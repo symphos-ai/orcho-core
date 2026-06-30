@@ -1,0 +1,46 @@
+name: DCO
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    name: signoff
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out pull request head
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Fetch base commit
+        run: |
+          git remote add base "https://github.com/${{ github.repository }}.git"
+          git fetch --no-tags --depth=1 base "${{ github.event.pull_request.base.sha }}"
+
+      - name: Check commit sign-offs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          base="${{ github.event.pull_request.base.sha }}"
+          missing=0
+
+          while IFS= read -r commit; do
+            if ! git log -1 --format=%B "$commit" | grep -qiE '^Signed-off-by: .+ <[^>]+>$'; then
+              echo "::error title=Missing DCO sign-off::Commit $commit is missing a Signed-off-by line."
+              missing=1
+            fi
+          done < <(git rev-list "${base}..HEAD")
+
+          if [[ "$missing" -ne 0 ]]; then
+            echo "Every commit must include a Signed-off-by line."
+            echo "Amend the latest commit with: git commit --amend --signoff"
+            exit 1
+          fi

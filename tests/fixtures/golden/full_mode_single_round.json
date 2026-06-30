@@ -1,0 +1,800 @@
+{
+  "change_handoff": "uncommitted",
+  "commit_delivery": {
+    "action": "approve",
+    "artifact_path": "<TMP>",
+    "baseline_ref": "<VOLATILE>",
+    "commit_sha": "<VOLATILE>",
+    "decided_at": "<VOLATILE>",
+    "decision_id": "<RUN_ID>",
+    "dirty": true,
+    "files_staged": [
+      ".orcho/mock_changes/last_build.md",
+      "src/checkout/implementation.txt"
+    ],
+    "final_message": "Mock release gate: change is ship-ready in mock mode.",
+    "include_untracked": true,
+    "project_path": "<PROJECT>",
+    "release_summary": "Mock release gate: change is ship-ready in mock mode.",
+    "release_verdict": "APPROVED",
+    "run_id": "<RUN_ID>",
+    "source_path": "<TMP>",
+    "status": "committed",
+    "strategy": "release_summary",
+    "untracked_delivered": [
+      ".orcho/mock_changes/last_build.md",
+      "src/checkout/implementation.txt"
+    ],
+    "untracked_paths": [
+      ".orcho/mock_changes/last_build.md",
+      "src/checkout/implementation.txt"
+    ]
+  },
+  "diff_patch": {
+    "baseline_ref": "<VOLATILE>",
+    "detail": "",
+    "patch_path": "<TMP>",
+    "reason": "patch_applies",
+    "status": "patch_valid"
+  },
+  "metrics": {
+    "phase_attempts": [
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "plan",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "validate_plan",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "implement",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "review_changes",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "final_acceptance",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      }
+    ],
+    "phases": {
+      "final_acceptance": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "implement": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "plan": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "review_changes": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "validate_plan": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      }
+    },
+    "subtasks": {
+      "implement": [
+        {
+          "declared_files": [
+            "src/checkout/implementation.txt"
+          ],
+          "duration_s": "<VOLATILE>",
+          "invocations": 1,
+          "model": "mock",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "state": "done",
+          "subtask_id": "inspect-target",
+          "tokens_exact": false,
+          "tokens_in": "<TOKEN_COUNT>",
+          "tokens_out": "<TOKEN_COUNT>",
+          "tool_calls": 0,
+          "total_tokens": "<TOKEN_COUNT>"
+        },
+        {
+          "declared_files": [
+            "src/checkout/implementation.txt"
+          ],
+          "duration_s": "<VOLATILE>",
+          "invocations": 1,
+          "model": "mock",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "state": "done",
+          "subtask_id": "apply-fix",
+          "tokens_exact": false,
+          "tokens_in": "<TOKEN_COUNT>",
+          "tokens_out": "<TOKEN_COUNT>",
+          "tool_calls": 0,
+          "total_tokens": "<TOKEN_COUNT>"
+        },
+        {
+          "declared_files": [
+            "src/checkout/implementation.txt"
+          ],
+          "duration_s": "<VOLATILE>",
+          "invocations": 1,
+          "model": "mock",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "state": "done",
+          "subtask_id": "verify",
+          "tokens_exact": false,
+          "tokens_in": "<TOKEN_COUNT>",
+          "tokens_out": "<TOKEN_COUNT>",
+          "tool_calls": 0,
+          "total_tokens": "<TOKEN_COUNT>"
+        }
+      ]
+    },
+    "total_duration_s": "<VOLATILE>",
+    "total_rounds": 1,
+    "total_tokens": "<TOKEN_COUNT>",
+    "total_tokens_in": "<TOKEN_COUNT>",
+    "total_tokens_out": "<TOKEN_COUNT>",
+    "total_tokens_unknown": "<TOKEN_COUNT>"
+  },
+  "model": "claude-opus-4-8[1m]",
+  "phases": {
+    "final_acceptance": {
+      "approved": true,
+      "continue_session": false,
+      "contract_status": {
+        "interfaces": "not_applicable",
+        "persistence": "not_applicable",
+        "task_contract": "satisfied",
+        "tests": "sufficient"
+      },
+      "critique": "# Release gate\n\n**Verdict:** APPROVED\n\n**Ship-ready:** yes\n\n**Short summary:** **Mock release gate: change is ship-ready in mock mode.**\n\n## Contract status\n\n- Task contract: satisfied\n- Interfaces:    not_applicable\n- Persistence:   not_applicable\n- Tests:         sufficient\n",
+      "findings": [],
+      "raw_response": "{\"verdict\": \"APPROVED\", \"ship_ready\": true, \"short_summary\": \"Mock release gate: change is ship-ready in mock mode.\", \"release_blockers\": [], \"verification_gaps\": [], \"contract_status\": {\"task_contract\": \"satisfied\", \"interfaces\": \"not_applicable\", \"persistence\": \"not_applicable\", \"tests\": \"sufficient\"}}",
+      "release_blockers": [],
+      "session_id": "<VOLATILE>",
+      "ship_ready": true,
+      "short_summary": "Mock release gate: change is ship-ready in mock mode.",
+      "verdict": "APPROVED",
+      "verification_gaps": []
+    },
+    "implement": {
+      "delivery_clean": true,
+      "implementation_receipts": [
+        {
+          "attestation_summary": "mock subtask inspect-target: all 2 criteria met",
+          "criteria_report": [
+            {
+              "criterion": "Relevant code path identified",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 1,
+              "met": true
+            },
+            {
+              "criterion": "Expected behaviour stated before edit",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 2,
+              "met": true
+            }
+          ],
+          "depends_on": [],
+          "done_criteria": [
+            "Relevant code path identified",
+            "Expected behaviour stated before edit"
+          ],
+          "duration": "<VOLATILE>",
+          "model": "mock",
+          "runtime": "claude",
+          "skill": null,
+          "state": "done",
+          "subtask_id": "inspect-target"
+        },
+        {
+          "attestation_summary": "mock subtask apply-fix: all 2 criteria met",
+          "criteria_report": [
+            {
+              "criterion": "Bug is fixed in the target implementation",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 1,
+              "met": true
+            },
+            {
+              "criterion": "No unrelated files are changed",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 2,
+              "met": true
+            }
+          ],
+          "depends_on": [
+            "inspect-target"
+          ],
+          "done_criteria": [
+            "Bug is fixed in the target implementation",
+            "No unrelated files are changed"
+          ],
+          "duration": "<VOLATILE>",
+          "model": "mock",
+          "runtime": "claude",
+          "skill": null,
+          "state": "done",
+          "subtask_id": "apply-fix"
+        },
+        {
+          "attestation_summary": "mock subtask verify: all 2 criteria met",
+          "criteria_report": [
+            {
+              "criterion": "Targeted verification passes",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 1,
+              "met": true
+            },
+            {
+              "criterion": "Failure output is captured for the fix loop if tests fail",
+              "evidence": "mock implementation satisfied this criterion",
+              "index": 2,
+              "met": true
+            }
+          ],
+          "depends_on": [
+            "apply-fix"
+          ],
+          "done_criteria": [
+            "Targeted verification passes",
+            "Failure output is captured for the fix loop if tests fail"
+          ],
+          "duration": "<VOLATILE>",
+          "model": "mock",
+          "runtime": "claude",
+          "skill": null,
+          "state": "done",
+          "subtask_id": "verify"
+        }
+      ],
+      "meta": {
+        "completed_count": 3,
+        "concurrency": 1,
+        "execution_mode": "subtask_dag",
+        "failed_count": 0,
+        "skipped_count": 0,
+        "subtask_count": 3
+      },
+      "output": "## subtask inspect-target (ok)\n\n## Build output \u2014 checkout\n\nImplemented the required changes:\n\n### Modified files\n- `src/checkout/implementation.txt`\n\n### Summary\n- Applied task requirements following project conventions\n- No breaking changes to public interfaces\n- Event subscriptions follow OnEnable/OnDisable pattern (where applicable)\n- All existing tests pass\n\nReady for Codex review.\n\n\n{\"type\": \"subtask_attestation\", \"subtask_id\": \"inspect-target\", \"criteria\": [{\"index\": 1, \"criterion\": \"Relevant code path identified\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}, {\"index\": 2, \"criterion\": \"Expected behaviour stated before edit\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}], \"summary\": \"mock subtask inspect-target: all 2 criteria met\"}\n\n## subtask apply-fix (ok)\n\n## Build output \u2014 checkout\n\nImplemented the required changes:\n\n### Modified files\n- `src/checkout/implementation.txt`\n\n### Summary\n- Applied task requirements following project conventions\n- No breaking changes to public interfaces\n- Event subscriptions follow OnEnable/OnDisable pattern (where applicable)\n- All existing tests pass\n\nReady for Codex review.\n\n\n{\"type\": \"subtask_attestation\", \"subtask_id\": \"apply-fix\", \"criteria\": [{\"index\": 1, \"criterion\": \"Bug is fixed in the target implementation\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}, {\"index\": 2, \"criterion\": \"No unrelated files are changed\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}], \"summary\": \"mock subtask apply-fix: all 2 criteria met\"}\n\n## subtask verify (ok)\n\n## Build output \u2014 checkout\n\nImplemented the required changes:\n\n### Modified files\n- `src/checkout/implementation.txt`\n\n### Summary\n- Applied task requirements following project conventions\n- No breaking changes to public interfaces\n- Event subscriptions follow OnEnable/OnDisable pattern (where applicable)\n- All existing tests pass\n\nReady for Codex review.\n\n\n{\"type\": \"subtask_attestation\", \"subtask_id\": \"verify\", \"criteria\": [{\"index\": 1, \"criterion\": \"Targeted verification passes\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}, {\"index\": 2, \"criterion\": \"Failure output is captured for the fix loop if tests fail\", \"met\": true, \"evidence\": \"mock implementation satisfied this criterion\"}], \"summary\": \"mock subtask verify: all 2 criteria met\"}",
+      "progress": {
+        "completed": 3,
+        "kind": "subtasks",
+        "total": 3
+      },
+      "prompt_render": {
+        "continue_session": true,
+        "delta_dropped_part_keys": [],
+        "execution_mode": "subtask_dag",
+        "omitted_part_keys": [],
+        "part_ids": [
+          "subtask:inspect-target",
+          "subtask:apply-fix",
+          "subtask:verify"
+        ],
+        "payload_hash": "<VOLATILE>",
+        "phase_key": "implement",
+        "prefix_hash": "<VOLATILE>",
+        "provider_session_id": "mock-claude-1",
+        "render_mode": "delta",
+        "round": null,
+        "selected_part_keys": [
+          "subtask:inspect-target",
+          "subtask:apply-fix",
+          "subtask:verify"
+        ],
+        "session_key": {
+          "model_key": "mock",
+          "run_id": "<RUN_ID>",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "scope": "per_role:implementation_engineer"
+        },
+        "session_split": "per_role",
+        "surface_count": 3,
+        "wire_chars": "<VOLATILE>"
+      },
+      "test_result": {
+        "duration": "<VOLATILE>",
+        "output": "[Tests] \u2713 All tests passed",
+        "passed": true,
+        "skipped": false
+      }
+    },
+    "plan": [
+      {
+        "attempt": 1,
+        "codemap_injected": false,
+        "context_clearing": {
+          "artifact_refs": [],
+          "cache_effect": "none",
+          "class_counts": {
+            "decision_bearing": 1,
+            "ephemeral": 0,
+            "persisted_artifact": 0,
+            "re_fetchable": 8
+          },
+          "clearable_part_ids": [
+            "contract:change_handoff:mode=uncommitted@1",
+            "system_tail:plan_artifact_boundary@1",
+            "role:systems_architect@0",
+            "format:terse@0",
+            "task:plan@0",
+            "contract:plan_json:v1:english@1",
+            "contract:authoring_language:v1:english@1",
+            "context:project@0"
+          ],
+          "clearable_tokens": "<TOKEN_COUNT>",
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "kind": "eligible_tool_results",
+          "payload_hash": "<VOLATILE>",
+          "phase": "plan",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "retained_part_ids": [
+            "turn_input:plan_task@0"
+          ],
+          "round": null,
+          "surface_id": null,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_growth": {
+          "artifact_refs": [],
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "input_tokens_estimate": "<TOKEN_COUNT>",
+          "kind": "phase_invocation",
+          "output_tokens_estimate": "<TOKEN_COUNT>",
+          "payload_hash": "<VOLATILE>",
+          "phase": "plan",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "round": null,
+          "summary_tokens": "<TOKEN_COUNT>",
+          "surface_id": null,
+          "tool_use_count": 0,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_pressure": {
+          "context_fill_ratio": "<TOKEN_COUNT>",
+          "context_remaining_tokens": "<TOKEN_COUNT>",
+          "context_source": "orcho_estimated",
+          "context_used_tokens": "<TOKEN_COUNT>",
+          "context_window_tokens": "<TOKEN_COUNT>",
+          "model": "mock",
+          "payload_hash": "<VOLATILE>",
+          "phase": "plan",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-claude-1",
+          "round": null,
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockClaude",
+            "scope": "common"
+          },
+          "session_split": "common",
+          "surface_id": null,
+          "trigger_source": "orcho_estimated",
+          "wire_chars": "<VOLATILE>"
+        },
+        "continue_session": false,
+        "existing_files": [],
+        "hypothesis_injected": false,
+        "missing_files": [
+          "src/checkout/implementation.txt"
+        ],
+        "output": "# Implementation Plan\n\n## Short Summary\n\n**Mock plan for snapshot regression task**\n\n## Planning Context\n\nMock planner selected a focused inspect/apply/verify path for: snapshot regression task\n\n## Plan Contract\n\n**Goal:** Deliver a focused, verified change for: snapshot regression task\n\n**Acceptance criteria:**\n- Implementation changes are limited to the planned files\n- Tests or equivalent verification are run before final QA\n- No regressions in adjacent modules\n\n**Owned files:**\n- src/checkout/implementation.txt\n\n**Commands to run:**\n- pytest -q\n\n**Risks:**\n- Existing public interfaces must remain stable\n- Do not mask test failures with broad rewrites\n\n**Review focus:**\n- Targeted change in planned files only\n- Verification command was actually run\n\n## Tasks\n\n## Task inspect-target: Inspect the current implementation for: snapshot regression task\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Spec:**\n\nRead src/checkout/implementation.txt and adjacent tests/docs to confirm the bug surface before making changes.\n\n**Done Criteria:**\n- Relevant code path identified\n- Expected behaviour stated before edit\n\n## Task apply-fix: Implement the requested change for checkout\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- inspect-target\n\n**Spec:**\n\nApply the smallest code change that satisfies the task while preserving existing public interfaces.\n\n**Done Criteria:**\n- Bug is fixed in the target implementation\n- No unrelated files are changed\n\n## Task verify: Verify behaviour and regression safety\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- apply-fix\n\n**Spec:**\n\nRun the narrowest relevant tests first, then the configured project test command when available.\n\n**Done Criteria:**\n- Targeted verification passes\n- Failure output is captured for the fix loop if tests fail\n",
+        "parsed_file_paths": [
+          "src/checkout/implementation.txt"
+        ],
+        "prompt_render": {
+          "continue_session": false,
+          "delta_dropped_part_keys": [],
+          "omitted_part_keys": [],
+          "part_ids": [
+            "contract:change_handoff:mode=uncommitted@1",
+            "system_tail:plan_artifact_boundary@1",
+            "role:systems_architect@0",
+            "format:terse@0",
+            "task:plan@0",
+            "contract:plan_json:v1:english@1",
+            "contract:authoring_language:v1:english@1",
+            "context:project@0",
+            "turn_input:plan_task@0"
+          ],
+          "payload_hash": "<VOLATILE>",
+          "phase_key": "plan",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-claude-1",
+          "render_mode": "full",
+          "round": 1,
+          "selected_part_keys": [
+            "contract:change_handoff:mode=uncommitted@1",
+            "system_tail:plan_artifact_boundary@1",
+            "role:systems_architect@0",
+            "format:terse@0",
+            "task:plan@0",
+            "contract:plan_json:v1:english@1",
+            "contract:authoring_language:v1:english@1",
+            "context:project@0",
+            "turn_input:plan_task@0"
+          ],
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockClaude",
+            "scope": "common"
+          },
+          "session_split": "common",
+          "wire_chars": "<VOLATILE>"
+        },
+        "session_id": "<VOLATILE>",
+        "total_atomic_tasks": "<VOLATILE>"
+      }
+    ],
+    "rounds": [
+      {
+        "context_clearing_review": {
+          "artifact_refs": [],
+          "cache_effect": "none",
+          "class_counts": {
+            "decision_bearing": 3,
+            "ephemeral": 1,
+            "persisted_artifact": 0,
+            "re_fetchable": 6
+          },
+          "clearable_part_ids": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0"
+          ],
+          "clearable_tokens": "<TOKEN_COUNT>",
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "kind": "eligible_tool_results",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "retained_part_ids": [
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "round": null,
+          "surface_id": null,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_growth_review": {
+          "artifact_refs": [],
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "input_tokens_estimate": "<TOKEN_COUNT>",
+          "kind": "phase_invocation",
+          "output_tokens_estimate": "<TOKEN_COUNT>",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "round": null,
+          "summary_tokens": "<TOKEN_COUNT>",
+          "surface_id": null,
+          "tool_use_count": 0,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_pressure_review": {
+          "context_fill_ratio": "<TOKEN_COUNT>",
+          "context_remaining_tokens": "<TOKEN_COUNT>",
+          "context_source": "orcho_estimated",
+          "context_used_tokens": "<TOKEN_COUNT>",
+          "context_window_tokens": "<TOKEN_COUNT>",
+          "model": "mock",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "round": null,
+          "runtime": "agents.runtimes._strategy._MockCodex",
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "per_role:code_reviewer"
+          },
+          "session_split": "per_role",
+          "surface_id": null,
+          "trigger_source": "orcho_estimated",
+          "wire_chars": "<VOLATILE>"
+        },
+        "critique": "",
+        "prompt_render_review": {
+          "continue_session": false,
+          "delta_dropped_part_keys": [],
+          "omitted_part_keys": [],
+          "part_ids": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "payload_hash": "<VOLATILE>",
+          "phase_key": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "render_mode": "full",
+          "round": 1,
+          "selected_part_keys": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "per_role:code_reviewer"
+          },
+          "session_split": "per_role",
+          "wire_chars": "<VOLATILE>"
+        },
+        "review_continue_session": false,
+        "review_session_id": "mock-codex-1",
+        "round": 1
+      }
+    ],
+    "validate_plan": [
+      {
+        "approved": true,
+        "attempt": 1,
+        "context_clearing": {
+          "artifact_refs": [],
+          "cache_effect": "none",
+          "class_counts": {
+            "decision_bearing": 3,
+            "ephemeral": 0,
+            "persisted_artifact": 0,
+            "re_fetchable": 5
+          },
+          "clearable_part_ids": [
+            "role:plan_reviewer@0",
+            "format:terse@0",
+            "task:validate_plan@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0"
+          ],
+          "clearable_tokens": "<TOKEN_COUNT>",
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "kind": "eligible_tool_results",
+          "payload_hash": "<VOLATILE>",
+          "phase": "validate_plan",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "retained_part_ids": [
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:validate_plan_task@0"
+          ],
+          "round": null,
+          "surface_id": null,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_growth": {
+          "artifact_refs": [],
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "input_tokens_estimate": "<TOKEN_COUNT>",
+          "kind": "phase_invocation",
+          "output_tokens_estimate": "<TOKEN_COUNT>",
+          "payload_hash": "<VOLATILE>",
+          "phase": "validate_plan",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "round": null,
+          "summary_tokens": "<TOKEN_COUNT>",
+          "surface_id": null,
+          "tool_use_count": 0,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_pressure": {
+          "context_fill_ratio": "<TOKEN_COUNT>",
+          "context_remaining_tokens": "<TOKEN_COUNT>",
+          "context_source": "orcho_estimated",
+          "context_used_tokens": "<TOKEN_COUNT>",
+          "context_window_tokens": "<TOKEN_COUNT>",
+          "model": "mock",
+          "payload_hash": "<VOLATILE>",
+          "phase": "validate_plan",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "round": null,
+          "runtime": "agents.runtimes._strategy._MockCodex",
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "per_role:plan_reviewer"
+          },
+          "session_split": "per_role",
+          "surface_id": null,
+          "trigger_source": "orcho_estimated",
+          "wire_chars": "<VOLATILE>"
+        },
+        "continue_session": false,
+        "critique": "# Review\n\n**Verdict:** APPROVED\n\n**Short summary:** **Plan approved by JSON contract; no residual risk identified.**\n\n## Checks\n\n- Reviewed plan structure\n- Reviewed acceptance criteria\n",
+        "findings": [],
+        "plan_file": "<TMP>",
+        "prompt_render": {
+          "continue_session": false,
+          "delta_dropped_part_keys": [],
+          "omitted_part_keys": [],
+          "part_ids": [
+            "role:plan_reviewer@0",
+            "format:terse@0",
+            "task:validate_plan@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:validate_plan_task@0"
+          ],
+          "payload_hash": "<VOLATILE>",
+          "phase_key": "validate_plan",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "render_mode": "full",
+          "round": 1,
+          "selected_part_keys": [
+            "role:plan_reviewer@0",
+            "format:terse@0",
+            "task:validate_plan@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "plan_contract:typed_plan@0",
+            "plan_tasks:execution_plan@0",
+            "turn_input:validate_plan_task@0"
+          ],
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "per_role:plan_reviewer"
+          },
+          "session_split": "per_role",
+          "wire_chars": "<VOLATILE>"
+        },
+        "raw_response": "{\"verdict\": \"APPROVED\", \"short_summary\": \"Plan approved by JSON contract; no residual risk identified.\", \"findings\": [], \"risks\": [], \"checks\": [\"Reviewed plan structure\", \"Reviewed acceptance criteria\"]}",
+        "reviewer_provider": "",
+        "session_id": "<VOLATILE>",
+        "short_summary": "Plan approved by JSON contract; no residual risk identified.",
+        "verdict": "APPROVED"
+      }
+    ]
+  },
+  "plan_source": "local",
+  "plugin": "Project",
+  "profile": "feature",
+  "project": "<PROJECT>",
+  "sandbox": {
+    "capabilities": "<HOST_SPECIFIC>",
+    "env_allowlist_effective": "<HOST_SPECIFIC>",
+    "env_stripped_count": "<HOST_SPECIFIC>",
+    "limit_hit": null,
+    "limits": {
+      "cpu_seconds": 0,
+      "file_size_mb": 0,
+      "memory_mb": 0,
+      "open_files": 0
+    },
+    "masking": {
+      "builtin_patterns": true,
+      "custom_patterns": 0
+    },
+    "mode": "env"
+  },
+  "session_mode_requested": "stateless",
+  "status": "done",
+  "task": "snapshot regression task",
+  "timestamp": "<TIMESTAMP>",
+  "worktree": {
+    "base_ref": "<VOLATILE>",
+    "branch_ref": "orcho/run/<RUN_ID>",
+    "isolation": "per_run",
+    "kind": "primary",
+    "manifest_path": "<TMP>",
+    "path": "<TMP>",
+    "retention_until": "<TIMESTAMP>",
+    "root_run_id": "<RUN_ID>",
+    "source_repo_path": "<PROJECT>",
+    "source_start_head": "<VOLATILE>",
+    "worktree_id": "wt_<RUN_ID>"
+  }
+}

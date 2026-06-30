@@ -1,0 +1,9 @@
+[project]
+name = "acmecorp-admin-api"
+version = "0.0.1"
+description = "API service for the AcmeCorp admin demo."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

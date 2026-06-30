@@ -1,0 +1,131 @@
+"""Drift guard for the public SDK contract.
+
+`docs/sdk_schema.json` is the committed snapshot of `sdk.__all__` and
+every public dataclass / callable / exception. Any change to the SDK
+surface (added export, renamed parameter, changed default, removed
+field) flips this test red.
+
+When the change is intentional, regenerate the snapshot:
+
+    python tools/dump_sdk_schema.py
+
+Then commit `docs/sdk_schema.json` together with the SDK change.
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCHEMA_PATH = _REPO_ROOT / "docs" / "sdk_schema.json"
+_DUMPER_PATH = _REPO_ROOT / "tools" / "dump_sdk_schema.py"
+
+
+def test_snapshot_exists() -> None:
+    assert _SCHEMA_PATH.exists(), (
+        f"{_SCHEMA_PATH.relative_to(_REPO_ROOT)} missing. "
+        "Generate with: python tools/dump_sdk_schema.py"
+    )
+
+
+def test_dumper_check_mode_passes() -> None:
+    """Run the dumper in --check mode; any drift fails the test.
+
+    Routed through subprocess so the dumper exercises its own CLI
+    contract (the same contract a CI hook or `pre-commit` would use).
+    """
+    result = subprocess.run(
+        [sys.executable, str(_DUMPER_PATH), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"sdk schema drift detected.\n"
+        f"stderr:\n{result.stderr}\n"
+        "Regenerate the snapshot with:\n"
+        "  python tools/dump_sdk_schema.py"
+    )
+
+
+def test_snapshot_covers_full_all() -> None:
+    """The snapshot's export list must equal `sdk.__all__` exactly."""
+    import sdk
+
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    snapshot_names = sorted(e["name"] for e in schema["exports"])
+    expected = sorted(sdk.__all__)
+    assert snapshot_names == expected, (
+        "sdk.__all__ and the snapshot have diverged.\n"
+        f"in __all__ but not in snapshot: {set(expected) - set(snapshot_names)}\n"
+        f"in snapshot but not in __all__: {set(snapshot_names) - set(expected)}\n"
+        "Regenerate with: python tools/dump_sdk_schema.py"
+    )
+
+
+def test_every_exception_has_exit_code() -> None:
+    """Every exception export carries a numeric `exit_code` for CLI mapping."""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    for entry in schema["exports"]:
+        if entry["kind"] != "exception":
+            continue
+        assert entry.get("exit_code") is not None, (
+            f"{entry['name']}.exit_code is None — every OrchoError subclass "
+            "must declare an exit_code so CLI handlers can map it uniformly."
+        )
+
+
+def test_every_dataclass_is_frozen_slotted() -> None:
+    """Public dataclasses must be `frozen=True, slots=True` per ADR 0021."""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    for entry in schema["exports"]:
+        if entry["kind"] != "dataclass":
+            continue
+        assert entry["frozen"] is True, f"{entry['name']} is not frozen"
+        assert entry["slots"] is True, f"{entry['name']} has no slots"
+
+
+def test_runs_dir_resolution_kwargs_uniform() -> None:
+    """Every read/report call accepts the (workspace, runs_dir, cwd) triple."""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    READERS = {
+        "load_status",
+        "list_history",
+        "get_run_metrics",
+        "list_metrics",
+        "list_events",
+        "aggregate_cost",
+        "collect_evidence",
+        "find_run",
+        "find_runs_dir",
+    }
+    for entry in schema["exports"]:
+        if entry["name"] not in READERS:
+            continue
+        param_names = {p["name"] for p in entry["params"]}
+        for required in ("workspace", "runs_dir", "cwd"):
+            assert required in param_names, (
+                f"{entry['name']} is missing the {required!r} kwarg "
+                "from the standard read/report context triple."
+            )
+
+
+@pytest.mark.parametrize(
+    "name,expected_exit_code",
+    [
+        ("OrchoError", 1),
+        ("NoWorkspace", 1),
+        ("RunNotFound", 1),
+        ("PricingFetchError", 2),
+        ("PromptNotFound", 1),
+        ("EvidenceInvalid", 1),
+    ],
+)
+def test_exit_code_pinning(name: str, expected_exit_code: int) -> None:
+    """Pin error exit codes; the CLI's `_run_cli` adapter relies on them."""
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    entry = next(e for e in schema["exports"] if e["name"] == name)
+    assert entry["exit_code"] == expected_exit_code

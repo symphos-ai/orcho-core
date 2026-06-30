@@ -1,0 +1,17 @@
+# Python bytecode + caches — runtime artifacts, never committed.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Coverage / build artifacts.
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Editor / OS noise.
+.DS_Store
+.vscode/
+.idea/

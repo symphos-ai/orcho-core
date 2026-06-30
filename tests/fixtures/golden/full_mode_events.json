@@ -1,0 +1,208 @@
+{
+  "events": [
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": null,
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "VALIDATE_PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "VALIDATE_PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "VALIDATE_PLAN",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "IMPLEMENT",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "REVIEW_CHANGES",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "REVIEW_CHANGES",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "REPAIR_CHANGES",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "REPAIR_CHANGES",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "FINAL_ACCEPTANCE",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "FINAL_ACCEPTANCE",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": null,
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "DONE",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": "DONE",
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": null,
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": null,
+      "type": "unknown"
+    },
+    {
+      "approved": null,
+      "attempt": null,
+      "phase": null,
+      "type": "unknown"
+    }
+  ]
+}

@@ -1,0 +1,4997 @@
+{
+  "exports": [
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "provider",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_exact",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "AgentBreakdown",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "uri",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mime",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "size_bytes",
+          "type": "int | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "ArtefactRef",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "source",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hook_label",
+          "type": "str"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "ran_pass",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "ran_fail",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "skipped_fresh",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "skipped_manual",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "receipt_paths",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "AutorunEvent",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "env",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "exit_code",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "passed",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parity",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "receipt_path",
+          "type": "Path | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "stdout_tail",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "stderr_tail",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "checkout_head",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "baseline_head",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "dependencies",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verify",
+      "name": "CommandOutcome",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs_dir",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "window",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cutoff",
+          "type": "datetime | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_runs",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_cost",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_tokens",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_tokens_in",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_tokens_out",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "total_duration_s",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "rows",
+          "type": "tuple[CostRunRow, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "top_runs",
+          "type": "tuple[CostRunRow, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase_breakdown",
+          "type": "tuple[PhaseBreakdown, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "agent_breakdown",
+          "type": "tuple[AgentBreakdown, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "priced_entries_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "pricing_source",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "pricing_snapshot_date",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "pricing_snapshot_age_days",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "any_estimated",
+          "type": "bool"
+        },
+        {
+          "default": "True",
+          "default_factory": null,
+          "name": "accounting_enabled",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "CostReport",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "index",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "criterion",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "met",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "evidence",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "CriterionReport",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "action",
+          "type": "DeliveryDecisionActionValue"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "note",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.types",
+      "name": "DeliveryDecisionCommand",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "action",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "accepted",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "terminal_outcome",
+          "type": "Literal['done', 'halted']"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "halt_reason",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "artifact_paths",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "commit_sha",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "blocker",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "followup_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "scope_disclosure",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.types",
+      "name": "DeliveryDecisionResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "decidable",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "Literal['delivery', 'correction', 'none']"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "available_actions",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "blocked_actions",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "default_action",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "reason",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "scope_disclosure",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.types",
+      "name": "DeliveryDecisionState",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.workspace",
+      "name": "DetectedProject",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "client",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.runtimes",
+      "name": "DetectedRuntime",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "errors",
+          "type": "tuple[dict[str, Any], ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "halt_reason",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "halted_at",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "error_summary",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "recovery",
+          "type": "ProviderAccessRecovery | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "provider_runtime",
+          "type": "ProviderRuntimeFailure | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "ErrorsAndHalt",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "size_bytes",
+          "type": "int"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "EvidenceArtifactRecord",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_ref",
+          "type": "RunRef"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "body",
+          "type": "dict[str, Any]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "markdown",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "valid",
+          "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "validation_errors",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "EvidenceBundle",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "argv_summary",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cwd",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "exit_code",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "EvidenceCommandRecord",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "EvidenceInvalid"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "git_dir",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.workspace",
+      "name": "ExtraProject",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "severity",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "title",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "body",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "required_fix",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "file",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "line",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "attempt",
+          "type": "int"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "Finding",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "project",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "dry_run",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "wrote",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": "list",
+          "name": "markers",
+          "type": "list[str]"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "candidate",
+          "type": "dict[str, Any]"
+        },
+        {
+          "default": null,
+          "default_factory": "list",
+          "name": "suggested_projects",
+          "type": "list[str]"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "note",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.fine_tune",
+      "name": "FineTuneResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "env",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hook",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "policy",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "required",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "GateStatus"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "receipt_path",
+          "type": "str"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "source_run_id",
+          "type": "str"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "inherited",
+          "type": "bool"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "stale_reason",
+          "type": "str"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "searched_run_dirs",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "rerun_hint",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "detail",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "GateProjection",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "handoff_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "advice_artifact",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "trigger",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "verdict",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "feedback_source",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recommended_action",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "applied_action",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "confidence",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "finding_fingerprint",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "resolved",
+          "type": "bool | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "repeated",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "severity_counts",
+          "type": "dict[str, int]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_in",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_out",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_cached",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost_usd_equivalent",
+          "type": "float | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "model",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "HandoffAdviceCall",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "calls",
+          "type": "tuple[HandoffAdviceCall, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "summary",
+          "type": "HandoffAdviceSummary"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "HandoffAdviceEvidence",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "handoff_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recommended_action",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "confidence",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "rationale",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "retry_feedback",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "risks",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "expected_files",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "operator_note",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parse_warnings",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "safety",
+          "type": "HandoffAdviceSafety"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "advice_artifact",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "provenance_note",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "usage",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.handoff_advice",
+      "name": "HandoffAdviceResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "auto_apply_ok",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "needs_confirmation",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "blocked_reason",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "waiver_blocked",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.handoff_advice",
+      "name": "HandoffAdviceSafety",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "calls",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "applied_retries",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "resolved_retries",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "repeated",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "stopped",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "unknown",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "usage",
+          "type": "HandoffAdviceUsage | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "HandoffAdviceSummary",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_in",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_out",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_cached",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost_usd_equivalent",
+          "type": "float | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "HandoffAdviceUsage",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "InvalidPhaseHandoffState"
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "NoWorkspace"
+    },
+    {
+      "bases": [
+        "Exception"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "OrchoError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_exact",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "PhaseBreakdown",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "handoff_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "action",
+          "type": "PhaseHandoffActionValue"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "feedback",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "note",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "decided_at",
+          "type": "str"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "next_actions",
+          "type": "tuple"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.phase_handoff",
+      "name": "PhaseHandoffDecision",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "PhaseStatus",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "source",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "short_summary",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "planning_context",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "subtask_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "has_contract",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "goal",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "acceptance_criteria",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "owned_files",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "commands_to_run",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "risks",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "review_focus",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "PlanSummary",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "PricingFetchError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "entries",
+          "type": "tuple[PricingEntry, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "user_snapshot_date",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "bundled_snapshot_date",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "snapshot_age_days",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "user_path",
+          "type": "Path | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "bundled_path",
+          "type": "Path | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "PricingTable",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "PromptNotFound"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "chain",
+          "type": "tuple[PromptResolutionStep, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "winner",
+          "type": "Path | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "body",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "PromptResolution",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "failure_kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recoverable",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recommended_action",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "failed_phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runtime",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "model",
+          "type": "str"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "replacements",
+          "type": "tuple[RecoveryReplacement, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "ProviderAccessRecovery",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "is_terminal_or_rejected",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "continuation_subject",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recommended_next_action",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "recommended_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "source_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "source_status",
+          "type": "str | None"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "source_resumable",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "source_worktree_preserved",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "plan_subject_available",
+          "type": "bool"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "active_child_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "missing_facts",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.types",
+      "name": "RecoveryLineage",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runtime",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "model",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "RecoveryReplacement",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "written_path",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "snapshot_date",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "models_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "source_label",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RefreshResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "condition",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "halt_reason",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "continuation_subject",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "recommended_next_action",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "recommended_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "source_run_id",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "missing_facts",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "handoff_id",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "available_actions",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "delivery_gate_kind",
+          "type": "str | None"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "blocked",
+          "type": "bool"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "block_message",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "recovery",
+          "type": "RecoveryLineage | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.types",
+      "name": "RunDiagnosis",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "added",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "removed",
+          "type": "int"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_diff",
+      "name": "RunDiffFileRecord",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "found",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mode",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "diff_path",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "files",
+          "type": "tuple[RunDiffFileRecord, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "content",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "truncated",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "max_bytes",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "message",
+          "type": "str | None"
+        },
+        {
+          "default": "'run'",
+          "default_factory": null,
+          "name": "scope",
+          "type": "Literal['run', 'phase']"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "phase",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_diff",
+      "name": "RunDiffRecord",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "seq",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "ts",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "payload",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunEvent",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "project",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "task",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "profile",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "timestamp",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "phases",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "projects",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "extra",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunMeta",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_dir",
+          "type": "Path"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens_in",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens_out",
+          "type": "int"
+        },
+        {
+          "default": "0.0",
+          "default_factory": null,
+          "name": "total_duration_s",
+          "type": "float"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_rounds",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_retries",
+          "type": "int"
+        },
+        {
+          "default": "0.0",
+          "default_factory": null,
+          "name": "total_cost_usd_equivalent",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "phases",
+          "type": "dict[str, dict[str, Any]]"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "raw",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunMetrics",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "RunNotFound"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_dir",
+          "type": "Path"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunRef",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_ref",
+          "type": "RunRef"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "meta",
+          "type": "RunMeta | None"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens_in",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_tokens_out",
+          "type": "int"
+        },
+        {
+          "default": "0.0",
+          "default_factory": null,
+          "name": "total_duration_s",
+          "type": "float"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_rounds",
+          "type": "int"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "total_retries",
+          "type": "int"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "sub_projects",
+          "type": "tuple[PhaseStatus, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "worktree",
+          "type": "dict[str, Any] | None"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "raw_meta",
+          "type": "dict[str, Any]"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "raw_metrics",
+          "type": "dict[str, Any]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "next_actions",
+          "type": "tuple"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "artefacts",
+          "type": "tuple"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunStatus",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_dir",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "task",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "project",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cross_aliases",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "timestamp",
+          "type": "datetime | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "RunSummary",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_dir",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "SubRunLink",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "subtask_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "state",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runtime",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "model",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "skill",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "depends_on",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "done_criteria",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "duration",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "error",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "criteria_report",
+          "type": "tuple[CriterionReport, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "attestation_summary",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "attestation_error",
+          "type": "str | None"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "attestation_repaired",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.evidence_slices",
+      "name": "SubtaskReceipt",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "nested_git_dirs",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.workspace",
+      "name": "UndetectedCandidate",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "project",
+          "type": "str"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "has_contract",
+          "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "gates",
+          "type": "tuple[GateProjection, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "env_statuses",
+          "type": "tuple[tuple[str, bool], ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "residual_missing",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "residual_stale",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "residual_failed",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "manual_only",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "inherited",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "searched_run_dirs",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "suggested_commands",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "policy_by_command",
+          "type": "tuple[tuple[str, str], ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "autorun_events",
+          "type": "tuple[AutorunEvent, ...]"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "scheduled_trail_available",
+          "type": "bool"
+        },
+        {
+          "default": "'per-firing scheduled-gate events (verification_gate_events) are not persisted durably; core must mirror the gate_repair routing-decision trail to a durable run artifact before a per-scheduled-hook firing timeline can be projected. Terminal banners are not parsed as a source of truth.'",
+          "default_factory": null,
+          "name": "scheduled_trail_gap",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "VerificationTimelineProjection",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.verify",
+      "name": "VerifyEnvError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "env",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "receipt_path",
+          "type": "Path | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "all_passed",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "subject",
+          "type": "dict[str, str]"
+        },
+        {
+          "default": null,
+          "default_factory": "list",
+          "name": "assertions",
+          "type": "list[dict[str, Any]]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verify",
+      "name": "VerifyEnvResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "commands",
+          "type": "list[dict[str, Any]]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verify",
+      "name": "VerifyListResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcomes",
+          "type": "list[CommandOutcome]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "all_passed",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verify",
+      "name": "VerifyRunResult",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "WorkspaceInitError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "group_root",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "workspace_dir",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs_dir",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "env_file",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "local_config_file",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "detected_projects",
+          "type": "tuple[DetectedProject, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "created_paths",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "skipped_paths",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "warnings",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mcp_server_name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mcp_snippet",
+          "type": "dict"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mcp_config_path",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "mcp_config_action",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "dry_run",
+          "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "detected_runtimes",
+          "type": "tuple[DetectedRuntime, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "extra_projects",
+          "type": "tuple[ExtraProject, ...]"
+        },
+        {
+          "default": "0",
+          "default_factory": null,
+          "name": "undetected_count",
+          "type": "int"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "interactive",
+          "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "extension_points",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.workspace",
+      "name": "WorkspaceInitResult",
+      "slots": true
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.cost",
+      "name": "aggregate_cost",
+      "params": [
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "str",
+          "default": "'30d'",
+          "kind": "KEYWORD_ONLY",
+          "name": "window"
+        },
+        {
+          "annotation": "int",
+          "default": "5",
+          "kind": "KEYWORD_ONLY",
+          "name": "top_n"
+        }
+      ],
+      "return": "CostReport"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.argv",
+      "name": "build_orch_argv",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "task"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "task_file"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "resume"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "int | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "max_rounds"
+        },
+        {
+          "annotation": "int",
+          "default": "0",
+          "kind": "KEYWORD_ONLY",
+          "name": "mock_validate_plan_reject"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "model"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "output_dir"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "mock"
+        },
+        {
+          "annotation": "str | None",
+          "default": "'summary'",
+          "kind": "KEYWORD_ONLY",
+          "name": "output_mode"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "verbose"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "stream_output"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "profile"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "cross_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_mode"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_split"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "model_plan"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "model_implement"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "model_repair_changes"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "model_review_changes"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runtime_plan"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runtime_implement"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runtime_repair_changes"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runtime_review_changes"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "attach"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "attach_text"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "attach_image"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "attach_binary"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "no_interactive"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "from_run_plan"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "no_worktree_isolation"
+        }
+      ],
+      "return": "list[str]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence",
+      "name": "collect_evidence",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "EvidenceBundle"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.run_control.delivery",
+      "name": "decide_delivery",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "DeliveryDecisionActionValue",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "action"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "note"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "DeliveryDecisionResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.run_control.delivery",
+      "name": "delivery_decision_state",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "dict[str, Any] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
+        }
+      ],
+      "return": "DeliveryDecisionState"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runtimes",
+      "name": "detect_cli_runtimes",
+      "params": [],
+      "return": "tuple[DetectedRuntime, ...]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.workspace",
+      "name": "discover_undetected_candidates",
+      "params": [
+        {
+          "annotation": "Path | str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "group_root"
+        }
+      ],
+      "return": "list[UndetectedCandidate]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runs",
+      "name": "find_run",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "RunRef"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runs",
+      "name": "find_runs_dir",
+      "params": [
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "Path"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.fine_tune",
+      "name": "fine_tune_project",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "project"
+        },
+        {
+          "annotation": "bool",
+          "default": "True",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        }
+      ],
+      "return": "FineTuneResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "get_errors_halt",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "ErrorsAndHalt"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "get_plan_summary",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "PlanSummary"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "get_resume_intent_options",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any] | None",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "parent_meta"
+        },
+        {
+          "annotation": "bool",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "has_new_task"
+        }
+      ],
+      "return": "ResumeIntentOptions"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.run_diff",
+      "name": "get_run_diff",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "Literal['preview', 'stat', 'full']",
+          "default": "'preview'",
+          "kind": "KEYWORD_ONLY",
+          "name": "mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "path"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "phase"
+        },
+        {
+          "annotation": "int | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "max_bytes"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "color"
+        }
+      ],
+      "return": "RunDiffRecord"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.metrics",
+      "name": "get_run_metrics",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "RunMetrics"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.verification_timeline",
+      "name": "get_verification_timeline",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "VerificationTimelineProjection"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.workspace",
+      "name": "init_workspace",
+      "params": [
+        {
+          "annotation": "Path | str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "project_group_root"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace_name"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "mcp_config"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "mcp_server_name"
+        },
+        {
+          "annotation": "str",
+          "default": "'orcho-mcp'",
+          "kind": "KEYWORD_ONLY",
+          "name": "orcho_mcp_command"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        },
+        {
+          "annotation": "Sequence[ExtraProject]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "extra_projects"
+        },
+        {
+          "annotation": "int",
+          "default": "0",
+          "kind": "KEYWORD_ONLY",
+          "name": "undetected_count"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "interactive"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "no_scaffold"
+        }
+      ],
+      "return": "WorkspaceInitResult"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_commit_decision_fix",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_commit_decision_halt",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_commit_delivery_pending",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_commit_delivery_scope_blocked",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_final_acceptance_rejected",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_phase_handoff_halt",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_resume_parent",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.resume_context",
+      "name": "is_terminal_success",
+      "params": [
+        {
+          "annotation": "Mapping[str, Any]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "meta"
+        }
+      ],
+      "return": "bool"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.events",
+      "name": "list_events",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "tuple[RunEvent, ...]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_evidence_artifacts",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[ArtifactRecord]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_evidence_commands",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[CommandRecord]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_findings",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "_SeverityLiteral | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "severity_min"
+        },
+        {
+          "annotation": "tuple[str, ...] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "phases"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[Finding]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_handoff_advice",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "HandoffAdviceEvidence | None"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.history",
+      "name": "list_history",
+      "params": [
+        {
+          "annotation": "int | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "last"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[RunSummary]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.metrics",
+      "name": "list_metrics",
+      "params": [
+        {
+          "annotation": "int",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "last"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[RunMetrics]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.prompts",
+      "name": "list_prompts",
+      "params": [],
+      "return": "list[str]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_sub_runs",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[SubRunLink]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence_slices",
+      "name": "list_subtask_receipts",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[SubtaskReceipt]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.phase_handoff",
+      "name": "load_active_phase_handoff",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "dict[str, Any] | None"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runs",
+      "name": "load_meta",
+      "params": [
+        {
+          "annotation": "Path",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_dir"
+        }
+      ],
+      "return": "dict[str, Any]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.phase_handoff",
+      "name": "load_phase_handoff_decision",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "handoff_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "PhaseHandoffDecision | None"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.phase_handoff",
+      "name": "load_phase_handoff_decisions",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[PhaseHandoffDecision]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.status",
+      "name": "load_status",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "RunStatus"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.phase_handoff",
+      "name": "phase_handoff_decide",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "handoff_id"
+        },
+        {
+          "annotation": "PhaseHandoffActionValue",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "action"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "feedback"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "note"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "PhaseHandoffDecision"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.workspace",
+      "name": "preflight_workspace_target",
+      "params": [
+        {
+          "annotation": "Path | str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "project_group_root"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
+        }
+      ],
+      "return": "Path"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.run_control.recovery_lineage",
+      "name": "recovery_lineage",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "dict[str, Any] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
+        },
+        {
+          "annotation": "Mapping[str, dict[str, Any]] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "source_meta"
+        }
+      ],
+      "return": "RecoveryLineage"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.pricing",
+      "name": "refresh_pricing",
+      "params": [
+        {
+          "annotation": "str",
+          "default": "'openai'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "provider"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        }
+      ],
+      "return": "RefreshResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence",
+      "name": "render_evidence_md",
+      "params": [
+        {
+          "annotation": "EvidenceBundle",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "bundle"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "debug"
+        }
+      ],
+      "return": "str"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.handoff_advice",
+      "name": "request_handoff_advice",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "handoff_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "Any | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "provider"
+        },
+        {
+          "annotation": "Any | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "agent"
+        }
+      ],
+      "return": "HandoffAdviceResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.prompts",
+      "name": "resolve_prompt",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "name"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project_dir"
+        }
+      ],
+      "return": "PromptResolution"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runner",
+      "name": "run_cross_from_args",
+      "params": [
+        {
+          "annotation": "Any",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "args"
+        }
+      ],
+      "return": "int"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.cross_project.orchestrator",
+      "name": "run_cross_pipeline",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "task"
+        },
+        {
+          "annotation": "dict[str, pathlib.Path]",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "projects"
+        },
+        {
+          "annotation": "int",
+          "default": "1",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "max_rounds"
+        },
+        {
+          "annotation": "str",
+          "default": "'claude-opus-4-8[1m]'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "model"
+        },
+        {
+          "annotation": "pathlib.Path | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "output_dir"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "dry_run"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "mock"
+        },
+        {
+          "annotation": "AgentProvider | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "provider"
+        },
+        {
+          "annotation": "agents.registry.PhaseAgentConfig | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "phase_config"
+        },
+        {
+          "annotation": "str",
+          "default": "'full'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "cross_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "plan_file"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "resume_from"
+        },
+        {
+          "annotation": "bool | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "hypothesis_enabled"
+        },
+        {
+          "annotation": "str",
+          "default": "'feature'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "profile_name"
+        },
+        {
+          "annotation": "tuple | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "operator_decisions"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "no_interactive"
+        },
+        {
+          "annotation": "dict | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "resumed_meta"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "resume_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_run_dir"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_status"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_base_task"
+        },
+        {
+          "annotation": "dict[str, dict[str, str]] | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_session_seeds_per_alias"
+        }
+      ],
+      "return": "dict"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.run_control.diagnosis",
+      "name": "run_diagnosis",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "dict[str, Any] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
+        },
+        {
+          "annotation": "Mapping[str, dict[str, Any]] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "source_meta"
+        }
+      ],
+      "return": "RunDiagnosis"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.project.app",
+      "name": "run_pipeline",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "task"
+        },
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "project_dir"
+        },
+        {
+          "annotation": "int",
+          "default": "1",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "max_rounds"
+        },
+        {
+          "annotation": "str",
+          "default": "'claude-opus-4-8[1m]'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "model"
+        },
+        {
+          "annotation": "pathlib.Path | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "output_dir"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "dry_run"
+        },
+        {
+          "annotation": "agents.registry.PhaseAgentConfig | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "phase_config"
+        },
+        {
+          "annotation": "agents.protocols.SessionMode",
+          "default": "<SessionMode.AUTO: 'auto'>",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "session_mode"
+        },
+        {
+          "annotation": "str",
+          "default": "'feature'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "profile_name"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "ma_artifacts_dir_override"
+        },
+        {
+          "annotation": "AgentProvider | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "provider"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "resume_from"
+        },
+        {
+          "annotation": "tuple",
+          "default": "()",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "attachments"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "parent_run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "project_alias"
+        },
+        {
+          "annotation": "bool | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "hypothesis_enabled"
+        },
+        {
+          "annotation": "Any | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "profile_obj"
+        },
+        {
+          "annotation": "str",
+          "default": "'local'",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "plan_source"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "handoff_path"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "resume_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_run_dir"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_parent_status"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_base_task"
+        },
+        {
+          "annotation": "dict[str, str] | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_session_seeds"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_child_status"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "followup_active_handoff_id"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "no_interactive"
+        },
+        {
+          "annotation": "Path | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "from_run_plan_parent_dir"
+        },
+        {
+          "annotation": "dict[str, Any] | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "worktree_config_override"
+        }
+      ],
+      "return": "dict"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.runner",
+      "name": "run_pipeline_from_args",
+      "params": [
+        {
+          "annotation": "Any",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "args"
+        }
+      ],
+      "return": "int"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.phase_handoff",
+      "name": "safe_handoff_id",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "handoff_id"
+        }
+      ],
+      "return": "str"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.pricing",
+      "name": "show_pricing",
+      "params": [],
+      "return": "PricingTable"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk._jsonable",
+      "name": "to_jsonable",
+      "params": [
+        {
+          "annotation": "Any",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "value"
+        }
+      ],
+      "return": "Any"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.verify",
+      "name": "verify_env",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "env"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        }
+      ],
+      "return": "VerifyEnvResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.verify",
+      "name": "verify_list",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        }
+      ],
+      "return": "VerifyListResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.verify",
+      "name": "verify_run",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "project"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "commands"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "required_only"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "include_manual"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "subject_checkout"
+        }
+      ],
+      "return": "VerifyRunResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.evidence",
+      "name": "write_evidence_bundle",
+      "params": [
+        {
+          "annotation": "EvidenceBundle",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "bundle"
+        },
+        {
+          "annotation": "Path | str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "out_dir"
+        }
+      ],
+      "return": "list[Path]"
+    }
+  ],
+  "generator": "tools/dump_sdk_schema.py",
+  "schema_version": 1,
+  "sdk_module": "sdk"
+}

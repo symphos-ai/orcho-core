@@ -1,0 +1,75 @@
+{
+  "change_handoff": "uncommitted",
+  "metrics": {
+    "phase_attempts": [],
+    "phases": {},
+    "total_duration_s": "<VOLATILE>",
+    "total_tokens": "<TOKEN_COUNT>",
+    "total_tokens_in": "<TOKEN_COUNT>",
+    "total_tokens_out": "<TOKEN_COUNT>",
+    "total_tokens_unknown": "<TOKEN_COUNT>"
+  },
+  "model": "claude-opus-4-8[1m]",
+  "no_change_outcome": {
+    "diff": "none",
+    "message": "Final acceptance approved a verification-only run that produced no file changes to review or deliver.",
+    "phase": "final_acceptance",
+    "reason": "verification_no_changes",
+    "review_target": "uncommitted",
+    "status": "done"
+  },
+  "phases": {
+    "final_acceptance": {
+      "approved": true,
+      "contract_status": {
+        "interfaces": "not_applicable",
+        "persistence": "not_applicable",
+        "task_contract": "satisfied",
+        "tests": "sufficient"
+      },
+      "critique": "# Release gate\n\n**Verdict:** APPROVED\n\n**Ship ready:** yes\n\n**Summary:** No file changes were produced; final acceptance is not applicable to the diff surface and implement evidence is complete or not part of this profile.\n",
+      "diff": "none",
+      "findings": [],
+      "no_change_outcome": true,
+      "release_blockers": [],
+      "review_target": "not_applicable",
+      "ship_ready": true,
+      "short_summary": "No file changes were produced; final acceptance is not applicable to the diff surface and implement evidence is complete or not part of this profile.",
+      "skipped": "no uncommitted changes",
+      "verdict": "APPROVED",
+      "verification_gaps": []
+    },
+    "rounds": []
+  },
+  "plan_source": "local",
+  "plugin": "Project",
+  "profile": "delivery_audit",
+  "project": "<PROJECT>",
+  "sandbox": {
+    "capabilities": "<HOST_SPECIFIC>",
+    "env_allowlist_effective": "<HOST_SPECIFIC>",
+    "env_stripped_count": "<HOST_SPECIFIC>",
+    "limit_hit": null,
+    "limits": {
+      "cpu_seconds": 0,
+      "file_size_mb": 0,
+      "memory_mb": 0,
+      "open_files": 0
+    },
+    "masking": {
+      "builtin_patterns": true,
+      "custom_patterns": 0
+    },
+    "mode": "env"
+  },
+  "session_mode_requested": "stateless",
+  "status": "done",
+  "task": "snapshot regression task",
+  "timestamp": "<TIMESTAMP>",
+  "worktree": {
+    "base_ref": "<VOLATILE>",
+    "branch_ref": null,
+    "isolation": "off",
+    "path": "<PROJECT>"
+  }
+}

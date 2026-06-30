@@ -1,0 +1,121 @@
+{
+  "_comment": "Default per-phase runtime+model+effort configuration. ``runtime`` selects the agent backend (claude / codex / gemini). ``effort`` (low|medium|high|xhigh|max) controls reasoning depth and is mapped to each runtime's CLI: Claude --effort, Codex -c model_reasoning_effort. Omit / null to let the CLI use its own default (e.g. ~/.codex/config.toml). Override locally via _config/config.local.json, ~/.orcho/config.local.json, $ORCHO_WORKSPACE/.orcho/config.local.json, or env vars (RUNTIME_<PHASE> / MODEL_<PHASE>).",
+  "phases": {
+    "plan":               {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
+    "validate_plan":      {"runtime": "codex",  "model": "gpt-5.5",           "effort": "medium"},
+    "implement":          {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "medium"},
+    "review_changes":     {"runtime": "codex",  "model": "gpt-5.5",           "effort": "medium"},
+    "repair_changes":     {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "medium"},
+    "repair_escalation":  {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
+    "final_acceptance":   {"runtime": "codex",  "model": "gpt-5.5",           "effort": "low"}
+  },
+  "timeouts": {
+    "_comment": "Hard caps use *_seconds and are disabled by 0. Idle watchdogs use *_idle_seconds and reset whenever the agent streams output.",
+    "claude_seconds": 0,
+    "codex_seconds": 0,
+    "gemini_seconds": 0,
+    "claude_idle_seconds": 1800,
+    "codex_idle_seconds": 900,
+    "gemini_idle_seconds": 900
+  },
+  "session": {
+    "_comment": "Caller-side policy for implement → repair_changes session continuation (ADR 0023). 'mode' picks the SessionMode (auto/stateless/chain/hybrid); 'chain_same_model_only' guards CHAIN against accidental cross-model resume. AUTO also suppresses CHAIN when prior implement usage exceeds the token or tool-call budget. Runtimes may capture session_id on every invoke; this only controls when the orchestrator passes continue_session=True.",
+    "mode": "auto",
+    "chain_same_model_only": true,
+    "auto_chain_max_tokens_in": 1000000,
+    "auto_chain_max_tool_calls": 30
+  },
+  "codemap": {
+    "enabled": false,
+    "languages": ["c_sharp", "python", "php"],
+    "max_depth": 3
+  },
+  "hypothesis": {
+    "_comment": "Legacy direct-helper fallback only. Normal profile dispatch reads PhaseStep.hypothesis {attempts, format} from pipeline_profiles_v2.json.",
+    "enabled": false,
+    "max_attempts": 1
+  },
+  "pipeline": {
+    "_comment": "Loop budgets (plan / repair) live in the active profile's LoopStep.max_rounds; per-phase pause semantics live in profile-declared handoff policies. change_handoff controls authoring→review hand-off mode (uncommitted | commit | commit_set). implementation_execution controls implement delivery (whole_plan | subtask_dag); semantic profile selection is normally explicit and may be delegated to the auto_detect selector. session_split_override may override profile-declared prompt-session split per phase for a workspace or one run.",
+    "change_handoff":       "uncommitted",
+    "implementation_execution": "whole_plan",
+    "session_split_override": {},
+    "auto_detect": {
+      "_comment": "Selector-only auto-detect of the semantic profile + operating mode (Stage C). policy: confirm (TTY shows the recommendation for operator accept/override; non-TTY degrades to trusted threshold gating) | trust_above_threshold (deterministic auto-selection). confidence_threshold (0..1) is the trusted-accept bar. fallback_profile is a concrete SemanticProfile used when low-confidence/error falls back. on_low_confidence / on_error: fallback | fail. Manual concrete --profile never invokes the detector and never reads this section.",
+      "policy":               "confirm",
+      "confidence_threshold": 0.7,
+      "fallback_profile":     "feature",
+      "on_low_confidence":    "fallback",
+      "on_error":             "fallback",
+      "topology_signals": {
+        "_comment": "Data-driven topology heuristic (Stage T1). Each phrase is lower-case substring-matched against the task text; a match recommends a cross topology over the union of the listed project aliases (orcho-core ordered first as primary). No model is involved. Override or extend per workspace.",
+        "mcp tool":        ["orcho-core", "orcho-mcp"],
+        "mcp schema":      ["orcho-core", "orcho-mcp"],
+        "sdk wire":        ["orcho-core", "orcho-mcp"],
+        "wire format":     ["orcho-core", "orcho-mcp"],
+        "wire schema":     ["orcho-core", "orcho-mcp"],
+        "schema snapshot": ["orcho-core", "orcho-mcp"],
+        "orcho-mcp":       ["orcho-core", "orcho-mcp"]
+      }
+    }
+  },
+  "cli": {
+    "_comment": "Defaults for `orcho run` / `orcho-run` / `orcho-cross` CLI flags. output_mode: summary | live | debug — transcript verbosity used when neither --output nor its aliases (--stream-output / --verbose / -v) are passed. Override via ORCHO_OUTPUT_MODE env var.",
+    "output_mode": "live"
+  },
+  "accounting": {
+    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render API-equivalent cost fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
+    "enabled": false
+  },
+  "commit": {
+    "_comment": "Post-release commit delivery. When enabled and the run-owned worktree has a diff after an APPROVED release verdict, Orcho can fix / approve / apply / skip / halt delivery. interactive_default is the preselected interactive action; auto_in_ci controls unattended runs. add_untracked controls delivery of non-ignored untracked files; approve also stages them. include_pre_existing_dirty and git_user_identity are reserved follow-up knobs from ADR 0032; Phase B1 keeps pre-existing dirty state user-owned and relies on the repo's configured git identity.",
+    "enabled": true,
+    "default_strategy": "release_summary",
+    "interactive_default": "apply",
+    "auto_in_ci": "approve",
+    "add_untracked": true,
+    "include_pre_existing_dirty": false,
+    "git_user_identity": null
+  },
+  "language": {
+    "_comment": "Engine defaults stay English so cross-machine prompt rendering is reproducible. Workspaces whose team writes tasks / plans in another natural language should override here (or via PLAN_LANGUAGE / TASK_LANGUAGE env vars).",
+    "plan_language": "English",
+    "task_language": "English"
+  },
+  "artifacts": {
+    "_comment": "mirror_to_project: копировать ли семантические артефакты (план, diff, review, todo) из runspace/runs/<ts>/ в <project>/<mirror_dir>/ для git-трекинга. По умолчанию выкл — все артефакты живут в runspace.",
+    "mirror_to_project": false,
+    "mirror_patterns": ["plan.md", "todo.md", "review.md", "cross_plan.json", "cross_plan.md", "diff.patch"],
+    "mirror_dir": ".orcho/artifacts"
+  },
+  "worktree": {
+    "_comment": "Per-run git worktree isolation (ADR 0033). When enabled, agent subprocesses run in an orcho-managed worktree under <workspace>/runspace/worktrees/<worktree_id>/checkout/ instead of the user's source checkout, so destructive git inside the worktree cannot harm user-owned uncommitted work. isolation: per_run (default) | off. retention_days: how long to keep the worktree on disk past run-end for inspection (orcho gc sweeps past TTL). allow_destructive_inside: reserved for future tightening; v1 always relaxes inside the worktree.",
+    "enabled": true,
+    "isolation": "per_run",
+    "retention_days": 7,
+    "allow_destructive_inside": true
+  },
+  "pre_run_dirty": {
+    "_comment": "Pre-run dirty intake (ADR 0044). When enabled and per-run isolation would start from HEAD while the project checkout is dirty, interactive callers choose whether to include the current uncommitted diff, exclude it, commit first, or halt. interactive_default is the preselected interactive action; non_interactive_default controls unattended starts. include_untracked: prompt | all | none.",
+    "enabled": true,
+    "interactive_default": "include",
+    "non_interactive_default": "halt",
+    "include_untracked": "prompt"
+  },
+  "sandbox": {
+    "_comment": "Launch-layer hygiene (ADR 0034). env allowlist + resource limits + token masking + child-process cleanup. mode: off|env (env is the default). env_allowlist appends to the built-in list (PATH/HOME/LANG/locale + provider API keys + ORCHO_* prefix); env_denylist always wins. limits use 0 to mean no limit. masking.builtin_patterns covers sk-ant-, sk-, AIza- token shapes; custom_patterns extends per-profile. Runtime sandbox (Claude Code / Codex etc.) covers file-access policy, tool-call approvals, and command guards — orcho does not duplicate them here.",
+    "mode": "env",
+    "env_allowlist": [],
+    "env_denylist": [],
+    "limits": {
+      "cpu_seconds": 0,
+      "memory_mb": 0,
+      "open_files": 0,
+      "file_size_mb": 0
+    },
+    "masking": {
+      "builtin_patterns": true,
+      "custom_patterns": []
+    }
+  }
+}

@@ -1,0 +1,596 @@
+{
+  "_comment":                "Active Profile schema (semantic work-kind + steps). Nine operator-facing profiles are keyed by goal-shaped semantic work kinds (small_task, feature, complex_feature, planning, delivery_audit, code_review, research, refactor, migration). Each carries explicit semantic identity: ``semantic_profile`` (== the key), ``default_mode`` (deterministic default OperatingMode, aligned with pipeline.runtime.semantic_mode_defaults), and ``recipe_kind`` (full_cycle | focused | internal). ``variant`` is NOT the source of semantic identity for built-ins. Two internal CUSTOM/SCOPED profiles, ``task`` and ``correction`` (internal=true, recipe_kind=internal, ADR 0085), are hidden from the interactive fresh-run picker but visible in the catalog. run_pipeline resolves this file by default.",
+  "_comment_default_mode":   "``default_mode`` is the default strictness posture a run takes when the operator gives no explicit mode override. The projection table (see pipeline.runtime.semantic_mode_defaults.default_operating_mode): small_task/feature/research → fast; complex_feature/planning/code_review/delivery_audit/refactor/migration → pro. ``governed`` is never a built-in default — it is an explicit opt-in posture, not something a work kind selects on its own. ``--profile auto-detect`` is a selector token, not a profile: it resolves to a concrete work kind and mode through the configured auto_detect confidence/fallback policy before normal profile dispatch.",
+  "_comment_recipe_reuse":   "Several work kinds intentionally reuse the same underlying phase recipe: feature and refactor share the full_cycle plan↔validate / subtask_dag implement / review↔repair / final_acceptance recipe; complex_feature and migration share the same recipe plus the extension-point compliance_check gate; planning and research share the plan-only recipe; delivery_audit and code_review share the review_changes → final_acceptance recipe. Reuse keeps phase graphs, worktree isolation, and cross_gates identical to the original recipe — the work kinds differ in intent and default_mode, not in topology.",
+  "_comment_execution":      "Phase 5e-5 dispatch routes PhaseStep through the lifecycle FSM. ``execution`` accepts the legacy string form (``\"linear\"``) and the ADR 0027 / M11 object form (``{\"mode\": ..., \"session_split\": ...}``). All shipped profiles below now use the object form so the wire intent is explicit.",
+  "_comment_session_continuity": "ADR 0113 (declarative continuity): per-phase ``execution.session_continuity`` declares whether a phase RESUMES its own prior provider session on a repeat invocation / loop round — an axis ORTHOGONAL to ``session_split`` (split = how a session is shared ACROSS phases in one pass; continuity = whether a phase resumes its OWN prior session on a repeat call). Three values: ``fresh_only`` = always a fresh session + compact handoff (review — 0113's measured win, review input grew 1.16M→6.78M while tool calls fell 31→6 when resumed, so review stays fresh); ``loop_continue`` = resume the prior session on round 2+ of the same plan/validate loop (the restored pre-0113 behaviour); ``same_zone_continue`` = resume only for a same-write-zone edit follow-on (implement / repair_changes). Shipped defaults: plan/validate_plan=loop_continue, implement/repair_changes=same_zone_continue, review_changes=fresh_only. Auxiliary invocation roles (companion / contract re-emit / audit / verification / boundary) are always fresh by invocation shape, resolved in code, not declared here. The continuity decision lives in exactly one place: the resolver in pipeline.phases.builtin.session_keys feeding pipeline.runtime.session_disposition.decide — never re-scattered into adapters.",
+  "_comment_session_split":  "ADR 0026 / M5-M11 session split: ``common`` = one runtime session per (runtime, model) for the whole run. ``per_role`` = one runtime session per (runtime, model, role) — shards context by responsibility so each role thread carries only its own conversation. ``per_phase`` = one session per (runtime, model, phase). Selection rule for shipped profiles: role-sensitive reviewer and implementation phases use ``per_role`` so plan review, code review, and implementation repair cannot bleed into each other's context when runtime/model topology overlaps. Solo-role release/planning steps stay common unless a role boundary matters. validate_plan uses plan_reviewer; review_changes uses code_reviewer; implement↔repair_changes share the implementation_engineer role thread. Multi-runtime topology contributes an additional separation via PhysicalSessionKey (runtime + model are always in the key); per_role layers on top of that. Runtime context lifecycle stays runtime-owned per ADR 0030 — contract recovery handles any broken contract from runtime auto-compaction.",
+  "_comment_implementation_execution": "Optional profile-level ``implementation_execution`` selects how the built-in implement phase consumes a parsed plan: ``whole_plan`` (one invoke) or ``subtask_dag`` (execute ParsedPlan.subtasks as tracked delivery units). ``subtask_dag`` v1 is sequential: internal concurrency is 1; do not express it as PhaseStep.execution=\"dag\".",
+  "_comment_phases":         "Phase IDs are workflow-semantic per ADR 0022: plan / validate_plan / implement / review_changes / repair_changes / final_acceptance. Loop predicates (validate_plan.approved / review_changes.clean) mirror the phase IDs.",
+  "_comment_prompt_roles":   "``prompt.role`` is the persona file under ``_prompts/roles/*.md``. Independent from phase IDs: plan_reviewer handles validate_plan, code_reviewer handles review_changes, release_manager handles final_acceptance.",
+  "_comment_handoff":        "Optional per-step ``handoff`` policy controls when a phase pauses the run with status ``awaiting_phase_handoff`` so a human can decide via the SDK (continue / retry_feedback / halt). Non-bypass support covers ``validate_plan`` in the plan loop, ``review_changes`` in the review/repair loop, and (ADR 0073) the top-level ``implement`` phase under ``subtask_dag`` delivery. Types: ``human_bypass`` — never fires, the loop runs fully automatic (used by ``small_task``). ``human_feedback_on_reject`` — fires only on the FINAL automatic round when the verdict is ``approved=false`` and ``until`` is unsatisfied; earlier rounds keep their auto budget and retry (used by the full_cycle recipes; available actions on pause: continue / retry_feedback / halt). ``human_feedback_always`` — fires on every round irrespective of verdict and budget; available actions are always continue / retry_feedback / halt so the human keeps feedback authority even when the reviewer agent approved. Used by the plan-only recipe (planning / research — every verdict is a human decision). Missing block ≡ ``human_bypass``. ADR 0073 implement extension (two extra keys, valid only on an interactive ``type``): ``repair_attempts`` (int ≥0, default 0) bounds the automatic substance-repair rounds for subtask_dag subtasks that finished INCOMPLETE before the handoff fires; ``on_exhausted`` (``halt`` default, or ``auto_waiver``) selects the fallback once repair attempts are spent — ``halt`` pauses for an operator, ``auto_waiver`` records a synthetic waiver and continues (gated additionally by the request-only ``auto_waiver_allowed`` opt-in). The full_cycle recipes (feature / refactor) enable this on implement (repair_attempts=1, on_exhausted=auto_waiver); the other profiles leave implement with no handoff block → a hard stop on incomplete delivery, unchanged.",
+  "_comment_cross":          "Optional per-step ``cross`` annotation declares projection policy for ``orcho cross``: scope (global|project|both|skip) places the step at the cross level or inside each child project. handler is REQUIRED for scope=global|both (it routes to a cross-level function: cross_plan, cross_validate_plan); handler is optional/ignored for scope=project|skip. Unknown handlers are rejected at projection. Steps without a ``cross`` block stay valid for mono runs; cross mode requires every step to be annotated and fails fast otherwise. ``contract_check`` is NEVER a profile step — the cross runner appends it as a built-in terminal gate, and declaring it in any profile is rejected at projection.",
+  "_comment_cross_gates":    "Optional top-level ``cross_gates`` block opts a profile INTO the two runner-owned cross gates: ``contract_check`` (cross-contract review) and ``cross_final_acceptance`` (system release gate). Missing ≡ off — a profile that omits the block (or one of the two keys) does NOT run that gate. Each entry: {enabled: bool, run: always|auto|manual_confirm|never, on_skip: block|allow_with_gap|allow, mode: 'artifact_bundle' (contract_check only)}. Below: the full_cycle recipes (feature / complex_feature / refactor / migration) opt into both gates strictly (run=always, on_skip=block); the focused and small_task recipes ship without the block and run no cross gates.",
+  "_comment_worktree":       "Focused / cheap profiles default to direct checkout work (worktree_isolation=off): planning and research are read-only, delivery_audit and code_review must inspect the operator's current diff, and small_task is intended for small direct changes. The full_cycle recipes (feature / complex_feature / refactor / migration) keep the global per_run default for isolated delivery-grade work. Correction inherits the retained parent worktree through follow-up mechanics.",
+
+  "small_task": {
+    "kind":               "custom",
+    "semantic_profile":   "small_task",
+    "default_mode":       "fast",
+    "recipe_kind":        "full_cycle",
+    "worktree_isolation": "off",
+    "description": "Quick dev cycle for a small, well-scoped change — plan → implement, no QA loops. The cheapest work kind, intended for small direct edits. No cross_gates block → no terminal cross gates run; ship-readiness here is the operator's call.",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "terse"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "terse"},
+              "handoff":   {"type": "human_bypass"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       1,
+          "round_extras_key": "plan_round"
+        }
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "common", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      }
+    ]
+  },
+
+  "feature": {
+    "kind":               "custom",
+    "semantic_profile":   "feature",
+    "default_mode":       "fast",
+    "recipe_kind":        "full_cycle",
+    "description": "Production-grade dev cycle for a feature: plan ↔ validate_plan loop, subtask_dag implement, review_changes ↔ repair_changes loop, final_acceptance. The default work kind for shipped work. validate_plan uses the plan_reviewer persona; review_changes uses code_reviewer; implement↔repair_changes share the implementation_engineer role thread. Reviewer and implementation phases use per_role boundaries; plan and final_acceptance stay common. Opts into both terminal cross gates strictly: contract_check (cross-contract review) and cross_final_acceptance (system release gate), both run=always with on_skip=block.",
+    "implementation_execution": "subtask_dag",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "terse"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "terse"},
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       2,
+          "round_extras_key": "plan_round"
+        }
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "handoff":   {"type": "human_feedback_on_reject", "repair_attempts": 1, "on_exhausted": "auto_waiver"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "terse"},
+              "cross":     {"scope": "project"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ],
+              "cross":     {"scope": "project"}
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       2,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "bullets"},
+        "cross":     {"scope": "project"}
+      }
+    ],
+    "cross_gates": {
+      "contract_check":         {"enabled": true, "mode": "artifact_bundle", "run": "always", "on_skip": "block"},
+      "cross_final_acceptance": {"enabled": true,                            "run": "always", "on_skip": "block"}
+    }
+  },
+
+  "complex_feature": {
+    "kind":               "custom",
+    "semantic_profile":   "complex_feature",
+    "default_mode":       "pro",
+    "recipe_kind":        "full_cycle",
+    "description": "More comprehensive development cycle for complex work + extension-point compliance/audit gate (no-op stub in core; embedders register their own handler via the orcho.phases entry_points group). Opts into both terminal cross gates strictly (same policy as feature). validate_plan uses the plan_reviewer persona; review_changes uses code_reviewer; implement↔repair_changes share the implementation_engineer role thread. Reviewer and implementation phases use per_role boundaries; plan, final_acceptance, and the role-less compliance_check gate stay common. Runtime context lifecycle is runtime-owned per ADR 0030; contract recovery handles broken contracts from auto-compaction.",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "detailed"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "terse"},
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       3,
+          "round_extras_key": "plan_round"
+        }
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      },
+      {
+        "phase":     "compliance_check",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "cross":     {"scope": "project"}
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"},
+              "cross":     {"scope": "project"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ],
+              "cross":     {"scope": "project"}
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       2,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      }
+    ],
+    "cross_gates": {
+      "contract_check":         {"enabled": true, "mode": "artifact_bundle", "run": "always", "on_skip": "block"},
+      "cross_final_acceptance": {"enabled": true,                            "run": "always", "on_skip": "block"}
+    }
+  },
+
+  "planning": {
+    "kind":               "custom",
+    "semantic_profile":   "planning",
+    "default_mode":       "pro",
+    "recipe_kind":        "focused",
+    "worktree_isolation": "off",
+    "description": "Produce a plan artifact and stop for human review. validate_plan carries handoff: human_feedback_always so every verdict (approved or rejected) pauses with status awaiting_phase_handoff; the human decides continue / retry_feedback / halt via the SDK. Useful for review-driven workflows — downstream implement / review_changes are the user's call (or a follow-up `task` profile after the decision lands). No cross_gates block → no terminal cross gates run (a planning-only run has nothing for them to review).",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "detailed"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "detailed"},
+              "handoff":   {"type": "human_feedback_always"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       2,
+          "round_extras_key": "plan_round"
+        }
+      }
+    ]
+  },
+
+  "research": {
+    "kind":               "custom",
+    "semantic_profile":   "research",
+    "default_mode":       "fast",
+    "recipe_kind":        "focused",
+    "worktree_isolation": "off",
+    "description": "Investigate and produce a plan artifact, then stop for human review — same plan-only recipe as planning, reused for exploratory research work with no delivery gates by default. validate_plan carries handoff: human_feedback_always so every verdict pauses for the human to decide continue / retry_feedback / halt via the SDK. No cross_gates block → no terminal cross gates run.",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "detailed"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "detailed"},
+              "handoff":   {"type": "human_feedback_always"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       2,
+          "round_extras_key": "plan_round"
+        }
+      }
+    ]
+  },
+
+  "delivery_audit": {
+    "kind":               "custom",
+    "semantic_profile":   "delivery_audit",
+    "default_mode":       "pro",
+    "recipe_kind":        "focused",
+    "worktree_isolation": "off",
+    "description": "Audit uncommitted changes for delivery readiness — review_changes pass over the current working tree (skips on no-uncommitted) then a final_acceptance verdict. For pre-commit / pre-PR sanity checks.",
+    "steps": [
+      {
+        "phase":     "review_changes",
+        "execution": {"mode": "linear", "session_split": "common", "session_continuity": "fresh_only"},
+        "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      }
+    ]
+  },
+
+  "code_review": {
+    "kind":               "custom",
+    "semantic_profile":   "code_review",
+    "default_mode":       "pro",
+    "recipe_kind":        "focused",
+    "worktree_isolation": "off",
+    "description": "Review uncommitted changes — same review_changes → final_acceptance recipe as delivery_audit, reused for a code-review focused pass over the operator's current working tree. For pre-commit / pre-PR review.",
+    "steps": [
+      {
+        "phase":     "review_changes",
+        "execution": {"mode": "linear", "session_split": "common", "session_continuity": "fresh_only"},
+        "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      }
+    ]
+  },
+
+  "refactor": {
+    "kind":               "custom",
+    "semantic_profile":   "refactor",
+    "default_mode":       "pro",
+    "recipe_kind":        "full_cycle",
+    "description": "Production-grade dev cycle for a refactor — same full_cycle recipe as feature (plan ↔ validate_plan loop, subtask_dag implement, review_changes ↔ repair_changes loop, final_acceptance), reused for restructuring work. Reviewer and implementation phases use per_role boundaries; plan and final_acceptance stay common. Opts into both terminal cross gates strictly: contract_check and cross_final_acceptance, both run=always with on_skip=block.",
+    "implementation_execution": "subtask_dag",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "terse"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "terse"},
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       2,
+          "round_extras_key": "plan_round"
+        }
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "handoff":   {"type": "human_feedback_on_reject", "repair_attempts": 1, "on_exhausted": "auto_waiver"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "terse"},
+              "cross":     {"scope": "project"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ],
+              "cross":     {"scope": "project"}
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       2,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "bullets"},
+        "cross":     {"scope": "project"}
+      }
+    ],
+    "cross_gates": {
+      "contract_check":         {"enabled": true, "mode": "artifact_bundle", "run": "always", "on_skip": "block"},
+      "cross_final_acceptance": {"enabled": true,                            "run": "always", "on_skip": "block"}
+    }
+  },
+
+  "migration": {
+    "kind":               "custom",
+    "semantic_profile":   "migration",
+    "default_mode":       "pro",
+    "recipe_kind":        "full_cycle",
+    "description": "More comprehensive development cycle for a migration — same recipe as complex_feature (full_cycle + extension-point compliance/audit gate; no-op stub in core, embedders register their own handler via orcho.phases). Opts into both terminal cross gates strictly. validate_plan uses the plan_reviewer persona; review_changes uses code_reviewer; implement↔repair_changes share the implementation_engineer role thread. Reviewer and implementation phases use per_role boundaries; plan, final_acceptance, and the role-less compliance_check gate stay common.",
+    "steps": [
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":      "plan",
+              "execution":  {"mode": "linear", "session_split": "common", "session_continuity": "loop_continue"},
+              "prompt":     {"role": "systems_architect", "task": "plan", "format": "detailed"},
+              "hypothesis": {"attempts": 0, "format": "compact"},
+              "cross":      {"scope": "global", "handler": "cross_plan"}
+            },
+            {
+              "phase":     "validate_plan",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "loop_continue"},
+              "prompt":    {"role": "plan_reviewer", "task": "validate_plan", "format": "terse"},
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "cross":     {"scope": "global", "handler": "cross_validate_plan"}
+            }
+          ],
+          "until":            "validate_plan.approved",
+          "max_rounds":       3,
+          "round_extras_key": "plan_round"
+        }
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      },
+      {
+        "phase":     "compliance_check",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "cross":     {"scope": "project"}
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"},
+              "cross":     {"scope": "project"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ],
+              "cross":     {"scope": "project"}
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       2,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      }
+    ],
+    "cross_gates": {
+      "contract_check":         {"enabled": true, "mode": "artifact_bundle", "run": "always", "on_skip": "block"},
+      "cross_final_acceptance": {"enabled": true,                            "run": "always", "on_skip": "block"}
+    }
+  },
+
+  "task": {
+    "kind":        "scoped",
+    "variant":     "task",
+    "internal":    true,
+    "recipe_kind": "internal",
+    "worktree_isolation": "off",
+    "description": "Internal profile (not a public work kind). Implement against an existing plan: skips planning, runs implement + review_changes/repair_changes loop + final_acceptance. The plan must already exist (e.g. produced by a prior `planning` run). Selective per_role on the implementation_engineer pair (implement ↔ repair_changes) so the engineer thread shards its context across the repair loop; solo-role steps (review_changes — only reviewer in this scoped profile, final_acceptance) stay common.",
+    "steps": [
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ],
+        "cross":     {"scope": "project"}
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "common", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"},
+              "cross":     {"scope": "project"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ],
+              "cross":     {"scope": "project"}
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       1,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"},
+        "cross":     {"scope": "project"}
+      }
+    ]
+  },
+
+  "correction": {
+    "kind":        "custom",
+    "variant":     "correction",
+    "internal":    true,
+    "recipe_kind": "internal",
+    "description": "Internal/system profile (ADR 0085) for the correction follow-up after a rejected final_acceptance — NOT a first-run profile. The interactive fresh-run picker hides it; without correction context (no correction_context.md and no follow-up parent) the opening correction_triage phase fail-fast halts the run. Starts at correction_triage (read-only classification of the recorded release blockers), then implement → review_changes/repair_changes loop → final_acceptance. No plan / validate_plan: the change already has a plan from the parent run and the retained worktree is the subject of the correction. Never projected to cross — declares no cross annotations or cross_gates.",
+    "steps": [
+      {
+        "phase":     "correction_triage",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "correction_triage", "format": "terse"}
+      },
+      {
+        "phase":     "implement",
+        "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+        "prompt":    {"role": "implementation_engineer", "task": "implement", "format": "handoff"},
+        "quality_gates": [
+          {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+        ]
+      },
+      {
+        "loop": {
+          "steps": [
+            {
+              "phase":     "review_changes",
+              "handoff":   {"type": "human_feedback_on_reject"},
+              "execution": {"mode": "linear", "session_split": "common", "session_continuity": "fresh_only"},
+              "prompt":    {"role": "code_reviewer", "task": "code_review", "format": "detailed"}
+            },
+            {
+              "phase":     "repair_changes",
+              "execution": {"mode": "linear", "session_split": "per_role", "session_continuity": "same_zone_continue"},
+              "prompt":    {"role": "implementation_engineer", "task": "repair_changes", "format": "handoff"},
+              "quality_gates": [
+                {"name": "tests", "kind": "computational", "on_fail": "feed_into_next", "feed_target": "last_test_output"}
+              ]
+            }
+          ],
+          "until":            "review_changes.clean",
+          "max_rounds":       1,
+          "round_extras_key": "repair_round"
+        }
+      },
+      {
+        "phase":     "final_acceptance",
+        "execution": {"mode": "linear", "session_split": "common"},
+        "prompt":    {"role": "release_manager", "task": "final_acceptance", "format": "detailed"}
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "_meta": {
+    "schema_version": 1,
+    "source": "https://developers.openai.com/api/docs/pricing",
+    "snapshot_date": null,
+    "warning": "This bundled snapshot is intentionally empty. orcho ships no hardcoded OpenAI prices because public rates change without notice and shipping a stale number is worse than shipping no number. Populate via ``orcho pricing refresh --provider openai`` (which scrapes the public pricing page, validates the structure, and writes to ~/.orcho/pricing.local.toml). Or hand-edit that file with rates from your actual API contract. Either way, keeping it in sync with reality is YOUR responsibility — verify against developers.openai.com/api/docs/pricing whenever the numbers matter."
+  },
+  "models": {}
+}

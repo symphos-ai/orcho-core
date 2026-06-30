@@ -1,0 +1,41 @@
+__pycache__/
+*.pyc
+*.pyo
+*.bak
+.DS_Store
+.mcp.json
+
+# Python venv
+.venv/
+
+# Local config override (not committed)
+core/_config/config.local.json
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+
+# Local workspace config (machine-specific, not part of the engine)
+# generated pipeline run outputs
+.agent/artifacts/
+# local dogfooding config (plugin, tasks, prompts)
+.agent/multiagent/
+# root streamlit config only (dashboard/.streamlit/ IS tracked)
+/.streamlit/
+
+# Static assets — fonts downloaded at deploy time
+dashboard/static/
+dashboard/app/static/
+*.ttf
+.coverage
+coverage.xml
+.orcho/.task-files/
+
+# Stray mock-pipeline run artifacts (accidentally tracked via c89b027).
+# Mock mode drops a fake project checkout + change log under the repo root.
+/src/
+/.orcho/mock_changes/
+# Mock mode can also materialize claimed one-level package edits such as
+# cli/Implementation.py, pipeline/Implementation.py, or sdk/Implementation.py.
+/*/Implementation.py

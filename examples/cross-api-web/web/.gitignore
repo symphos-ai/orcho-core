@@ -1,0 +1,10 @@
+# Node/Vite runtime artifacts, never committed.
+node_modules/
+dist/
+.vite/
+coverage/
+
+# Editor / OS noise.
+.DS_Store
+.vscode/
+.idea/

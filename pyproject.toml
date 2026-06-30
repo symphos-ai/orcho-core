@@ -1,0 +1,188 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orcho-core"
+version = "0.1.0"
+description = "Local-first control plane for cross-agent AI software delivery"
+requires-python = ">=3.12"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Symphos"},
+]
+keywords = [
+    "agents",
+    "ai",
+    "automation",
+    "cli",
+    "developer-tools",
+    "orchestration",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "tiktoken>=0.12",
+    # ADR 0034 sandbox L1 Windows backend — Job Object via pywin32.
+    # Conditional: Linux / macOS installs do not pull pywin32, so the
+    # cross-platform install footprint stays unchanged on Unix.
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+    "setuptools>=77",
+]
+# Optional codemap support. The regex fallback in core.context.build_repo_map
+# already covers C# / Python / PHP — these grammars upgrade accuracy for
+# nested classes and unusual signatures. Kept optional so the package keeps
+# importing on a bare stdlib install.
+codemap = [
+    "tree-sitter>=0.22",
+    "tree-sitter-python>=0.21",
+    "tree-sitter-c-sharp>=0.21",
+    "tree-sitter-php>=0.22",
+]
+
+[project.urls]
+Homepage = "https://github.com/symphos-ai/orcho-core"
+Repository = "https://github.com/symphos-ai/orcho-core"
+Issues = "https://github.com/symphos-ai/orcho-core/issues"
+# The MCP server moved to the standalone `orcho-mcp` package.
+# Install it with: pip install orcho-mcp
+
+[project.scripts]
+orcho       = "cli.orcho:main"
+orcho-run   = "pipeline.project_orchestrator:main"
+orcho-cross = "pipeline.cross_project.cli:main"
+
+# ── Plugin extension points ─────────────────────────────────────────────────
+# orcho-core declares its built-in providers and phase handlers via
+# importlib.metadata entry_points. Any third-party package can register
+# its own entries under the same group names — AgentRegistry.default() and
+# register_builtin_phases() pick them up automatically without core edits.
+#
+# Re-registration is allowed: a third-party entry with name "plan" replaces
+# the built-in. This is the supported override mechanism for plugin
+# authors who need richer behaviour than the default stub.
+# Phase 7a — R10 backend neutrality: single ``orcho.agent_runtimes``
+# entry_points group replaces 3 role-keyed groups
+# (``orcho.providers.architect`` / ``.developer`` / ``.reviewer``).
+# Same agent class implements all three role Protocols — the role split
+# was always artificial. Per ``feedback_no_backcompat_ceremony``, clean
+# break — no aliasing of legacy groups.
+[project.entry-points."orcho.agent_runtimes"]
+claude = "agents.runtimes.claude:ClaudeAgent"
+codex  = "agents.runtimes.codex:CodexAgent"
+gemini = "agents.runtimes.gemini:GeminiAgent"
+
+# Phase 7d-2 — Agent Skills R9 plugin extension surface. Plugin authors
+# can ship SkillPackage instances directly (or zero-arg factories /
+# Path objects pointing at <root>/<name>/SKILL.md trees). orcho-core
+# itself ships no built-in entries — this group is purely third-party.
+[project.entry-points."orcho.skills"]
+
+[project.entry-points."orcho.phases"]
+# Workflow-semantic phase IDs per ADR 0022.
+plan             = "pipeline.phases.builtin:_phase_plan"
+validate_plan    = "pipeline.phases.builtin:_phase_validate_plan"
+implement        = "pipeline.phases.builtin:_phase_implement"
+review_changes   = "pipeline.phases.builtin:_phase_review_changes"
+repair_changes   = "pipeline.phases.builtin:_phase_repair_changes"
+final_acceptance = "pipeline.phases.builtin:_phase_final_acceptance"
+compliance_check = "pipeline.phases.builtin:_phase_compliance_check"
+correction_triage = "pipeline.phases.builtin:_phase_correction_triage"
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+include = ["core*", "agents*", "pipeline*", "cli*", "sdk*"]
+exclude = ["tests*", "docs*", "shell*"]
+
+# Asset directories (``core/_prompts/`` and ``core/_config/``) live
+# INSIDE the ``core`` package so they ship in wheels / sdists.
+# Runtime resolution goes through :mod:`core.infra.paths`, which uses
+# :func:`importlib.resources.files` so the same lookup works under
+# both editable installs and built wheels.
+[tool.setuptools.package-data]
+core = [
+    "_prompts/*.md",
+    "_prompts/**/*.md",
+    "_config/*.json",
+]
+
+# ``config.local.json`` is gitignored, user-local override content
+# that must never ship in a release wheel. If a developer happens
+# to have one in their working tree, exclude it explicitly so the
+# build stays reproducible.
+[tool.setuptools.exclude-package-data]
+core = [
+    "_config/config.local.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+# ``auto`` so async tests run without per-test decoration and a
+# future async test that forgets ``@pytest.mark.asyncio`` cannot
+# silently no-op ("async def functions are not natively supported").
+# The event hub primitive (ADR 0048) is the repo's first async test
+# surface; ``pytest-asyncio`` is declared in the ``dev`` extra.
+asyncio_mode = "auto"
+markers = [
+    "unit: pure unit tests for local functions/classes.",
+    "integration: multi-module tests or tests that exercise persisted state.",
+    "acceptance: end-to-end behaviour tests for user-visible workflows.",
+    "smoke: small broad-coverage checks suitable for quick confidence.",
+    "serial: must run outside xdist because it uses shared process, filesystem, git, env, port, or global event state.",
+    "worktree: git worktree isolation, dirty intake, commit delivery, and follow-up checkout behaviour.",
+    "project_run: single-project run orchestration, checkpoints, resume, from-run-plan, and presentation boundaries.",
+    "cross_project: cross-project planning, dispatch, contract checks, sub-runs, and final acceptance.",
+    "prompts: prompt composition, protected boundaries, render evidence, snapshots, and prompt fixtures.",
+    "runtime: agent runtime adapters, session bridges, retry, DAG execution, and phase handler runtime behaviour.",
+    "sdk: public SDK status, history, evidence, events, cost, and typed projections.",
+    "cli: command-line parsing, commands, profiles, and terminal UX.",
+    "evidence: evidence bundle generation, render evidence, findings, and artefact slices.",
+    "profiles: profile loading, overlays, execution policy, and phase registry behaviour.",
+    "quality_gates: tests gate, contract gate, final acceptance, and gate audit behaviour.",
+    "packaging: wheel/install/build packaging checks.",
+    "slow_packaging: builds a wheel + installs it in a temp venv (a few seconds; deselect with -m 'not slow_packaging' for a quick partial run).",
+    "preserve_handoff_fail_fast: keep the cross-projection handoff fail-fast guard active for this test (opts out of the cross_project conftest's test-only suppression).",
+    "e2e: full user-scenario tests that execute pipeline/CLI/git/worktree/artifact flows end-to-end; expensive and not part of the default debug loop.",
+    "slow_process: tests that intentionally wait for real process timeout or subprocess lifecycle behaviour.",
+    "git_worktree: tests that create real git repos or worktrees, or exercise delivery/diff isolation.",
+    "filesystem_heavy: tests that create substantial temp run / artifact trees.",
+    "run_state: pure run-state reducer/snapshot/consistency tests.",
+    "state_transition: allowed/refused run-state transition coverage.",
+    "filesystem_light: tiny synthetic run dirs / meta.json builders only.",
+    "mcp_integration: non-e2e mock smoke pinning that a change does not move the MCP-facing wire (ADR 0081 falsifier).",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

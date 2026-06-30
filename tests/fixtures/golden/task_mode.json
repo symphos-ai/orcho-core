@@ -1,0 +1,407 @@
+{
+  "change_handoff": "uncommitted",
+  "commit_delivery": {
+    "action": "approve",
+    "artifact_path": "<TMP>",
+    "baseline_ref": "<VOLATILE>",
+    "commit_sha": "<VOLATILE>",
+    "decided_at": "<VOLATILE>",
+    "decision_id": "<RUN_ID>",
+    "dirty": true,
+    "files_staged": [
+      "src/proj/implementation.txt"
+    ],
+    "final_message": "Mock release gate: change is ship-ready in mock mode.",
+    "include_untracked": true,
+    "project_path": "<PROJECT>",
+    "release_summary": "Mock release gate: change is ship-ready in mock mode.",
+    "release_verdict": "APPROVED",
+    "run_id": "<RUN_ID>",
+    "source_path": "<PROJECT>",
+    "status": "committed",
+    "strategy": "release_summary",
+    "untracked_delivered": [
+      "src/proj/implementation.txt"
+    ],
+    "untracked_paths": [
+      "src/proj/implementation.txt"
+    ]
+  },
+  "diff_patch": {
+    "baseline_ref": "<VOLATILE>",
+    "detail": "",
+    "patch_path": "<TMP>",
+    "reason": "patch_applies",
+    "status": "patch_valid"
+  },
+  "metrics": {
+    "phase_attempts": [
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "implement",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "review_changes",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      {
+        "attempt": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "phase": "final_acceptance",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      }
+    ],
+    "phases": {
+      "final_acceptance": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "implement": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      },
+      "review_changes": {
+        "attempts": 1,
+        "duration_s": "<VOLATILE>",
+        "model": "mock",
+        "tokens_exact": false,
+        "tokens_in": "<TOKEN_COUNT>",
+        "tokens_out": "<TOKEN_COUNT>",
+        "tokens_unknown": "<TOKEN_COUNT>",
+        "total_tokens": "<TOKEN_COUNT>"
+      }
+    },
+    "total_duration_s": "<VOLATILE>",
+    "total_rounds": 1,
+    "total_tokens": "<TOKEN_COUNT>",
+    "total_tokens_in": "<TOKEN_COUNT>",
+    "total_tokens_out": "<TOKEN_COUNT>",
+    "total_tokens_unknown": "<TOKEN_COUNT>"
+  },
+  "model": "claude-opus-4-8[1m]",
+  "phases": {
+    "final_acceptance": {
+      "approved": true,
+      "continue_session": false,
+      "contract_status": {
+        "interfaces": "not_applicable",
+        "persistence": "not_applicable",
+        "task_contract": "satisfied",
+        "tests": "sufficient"
+      },
+      "critique": "# Release gate\n\n**Verdict:** APPROVED\n\n**Ship-ready:** yes\n\n**Short summary:** **Mock release gate: change is ship-ready in mock mode.**\n\n## Contract status\n\n- Task contract: satisfied\n- Interfaces:    not_applicable\n- Persistence:   not_applicable\n- Tests:         sufficient\n",
+      "findings": [],
+      "raw_response": "{\"verdict\": \"APPROVED\", \"ship_ready\": true, \"short_summary\": \"Mock release gate: change is ship-ready in mock mode.\", \"release_blockers\": [], \"verification_gaps\": [], \"contract_status\": {\"task_contract\": \"satisfied\", \"interfaces\": \"not_applicable\", \"persistence\": \"not_applicable\", \"tests\": \"sufficient\"}}",
+      "release_blockers": [],
+      "session_id": "<VOLATILE>",
+      "ship_ready": true,
+      "short_summary": "Mock release gate: change is ship-ready in mock mode.",
+      "verdict": "APPROVED",
+      "verification_gaps": []
+    },
+    "implement": {
+      "context_clearing": {
+        "artifact_refs": [],
+        "cache_effect": "none",
+        "class_counts": {
+          "decision_bearing": 1,
+          "ephemeral": 0,
+          "persisted_artifact": 0,
+          "re_fetchable": 6
+        },
+        "clearable_part_ids": [
+          "contract:change_handoff:mode=uncommitted@1",
+          "role:implementation_engineer@0",
+          "format:handoff@0",
+          "task:implement@0",
+          "contract:authoring_language:v1:english@1",
+          "context:project@0"
+        ],
+        "clearable_tokens": "<TOKEN_COUNT>",
+        "cleared_tokens": "<TOKEN_COUNT>",
+        "kind": "eligible_tool_results",
+        "payload_hash": "<VOLATILE>",
+        "phase": "implement",
+        "prefix_hash": "<VOLATILE>",
+        "render_mode": "full",
+        "retained_part_ids": [
+          "turn_input:implement_task@0"
+        ],
+        "round": null,
+        "surface_id": null,
+        "trigger": "phase_invocation",
+        "wire_chars": "<VOLATILE>"
+      },
+      "context_growth": {
+        "artifact_refs": [],
+        "cleared_tokens": "<TOKEN_COUNT>",
+        "input_tokens_estimate": "<TOKEN_COUNT>",
+        "kind": "phase_invocation",
+        "output_tokens_estimate": "<TOKEN_COUNT>",
+        "payload_hash": "<VOLATILE>",
+        "phase": "implement",
+        "prefix_hash": "<VOLATILE>",
+        "render_mode": "full",
+        "round": null,
+        "summary_tokens": "<TOKEN_COUNT>",
+        "surface_id": null,
+        "tool_use_count": 0,
+        "trigger": "phase_invocation",
+        "wire_chars": "<VOLATILE>"
+      },
+      "context_pressure": {
+        "context_fill_ratio": "<TOKEN_COUNT>",
+        "context_remaining_tokens": "<TOKEN_COUNT>",
+        "context_source": "orcho_estimated",
+        "context_used_tokens": "<TOKEN_COUNT>",
+        "context_window_tokens": "<TOKEN_COUNT>",
+        "model": "mock",
+        "payload_hash": "<VOLATILE>",
+        "phase": "implement",
+        "prefix_hash": "<VOLATILE>",
+        "provider_session_id": "mock-claude-1",
+        "round": null,
+        "runtime": "agents.runtimes._strategy._MockClaude",
+        "session_key": {
+          "model_key": "mock",
+          "run_id": "<RUN_ID>",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "scope": "per_role:implementation_engineer"
+        },
+        "session_split": "per_role",
+        "surface_id": null,
+        "trigger_source": "orcho_estimated",
+        "wire_chars": "<VOLATILE>"
+      },
+      "meta": {
+        "continue_session": false,
+        "session_id": "<VOLATILE>"
+      },
+      "output": "## Build output \u2014 proj\n\nImplemented the required changes:\n\n### Modified files\n- `src/proj/implementation.txt`\n\n### Summary\n- Applied task requirements following project conventions\n- No breaking changes to public interfaces\n- Event subscriptions follow OnEnable/OnDisable pattern (where applicable)\n- All existing tests pass\n\nReady for Codex review.\n",
+      "prompt_render": {
+        "continue_session": false,
+        "delta_dropped_part_keys": [],
+        "omitted_part_keys": [],
+        "part_ids": [
+          "contract:change_handoff:mode=uncommitted@1",
+          "role:implementation_engineer@0",
+          "format:handoff@0",
+          "task:implement@0",
+          "contract:authoring_language:v1:english@1",
+          "context:project@0",
+          "turn_input:implement_task@0"
+        ],
+        "payload_hash": "<VOLATILE>",
+        "phase_key": "implement",
+        "prefix_hash": "<VOLATILE>",
+        "provider_session_id": "mock-claude-1",
+        "render_mode": "full",
+        "round": null,
+        "selected_part_keys": [
+          "contract:change_handoff:mode=uncommitted@1",
+          "role:implementation_engineer@0",
+          "format:handoff@0",
+          "task:implement@0",
+          "contract:authoring_language:v1:english@1",
+          "context:project@0",
+          "turn_input:implement_task@0"
+        ],
+        "session_key": {
+          "model_key": "mock",
+          "run_id": "<RUN_ID>",
+          "runtime": "agents.runtimes._strategy._MockClaude",
+          "scope": "per_role:implementation_engineer"
+        },
+        "session_split": "per_role",
+        "wire_chars": "<VOLATILE>"
+      },
+      "test_result": {
+        "duration": "<VOLATILE>",
+        "output": "[Tests] \u2713 All tests passed",
+        "passed": true,
+        "skipped": false
+      }
+    },
+    "rounds": [
+      {
+        "context_clearing_review": {
+          "artifact_refs": [],
+          "cache_effect": "none",
+          "class_counts": {
+            "decision_bearing": 1,
+            "ephemeral": 1,
+            "persisted_artifact": 0,
+            "re_fetchable": 6
+          },
+          "clearable_part_ids": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0"
+          ],
+          "clearable_tokens": "<TOKEN_COUNT>",
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "kind": "eligible_tool_results",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "retained_part_ids": [
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "round": null,
+          "surface_id": null,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_growth_review": {
+          "artifact_refs": [],
+          "cleared_tokens": "<TOKEN_COUNT>",
+          "input_tokens_estimate": "<TOKEN_COUNT>",
+          "kind": "phase_invocation",
+          "output_tokens_estimate": "<TOKEN_COUNT>",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "render_mode": "full",
+          "round": null,
+          "summary_tokens": "<TOKEN_COUNT>",
+          "surface_id": null,
+          "tool_use_count": 0,
+          "trigger": "phase_invocation",
+          "wire_chars": "<VOLATILE>"
+        },
+        "context_pressure_review": {
+          "context_fill_ratio": "<TOKEN_COUNT>",
+          "context_remaining_tokens": "<TOKEN_COUNT>",
+          "context_source": "orcho_estimated",
+          "context_used_tokens": "<TOKEN_COUNT>",
+          "context_window_tokens": "<TOKEN_COUNT>",
+          "model": "mock",
+          "payload_hash": "<VOLATILE>",
+          "phase": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "round": null,
+          "runtime": "agents.runtimes._strategy._MockCodex",
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "common"
+          },
+          "session_split": "common",
+          "surface_id": null,
+          "trigger_source": "orcho_estimated",
+          "wire_chars": "<VOLATILE>"
+        },
+        "critique": "",
+        "prompt_render_review": {
+          "continue_session": false,
+          "delta_dropped_part_keys": [],
+          "omitted_part_keys": [],
+          "part_ids": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "payload_hash": "<VOLATILE>",
+          "phase_key": "review_changes",
+          "prefix_hash": "<VOLATILE>",
+          "provider_session_id": "mock-codex-1",
+          "render_mode": "full",
+          "round": 1,
+          "selected_part_keys": [
+            "contract:review_target:mode=uncommitted@1",
+            "role:code_reviewer@0",
+            "format:detailed@0",
+            "task:review_uncommitted@0",
+            "contract:review_json:v1:english@1",
+            "context:project@0",
+            "turn_input:review_focus@0",
+            "verification_receipt:latest@0"
+          ],
+          "session_key": {
+            "model_key": "mock",
+            "run_id": "<RUN_ID>",
+            "runtime": "agents.runtimes._strategy._MockCodex",
+            "scope": "common"
+          },
+          "session_split": "common",
+          "wire_chars": "<VOLATILE>"
+        },
+        "review_continue_session": false,
+        "review_session_id": "mock-codex-1",
+        "round": 1
+      }
+    ]
+  },
+  "plan_source": "local",
+  "plugin": "Project",
+  "profile": "task",
+  "project": "<PROJECT>",
+  "sandbox": {
+    "capabilities": "<HOST_SPECIFIC>",
+    "env_allowlist_effective": "<HOST_SPECIFIC>",
+    "env_stripped_count": "<HOST_SPECIFIC>",
+    "limit_hit": null,
+    "limits": {
+      "cpu_seconds": 0,
+      "file_size_mb": 0,
+      "memory_mb": 0,
+      "open_files": 0
+    },
+    "masking": {
+      "builtin_patterns": true,
+      "custom_patterns": 0
+    },
+    "mode": "env"
+  },
+  "session_mode_requested": "stateless",
+  "status": "done",
+  "task": "snapshot regression task",
+  "timestamp": "<TIMESTAMP>",
+  "worktree": {
+    "base_ref": "<VOLATILE>",
+    "branch_ref": null,
+    "isolation": "off",
+    "path": "<PROJECT>"
+  }
+}

@@ -1,0 +1,468 @@
+# orcho-mcp companion for ADR 0101 (orcho_run_resume runtime_override)
+# Source repo: orcho-mcp @ 328c7f8 (working-tree changes, separate git history)
+# Apply from orcho-mcp root: git apply 0101-orcho-mcp-companion.patch
+#
+diff --git a/docs/mcp_schema.json b/docs/mcp_schema.json
+index f0ce822..5a02514 100644
+--- a/docs/mcp_schema.json
++++ b/docs/mcp_schema.json
+@@ -5095,8 +5095,38 @@
+       }
+     },
+     {
+-      "description": "Continue an interrupted run by spawning a new pipeline subprocess\n    that loads the existing checkpoint via ``--resume``.\n\n    ``profile=None`` (default): inherit the original run's profile from\n    ``meta.profile``. This is the right default for most callers —\n    review and final-acceptance prompt envelopes depend on the active\n    profile (``feature`` carries the full plan/validate envelope;\n    leaner scoped profiles do not), and resuming under a different\n    profile silently changes which prompt parts the reviewer agent\n    sees. Runs without a recorded profile fall back to the semantic\n    default ``\"feature\"``.\n\n    ``profile=\"<name>\"`` is a deliberate profile switch — e.g. pass\n    ``\"small_task\"`` for a lean scoped continuation, or ``\"planning\"``\n    to refine the plan only.\n\n    A pre-flight guard classifies the run before spawning, so the typed\n    ``resume_outcome`` carries one of four outcomes:\n\n    - ``applied`` (:class:`RunResumeResult`) — a resumable run (running\n      restart / ``failed`` / ``interrupted`` / non-terminal ``halted``)\n      spawned a fresh subprocess; ``pid`` / ``run_dir`` / ``started_at`` /\n      ``command`` are populated.\n    - ``pending_decision`` (:class:`ResumePendingDecisionResult`) — paused\n      on ``awaiting_phase_handoff`` with no recorded decision; resolve it\n      with ``orcho_phase_handoff_decide`` first, then resume.\n    - ``superseded_by_child`` (:class:`ResumeBlockedResult`) — a newer\n      unfinished follow-up child is continuing this run; resume that child\n      (``recommended_run_id``) instead of this parent. No subprocess spawns.\n    - ``rejected_terminal`` (:class:`ResumeBlockedResult`) — the run is\n      terminal; resuming is inert, so this is **not** success-shaped (no\n      ``pid``). Inspect via ``orcho_run_status`` / ``orcho_run_evidence``\n      instead. No subprocess spawns.\n\n    Raises RunNotFoundError if ``run_id`` doesn't exist or its\n    ``mcp_supervisor.json`` is missing (we need ``project_dir`` from there).\n    ",
++      "description": "Continue an interrupted run by spawning a new pipeline subprocess\n    that loads the existing checkpoint via ``--resume``.\n\n    ``runtime_override=None`` (default): a plain checkpoint resume — the run\n    continues under its original per-phase runtimes/models. This is the\n    overwhelmingly common case.\n\n    ``runtime_override={phase, runtime, model}``: deliver an operator\n    *replace* decision after a terminal provider-access failure.\n    Before the resume subprocess spawns, the chosen pair is validated against\n    the phase's configured replacement candidates and persisted into the run's\n    durable ``meta.json``; the resumed pipeline re-reads that record and applies\n    the override to exactly the named phase. A non-candidate pair aborts the\n    resume (no silent fallback). Pass the value verbatim from the *replace*\n    ``next_actions`` Action surfaced by ``orcho_run_status`` /\n    ``orcho_run_evidence`` on a provider-access failure.\n\n    ``profile=None`` (default): inherit the original run's profile from\n    ``meta.profile``. This is the right default for most callers —\n    review and final-acceptance prompt envelopes depend on the active\n    profile (``feature`` carries the full plan/validate envelope;\n    leaner scoped profiles do not), and resuming under a different\n    profile silently changes which prompt parts the reviewer agent\n    sees. Runs without a recorded profile fall back to the semantic\n    default ``\"feature\"``.\n\n    ``profile=\"<name>\"`` is a deliberate profile switch — e.g. pass\n    ``\"small_task\"`` for a lean scoped continuation, or ``\"planning\"``\n    to refine the plan only.\n\n    A pre-flight guard classifies the run before spawning, so the typed\n    ``resume_outcome`` carries one of four outcomes:\n\n    - ``applied`` (:class:`RunResumeResult`) — a resumable run (running\n      restart / ``failed`` / ``interrupted`` / non-terminal ``halted``)\n      spawned a fresh subprocess; ``pid`` / ``run_dir`` / ``started_at`` /\n      ``command`` are populated.\n    - ``pending_decision`` (:class:`ResumePendingDecisionResult`) — paused\n      on ``awaiting_phase_handoff`` with no recorded decision; resolve it\n      with ``orcho_phase_handoff_decide`` first, then resume.\n    - ``superseded_by_child`` (:class:`ResumeBlockedResult`) — a newer\n      unfinished follow-up child is continuing this run; resume that child\n      (``recommended_run_id``) instead of this parent. No subprocess spawns.\n    - ``rejected_terminal`` (:class:`ResumeBlockedResult`) — the run is\n      terminal; resuming is inert, so this is **not** success-shaped (no\n      ``pid``). Inspect via ``orcho_run_status`` / ``orcho_run_evidence``\n      instead. No subprocess spawns.\n\n    Raises RunNotFoundError if ``run_id`` doesn't exist or its\n    ``mcp_supervisor.json`` is missing (we need ``project_dir`` from there).\n    ",
+       "inputSchema": {
++        "$defs": {
++          "RuntimeOverrideArg": {
++            "additionalProperties": false,
++            "description": "Operator runtime/model override for ``orcho_run_resume``.\n\nDelivers the operator's *replace* decision after a terminal provider-access\nfailure: switch the named phase to a different configured ``(runtime,\nmodel)`` pair and resume. The shape mirrors\n``sdk.run_control.types.RuntimeOverride`` in orcho-core; the resume path\nvalidates the pair against the configured replacement candidates and\npersists it into the run's durable ``meta.json`` *before* spawning the\nresume subprocess, so a non-candidate pair aborts the resume rather than\nsilently falling back.\n\nThe candidate ``(runtime, model)`` pairs are exactly the ones the SDK\n``next_actions`` *replace* Action carries (``orcho_run_resume`` with\n``runtime_override``); callers should pass a value taken from that Action\nrather than inventing a pair.",
++            "properties": {
++              "model": {
++                "description": "The replacement model id paired with ``runtime`` in the configured candidate set.",
++                "title": "Model",
++                "type": "string"
++              },
++              "phase": {
++                "description": "The pipeline phase whose runtime/model is overridden (e.g. ``plan`` / ``implement`` / ``review_changes``). The override is isolated to this phase.",
++                "title": "Phase",
++                "type": "string"
++              },
++              "runtime": {
++                "description": "The replacement runtime name — must be a registered runtime and part of a configured replacement candidate pair for the phase.",
++                "title": "Runtime",
++                "type": "string"
++              }
++            },
++            "required": [
++              "phase",
++              "runtime",
++              "model"
++            ],
++            "title": "RuntimeOverrideArg",
++            "type": "object"
++          }
++        },
+         "properties": {
+           "profile": {
+             "anyOf": [
+@@ -5113,6 +5143,17 @@
+           "run_id": {
+             "title": "Run Id",
+             "type": "string"
++          },
++          "runtime_override": {
++            "anyOf": [
++              {
++                "$ref": "#/$defs/RuntimeOverrideArg"
++              },
++              {
++                "type": "null"
++              }
++            ],
++            "default": null
+           }
+         },
+         "required": [
+diff --git a/src/orcho_mcp/run_control/lifecycle.py b/src/orcho_mcp/run_control/lifecycle.py
+index 189aeb7..8cd9f54 100644
+--- a/src/orcho_mcp/run_control/lifecycle.py
++++ b/src/orcho_mcp/run_control/lifecycle.py
+@@ -28,6 +28,7 @@ from orcho_mcp.schemas import (
+     ResumePendingDecisionResult,
+     RunResumeResult,
+     RunStartedResult,
++    RuntimeOverrideArg,
+ )
+ from orcho_mcp.services.errors import map_command_errors
+ from orcho_mcp.services.run_projection import (
+@@ -363,14 +364,55 @@ def _resume_block_or_none(
+     return None
+ 
+ 
++def _persist_runtime_override(
++    run_id: str, override: RuntimeOverrideArg,
++) -> None:
++    """Fix an operator runtime/model override into the run's durable meta.
++
++    Resolves the run directory and delegates to orcho-core's
++    ``sdk.run_control.runtime_override.persist_runtime_override`` — the single
++    validation + persistence authority. orcho-core validates
++    the ``(runtime, model)`` pair against the configured replacement candidates
++    for the phase and writes ``meta['runtime_override']`` idempotently; a
++    non-candidate pair raises ``RuntimeOverrideError`` (a ``ValueError``
++    subclass) and a divergent re-decision raises ``RuntimeOverrideConflict``.
++    Both surface through :func:`map_command_errors` as the typed
++    ``InvalidPlanError`` so a bad override is a clean bad-request, never a
++    silently-spawned wrong-runtime run.
++    """
++    from orcho_mcp.services.run_lookup import find_run_dir
++
++    run_dir = find_run_dir(run_id)
++    with map_command_errors():
++        from sdk.run_control.runtime_override import persist_runtime_override
++
++        persist_runtime_override(
++            run_dir,
++            phase=override.phase,
++            runtime=override.runtime,
++            model=override.model,
++        )
++
++
+ async def resume_run(
+-    run_id: str, profile: str | None = None,
++    run_id: str,
++    profile: str | None = None,
++    runtime_override: RuntimeOverrideArg | None = None,
+ ) -> RunResumeResult | ResumeBlockedResult | ResumePendingDecisionResult:
+     """Continue an interrupted run via the supervisor's ``--resume`` path.
+ 
+     See ``orcho_run_resume`` docstring in ``orcho_mcp.tools`` for the
+     wire contract.
+ 
++    Provider-access recovery: when ``runtime_override`` is supplied,
++    the operator's per-phase runtime/model replacement is persisted into the
++    run's durable ``meta.json`` *before* the supervisor spawns the resume
++    subprocess. The resumed pipeline re-reads that record and applies it to the
++    named phase — the override is delivered through durable meta, so the spawn
++    arguments stay unchanged. Persisting happens only after the pre-flight guard
++    clears (a blocked / terminal resume never writes an override), and a
++    non-candidate pair raises before any spawn (no silent fallback).
++
+     Pre-flight guard: before asking the supervisor to spawn, the run is
+     classified once via the shared :func:`project_run_diagnosis`. Four
+     conditions intercept *before* any spawn so a no-op resume is never
+@@ -406,6 +448,17 @@ async def resume_run(
+         if blocked is not None:
+             return blocked
+ 
++    # Deliver the operator runtime/model override by fixing it into the run's
++    # durable ``meta.json`` before the resume subprocess spawns.
++    # The pipeline re-reads + applies it on resume; the supervisor spawn args
++    # are untouched. Validation (configured replacement candidate + registered
++    # runtime) lives in orcho-core's ``persist_runtime_override`` and raises a
++    # bare ``ValueError`` for a non-candidate pair — mapped here to the typed
++    # invalid-request boundary so a bad override never spawns a wrong-runtime
++    # run.
++    if runtime_override is not None:
++        _persist_runtime_override(run_id, runtime_override)
++
+     supervisor = get_supervisor()
+     with map_command_errors():
+         handle = await supervisor.resume(run_id, profile=profile)
+diff --git a/src/orcho_mcp/schemas/__init__.py b/src/orcho_mcp/schemas/__init__.py
+index e26375d..a949227 100644
+--- a/src/orcho_mcp/schemas/__init__.py
++++ b/src/orcho_mcp/schemas/__init__.py
+@@ -106,6 +106,7 @@ from orcho_mcp.schemas.run_control import (
+     RunDiagnosis,
+     RunResumeResult,
+     RunStartedResult,
++    RuntimeOverrideArg,
+     TypedRunResult,
+     TypedRunStartedResult,
+ )
+@@ -189,6 +190,7 @@ __all__ = [
+     "RunDiagnosis",
+     "RunResumeResult",
+     "RunStartedResult",
++    "RuntimeOverrideArg",
+     "TypedRunResult",
+     "TypedRunStartedResult",
+     # inspection
+diff --git a/src/orcho_mcp/schemas/run_control.py b/src/orcho_mcp/schemas/run_control.py
+index 4a5ff8d..a49f08f 100644
+--- a/src/orcho_mcp/schemas/run_control.py
++++ b/src/orcho_mcp/schemas/run_control.py
+@@ -24,6 +24,42 @@ from orcho_mcp.schemas.shared import (
+ )
+ 
+ 
++class RuntimeOverrideArg(BaseModel):
++    """Operator runtime/model override for ``orcho_run_resume``.
++
++    Delivers the operator's *replace* decision after a terminal provider-access
++    failure: switch the named phase to a different configured ``(runtime,
++    model)`` pair and resume. The shape mirrors
++    ``sdk.run_control.types.RuntimeOverride`` in orcho-core; the resume path
++    validates the pair against the configured replacement candidates and
++    persists it into the run's durable ``meta.json`` *before* spawning the
++    resume subprocess, so a non-candidate pair aborts the resume rather than
++    silently falling back.
++
++    The candidate ``(runtime, model)`` pairs are exactly the ones the SDK
++    ``next_actions`` *replace* Action carries (``orcho_run_resume`` with
++    ``runtime_override``); callers should pass a value taken from that Action
++    rather than inventing a pair.
++    """
++
++    model_config = {"extra": "forbid"}
++
++    phase: str = Field(
++        description="The pipeline phase whose runtime/model is overridden "
++                    "(e.g. ``plan`` / ``implement`` / ``review_changes``). "
++                    "The override is isolated to this phase.",
++    )
++    runtime: str = Field(
++        description="The replacement runtime name — must be a registered "
++                    "runtime and part of a configured replacement candidate "
++                    "pair for the phase.",
++    )
++    model: str = Field(
++        description="The replacement model id paired with ``runtime`` in the "
++                    "configured candidate set.",
++    )
++
++
+ class RunStartedResult(BaseModel):
+     """Returned by ``orcho_run_start`` and ``orcho_run_resume``.
+ 
+diff --git a/src/orcho_mcp/tools.py b/src/orcho_mcp/tools.py
+index 546cb47..2672d41 100644
+--- a/src/orcho_mcp/tools.py
++++ b/src/orcho_mcp/tools.py
+@@ -85,6 +85,7 @@ from orcho_mcp.schemas import (
+     RunResumeResult,
+     RunStartedResult,
+     RunStatus,
++    RuntimeOverrideArg,
+     RunWatchResult,
+     SkillsListResult,
+     TypedRunResult,
+@@ -785,11 +786,27 @@ async def orcho_run_project_typed_async(
+ 
+ @mcp.tool()
+ async def orcho_run_resume(
+-    run_id: str, profile: str | None = None,
++    run_id: str,
++    profile: str | None = None,
++    runtime_override: RuntimeOverrideArg | None = None,
+ ) -> RunResumeResult | ResumeBlockedResult | ResumePendingDecisionResult:
+     """Continue an interrupted run by spawning a new pipeline subprocess
+     that loads the existing checkpoint via ``--resume``.
+ 
++    ``runtime_override=None`` (default): a plain checkpoint resume — the run
++    continues under its original per-phase runtimes/models. This is the
++    overwhelmingly common case.
++
++    ``runtime_override={phase, runtime, model}``: deliver an operator
++    *replace* decision after a terminal provider-access failure.
++    Before the resume subprocess spawns, the chosen pair is validated against
++    the phase's configured replacement candidates and persisted into the run's
++    durable ``meta.json``; the resumed pipeline re-reads that record and applies
++    the override to exactly the named phase. A non-candidate pair aborts the
++    resume (no silent fallback). Pass the value verbatim from the *replace*
++    ``next_actions`` Action surfaced by ``orcho_run_status`` /
++    ``orcho_run_evidence`` on a provider-access failure.
++
+     ``profile=None`` (default): inherit the original run's profile from
+     ``meta.profile``. This is the right default for most callers —
+     review and final-acceptance prompt envelopes depend on the active
+@@ -824,7 +841,9 @@ async def orcho_run_resume(
+     Raises RunNotFoundError if ``run_id`` doesn't exist or its
+     ``mcp_supervisor.json`` is missing (we need ``project_dir`` from there).
+     """
+-    return await resume_run(run_id, profile=profile)
++    return await resume_run(
++        run_id, profile=profile, runtime_override=runtime_override,
++    )
+ 
+ 
+ @mcp.tool()
+diff --git a/tests/unit/run_control/test_resume_runtime_override.py b/tests/unit/run_control/test_resume_runtime_override.py
+new file mode 100644
+index 0000000..0fd537c
+--- /dev/null
++++ b/tests/unit/run_control/test_resume_runtime_override.py
+@@ -0,0 +1,190 @@
++"""``orcho_run_resume`` runtime_override delivery.
++
++The provider-access recovery *replace* Action targets ``orcho_run_resume`` with
++``runtime_override={phase, runtime, model}``. For that Action to actually
++deliver the operator's choice, the MCP tool must (1) accept the arg through its
++strict schema and (2) fix the override into the run's durable ``meta.json``
++*before* the supervisor spawns the resume subprocess — the subprocess re-reads
++that record and applies it. These mock-smokes prove the MCP-side wiring end to
++end: the tool accepts the typed arg, persistence runs before the spawn, and a
++non-candidate pair aborts the resume as a typed bad-request.
++
++orcho-core stays the single validation + persistence authority. Its own unit
++suite (``tests/unit/pipeline/project/test_runtime_override_resume.py`` in
++orcho-core) pins ``persist_runtime_override``'s real candidate validation,
++idempotency, conflict, and resume carry-forward. Because the orcho-mcp test
++environment resolves ``sdk`` against the installed orcho-core (which predates
++the new module until promotion), these smokes install a stand-in for the
++orcho-core persistence boundary that mirrors its contract — they assert the
++*wiring*, not orcho-core's internal logic.
++"""
++from __future__ import annotations
++
++import json
++import sys
++import types
++from pathlib import Path
++
++import pytest
++
++from orcho_mcp.errors import InvalidPlanError
++from orcho_mcp.run_control.lifecycle import resume_run
++from orcho_mcp.schemas import RunResumeResult, RuntimeOverrideArg
++from orcho_mcp.supervisor import RunHandle
++from tests.fixtures.mcp_workspace import meta, write_run
++
++
++class _SpySupervisor:
++    """Fake supervisor recording whether ``resume`` was ever invoked."""
++
++    def __init__(self, run_dir: Path) -> None:
++        self.run_dir = run_dir
++        self.resume_calls: list[dict] = []
++
++    async def resume(self, run_id: str, *, profile: str | None = None):
++        self.resume_calls.append({"run_id": run_id, "profile": profile})
++        return RunHandle(
++            run_id=run_id,
++            pid=4321,
++            pgid=4321,
++            run_dir=self.run_dir,
++            project_dir="/p",
++            command=["python", "-m", "pipeline.project_orchestrator", "--resume"],
++            started_at="2026-06-19T12:00:00.000Z",
++        )
++
++
++def _patch_supervisor(monkeypatch, fake) -> None:
++    monkeypatch.setattr("orcho_mcp.supervisor.get_supervisor", lambda: fake)
++
++
++def _install_core_override_stub(monkeypatch, candidates: list[dict]) -> None:
++    """Install a stand-in for orcho-core's ``sdk.run_control.runtime_override``.
++
++    ``orcho_mcp.run_control.lifecycle._persist_runtime_override`` lazily imports
++    ``persist_runtime_override`` from orcho-core. The stub mirrors the real
++    contract: validate the ``(runtime, model)`` pair against ``candidates`` and
++    write ``meta['runtime_override']`` (a non-candidate pair raises a
++    ``ValueError`` the MCP boundary maps to ``InvalidPlanError``). This isolates
++    the MCP wiring from the orcho-core install version while still exercising the
++    real run-dir resolution, error mapping, and persist-before-spawn ordering.
++    """
++    mod = types.ModuleType("sdk.run_control.runtime_override")
++
++    def persist_runtime_override(
++        run_dir: Path, *, phase: str, runtime: str, model: str,
++        note: str | None = None, decided_at: str | None = None,
++    ) -> dict:
++        if {"runtime": runtime, "model": model} not in candidates:
++            raise ValueError(
++                f"runtime override for phase {phase!r}: "
++                f"({runtime!r}, {model!r}) is not a configured candidate",
++            )
++        meta_file = Path(run_dir) / "meta.json"
++        on_disk = (
++            json.loads(meta_file.read_text(encoding="utf-8"))
++            if meta_file.is_file() else {}
++        )
++        record = {
++            "phase": phase, "runtime": runtime, "model": model,
++            "decided_at": decided_at or "2026-06-24T00:00:00", "note": note,
++        }
++        on_disk["runtime_override"] = record
++        meta_file.write_text(json.dumps(on_disk), encoding="utf-8")
++        return record
++
++    mod.persist_runtime_override = persist_runtime_override
++    monkeypatch.setitem(
++        sys.modules, "sdk.run_control.runtime_override", mod,
++    )
++
++
++_FAILED_META = meta(
++    status="failed", project="/p/x", task="t",
++    failure={
++        "phase": "implement",
++        "failure_kind": "provider_access",
++        "failed_phase": "implement",
++        "recovery_actions": [
++            {"action": "retry"},
++            {"action": "halt"},
++            {"action": "replace", "runtime": "codex", "model": "gpt-5"},
++        ],
++    },
++)
++
++
++@pytest.mark.asyncio
++async def test_runtime_override_persisted_before_spawn(
++    fake_workspace, monkeypatch,
++):
++    run_dir = write_run(fake_workspace, "20260101_000001", meta=_FAILED_META)
++    fake = _SpySupervisor(run_dir)
++    _patch_supervisor(monkeypatch, fake)
++    _install_core_override_stub(monkeypatch, [{"runtime": "codex", "model": "gpt-5"}])
++
++    result = await resume_run(
++        "20260101_000001",
++        runtime_override=RuntimeOverrideArg(
++            phase="implement", runtime="codex", model="gpt-5",
++        ),
++    )
++
++    # The resume spawned a real subprocess (success-shaped).
++    assert isinstance(result, RunResumeResult)
++    assert result.resume_outcome == "applied"
++    assert fake.resume_calls == [
++        {"run_id": "20260101_000001", "profile": None},
++    ]
++    # The operator's override is durable in meta.json — written before the
++    # supervisor was asked to spawn (the resumed pipeline re-reads + applies it).
++    persisted = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
++    record = persisted["runtime_override"]
++    assert record["phase"] == "implement"
++    assert record["runtime"] == "codex"
++    assert record["model"] == "gpt-5"
++
++
++@pytest.mark.asyncio
++async def test_plain_resume_writes_no_override(fake_workspace, monkeypatch):
++    run_dir = write_run(
++        fake_workspace, "20260101_000002",
++        meta=meta(status="interrupted", project="/p/x", task="t"),
++    )
++    fake = _SpySupervisor(run_dir)
++    _patch_supervisor(monkeypatch, fake)
++
++    result = await resume_run("20260101_000002")
++
++    assert isinstance(result, RunResumeResult)
++    assert fake.resume_calls and fake.resume_calls[0]["run_id"] == "20260101_000002"
++    # No override arg → meta.json carries no runtime_override key (behaviour
++    # unchanged for a plain resume).
++    persisted = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
++    assert "runtime_override" not in persisted
++
++
++@pytest.mark.asyncio
++async def test_non_candidate_override_rejected_without_spawn(
++    fake_workspace, monkeypatch,
++):
++    run_dir = write_run(fake_workspace, "20260101_000003", meta=_FAILED_META)
++    fake = _SpySupervisor(run_dir)
++    _patch_supervisor(monkeypatch, fake)
++    # Only ``codex/gpt-5`` is a configured candidate; the operator-supplied
++    # pair below is not, so persistence must reject it and resume must abort
++    # before the supervisor is ever asked to spawn.
++    _install_core_override_stub(monkeypatch, [{"runtime": "codex", "model": "gpt-5"}])
++
++    with pytest.raises(InvalidPlanError):
++        await resume_run(
++            "20260101_000003",
++            runtime_override=RuntimeOverrideArg(
++                phase="implement", runtime="gemini", model="ghost-model",
++            ),
++        )
++
++    # No spawn, and no override written for the rejected pair.
++    assert fake.resume_calls == []
++    persisted = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
++    assert "runtime_override" not in persisted
