@@ -7,6 +7,7 @@
 [![DCO](https://github.com/symphos-ai/orcho-core/actions/workflows/dco.yml/badge.svg)](https://github.com/symphos-ai/orcho-core/actions/workflows/dco.yml)
 [![Release](https://github.com/symphos-ai/orcho-core/actions/workflows/release.yml/badge.svg)](https://github.com/symphos-ai/orcho-core/actions/workflows/release.yml)
 [![codecov](https://codecov.io/gh/symphos-ai/orcho-core/branch/main/graph/badge.svg)](https://codecov.io/gh/symphos-ai/orcho-core)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/symphos-ai/orcho-core/badge)](https://scorecard.dev/viewer/?uri=github.com/symphos-ai/orcho-core)
 
 **Orcho** — local-first control plane for agentic software delivery.
 Use the coding agents you already trust; Orcho supervises the workflow
