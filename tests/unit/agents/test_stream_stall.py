@@ -258,8 +258,13 @@ def test_idle_timeout_without_sink_keeps_legacy_return(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def _no_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep runtime retry backoff instant in the runtime-path tests."""
+def _runtime_test_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_claude_bin: None,
+    mock_codex_bin: None,
+    mock_gemini_bin: None,
+) -> None:
+    """Keep runtime retry backoff instant and CLI lookup hermetic."""
     from agents.runtimes import _failures
 
     monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
@@ -276,7 +281,7 @@ def _runtime_classes() -> list:
 @pytest.mark.parametrize("agent_cls", _runtime_classes())
 def test_runtime_invoke_wires_default_sink_and_phase(
     agent_cls, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    _no_backoff_sleep: None,
+    _runtime_test_environment: None,
 ) -> None:
     """Through the REAL runtime invoke callsite (no manual opt-in): the
     production ``_stream_run`` call carries a provider-neutral
@@ -328,7 +333,9 @@ def test_runtime_invoke_wires_default_sink_and_phase(
 
 @pytest.mark.parametrize("agent_cls", _runtime_classes())
 def test_runtime_invoke_propagates_terminal_stalled_error(
-    agent_cls, monkeypatch: pytest.MonkeyPatch, _no_backoff_sleep: None,
+    agent_cls,
+    monkeypatch: pytest.MonkeyPatch,
+    _runtime_test_environment: None,
 ) -> None:
     """An idle-timeout escalation raised inside ``_stream_run`` propagates out of
     the real runtime ``invoke()`` (it is NOT swallowed by the retry policy, which

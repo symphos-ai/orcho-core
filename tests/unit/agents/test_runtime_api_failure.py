@@ -201,8 +201,13 @@ def _stream(stdout: str = "", returncode: int = 0, stderr: str = ""):
 
 
 @pytest.fixture(autouse=True)
-def _no_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep runtime retry backoff instant in these tests."""
+def _runtime_test_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_claude_bin: None,
+    mock_codex_bin: None,
+    mock_gemini_bin: None,
+) -> None:
+    """Keep runtime retry backoff instant and CLI lookup hermetic."""
     monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
 
 
