@@ -1,6 +1,11 @@
 # Orcho — Multi-Agent Pipeline Engine
 
+[![PyPI](https://img.shields.io/pypi/v/orcho-core.svg)](https://pypi.org/project/orcho-core/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/orcho-core/)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/symphos-ai/orcho-core/actions/workflows/ci.yml/badge.svg)](https://github.com/symphos-ai/orcho-core/actions/workflows/ci.yml)
+[![DCO](https://github.com/symphos-ai/orcho-core/actions/workflows/dco.yml/badge.svg)](https://github.com/symphos-ai/orcho-core/actions/workflows/dco.yml)
+[![Release](https://github.com/symphos-ai/orcho-core/actions/workflows/release.yml/badge.svg)](https://github.com/symphos-ai/orcho-core/actions/workflows/release.yml)
 [![codecov](https://codecov.io/gh/symphos-ai/orcho-core/branch/main/graph/badge.svg)](https://codecov.io/gh/symphos-ai/orcho-core)
 
 **Orcho** — local-first control plane for agentic software delivery.
