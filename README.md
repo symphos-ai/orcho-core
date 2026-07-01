@@ -64,22 +64,45 @@ connect your project → first run.
 
 ## Install
 
-**Recommended once the packages are published:**
+If `pipx` is missing, install it first. On macOS with Homebrew:
 
 ```bash
-pipx install orcho
+brew install pipx
+pipx ensurepath
+exec zsh -l
+```
+
+For Linux or Windows, use the
+[official pipx installation guide](https://pipx.pypa.io/stable/installation/).
+
+### Recommended CLI install
+
+Use the `orcho` distribution when you want the public command set available
+from your shell. `pipx` keeps the CLI isolated from the current project or
+Python environment.
+
+```bash
+pipx install "orcho[mcp]"
 orcho --help
 ```
 
-Use `python -m pip install orcho` if you prefer a project-managed
-environment over `pipx`.
-
-Optional control surfaces are available through extras:
+Core commands only:
 
 ```bash
-pipx install 'orcho[mcp]'
-pipx install 'orcho[all]'
+pipx install orcho
 ```
+
+### Direct engine dependency
+
+Use `pip` when you intentionally want `orcho-core` in the active virtual
+environment, CI image, devcontainer, or Docker image.
+
+```bash
+python -m pip install orcho-core
+```
+
+The `orcho` distribution depends on `orcho-core`; most CLI users should start
+with `orcho`, while integrators can depend on `orcho-core` directly.
 
 **Source checkout for development:**
 
