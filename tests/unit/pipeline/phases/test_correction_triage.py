@@ -14,9 +14,12 @@ from types import SimpleNamespace
 from agents.runtimes._strategy import MockAgentProvider
 from pipeline.phases.builtin.handlers.correction_triage import (
     _VALID_KINDS,
+    _as_str_list,
     _extract_json_object,
+    _load_correction_context,
     _normalize_triage,
     _phase_correction_triage,
+    _triage_task_body,
 )
 from pipeline.plugins import PluginConfig
 from pipeline.runtime import PipelineState
@@ -341,3 +344,176 @@ def test_adapter_persists_fail_fast_markers(tmp_path: Path) -> None:
     entry = session["phases"]["correction_triage"]
     assert entry["halted"] is True
     assert entry["reason"] == "correction_triage_missing_context"
+
+
+# ── _load_correction_context (pure context loader) ─────────────────────
+
+
+def test_load_context_no_output_dir_returns_none() -> None:
+    # output_dir is None → there is nowhere to read from (line 105).
+    state = SimpleNamespace(output_dir=None)
+    assert _load_correction_context(state) is None
+
+
+def test_load_context_missing_file_returns_none(tmp_path: Path) -> None:
+    # output_dir set but correction_context.md absent → None (is_file branch).
+    state = SimpleNamespace(output_dir=tmp_path)
+    assert _load_correction_context(state) is None
+
+
+def test_load_context_read_oserror_returns_none(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # File exists (is_file True) but read_text raises OSError → None (111-112).
+    (tmp_path / "correction_context.md").write_text("blocker", encoding="utf-8")
+
+    def _boom(self, *args, **kwargs):  # noqa: ANN001
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    state = SimpleNamespace(output_dir=tmp_path)
+    assert _load_correction_context(state) is None
+
+
+def test_load_context_empty_file_returns_none(tmp_path: Path) -> None:
+    # A present-but-whitespace file is treated as absent (text or None → None).
+    (tmp_path / "correction_context.md").write_text("  \n\t", encoding="utf-8")
+    state = SimpleNamespace(output_dir=tmp_path)
+    assert _load_correction_context(state) is None
+
+
+def test_load_context_nonempty_file_returns_stripped_text(tmp_path: Path) -> None:
+    # A non-empty file returns its stripped text.
+    (tmp_path / "correction_context.md").write_text(
+        "\n  recorded blockers here  \n", encoding="utf-8"
+    )
+    state = SimpleNamespace(output_dir=tmp_path)
+    assert _load_correction_context(state) == "recorded blockers here"
+
+
+# ── _triage_task_body (procedure part loader) ──────────────────────────
+
+
+def test_triage_task_body_oserror_returns_empty(monkeypatch) -> None:
+    # When the procedure part cannot be read, fall back to '' (121-122).
+    def _boom(self, *args, **kwargs):  # noqa: ANN001
+        raise OSError("simulated missing prompt part")
+
+    monkeypatch.setattr(Path, "read_text", _boom)
+    assert _triage_task_body() == ""
+
+
+# ── _extract_json_object (lenient JSON extraction) ─────────────────────
+
+
+def test_extract_empty_string_returns_none() -> None:
+    # Falsy input short-circuits before any parsing (line 173).
+    assert _extract_json_object("") is None
+
+
+def test_extract_fenced_block_returns_dict() -> None:
+    # A ```json fenced block is stripped, then whole-string parsed (176-177).
+    text = '```json\n{"kind": "code_fix", "summary": "s"}\n```'
+    assert _extract_json_object(text) == {"kind": "code_fix", "summary": "s"}
+
+
+def test_extract_whole_object_returns_dict() -> None:
+    # A bare whole-string JSON object parses directly.
+    assert _extract_json_object('{"a": 1}') == {"a": 1}
+
+
+def test_extract_leading_garbage_uses_brace_scanner() -> None:
+    # Whole-string parse fails; the first balanced {...} is recovered (184-200).
+    text = 'here is your verdict: {"kind": "gate_rerun"} thanks'
+    assert _extract_json_object(text) == {"kind": "gate_rerun"}
+
+
+def test_extract_nested_braces_balanced_in_scanner() -> None:
+    # Brace-depth tracking keeps nested objects intact (189-194).
+    text = 'noise {"a": {"b": 1}} tail'
+    assert _extract_json_object(text) == {"a": {"b": 1}}
+
+
+def test_extract_invalid_candidate_then_valid_object() -> None:
+    # The first balanced candidate is invalid JSON → break + advance to the
+    # next "{" which parses (197-198 break, 202 scan continuation).
+    text = 'garbage {bad json} then {"x": 1}'
+    assert _extract_json_object(text) == {"x": 1}
+
+
+def test_extract_array_candidate_falls_through_to_none() -> None:
+    # A whole-string JSON array is not a dict; the scanner finds no "{" and
+    # returns None (180 non-dict, 184 start==-1, 203 None).
+    assert _extract_json_object("[1, 2, 3]") is None
+
+
+def test_extract_no_object_returns_none() -> None:
+    # No JSON object anywhere → None (203).
+    assert _extract_json_object("absolutely no object here") is None
+
+
+# ── _as_str_list (field normalization) ─────────────────────────────────
+
+
+def test_as_str_list_none_returns_empty() -> None:
+    assert _as_str_list(None) == []  # line 209
+
+
+def test_as_str_list_empty_string_returns_empty() -> None:
+    assert _as_str_list("   ") == []  # blank string → []
+
+
+def test_as_str_list_nonempty_string_wraps() -> None:
+    assert _as_str_list("  one line  ") == ["one line"]
+
+
+def test_as_str_list_mapping_prefers_summary() -> None:
+    # Mapping branch: summary wins (214-220).
+    assert _as_str_list({"summary": "the summary", "title": "ignored"}) == [
+        "the summary"
+    ]
+
+
+def test_as_str_list_mapping_falls_back_to_title_then_blocker() -> None:
+    assert _as_str_list({"title": "the title"}) == ["the title"]
+    assert _as_str_list({"blocker": "the blocker"}) == ["the blocker"]
+
+
+def test_as_str_list_empty_mapping_stringifies_value() -> None:
+    # No summary/title/blocker → str(value) of the (falsy) mapping itself.
+    assert _as_str_list({}) == ["{}"]
+
+
+def test_as_str_list_nested_list_and_tuple_recurse() -> None:
+    # Recursion flattens both list and tuple members (221-225).
+    value = [["a", ("b", "c")], "d", ()]
+    assert _as_str_list(value) == ["a", "b", "c", "d"]
+
+
+def test_as_str_list_scalar_int_stringifies() -> None:
+    assert _as_str_list(5) == ["5"]  # 226-227
+
+
+def test_as_str_list_scalar_bool_stringifies() -> None:
+    assert _as_str_list(True) == ["True"]
+
+
+# ── _normalize_triage: blocked-without-blocker fill (line 273) ─────────
+
+
+def test_normalize_blocked_without_blockers_uses_summary() -> None:
+    # kind=blocked + empty blockers → summary becomes the blocker (272-275).
+    rec = _normalize_triage(
+        {"kind": "blocked", "summary": "no safe path forward"}, raw="r"
+    )
+    assert rec["kind"] == "blocked"
+    assert rec["blockers"] == ["no safe path forward"]
+
+
+def test_normalize_blocked_without_summary_uses_default_blocker() -> None:
+    # kind=blocked, no summary, no blockers → the canned fallback blocker.
+    rec = _normalize_triage({"kind": "blocked"}, raw="r")
+    assert rec["kind"] == "blocked"
+    assert rec["blockers"] == [
+        "Triage marked the run blocked without naming a blocker."
+    ]
