@@ -11,7 +11,8 @@ tagged releases and published packages for installable builds.
 ## Reporting a Vulnerability
 
 Please report suspected security vulnerabilities through GitHub's private
-vulnerability reporting flow for this repository.
+vulnerability reporting flow for this repository:
+https://github.com/symphos-ai/orcho-core/security/advisories/new
 
 Include as much detail as you can:
 
