@@ -1,14 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import pipeline.engine.diff_apply_check as dac
 from pipeline.engine.diff_apply_check import (
     DiffApplyCheckResult,
+    _bound_text,
+    _coerce_output,
+    _command_label,
+    _display_path,
+    _GitCommandResult,
+    _resolve_root,
+    _run_git_command,
+    capture_run_diff_with_apply_check,
     check_diff_patch_apply,
     diff_patch_durable_block,
     diff_patch_triad,
@@ -217,3 +227,332 @@ def test_diff_patch_durable_block_keeps_only_actionable_fields() -> None:
         "baseline_ref": "base",
         "detail": "git apply --check exited with 1",
     }
+
+
+# --- capture_run_diff_with_apply_check: no-diff -> None (line 160) ----------
+
+
+@pytest.mark.git_worktree
+@pytest.mark.serial
+def test_capture_run_diff_with_apply_check_returns_none_without_changes(
+    tmp_path: Path,
+) -> None:
+    """Line 160: a clean repo (no diff vs HEAD) yields ``None``."""
+    _require_git()
+    project = tmp_path / "project"
+    _init_repo(project)
+    baseline = _git_output(project, "rev-parse", "HEAD").strip()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    captured = capture_run_diff_with_apply_check(
+        project, run_dir, baseline_ref=baseline,
+    )
+
+    assert captured is None
+    assert not (run_dir / "diff.patch").exists()
+
+
+# --- capture_run_diff_with_apply_check: emit failure swallowed (369-370) ----
+
+
+@pytest.mark.git_worktree
+@pytest.mark.serial
+def test_capture_run_diff_with_apply_check_survives_emit_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines 369-370 (+162-171): a raising event emitter is swallowed."""
+    _require_git()
+    project = tmp_path / "project"
+    _init_repo(project)
+    baseline = _git_output(project, "rev-parse", "HEAD").strip()
+    (project / "payload.py").write_text("value = 2\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    from core.observability import events as _events
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("emit exploded")
+
+    monkeypatch.setattr(_events, "emit", _boom)
+
+    captured = capture_run_diff_with_apply_check(
+        project, run_dir, baseline_ref=baseline,
+    )
+
+    assert captured is not None
+    assert captured.path == run_dir / "diff.patch"
+    assert captured.apply_check is not None
+    assert captured.apply_check.status == "pass"
+
+
+# --- check_diff_patch_apply: patch present but unreadable (213-214) ---------
+
+
+def test_check_diff_patch_apply_degrades_when_patch_unreadable(
+    tmp_path: Path,
+) -> None:
+    """Lines 213-214: a regular file that cannot be read -> patch_unreadable."""
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses file-permission read errors")
+    patch_path = tmp_path / "diff.patch"
+    patch_path.write_text("data\n", encoding="utf-8")
+    patch_path.chmod(0o000)
+    try:
+        result = check_diff_patch_apply(
+            tmp_path / "project",
+            patch_path=patch_path,
+            baseline_ref="deadbeef",
+        )
+    finally:
+        patch_path.chmod(0o600)
+
+    assert result.status == "degraded"
+    assert result.reason == "patch_unreadable"
+    assert diff_patch_triad(result) == "patch_missing"
+
+
+# --- read-tree returncode is None -> degraded (261-266) --------------------
+
+
+def _readable_patch(tmp_path: Path) -> Path:
+    patch_path = tmp_path / "diff.patch"
+    patch_path.write_text(
+        "diff --git a/payload.py b/payload.py\n"
+        "--- a/payload.py\n+++ b/payload.py\n"
+        "@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+        encoding="utf-8",
+    )
+    return patch_path
+
+
+@pytest.mark.parametrize(
+    ("unavailable_reason", "expected"),
+    [
+        ("git_unavailable", "git_unavailable"),
+        ("timeout", "baseline_unavailable"),
+    ],
+)
+def test_read_tree_returncode_none_degrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unavailable_reason: str,
+    expected: str,
+) -> None:
+    """Lines 261-266: read-tree returncode None maps to the right reason."""
+    patch_path = _readable_patch(tmp_path)
+    git_root = tmp_path / "root"
+    git_root.mkdir()
+
+    def _fake(command, **kwargs):
+        return _GitCommandResult(
+            returncode=None, unavailable_reason=unavailable_reason,
+        )
+
+    monkeypatch.setattr(dac, "_run_git_command", _fake)
+
+    result = check_diff_patch_apply(
+        git_root=git_root,
+        patch_path=patch_path,
+        baseline_ref="deadbeef",
+    )
+
+    assert result.status == "degraded"
+    assert result.reason == expected
+    assert result.command == ("git", "read-tree", "deadbeef")
+
+
+# --- apply returncode is None -> degraded (295-300) ------------------------
+
+
+@pytest.mark.parametrize(
+    ("unavailable_reason", "expected"),
+    [
+        ("git_unavailable", "git_unavailable"),
+        ("timeout", "apply_check_unavailable"),
+    ],
+)
+def test_apply_returncode_none_degrades(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unavailable_reason: str,
+    expected: str,
+) -> None:
+    """Lines 295-300: read-tree ok but apply returncode None degrades."""
+    patch_path = _readable_patch(tmp_path)
+    git_root = tmp_path / "root"
+    git_root.mkdir()
+
+    def _fake(command, **kwargs):
+        if command[1] == "read-tree":
+            return _GitCommandResult(returncode=0)
+        return _GitCommandResult(
+            returncode=None, unavailable_reason=unavailable_reason,
+        )
+
+    monkeypatch.setattr(dac, "_run_git_command", _fake)
+
+    result = check_diff_patch_apply(
+        git_root=git_root,
+        patch_path=patch_path,
+        baseline_ref="deadbeef",
+    )
+
+    assert result.status == "degraded"
+    assert result.reason == expected
+    assert result.command == ("git", "apply", "--check", "--cached",
+                              str(patch_path.resolve()))
+
+
+# --- _resolve_root branches (346-347, 349) ---------------------------------
+
+
+def test_resolve_root_returns_existing_git_root(tmp_path: Path) -> None:
+    """Line 346: an existing git_root path is returned verbatim."""
+    git_root = tmp_path / "root"
+    git_root.mkdir()
+
+    assert _resolve_root(project_path=None, git_root=git_root) == git_root
+
+
+def test_resolve_root_missing_git_root_is_none(tmp_path: Path) -> None:
+    """Line 347: a non-existent git_root resolves to None."""
+    assert _resolve_root(
+        project_path=None, git_root=tmp_path / "absent",
+    ) is None
+
+
+def test_resolve_root_without_any_input_is_none() -> None:
+    """Line 349: no project_path and no git_root resolves to None."""
+    assert _resolve_root(project_path=None, git_root=None) is None
+
+
+def test_check_diff_patch_apply_degrades_when_git_root_missing(
+    tmp_path: Path,
+) -> None:
+    """Line 347 via public API: a missing git_root -> git_root_unavailable."""
+    patch_path = _readable_patch(tmp_path)
+
+    result = check_diff_patch_apply(
+        git_root=tmp_path / "absent",
+        patch_path=patch_path,
+        baseline_ref="deadbeef",
+    )
+
+    assert result.status == "degraded"
+    assert result.reason == "git_root_unavailable"
+
+
+# --- _run_git_command subprocess failure branches (391-410) ----------------
+
+
+def test_run_git_command_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines 391-398: TimeoutExpired -> returncode None, reason 'timeout'."""
+    def _raise(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd="git read-tree", timeout=5, output=b"out", stderr=b"err",
+        )
+
+    monkeypatch.setattr(dac.subprocess, "run", _raise)
+
+    result = _run_git_command(
+        ("git", "read-tree", "base"),
+        cwd=str(tmp_path), env={}, timeout=5,
+    )
+
+    assert result.returncode is None
+    assert result.unavailable_reason == "timeout"
+    assert "timed out" in result.detail
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+
+
+def test_run_git_command_file_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines 399-404: FileNotFoundError -> reason 'git_unavailable'."""
+    def _raise(*args, **kwargs):
+        raise FileNotFoundError("no git here")
+
+    monkeypatch.setattr(dac.subprocess, "run", _raise)
+
+    result = _run_git_command(
+        ("git", "read-tree", "base"),
+        cwd=str(tmp_path), env={}, timeout=5,
+    )
+
+    assert result.returncode is None
+    assert result.unavailable_reason == "git_unavailable"
+    assert "no git here" in result.detail
+
+
+def test_run_git_command_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines 405-410: a generic OSError -> reason 'os_error'."""
+    def _raise(*args, **kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(dac.subprocess, "run", _raise)
+
+    result = _run_git_command(
+        ("git", "read-tree", "base"),
+        cwd=str(tmp_path), env={}, timeout=5,
+    )
+
+    assert result.returncode is None
+    assert result.unavailable_reason == "os_error"
+    assert "disk gone" in result.detail
+
+
+# --- trivial helper direct calls (451, 455, 459-463, 467-469, 475-476) -----
+
+
+def test_bound_text_zero_max_bytes() -> None:
+    """Line 451: max_bytes<=0 returns empty text with truncated flag."""
+    assert _bound_text("x", 0) == ("", True)
+    assert _bound_text("", 0) == ("", False)
+
+
+def test_bound_text_truncates_overlong_text() -> None:
+    """Line 455: text longer than max_bytes is truncated with the flag set."""
+    bounded, truncated = _bound_text("abcdef", 3)
+
+    assert truncated is True
+    assert bounded == "abc"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, ""),
+        (b"bytes", "bytes"),
+        ("plain", "plain"),
+    ],
+)
+def test_coerce_output_variants(value, expected) -> None:
+    """Lines 459-463: None/bytes/str outputs are normalised to str."""
+    assert _coerce_output(value) == expected
+
+
+def test_command_label_single_and_empty() -> None:
+    """Lines 467-469: a 1-element label joins, an empty tuple falls back."""
+    assert _command_label(("git",)) == "git"
+    assert _command_label(()) == "command"
+
+
+def test_display_path_falls_back_on_resolve_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines 475-476: a resolve() OSError falls back to str(path)."""
+    target = tmp_path / "diff.patch"
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("cannot resolve")
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+
+    assert _display_path(target) == str(target)
