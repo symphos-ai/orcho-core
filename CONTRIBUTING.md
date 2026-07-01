@@ -32,17 +32,41 @@ have the right to submit it under the repository's license.
 
 ## Dev Setup
 
-```bash
-git clone <repo>
-cd orcho-core
+Clone the source checkout and install the development dependencies:
 
-python -m venv .venv
+```bash
+git clone git@github.com:symphos-ai/orcho-core.git ~/.local/share/orcho-core
+cd ~/.local/share/orcho-core
+
+python3 -m venv .venv
 source .venv/bin/activate
 
 pip install -e ".[dev]"
 ```
 
-That's it. No external services needed — all tests use mock agents.
+Optional shell shortcut for `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export ORCHO_CORE="$HOME/.local/share/orcho-core"
+orcho() { (source "$ORCHO_CORE/.venv/bin/activate" && "$ORCHO_CORE/.venv/bin/python" -m cli.orcho "$@"); }
+```
+
+Windows PowerShell:
+
+```powershell
+git clone git@github.com:symphos-ai/orcho-core.git "$env:LOCALAPPDATA\orcho-core"
+cd "$env:LOCALAPPDATA\orcho-core"
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
+Optional PowerShell profile shortcut:
+
+```powershell
+. "$env:LOCALAPPDATA\orcho-core\shell\orcho-env-base.ps1"
+```
+
+That's it. No external services are needed; all tests use mock agents.
 
 ---
 

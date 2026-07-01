@@ -104,32 +104,8 @@ python -m pip install orcho-core
 The `orcho` distribution depends on `orcho-core`; most CLI users should start
 with `orcho`, while integrators can depend on `orcho-core` directly.
 
-**Source checkout for development:**
-
-```bash
-git clone git@github.com:symphos-ai/orcho-core.git ~/.local/share/orcho-core
-cd ~/.local/share/orcho-core
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
-Add to `~/.zshrc` / `~/.bashrc`:
-```bash
-export ORCHO_CORE="$HOME/.local/share/orcho-core"
-orcho() { (source "$ORCHO_CORE/.venv/bin/activate" && "$ORCHO_CORE/.venv/bin/python" -m cli.orcho "$@"); }
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone git@github.com:symphos-ai/orcho-core.git "$env:LOCALAPPDATA\orcho-core"
-cd "$env:LOCALAPPDATA\orcho-core"
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-```
-Add to `$PROFILE`:
-```powershell
-. "$env:LOCALAPPDATA\orcho-core\shell\orcho-env-base.ps1"
-```
+For source checkout setup, tests, and contribution workflow, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
