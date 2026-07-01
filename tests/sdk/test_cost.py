@@ -112,6 +112,12 @@ def test_workspace_accounting_applies_to_walkup_workspace(
 
     monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
     monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    # Also clear ORCHO_RUNSPACE: find_runs_dir() resolves it (as
+    # $ORCHO_RUNSPACE/runs) ahead of cwd walk-up, so an ambient value — e.g.
+    # when this suite runs inside an Orcho-managed worktree — would shadow the
+    # walk-up path this test exercises and point aggregation at the real
+    # runspace. Deleting it keeps the walk-up resolution hermetic.
+    monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
     monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
     config._reset_config()
 
