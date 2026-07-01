@@ -129,3 +129,51 @@ def test_exit_code_pinning(name: str, expected_exit_code: int) -> None:
     schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
     entry = next(e for e in schema["exports"] if e["name"] == name)
     assert entry["exit_code"] == expected_exit_code
+
+
+# ── In-process coverage of the dumper ─────────────────────────────────────────
+#
+# ``test_dumper_check_mode_passes`` above runs the dumper as a *subprocess* to
+# pin the real CLI contract, but a child process is invisible to the parent's
+# coverage session (the dumper's own line coverage reads as 0%). These tests
+# drive the same ``build_schema`` / ``main`` code paths in-process so the
+# contract-critical reflection logic is actually measured.
+
+import importlib.util  # noqa: E402
+
+
+def _load_dumper():
+    spec = importlib.util.spec_from_file_location("dump_sdk_schema_mod", _DUMPER_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_build_schema_shape_in_process() -> None:
+    """``build_schema`` reflects the full public SDK surface in-process."""
+    import sdk
+
+    dumper = _load_dumper()
+    schema = dumper.build_schema()
+    assert schema["exports"], "schema must enumerate exports"
+    assert all("name" in e for e in schema["exports"])
+    assert {e["name"] for e in schema["exports"]} == set(sdk.__all__)
+
+
+def test_check_mode_matches_committed_in_process() -> None:
+    """``--check`` against the committed snapshot passes in-process (exit 0)."""
+    dumper = _load_dumper()
+    assert dumper.main(["--check"]) == 0
+
+
+def test_check_mode_missing_snapshot_returns_1(tmp_path: Path) -> None:
+    dumper = _load_dumper()
+    assert dumper.main(["--check", "--out", str(tmp_path / "absent.json")]) == 1
+
+
+def test_check_mode_drift_returns_1(tmp_path: Path) -> None:
+    dumper = _load_dumper()
+    stale = tmp_path / "stale.json"
+    stale.write_text("{}", encoding="utf-8")
+    assert dumper.main(["--check", "--out", str(stale)]) == 1
