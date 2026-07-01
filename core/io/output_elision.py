@@ -50,7 +50,7 @@ def elide_middle_by_bytes(text: str, *, max_bytes: int) -> str:
     omitted_lines = text.count("\n")
     marker = (
         f"\n[… {format_bytes(omitted_bytes)} / "
-        f"{format_count(omitted_lines)} строк вырезано …]\n"
+        f"{format_count(omitted_lines)} lines omitted …]\n"
     )
     marker_bytes = marker.encode("utf-8")
     remaining = max(0, max_bytes - len(marker_bytes))
@@ -125,8 +125,8 @@ def elide_tool_result_for_transcript(
         tail = "".join(lines[-tail_lines:])
         middle = "".join(lines[head_lines:-tail_lines])
         marker = (
-            f"[… {format_count(len(lines) - head_lines - tail_lines)} строк / "
-            f"{format_bytes(utf8_len(middle))} вырезано …]\n"
+            f"[… {format_count(len(lines) - head_lines - tail_lines)} lines / "
+            f"{format_bytes(utf8_len(middle))} omitted …]\n"
         )
         return f"{head}{marker}{tail}"
     return elide_middle_by_bytes(text, max_bytes=max_bytes)

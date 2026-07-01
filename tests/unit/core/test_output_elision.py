@@ -18,7 +18,7 @@ def test_byte_cap_elides_single_line_blob_with_marker() -> None:
     out = elide_middle_by_bytes(blob, max_bytes=64 * 1024)
 
     assert utf8_len(out) <= 64 * 1024
-    assert "вырезано" in out
+    assert "omitted" in out
     assert out.startswith("A" * 100)
     assert out.endswith("A" * 100)
 
@@ -42,7 +42,7 @@ def test_tool_result_line_caps_json_output_field() -> None:
 
     assert utf8_len(out) <= 64 * 1024
     assert decoded["tool_id"] == "run-shell"
-    assert "вырезано" in decoded["output"]
+    assert "omitted" in decoded["output"]
     assert "B" * 100 in decoded["output"]
 
 
@@ -60,8 +60,8 @@ def test_transcript_elision_uses_head_tail_lines_and_marker() -> None:
     assert "line-0\nline-1\nline-2\n" in out
     assert "line-67\nline-68\nline-69\n" in out
     assert "line-30" not in out
-    assert "64 строк" in out
-    assert "вырезано" in out
+    assert "64 lines" in out
+    assert "omitted" in out
 
 
 def test_transcript_elision_leaves_small_text_unchanged() -> None:

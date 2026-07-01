@@ -230,7 +230,7 @@ def test_stream_run_return_filter_caps_single_line_tool_result() -> None:
     assert returncode == 0
     assert stderr == ""
     assert utf8_len(stdout) <= 64 * 1024
-    assert "вырезано" in stdout
+    assert "omitted" in stdout
 
 
 def test_stream_run_log_elides_oversized_raw_formatter_output(tmp_path) -> None:
@@ -251,4 +251,4 @@ def test_stream_run_log_elides_oversized_raw_formatter_output(tmp_path) -> None:
     assert stderr == ""
     assert utf8_len(stdout) > 1024 * 1024
     assert utf8_len(log_text) < 200 * 1024
-    assert "вырезано" in log_text
+    assert "omitted" in log_text

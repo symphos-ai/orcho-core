@@ -247,7 +247,7 @@ write up the blocker, and ask for direction before proceeding:
 - Docs-only commit. No runtime changes.
 - `ruff check .` clean.
 - `git diff --check` clean.
-- Public-boundary term scan clean. The canonical token list lives in
+- Public text hygiene check clean. The canonical blocked-token list lives in
   the hygiene test; this ADR does not enumerate the tokens. The scan
   is enforced in CI by
   `tests/unit/core/test_open_core_hygiene.py::test_no_banned_tokens_in_public_packages`.
