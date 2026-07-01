@@ -176,6 +176,18 @@ markers = [
     "mcp_integration: non-e2e mock smoke pinning that a change does not move the MCP-facing wire (ADR 0081 falsifier).",
 ]
 
+[tool.coverage.run]
+# CI measures coverage across agents/cli/core/pipeline/sdk/shell/tools
+# (see .github/workflows/ci.yml). Omit only code that cannot execute on the
+# Linux CI runner, so the percentage reflects exercised behaviour rather than
+# unreachable platform branches.
+omit = [
+    # Windows-only sandbox backend (Job Objects via pywin32). The Unix CI
+    # runner never imports or executes it, so its lines can only ever read as
+    # uncovered noise.
+    "pipeline/sandbox/backends/env_windows.py",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
