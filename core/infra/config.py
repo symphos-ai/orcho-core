@@ -695,6 +695,13 @@ class AppConfig:
         commit_defaults: dict[str, Any] = {
             "enabled": True,
             "default_strategy": "release_summary",
+            # ADR 0119 — delivery never auto-commits onto the repository's
+            # default branch. ``worktree_branch`` (default) publishes an
+            # isolated run's own branch as ``orcho/deliver/<run_id>-<slug>``;
+            # an in-place run whose HEAD is the default branch gets a fresh
+            # delivery branch instead of a commit on the default. ``bypass`` is
+            # the explicit opt-out (prior "commit onto current HEAD" behavior).
+            "branch_policy": "worktree_branch",
             "interactive_default": "apply",
             "auto_in_ci": "approve",
             # ADR 0100 — provider-neutral parking switch. ``auto`` keeps the

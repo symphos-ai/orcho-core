@@ -446,6 +446,18 @@
         {
           "default": "None",
           "default_factory": null,
+          "name": "delivery_branch",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "pr_intent",
+          "type": "DeliveryPrIntent | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
           "name": "blocker",
           "type": "str | None"
         },

@@ -249,6 +249,14 @@ def run_cross_delivery(
         consumes to decide the terminal status.
     """
     commit_cfg = dict(getattr(app_cfg, "commit", {}) or {})
+    # ADR 0119 — cross delivery flows through the same single commit site, so it
+    # obeys the same default-branch invariant: a missing ``commit.branch_policy``
+    # resolves (via ``normalize_branch_policy`` at the commit site) to the
+    # ``worktree_branch`` default, never to ``bypass``. ``bypass`` — committing
+    # the alias diff straight onto each project checkout's current HEAD,
+    # including its default branch — is reachable only when the operator sets it
+    # explicitly in config; cross must not inject it as a hidden default and
+    # silently weaken the invariant. The config passes through unchanged.
     if commit_cfg.get("enabled") is False:
         # Operator turned delivery off on purpose — success-like.
         result = CrossDeliveryResult(overall="disabled", disabled_by_config=True)

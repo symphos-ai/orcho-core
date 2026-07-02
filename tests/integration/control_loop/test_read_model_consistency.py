@@ -76,6 +76,31 @@ from tests.integration.control_loop import _harness as H
 pytestmark = [pytest.mark.project_run, pytest.mark.serial]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _adr0119_legacy_bypass_delivery():
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy harness.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout — so a parent run leaves its checkout clean and a follow-up
+    refuses to start. This module-scoped harness builds its driver results once
+    and predates that policy, so it runs under ``bypass`` (the ADR's explicit
+    legacy opt-out). Module-scoped (via a manual ``MonkeyPatch``) so the patch is
+    active while the ``states`` fixture drives the pipeline. The new
+    branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    import pipeline.engine.delivery_branch as _db
+
+    mp = MonkeyPatch()
+    mp.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+    yield
+    mp.undo()
+
+
 # ── Expected core→SDK matrix ─────────────────────────────────────────────────
 # condition: the exact closed-set string the SDK must report.
 # decidable / kind: the delivery_decision_state agreement for that condition.

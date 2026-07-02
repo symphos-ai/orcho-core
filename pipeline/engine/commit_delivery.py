@@ -31,6 +31,13 @@ from core.io.journey_prompt import (
     title,
 )
 from core.io.terminal_input import stdio_interactive
+from pipeline.engine.delivery_branch import (
+    DeliveryBranchOutcome,
+    DeliveryPrIntent,
+    checkout_delivery_branch,
+    publish_delivery_branch,
+    resolve_delivery_branch,
+)
 from pipeline.engine.run_diff import resolve_git_root
 from pipeline.run_state.release_verdict import is_release_blocked
 
@@ -136,6 +143,21 @@ class CommitDeliveryDecision:
     # state. Empty for a clean single-repo mono run, so the no-companion path
     # stays byte-identical. Serialised (never the patch text) via ``to_dict``.
     scope_companions: tuple[Any, ...] = ()
+    # ADR 0119 delivery-branch policy — additive awareness. ``delivery_branch``
+    # is the published/publishable branch (``orcho/deliver/…`` or a named /
+    # feature branch); ``pr_intent`` the provider-neutral PR record. Both stay
+    # empty for the ``bypass`` opt-out and the pre-ADR-0119 no-op path, and are
+    # serialised via ``to_dict`` only when non-empty so that path stays
+    # byte-identical. The single commit site resolves them through
+    # :mod:`pipeline.engine.delivery_branch`.
+    delivery_branch: str | None = None
+    pr_intent: DeliveryPrIntent | None = None
+    # ADR 0119 — non-fatal delivery-branch diagnostics (rebase conflict,
+    # offline/no-remote degrade). Persisted onto the decision (and to_dict) so an
+    # operator sees them; empty on the no-op / commit-in-place paths, so those
+    # stay byte-identical.
+    delivery_warnings: tuple[str, ...] = ()
+    delivery_notices: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -204,6 +226,16 @@ class CommitDeliveryDecision:
         # paths — never patch text (the patch_text invariant is preserved).
         if self.scope_companions:
             out["scope_companions"] = [c.to_dict() for c in self.scope_companions]
+        # ADR 0119 delivery-branch awareness: present only when non-empty so the
+        # bypass / no-op path stays byte-identical.
+        if self.delivery_branch:
+            out["delivery_branch"] = self.delivery_branch
+        if self.pr_intent is not None:
+            out["pr_intent"] = self.pr_intent.to_dict()
+        if self.delivery_warnings:
+            out["delivery_warnings"] = list(self.delivery_warnings)
+        if self.delivery_notices:
+            out["delivery_notices"] = list(self.delivery_notices)
         return out
 
 
@@ -629,6 +661,22 @@ def apply_commit_delivery(
 
     interactive = (not no_interactive) and stdio_interactive()
     in_place_delivery = _same_checkout(decision.source_path, decision.project_path)
+
+    # ADR 0119 — resolve the delivery branch policy for an auto/approve commit
+    # (the interactive ``apply`` draft makes no branch decision). This is the
+    # single point that decides where the commit lands; the policy table,
+    # default-branch detection, rebase and PR-intent all live in
+    # ``pipeline.engine.delivery_branch``. A ``worktree_branch`` publish never
+    # writes the canonical checkout, so it diverges here — before the
+    # target-dirty guard that protects the checkout it will not touch.
+    delivery_outcome: DeliveryBranchOutcome | None = None
+    if decision.action == "approve":
+        delivery_outcome = _resolve_delivery_branch_outcome(decision, commit_config)
+        if delivery_outcome.plan == "publish":
+            return _deliver_published_branch(
+                decision, delivery_outcome, run_dir=run_dir,
+            )
+
     retries = 0
     while True:
         dirty = _target_dirty_paths(decision.project_path)
@@ -741,6 +789,31 @@ def apply_commit_delivery(
             target_dirty_retries=retries,
         )
 
+    # ADR 0119 — a ``protect_default`` (in-place HEAD=default) or ``named``
+    # delivery commits onto a dedicated branch, not the current HEAD: switch to
+    # it (creating it off the resolved default branch / PR base if absent, not
+    # the checkout's current tip) before staging so the commit never lands on
+    # the default branch and the delivery branch is anchored to the base
+    # delivery point. ``commit_in_place`` (in-place feature branch / bypass)
+    # keeps the current HEAD.
+    if delivery_outcome is not None and delivery_outcome.plan == "commit_on_branch":
+        checkout_err = checkout_delivery_branch(
+            decision.project_path,
+            delivery_outcome.commit_branch or "",
+            base_ref=delivery_outcome.base_ref,
+        )
+        if checkout_err is not None:
+            return _persist(
+                decision,
+                run_dir=run_dir,
+                status="commit_failed",
+                error=(
+                    f"could not switch to delivery branch "
+                    f"{delivery_outcome.commit_branch!r}: {checkout_err}"
+                ),
+                target_dirty_retries=retries,
+            )
+
     # Path-scoped staging — only run-owned paths reach the index.
     # Blanket ``git add -A`` would silently fold in any unrelated
     # parallel work that appeared between the guard's clean check and
@@ -797,7 +870,129 @@ def apply_commit_delivery(
         files_staged=tuple(files_staged),
         untracked_delivered=staged_untracked,
         target_dirty_retries=retries,
+        **_delivery_branch_persist_fields(delivery_outcome),
     )
+
+
+def _resolve_delivery_branch_outcome(
+    decision: CommitDeliveryDecision,
+    commit_config: Mapping[str, Any] | None,
+) -> DeliveryBranchOutcome:
+    """Resolve the ADR 0119 delivery-branch outcome for this decision.
+
+    Thin adapter over :func:`pipeline.engine.delivery_branch.resolve_delivery_branch`
+    — it only reads ``branch_policy`` / ``branch_name`` off the commit config and
+    forwards the decision's isolation facts. A commit config that carries no
+    ``branch_policy`` (an un-migrated embedder or an ad-hoc caller) is forwarded
+    as ``None`` and :func:`normalize_branch_policy` selects the ADR 0119 default
+    ``worktree_branch`` — a missing key must never silently weaken the
+    default-branch invariant into ``bypass``. ``bypass`` is reachable only by an
+    explicit opt-out. No policy table lives here.
+    """
+    cfg = dict(commit_config or {})
+    return resolve_delivery_branch(
+        source_path=decision.source_path,
+        project_path=decision.project_path,
+        run_id=decision.run_id,
+        base_ref=decision.baseline_ref,
+        branch_policy=cfg.get("branch_policy"),
+        named_branch=cfg.get("branch_name"),
+        release_summary=decision.release_summary,
+    )
+
+
+def _delivery_branch_persist_fields(
+    outcome: DeliveryBranchOutcome | None,
+) -> dict[str, Any]:
+    """Delivery-branch fields to thread into a committed ``_persist`` call.
+
+    Empty dict for ``bypass`` / no-outcome, so the persisted decision stays
+    byte-identical to the pre-ADR-0119 path.
+    """
+    if outcome is None or outcome.delivery_branch is None:
+        return {}
+    return {
+        "delivery_branch": outcome.delivery_branch,
+        "pr_intent": outcome.pr_intent,
+        "delivery_warnings": outcome.warnings,
+        "delivery_notices": outcome.notices,
+    }
+
+
+def _deliver_published_branch(
+    decision: CommitDeliveryDecision,
+    outcome: DeliveryBranchOutcome,
+    *,
+    run_dir: Path,
+) -> CommitDeliveryDecision:
+    """Execute a ``worktree_branch`` publish (ADR 0119).
+
+    Commits the run's own work onto its branch inside the disposable run
+    worktree, then publishes (rebase onto fresh default) via
+    :func:`publish_delivery_branch`. The canonical checkout is never touched, so
+    the decision surfaces ``commit_sha=None`` + ``delivery_branch``; the durable
+    audit artifact records the real branch commit (``artifact_commit_sha``) to
+    satisfy its schema. Non-fatal rebase/offline diagnostics ride along on
+    ``delivery_warnings`` / ``delivery_notices``.
+    """
+    branch_sha, error = _commit_run_branch(decision)
+    if error is not None:
+        return _persist(
+            decision,
+            run_dir=run_dir,
+            status="commit_failed",
+            error=error,
+        )
+    published = publish_delivery_branch(
+        source_path=decision.source_path,
+        project_path=decision.project_path,
+        outcome=outcome,
+    )
+    return _persist(
+        decision,
+        run_dir=run_dir,
+        status="committed",
+        commit_sha=None,
+        artifact_commit_sha=branch_sha,
+        delivery_branch=published.delivery_branch,
+        pr_intent=published.pr_intent,
+        delivery_warnings=published.warnings,
+        delivery_notices=published.notices,
+    )
+
+
+def _commit_run_branch(
+    decision: CommitDeliveryDecision,
+) -> tuple[str | None, str | None]:
+    """Stage + commit the run's own work onto its branch in the run worktree.
+
+    Returns ``(commit_sha, None)`` on success, or ``(None, error)``. The run's
+    changes are otherwise uncommitted working-tree diffs; this materialises them
+    as the delivery commit so ``publish_delivery_branch`` has something to rebase
+    and publish. Runs entirely inside ``decision.source_path`` (the run
+    worktree) — never the canonical checkout.
+    """
+    source = decision.source_path
+    stage_paths = list(decision.changed_paths)
+    if decision.include_untracked:
+        stage_paths += list(decision.untracked_paths)
+    if stage_paths:
+        add = _run_git(source, ["add", "--", *stage_paths])
+        if not add.ok:
+            return None, add.error
+    staged = _run_git(source, ["diff", "--cached", "--name-only"])
+    if staged.ok and staged.stdout.strip():
+        message = decision.final_message or _message_from_release_summary(
+            decision.release_summary, decision.run_id,
+        )
+        commit = _run_git(source, ["commit", "-s", "-m", message])
+        if not commit.ok:
+            _run_git(source, ["reset"])
+            return None, commit.error
+    sha = (_git_stdout(source, ["rev-parse", "HEAD"]) or "").strip()
+    if not sha:
+        return None, "could not resolve delivery branch HEAD after commit"
+    return sha, None
 
 
 def _run_owned_patch(source_worktree: Path, baseline_ref: str) -> str:
@@ -932,12 +1127,25 @@ def _persist(
     target_dirty_paths: tuple[str, ...] = (),
     target_dirty_retries: int = 0,
     action: CommitDeliveryAction | None = None,
+    delivery_branch: str | None = None,
+    pr_intent: DeliveryPrIntent | None = None,
+    delivery_warnings: tuple[str, ...] = (),
+    delivery_notices: tuple[str, ...] = (),
+    artifact_commit_sha: str | None = None,
 ) -> CommitDeliveryDecision:
     """Write the audit artifact and rebuild the frozen decision dataclass.
 
     ``action`` lets the dirty-prompt skip/halt path substitute the
     final action on the resulting decision (e.g. operator originally
     chose approve but resolved a target-dirty block via skip).
+
+    ``artifact_commit_sha`` (ADR 0119) decouples the durable audit ``commit_sha``
+    from the decision/wire ``commit_sha``. A ``worktree_branch`` publish makes a
+    real commit on the run's delivery branch (recorded in the schema-locked audit
+    artifact, which requires a non-empty sha for a ``committed`` record) but
+    leaves the canonical checkout untouched, so the decision surfaces
+    ``commit_sha=None`` and ``delivery_branch`` instead. When ``None`` the audit
+    sha mirrors the decision ``commit_sha`` (byte-identical prior behavior).
     """
     final_action = action or decision.action
     artifact_path = _artifact_path(run_dir, decision.decision_id)
@@ -945,7 +1153,9 @@ def _persist(
         decision,
         status=status,
         error=error,
-        commit_sha=commit_sha,
+        commit_sha=(
+            artifact_commit_sha if artifact_commit_sha is not None else commit_sha
+        ),
         files_staged=files_staged,
         untracked_delivered=untracked_delivered,
         target_dirty_paths=target_dirty_paths,
@@ -1003,6 +1213,11 @@ def _persist(
         scope_disclosure=decision.scope_disclosure,
         scope_projects=decision.scope_projects,
         scope_companions=decision.scope_companions,
+        # ADR 0119 delivery-branch outcome travels with the delivered decision.
+        delivery_branch=delivery_branch,
+        pr_intent=pr_intent,
+        delivery_warnings=delivery_warnings,
+        delivery_notices=delivery_notices,
     )
 
 
