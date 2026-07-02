@@ -10,6 +10,8 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/symphos-ai/orcho-core/badge)](https://scorecard.dev/viewer/?uri=github.com/symphos-ai/orcho-core)
 
 **Orcho** — local-first control plane for agentic software delivery.
+
+📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 Use the coding agents you already trust; Orcho supervises the workflow
 around them: plan → implementation → review → repair → final acceptance.
 
@@ -204,7 +206,10 @@ orcho-core/
 
 ## Documentation
 
-Ordered from general to specific — start at the top, go deeper as needed.
+The user-facing portal is **[docs.orcho.dev](https://docs.orcho.dev)** — start there.
+
+The in-repo docs below are the contributor & deep reference: the canonical
+engineering contracts the portal links into. Ordered from general to specific.
 
 | Level | For whom | Link |
 |---------|---------|--------|
