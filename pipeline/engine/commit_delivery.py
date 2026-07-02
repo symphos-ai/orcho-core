@@ -772,7 +772,7 @@ def apply_commit_delivery(
     files_staged = _git_lines(decision.project_path, ["diff", "--cached", "--name-only"])
     commit = _run_git(
         decision.project_path,
-        ["commit", "-m", decision.final_message or _message_from_release_summary("", decision.run_id)],
+        ["commit", "-s", "-m", decision.final_message or _message_from_release_summary("", decision.run_id)],
     )
     if not commit.ok:
         reset = _run_git(decision.project_path, ["reset"])

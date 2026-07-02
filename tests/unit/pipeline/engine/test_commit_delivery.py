@@ -1,6 +1,7 @@
 """Commit delivery executor tests (ADR 0032 / ADR 0043)."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from pathlib import Path
@@ -53,6 +54,17 @@ def _head(repo: Path) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def _commit_message(repo: Path) -> str:
+    result = subprocess.run(
+        ["git", "show", "-s", "--format=%B", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
 
 
 def _status(repo: Path) -> str:
@@ -139,6 +151,72 @@ def test_approve_applies_diff_and_commits_clean_checkout(tmp_path: Path) -> None
     artifact = json.loads((run_dir / "commit_decisions" / "r1.json").read_text())
     assert artifact["commit_status"] == "committed"
     assert artifact["final_message"] == "feat: update app"
+
+
+def test_delivery_commit_carries_signoff_trailer(tmp_path: Path) -> None:
+    # ``git commit -s`` appends a ``Signed-off-by:`` trailer matching the
+    # committer identity after the message body, without disturbing it.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _resolve_and_apply(
+        repo=repo,
+        worktree=worktree,
+        run_dir=run_dir,
+        action="approve",
+    )
+
+    assert delivered.status == "committed"
+    message = _commit_message(repo)
+    assert message.startswith("feat: update app")
+    assert message.rstrip().endswith(
+        "Signed-off-by: Orcho Test <test@orcho.invalid>"
+    )
+
+
+def test_delivery_commit_does_not_duplicate_existing_signoff(
+    tmp_path: Path,
+) -> None:
+    # ``git commit -s`` de-duplicates an identical committer trailer already
+    # present in the message body — no bespoke dedup is needed.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    trailer = "Signed-off-by: Orcho Test <test@orcho.invalid>"
+    decision = resolve_commit_delivery(
+        project_dir=repo,
+        source_worktree=worktree,
+        run_dir=run_dir,
+        run_id="r1",
+        session=_session(),
+        commit_config={
+            "enabled": True,
+            "auto_in_ci": "approve",
+            "add_untracked": True,
+        },
+        no_interactive=True,
+        baseline_ref="HEAD",
+    )
+    # Committer already supplied an identical trailer in the message body.
+    decision = dataclasses.replace(
+        decision,
+        final_message=f"feat: update app\n\n{trailer}",
+    )
+    delivered = apply_commit_delivery(
+        decision,
+        run_dir=run_dir,
+        commit_config={"add_untracked": True},
+    )
+
+    assert delivered.status == "committed"
+    message = _commit_message(repo)
+    assert message.count(trailer) == 1
 
 
 def test_apply_transports_diff_without_committing(tmp_path: Path) -> None:
