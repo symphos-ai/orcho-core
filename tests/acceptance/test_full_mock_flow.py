@@ -78,6 +78,25 @@ def reset_logging_globals():
     _events.init_event_store(None)
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy slice.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout — so a parent run leaves its checkout clean and a follow-up /
+    correction rerun refuses to start. These end-to-end flows predate that policy
+    and assert the prior "commit onto the checkout" behavior, so they run under
+    ``bypass`` (the ADR's explicit legacy opt-out). The new branch-policy
+    behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared plugin config (real object, not MagicMock)
 # ─────────────────────────────────────────────────────────────────────────────

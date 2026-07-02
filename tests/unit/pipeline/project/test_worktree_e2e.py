@@ -98,6 +98,20 @@ def _git_status_short(cwd: Path) -> str:
     return r.stdout.strip()
 
 
+def _diff_survived(cwd: Path) -> bool:
+    """True when the rejected diff is present in the (reused) retained worktree.
+
+    The incident these scenarios guard against silently mints a FRESH clean
+    checkout at a drifted path, so the rejected file is absent there. Presence in
+    the reused worktree is the surviving invariant — regardless of whether it is
+    still an uncommitted working-tree diff, or was committed onto the run branch
+    by the ADR 0119 ``worktree_branch`` delivery that a full mock resume now runs
+    at the end (the file stays on disk either way; only ``git status`` clears
+    once it is committed).
+    """
+    return (cwd / _DIFF_MARKER).exists()
+
+
 def _active_review_payload(*, round_n: int = 1) -> dict:
     handoff_id = f"review_changes:repair_round:{round_n}"
     return {
@@ -228,7 +242,7 @@ def test_scenario1_resume_reuses_retained_worktree_incident_drift(
     assert existing == [f"wt_{_ORIG_WT_ID}"]
     assert not (inc.worktrees_dir / f"wt_{_RESUME_RUN}").exists()
     # The original rejected diff still lives in the retained worktree.
-    assert _DIFF_MARKER in _git_status_short(inc.retained_path)
+    assert _diff_survived(inc.retained_path)
     # The reuse decision is recorded additively for inspectability.
     assert session["worktree"]["resume_continuity"]["path"] == str(inc.retained_path)
 
@@ -328,7 +342,7 @@ def test_scenario2_provider_session_fallback_keeps_same_worktree_subject(
     # ...yet the worktree / diff subject is the SAME retained worktree.
     assert Path(session["worktree"]["path"]) == inc.retained_path
     assert not (inc.worktrees_dir / f"wt_{_RESUME_RUN}").exists()
-    assert _DIFF_MARKER in _git_status_short(inc.retained_path)
+    assert _diff_survived(inc.retained_path)
 
 
 def test_scenario3_deleted_retained_subject_blocks_repair(
@@ -402,7 +416,7 @@ def test_scenario3_deleted_retained_subject_blocks_repair(
     ).session
     assert Path(session["worktree"]["path"]) == inc.retained_path
     assert not (inc.worktrees_dir / f"wt_{_RESUME_RUN}").exists()
-    assert _DIFF_MARKER in _git_status_short(inc.retained_path)
+    assert _diff_survived(inc.retained_path)
 
 
 def test_scenario3b_clean_head_guard_persists_decidable_state(
@@ -457,7 +471,7 @@ def test_scenario3b_clean_head_guard_persists_decidable_state(
     ).session
     assert Path(session["worktree"]["path"]) == inc.retained_path
     assert not (inc.worktrees_dir / f"wt_{_RESUME_RUN}").exists()
-    assert _DIFF_MARKER in _git_status_short(inc.retained_path)
+    assert _diff_survived(inc.retained_path)
 
 
 def test_scenario4_round_progression_snapshot_and_idempotent_decide(

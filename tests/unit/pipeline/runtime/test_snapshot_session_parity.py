@@ -48,6 +48,24 @@ _TOKEN_BUDGET_TOTAL_IN = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for the shape snapshots.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which changes the ``commit_delivery`` session block (a published branch +
+    ``delivery_branch`` instead of a ``commit_sha`` on the checkout). The golden
+    session-shape fixtures pin the prior block, so these runs use ``bypass`` (the
+    ADR's explicit legacy opt-out) to keep the goldens valid without regenerating
+    high-blast-radius snapshot data. The new branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 def test_session_shape_normalizer_masks_prompt_size_estimates() -> None:
     """Shape snapshots pin prompt topology, not exact prompt prose size."""
     normalized = normalize_session({

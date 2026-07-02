@@ -35,6 +35,7 @@ from sdk.run_control.types import (
     DeliveryDecisionActionValue,
     DeliveryDecisionResult,
     DeliveryDecisionState,
+    DeliveryPrIntent,
 )
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
 
@@ -863,6 +864,12 @@ def _finalize(
         halt_reason=result_halt_reason,
         artifact_paths=tuple(artifact_paths),
         commit_sha=applied.commit_sha,
+        # ADR 0119 — additive delivery-branch projection. ``commit_sha`` above
+        # already carries the fill rule (populated for a commit onto the target
+        # checkout, ``None`` for a pure worktree_branch publish); ``delivery_branch``
+        # + ``pr_intent`` surface the published-branch outcome alongside it.
+        delivery_branch=applied.delivery_branch,
+        pr_intent=_pr_intent_projection(applied.pr_intent),
         blocker=blocker,
         # The SDK never starts a correction follow-up synchronously
         # (``drive_correction_followups`` is TTY-only): a ``fix`` here only
@@ -871,6 +878,25 @@ def _finalize(
         # ADR 0107 / T3: enriched companion disclosure from the durable parked
         # gate, so an accepted decision still names a companion repo left behind.
         scope_disclosure=scope_disclosure,
+    )
+
+
+def _pr_intent_projection(intent: Any) -> DeliveryPrIntent | None:
+    """Project the core delivery PR-intent onto the SDK boundary type (ADR 0119).
+
+    ``intent`` is the core
+    :class:`pipeline.engine.delivery_branch.DeliveryPrIntent` carried on the
+    applied decision (``None`` on any commit-onto-checkout / ``bypass`` path).
+    Mapped field-for-field onto the public SDK :class:`DeliveryPrIntent` so the
+    wire surface owns its own typed shape rather than leaking the engine type.
+    """
+    if intent is None:
+        return None
+    return DeliveryPrIntent(
+        branch=intent.branch,
+        base=intent.base,
+        title=intent.title,
+        suggested_command=intent.suggested_command,
     )
 
 

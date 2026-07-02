@@ -125,7 +125,7 @@ def _resolve_and_apply(
     return apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
 
@@ -211,7 +211,7 @@ def test_delivery_commit_does_not_duplicate_existing_signoff(
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
     assert delivered.status == "committed"
@@ -612,7 +612,7 @@ def test_llm_generate_strategy_uses_generated_commit_message(
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
     assert delivered.status == "committed"
@@ -756,7 +756,7 @@ def test_apply_uses_pre_run_dirty_seed_tree_as_baseline(tmp_path: Path) -> None:
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=True,
     )
     assert delivered.status == "target_dirty"
@@ -961,7 +961,7 @@ def test_no_tty_treated_as_non_interactive(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,  # would normally prompt
         input_fn=_no_input,
     )
@@ -998,7 +998,7 @@ def test_interactive_retry_then_clean_proceeds_with_original_action(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=lambda _p: next(answers),
         output_fn=lambda _l: None,
@@ -1042,7 +1042,7 @@ def test_interactive_retry_then_still_dirty_then_skip(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=lambda _p: next(answers),
         output_fn=lambda _l: None,
@@ -1079,7 +1079,7 @@ def test_interactive_immediate_skip_at_dirty_prompt(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=lambda _p: "skip",
         output_fn=lambda _l: None,
@@ -1116,7 +1116,7 @@ def test_interactive_immediate_halt_at_dirty_prompt(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=lambda _p: "halt",
         output_fn=lambda _l: None,
@@ -1297,7 +1297,7 @@ def test_profile_without_final_acceptance_delivers_implicitly(
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
     assert delivered.status == "committed", delivered.error
@@ -1426,7 +1426,7 @@ def test_interactive_retry_after_operator_commit_rebases_patch(
     original_baseline = decision.baseline_ref
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=commit_then_retry,
         output_fn=lambda _l: None,
@@ -1490,7 +1490,7 @@ def test_interactive_retry_rebase_keeps_unrelated_operator_commit_out(
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=commit_then_retry,
         output_fn=lambda _l: None,
@@ -1548,7 +1548,7 @@ def test_interactive_retry_after_operator_commits_run_output_reports_no_op(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=commit_then_retry,
         output_fn=lambda _l: None,
@@ -1602,7 +1602,7 @@ def test_interactive_retry_after_operator_divergent_commit_still_applies(
     )
     delivered = apply_commit_delivery(
         decision, run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
         no_interactive=False,
         input_fn=commit_then_retry,
         output_fn=lambda _l: None,
@@ -1722,7 +1722,7 @@ def test_fix_action_persists_correction_request(tmp_path: Path) -> None:
     delivered = apply_commit_delivery(
         decision,
         run_dir=run_dir,
-        commit_config={"add_untracked": True},
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
     assert delivered.action == "fix"
@@ -1957,10 +1957,260 @@ def test_delivery_anchors_on_nested_git_dir_not_registered_project(
     assert not (project_root / ".git").exists()
 
     delivered = apply_commit_delivery(
-        decision, run_dir=run_dir, commit_config={"add_untracked": True},
+        decision, run_dir=run_dir,
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
     )
 
     assert delivered.status == "committed"
     assert delivered.commit_sha and delivered.commit_sha != old_head
     assert (nested_repo / "app.txt").read_text(encoding="utf-8") == "base\nrun\n"
     assert _status(nested_repo) == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ADR 0119 — branch_policy × isolation at the single commit site.
+#
+# These pin the default-branch invariant end-to-end through apply_commit_delivery
+# on real git commits. A missing ``branch_policy`` key resolves to the ADR 0119
+# default ``worktree_branch`` (never ``bypass``), so the mechanics tests above
+# opt out explicitly with ``branch_policy="bypass"`` to keep committing onto the
+# current HEAD; each mode below is exercised with an explicit policy.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _git_str(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _current_branch(repo: Path) -> str:
+    return _git_str(repo, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+def _branch_exists(repo: Path, name: str) -> bool:
+    return subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"],
+        cwd=repo, capture_output=True,
+    ).returncode == 0
+
+
+def _apply_with_policy(
+    *,
+    repo: Path,
+    worktree: Path,
+    run_dir: Path,
+    branch_policy: str,
+    branch_name: str | None = None,
+    action: str = "approve",
+    baseline_ref: str = "HEAD",
+):
+    commit_config: dict = {
+        "enabled": True,
+        "auto_in_ci": action,
+        "add_untracked": True,
+        "branch_policy": branch_policy,
+    }
+    if branch_name is not None:
+        commit_config["branch_name"] = branch_name
+    decision = resolve_commit_delivery(
+        project_dir=repo,
+        source_worktree=worktree,
+        run_dir=run_dir,
+        run_id="r1",
+        session=_session(),
+        commit_config=commit_config,
+        no_interactive=True,
+        baseline_ref=baseline_ref,
+    )
+    return apply_commit_delivery(
+        decision, run_dir=run_dir, commit_config=commit_config,
+    )
+
+
+def test_worktree_branch_publishes_and_leaves_canonical_untouched(
+    tmp_path: Path,
+) -> None:
+    """worktree_branch (per_run): the canonical checkout's HEAD and working tree
+    are never touched; the run's work is published as ``orcho/deliver/…`` and the
+    decision surfaces ``commit_sha=None`` + ``delivery_branch``."""
+    repo = tmp_path / "repo"
+    old_head = _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=worktree, run_dir=run_dir,
+        branch_policy="worktree_branch",
+    )
+
+    assert delivered.status == "committed"
+    # Invariant: canonical checkout untouched — no commit landed on it.
+    assert _head(repo) == old_head
+    assert _current_branch(repo) == "main"
+    assert _status(repo) == ""
+    # commit_sha absent for a pure publish; the branch is the deliverable.
+    assert delivered.commit_sha is None
+    assert delivered.delivery_branch is not None
+    assert delivered.delivery_branch.startswith("orcho/deliver/r1-")
+    assert delivered.pr_intent is not None
+    assert delivered.pr_intent.base == "main"
+    # The published branch carries the run's change.
+    assert _branch_exists(repo, delivered.delivery_branch)
+    assert _git_str(repo, "show", f"{delivered.delivery_branch}:app.txt") == "base\nrun"
+    # Serialized projection carries the additive keys.
+    payload = delivered.to_dict()
+    assert payload["delivery_branch"] == delivered.delivery_branch
+    assert "commit_sha" not in payload
+
+
+def test_protect_default_in_place_head_default_creates_delivery_branch(
+    tmp_path: Path,
+) -> None:
+    """protect_default, in-place, HEAD on the default branch: the delivery must
+    NOT land on the default branch — a fresh ``orcho/deliver/…`` is created and
+    committed instead."""
+    repo = tmp_path / "repo"
+    old_head = _init_repo(repo)
+    run_dir = tmp_path / "run"
+    # In-place: the run mutated the canonical checkout directly.
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=repo, run_dir=run_dir,
+        branch_policy="protect_default",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha
+    # Invariant: the default branch never moved.
+    assert _git_str(repo, "rev-parse", "main") == old_head
+    # The commit landed on a fresh delivery branch, now checked out.
+    assert _current_branch(repo).startswith("orcho/deliver/r1-")
+    assert delivered.commit_sha == _head(repo)
+    assert delivered.delivery_branch == _current_branch(repo)
+
+
+def test_worktree_branch_in_place_degrades_and_protects_default(
+    tmp_path: Path,
+) -> None:
+    """worktree_branch with an in-place run has no run branch to publish, so it
+    degrades to protect_default — still guarding the default branch."""
+    repo = tmp_path / "repo"
+    old_head = _init_repo(repo)
+    run_dir = tmp_path / "run"
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=repo, run_dir=run_dir,
+        branch_policy="worktree_branch",
+    )
+
+    assert delivered.status == "committed"
+    assert _git_str(repo, "rev-parse", "main") == old_head
+    assert _current_branch(repo).startswith("orcho/deliver/r1-")
+
+
+def test_in_place_feature_branch_commits_in_place(tmp_path: Path) -> None:
+    """In-place on a NON-default branch: the operator ran on their own feature
+    branch deliberately — the delivery commits onto it."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    subprocess.run(["git", "checkout", "-q", "-b", "feature/x"], cwd=repo, check=True)
+    feature_head = _head(repo)
+    run_dir = tmp_path / "run"
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=repo, run_dir=run_dir,
+        branch_policy="worktree_branch",
+    )
+
+    assert delivered.status == "committed"
+    assert _current_branch(repo) == "feature/x"
+    assert delivered.commit_sha and delivered.commit_sha != feature_head
+    assert delivered.commit_sha == _head(repo)
+    assert delivered.delivery_branch == "feature/x"
+
+
+def test_bypass_commits_onto_default_branch(tmp_path: Path) -> None:
+    """bypass is the explicit opt-out: it reproduces the prior behavior and
+    commits onto the current HEAD, including the default branch."""
+    repo = tmp_path / "repo"
+    old_head = _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=worktree, run_dir=run_dir,
+        branch_policy="bypass",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha and delivered.commit_sha != old_head
+    # bypass committed straight onto main.
+    assert _current_branch(repo) == "main"
+    assert _head(repo) == delivered.commit_sha
+    assert (repo / "app.txt").read_text(encoding="utf-8") == "base\nrun\n"
+    # No branch record / PR-intent — byte-identical to the prior path.
+    assert delivered.delivery_branch is None
+    assert "delivery_branch" not in delivered.to_dict()
+
+
+def test_named_commits_onto_named_branch(tmp_path: Path) -> None:
+    """named commits onto the operator-supplied branch (created off the current
+    tip when absent)."""
+    repo = tmp_path / "repo"
+    old_head = _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=worktree, run_dir=run_dir,
+        branch_policy="named", branch_name="release/v9",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha
+    assert _git_str(repo, "rev-parse", "main") == old_head
+    assert _current_branch(repo) == "release/v9"
+    assert delivered.delivery_branch == "release/v9"
+
+
+def test_named_delivery_branch_roots_at_base_ref(
+    tmp_path: Path,
+) -> None:
+    """A ``named`` / ``protect_default`` delivery branch is created off the run's
+    ``base_ref`` (ADR 0119) and carries the run's owned change. The parent of the
+    delivery commit is exactly ``base_ref``, so the branch / PR range starts at
+    the run baseline rather than the local default branch or the current HEAD.
+
+    (The ref-level "base_ref, not default, even for a bare SHA" invariant is
+    pinned directly on the resolver in
+    ``tests/unit/pipeline/engine/test_delivery_branch.py``; this is the
+    integration-level check that the commit site threads ``base_ref`` through.)"""
+    repo = tmp_path / "repo"
+    base = _init_repo(repo)  # main @ A — the run's baseline
+    run_dir = tmp_path / "run"
+    # In-place run mutates the canonical checkout (an owned change over baseline).
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=repo, run_dir=run_dir,
+        branch_policy="named", branch_name="release/v9",
+        baseline_ref=base,
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.delivery_branch == "release/v9"
+    assert _current_branch(repo) == "release/v9"
+    # The delivery commit's parent is exactly base_ref: the branch starts at the
+    # run baseline, and the default branch never moved.
+    assert _git_str(repo, "rev-parse", "release/v9~1") == base
+    assert _git_str(repo, "rev-parse", "main") == base
+    tree = _git_str(repo, "ls-tree", "-r", "--name-only", "release/v9").split()
+    assert "app.txt" in tree
+    assert _git_str(repo, "show", "release/v9:app.txt") == "base\nrun"

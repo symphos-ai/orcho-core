@@ -110,6 +110,10 @@ def _commit_config() -> dict:
         "auto_in_ci": "approve",
         "add_untracked": True,
         "default_strategy": "release_summary",
+        # These scope tests predate ADR 0119 and assert commit-onto-HEAD
+        # mechanics; opt out of branch protection explicitly (a missing key now
+        # resolves to the ``worktree_branch`` default, not ``bypass``).
+        "branch_policy": "bypass",
     }
 
 

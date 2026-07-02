@@ -43,6 +43,23 @@ from pipeline.plan_parser import ParsedPlan
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy slice.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout. This full-pipeline test predates that policy and asserts the
+    prior "commit onto the checkout" behavior, so it runs under ``bypass`` (the
+    ADR's explicit legacy opt-out). The new branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 def _init_repo(repo: Path) -> str:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)

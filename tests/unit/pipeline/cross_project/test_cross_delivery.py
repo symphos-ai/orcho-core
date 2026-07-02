@@ -86,14 +86,24 @@ def _child_session(
     return child
 
 
-def _app_cfg(enabled: bool = True, action: str = "approve") -> SimpleNamespace:
-    return SimpleNamespace(
-        commit={
-            "enabled": enabled,
-            "auto_in_ci": action,
-            "add_untracked": True,
-        },
-    )
+def _app_cfg(
+    enabled: bool = True,
+    action: str = "approve",
+    branch_policy: str | None = "bypass",
+) -> SimpleNamespace:
+    # These legacy cross tests assert the "commit the alias diff onto each
+    # project checkout" contract, which under ADR 0119 is the ``bypass`` policy —
+    # opt into it explicitly. A ``None`` policy omits the key entirely so the
+    # commit site resolves the ``worktree_branch`` default (default-branch
+    # protection).
+    commit: dict = {
+        "enabled": enabled,
+        "auto_in_ci": action,
+        "add_untracked": True,
+    }
+    if branch_policy is not None:
+        commit["branch_policy"] = branch_policy
+    return SimpleNamespace(commit=commit)
 
 
 def _make_alias(
@@ -144,6 +154,43 @@ def test_per_alias_clean_targets_all_commit(tmp_path: Path) -> None:
     assert ev["per_alias"]["api"]["status"] == "committed"
     assert ev["per_alias"]["api"]["commit_sha"]
     assert ev["per_alias"]["web"]["status"] == "committed"
+
+
+def test_missing_branch_policy_protects_project_default_branch(
+    tmp_path: Path,
+) -> None:
+    """ADR 0119 invariant for cross: a missing ``commit.branch_policy`` resolves
+    to ``worktree_branch`` (never a hidden ``bypass``), so an APPROVED cross run
+    publishes a delivery branch instead of auto-committing onto each project's
+    default branch."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    old_head = _head(api_repo)
+    session = {"phases": {"projects": {"api": api_child}}}
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_app_cfg(branch_policy=None),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+    )
+
+    assert result.overall == "ok"
+    rec = result.per_alias[0]
+    assert rec.status == "committed"
+    # Invariant: the default branch never moved and no commit_sha was produced —
+    # the deliverable is a published branch, not a commit onto ``main``.
+    assert _head(api_repo) == old_head
+    assert _git_log_subjects(api_repo) == ["init"]
+    assert rec.commit_sha is None
+    # The run's work is published as an ``orcho/deliver/…`` branch.
+    branches = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        cwd=api_repo, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert any(b.startswith("orcho/deliver/") for b in branches)
 
 
 def test_outcome_matrix_classifies_no_diff_as_success(tmp_path: Path) -> None:

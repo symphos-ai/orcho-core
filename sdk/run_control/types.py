@@ -33,6 +33,7 @@ __all__ = [
     "DeliveryDecisionCommand",
     "DeliveryDecisionResult",
     "DeliveryDecisionState",
+    "DeliveryPrIntent",
     "PendingOperatorAction",
     "PhaseHandoffActionValue",
     "PhaseHandoffDecisionCommand",
@@ -215,6 +216,24 @@ class DeliveryDecisionCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryPrIntent:
+    """Provider-neutral pull-request intent for a published delivery branch (ADR 0119).
+
+    Emitted when delivery publishes a branch instead of committing onto the
+    target checkout: ``branch`` is the published/publishable delivery branch,
+    ``base`` the repository's default branch, ``title`` is lifted from the
+    release summary, and ``suggested_command`` is a plain-``git`` command. Core
+    records the intent only — it never pushes or opens a pull request; a
+    git-provider plugin owns that step.
+    """
+
+    branch: str
+    base: str
+    title: str
+    suggested_command: str
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryDecisionResult:
     """Typed outcome of a post-release delivery decision (ADR 0100).
 
@@ -243,6 +262,15 @@ class DeliveryDecisionResult:
     halt_reason: str | None = None
     artifact_paths: tuple[str, ...] = ()
     commit_sha: str | None = None
+    # ADR 0119 — additive delivery-branch projection. ``delivery_branch`` is the
+    # published/publishable branch and ``pr_intent`` its provider-neutral PR
+    # record. Fill rule mirrors the core decision: ``commit_sha`` stays populated
+    # for a commit that landed on the target checkout (``protect_default`` /
+    # ``named`` / ``bypass``) and is ``None`` for a pure ``worktree_branch``
+    # publish, where ``delivery_branch`` + ``pr_intent`` carry the outcome
+    # instead. Both are ``None`` on a commit-onto-checkout decision.
+    delivery_branch: str | None = None
+    pr_intent: DeliveryPrIntent | None = None
     blocker: str | None = None
     followup_run_id: str | None = None
     # Per-alias companion files (``[alias]/rel``) implicated by a delivery-scope
