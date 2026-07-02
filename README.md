@@ -84,15 +84,13 @@ from your shell. `pipx` keeps the CLI isolated from the current project or
 Python environment.
 
 ```bash
-pipx install "orcho[mcp]"
+pipx install orcho
 orcho --help
 ```
 
-Core commands only:
-
-```bash
-pipx install orcho
-```
+Since `orcho` 0.1.1 this installs the full set — the core CLI and the MCP
+server (`orcho-mcp`). The `[mcp]`/`[all]` extras remain as no-op back-compat
+aliases.
 
 ### Direct engine dependency
 
