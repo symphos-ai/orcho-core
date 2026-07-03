@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# shell/orcho-promote — promote your DEV checkout of orcho-core to your
+# STABLE install, so the everyday `orcho …` command rides the code you
+# just pushed.
+#
+# See docs/creator/09_dev_workflow.md for the full DEV ↔ STABLE model.
+#
+# STABLE always tracks `main`; promoting from a feature branch is rejected
+# with an actionable hint instead of merging behind your back. Each step is
+# fail-fast — on error it returns non-zero and later steps do not run.
+#
+# Paths resolve from the environment when set, with defaults that make the
+# script work standalone:
+#   ORCHO_CORE_DEV — your DEV checkout (defaults to the repo this script
+#                    ships in, i.e. the parent of this shell/ directory)
+#   ORCHO_CORE     — your STABLE install (defaults to
+#                    $HOME/.local/share/orcho-core)
+#
+# Put it on your PATH once so you can call `orcho-promote` from anywhere:
+#   ln -s "$ORCHO_CORE_DEV/shell/orcho-promote" ~/.local/bin/orcho-promote
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+: "${ORCHO_CORE_DEV:=$(cd "$script_dir/.." && pwd)}"
+: "${ORCHO_CORE:=$HOME/.local/share/orcho-core}"
+
+main() {
+    echo "🚀 Promoting DEV → STABLE (orcho-core)..."
+
+    # Step 0: branch guard. STABLE only ever tracks main; refuse a
+    # feature branch with a hint on how to merge it forward.
+    local branch
+    branch="$(cd "$ORCHO_CORE_DEV" && git rev-parse --abbrev-ref HEAD)" || {
+        echo "❌ Cannot read current branch in $ORCHO_CORE_DEV"; return 1
+    }
+    if [[ "$branch" != "main" ]]; then
+        echo "❌ DEV is on '$branch', not 'main'. STABLE only tracks main."
+        echo "   Merge into main first:"
+        echo "     cd \"$ORCHO_CORE_DEV\" && git switch main && git merge --ff-only $branch && git push"
+        echo "   Then re-run orcho-promote."
+        return 1
+    fi
+
+    echo "1️⃣  Push DEV (main) to GitHub..."
+    (cd "$ORCHO_CORE_DEV" && git push) || { echo "❌ Push failed"; return 1; }
+
+    echo "2️⃣  Pull into STABLE ($ORCHO_CORE)..."
+    (cd "$ORCHO_CORE" && git pull) || { echo "❌ Pull failed"; return 1; }
+
+    echo "3️⃣  Reinstall STABLE venv ($ORCHO_CORE/.venv)..."
+    # --force-reinstall so a version bump in pyproject.toml actually lands
+    # in importlib.metadata (plain `-e .` skips when sources are
+    # unchanged). No --no-deps: STABLE must receive orcho-core's normal
+    # runtime dependencies.
+    (cd "$ORCHO_CORE" && source "$ORCHO_CORE/.venv/bin/activate" \
+        && pip install --force-reinstall -e "." -q) \
+        || { echo "❌ Install failed"; return 1; }
+
+    echo "4️⃣  Installed package versions..."
+    "$ORCHO_CORE/.venv/bin/python" - <<'PYVERSIONS'
+import importlib.metadata as md
+
+for package in ("orcho-core", "tiktoken"):
+    try:
+        print(f"   {package}: {md.version(package)}")
+    except md.PackageNotFoundError:
+        print(f"   {package}: NOT INSTALLED")
+PYVERSIONS
+
+    echo "✅ Done! STABLE is now at: $(cd "$ORCHO_CORE" && git log --oneline -1)"
+}
+
+main "$@"
