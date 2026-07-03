@@ -17,11 +17,22 @@ tool (for example Claude CLI or Codex CLI). It must be a CLI tool that
 Orcho can invoke from a terminal; an IDE or a chat app is not enough by
 itself. The selected profile may need a second CLI for reviewer phases.
 
-Once the packages are published, install the core CLI with:
+For the native CLI path, install the `orcho` distribution with `pipx`. This
+installs the core CLI and the MCP server:
 
 ```bash
 pipx install orcho
 orcho --help
+```
+
+For an isolated container path:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
 ```
 
 If you prefer a project-managed Python environment:
@@ -42,14 +53,15 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-This gives you the core CLI. Optional MCP server, shell helpers, and MCP
-client config are described in
+The `orcho` distribution gives you both `orcho` and `orcho-mcp`. Shell helpers,
+source-checkout setup, and MCP client config are described in
 [early_adopter_install.md](early_adopter_install.md).
 
 Verify:
 
 ```bash
 orcho --help
+orcho-mcp --help
 ```
 
 ---
