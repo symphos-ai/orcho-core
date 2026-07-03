@@ -1544,6 +1544,9 @@ _HALT_BANNER_LABELS: dict[str, tuple[str, str]] = {
     "correction_not_converging": (
         "Run halted — correction not converging", C.YELLOW,
     ),
+    "phase_handoff_unattended_halt": (
+        "Run halted — unattended phase handoff", C.YELLOW,
+    ),
 }
 
 

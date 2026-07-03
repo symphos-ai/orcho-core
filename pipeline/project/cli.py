@@ -50,7 +50,7 @@ from core.observability.logging import (
 from pipeline.plugins import load_plugin
 from pipeline.project.app import (
     print_error,
-    run_pipeline,
+    run_project_pipeline,
 )
 from pipeline.project.auto_detect import (
     AUTO_DETECT_PROFILE_TOKEN,
@@ -73,6 +73,7 @@ from pipeline.project.followup_worktree import FollowupPlanContinuationError
 from pipeline.project.phase_config import build_phase_config_from_overrides
 from pipeline.project.profile_setup import _resolve_profile_name
 from pipeline.project.project_aliases import resolve_project_alias
+from pipeline.project.types import ProjectRunRequest
 from pipeline.project.workspace_picker import (
     WorkspaceProjectPickError,
     pick_project_for_fresh_run,
@@ -95,6 +96,12 @@ _PROJECT_GROUP_EXCLUDED_CHILDREN = {
     ".idea",
     ".vscode",
 }
+
+
+def run_pipeline(**kwargs: object) -> dict:
+    """CLI patch seam that routes through the typed project boundary."""
+    request = ProjectRunRequest.from_kwargs(**kwargs)
+    return run_project_pipeline(request).session
 
 
 def _looks_like_single_project(path: Path) -> bool:
@@ -1317,6 +1324,8 @@ Examples:
             else None
         ),
     }
+    if _no_interactive:
+        _stable_followup_kwargs["unattended"] = True
 
     # Scoped auto-detect env channels (T3 fixes F1+F2): for an auto-detect run
     # serialize the typed AutoDetectResolution into ORCHO_AUTODETECT_DECISION and
