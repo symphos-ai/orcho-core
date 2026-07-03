@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from core.infra.platform import venv_python_subpath
 from sdk.fine_tune import FineTuneResult, fine_tune_project
 
 
@@ -41,9 +42,9 @@ def _python_project(root: Path, *, pkg: str = "proj_pkg", venv: bool = False) ->
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.py").write_text("PLUGIN = {}\n", encoding="utf-8")
     if venv:
-        venv_bin = project / ".venv" / "bin"
-        venv_bin.mkdir(parents=True)
-        (venv_bin / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+        venv_python = project / venv_python_subpath()
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/bin/sh\n", encoding="utf-8")
     return project
 
 
@@ -68,7 +69,7 @@ class TestCandidateContract:
         project = _python_project(tmp_path, venv=True)
         result = fine_tune_project(str(project), dry_run=True)
         assert result.candidate["verification_envs"]["py"]["python"] == (
-            "{checkout}/.venv/bin/python"
+            f"{{checkout}}/{venv_python_subpath()}"
         )
 
     def test_node_project_detected(self, tmp_path: Path) -> None:
