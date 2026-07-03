@@ -12,6 +12,12 @@
 **Orcho** — local-first control plane for agentic software delivery.
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
+
+![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](docs/assets/orcho-run-demo.gif)
+
+<sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
+with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
+
 Use the coding agents you already trust; Orcho supervises the workflow
 around them: plan → implementation → review → repair → final acceptance.
 
