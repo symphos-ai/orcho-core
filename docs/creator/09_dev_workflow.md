@@ -67,6 +67,16 @@ It defaults DEV to the repo it ships in and STABLE to `$ORCHO_CORE`
 Because it is a real command, not a shell function, `orcho-promote` then
 resolves from any shell — no `~/.zshrc` reload needed after an update.
 
+**Windows.** In Git Bash or WSL the same `shell/orcho-promote` works as-is.
+For native PowerShell, dot-source [`shell/orcho-env-base.ps1`](../../shell/orcho-env-base.ps1)
+from your `$PROFILE` for the `orcho` / `orcho-dev` facades, and use
+[`shell/orcho-promote.ps1`](../../shell/orcho-promote.ps1) to promote (STABLE
+defaults to `$env:LOCALAPPDATA\orcho-core`). Wire it up once:
+
+```powershell
+function orcho-promote { & "$env:ORCHO_CORE_DEV\shell\orcho-promote.ps1" @args }
+```
+
 | Command | Which code it uses | When |
 |---|---|---|
 | `orcho` | STABLE | Regular runs on projects |
