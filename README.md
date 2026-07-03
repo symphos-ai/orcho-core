@@ -13,7 +13,7 @@
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
-![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](docs/assets/orcho-run-demo.gif)
+![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
 
 <sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
 with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
