@@ -31,6 +31,7 @@ from pipeline.project.handoff import (
 )
 from pipeline.project.handoff_advice import AdvisorResult, HandoffAdvice
 from pipeline.project.handoff_advice_policy import HandoffAdvicePolicy
+from pipeline.project.handoff_noninteractive import UNATTENDED_HALT_REASON
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -63,14 +64,20 @@ def _plan(owned: tuple[str, ...] = ("a.py",)) -> ParsedPlan:
     )
 
 
-def _signal(*, findings: tuple[dict, ...] = ()) -> SimpleNamespace:
+def _signal(
+    *,
+    findings: tuple[dict, ...] = (),
+    phase: str = "implement",
+    trigger: str = "rejected",
+    available_actions: tuple[str, ...] = ("retry_feedback",),
+) -> SimpleNamespace:
     return SimpleNamespace(
         handoff_id="h1",
-        phase="implement",
-        trigger="rejected",
+        phase=phase,
+        trigger=trigger,
         verdict="REJECTED",
         approved=False,
-        available_actions=("retry_feedback",),
+        available_actions=available_actions,
         artifacts={"findings": list(findings)},
         last_output="reviewer rejected the change",
         round=1,
@@ -82,7 +89,13 @@ def _finding(fid: str, severity: str, title: str = "t") -> dict:
     return {"id": fid, "severity": severity, "title": title}
 
 
-def _run(tmp_path, signal, *, parsed_plan: ParsedPlan | None) -> SimpleNamespace:
+def _run(
+    tmp_path,
+    signal,
+    *,
+    parsed_plan: ParsedPlan | None,
+    unattended: bool = False,
+) -> SimpleNamespace:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     state = SimpleNamespace(
@@ -97,6 +110,7 @@ def _run(tmp_path, signal, *, parsed_plan: ParsedPlan | None) -> SimpleNamespace
     return SimpleNamespace(
         state=state,
         no_interactive=True,
+        unattended=unattended,
         session={"status": "awaiting_phase_handoff"},
         session_ts="20260613_1",
         output_dir=run_dir,
@@ -369,3 +383,76 @@ def test_disabled_policy_skips_advisor_and_aggregate(tmp_path, wired):
     assert result.paused is True
     assert wired.advisor_calls.n == 0
     assert "_ci_agent_advice" not in run.state.extras
+
+
+def test_unattended_advice_ineligible_auto_continues(tmp_path, wired):
+    wired.install_advice(_advice())
+    wired.monkeypatch.setattr(
+        _policy, "resolve_handoff_advice_policy",
+        lambda run: HandoffAdvicePolicy(auto_retry_with_agent=False),
+    )
+    resume = _ResumeScript(["resolve"])
+    wired.monkeypatch.setattr(
+        handoff_mod, "apply_phase_handoff_resume_with_banners", resume,
+    )
+    signal = _signal(
+        phase="validate_plan",
+        available_actions=("continue", "retry_feedback", "halt"),
+    )
+    run = _run(tmp_path, signal, parsed_plan=_plan(), unattended=True)
+
+    result = process_pending_phase_handoffs(run, profile="P", ctx="C")
+
+    assert result.continue_dispatch is True
+    assert len(wired.decide.calls) == 1
+    assert wired.decide.calls[0].action == "continue"
+    assert "auto-decided by unattended policy" in wired.decide.calls[0].note
+    assert wired.advisor_calls.n == 0
+
+
+def test_unattended_ci_stop_auto_continues(tmp_path, wired):
+    wired.install_advice(_advice(expected_files=("a.py",)))
+    first = _signal(
+        phase="validate_plan",
+        available_actions=("continue", "retry_feedback", "halt"),
+    )
+    second = _signal(
+        phase="validate_plan",
+        available_actions=("continue", "retry_feedback", "halt"),
+    )
+    resume = _ResumeScript(["new_handoff", "resolve"], new_signal=second)
+    wired.monkeypatch.setattr(
+        handoff_mod, "apply_phase_handoff_resume_with_banners", resume,
+    )
+    run = _run(tmp_path, first, parsed_plan=_plan(owned=("a.py",)), unattended=True)
+
+    result = process_pending_phase_handoffs(run, profile="P", ctx="C")
+
+    assert result.continue_dispatch is True
+    assert [call.action for call in wired.decide.calls] == [
+        "retry_feedback",
+        "continue",
+    ]
+    assert "ci_stop=budget_exhausted:budget_exhausted" in wired.decide.calls[1].note
+    agg = _aggregate(run)
+    assert agg["retries"] == 1
+    assert agg["stopped"] == 1
+
+
+def test_unattended_implement_handoff_halts_instead_of_parking(tmp_path, wired):
+    wired.install_advice(_advice())
+    wired.monkeypatch.setattr(
+        _policy, "resolve_handoff_advice_policy",
+        lambda run: HandoffAdvicePolicy(auto_retry_with_agent=False),
+    )
+    wired.monkeypatch.setattr(handoff_mod, "save_session", lambda *a, **k: None)
+    run = _run(tmp_path, _signal(), parsed_plan=_plan(), unattended=True)
+
+    result = process_pending_phase_handoffs(run, profile="P", ctx="C")
+
+    assert result.continue_dispatch is True
+    assert run.state.halt is True
+    assert run.state.halt_reason == UNATTENDED_HALT_REASON
+    assert run.state.phase_handoff_request is None
+    assert run.session["phase_handoff_unattended"]["reason"] == "implement_handoff"
+    assert len(wired.decide.calls) == 0

@@ -475,6 +475,7 @@ def _build_and_dispatch(request: ProjectRunRequest, ctx: _ProjectRunContext) -> 
         profile_name=ctx.resolved_profile_name,
         session_mode=request.session_mode, max_rounds=ctx.max_rounds,
         no_interactive=request.no_interactive,
+        unattended=request.unattended,
         plan_model=ctx.plan_model, implement_model=ctx.implement_model,
         repair_model=ctx.repair_model,
         repair_escalation_model=ctx.repair_escalation_model,

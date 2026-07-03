@@ -102,6 +102,7 @@ recognise:
 | Value | Set by | When |
 |---|---|---|
 | `"phase_handoff_halt"` | SDK halt + interactive halt + resume halt-heal | operator chose `halt` in `phase_handoff_decide` |
+| `"phase_handoff_unattended_halt"` | CLI unattended phase-handoff policy | `orcho run --no-interactive` reached a handoff that cannot be safely auto-continued |
 | `"commit_decision_fix"` | commit-decision correction path | operator chose `fix` after a rejected release verdict; follow-up resume is the intended next step |
 | `"commit_decision_halt"` | commit-decision gate halt path | operator rejected the commit decision; see ADR 0032 |
 | `"interrupted"` | atexit hook | graceful interrupt while status was `running` |
@@ -508,6 +509,7 @@ nested `halt={reason, phase}`.
 | `phase_handoff_decide(action="halt")` | `sdk/phase_handoff.py:285-299` | `"phase_handoff_halt"` |
 | Interactive in-process halt sync (after decide) | `project_orchestrator.py:2915-2921` | `"phase_handoff_halt"` |
 | Resume halt-heal defensive flip | `project_orchestrator.py:3310-3313` | `"phase_handoff_halt"` |
+| CLI unattended phase-handoff halt | `pipeline/project/handoff.py` | `"phase_handoff_unattended_halt"` |
 | commit-decision halt | see [ADR 0032](../adr/0032-commit-decision-gate.md) | `"commit_decision_halt"` |
 | deferred delivery parked (defer mode) | see [ADR 0099](../adr/0099-deferred-delivery-decision-gate.md) | `"commit_delivery_pending"` |
 | `decide_delivery(action="halt"/"fix")` | `sdk/run_control/delivery.py` | `"commit_decision_halt"` / `"commit_decision_fix"` |

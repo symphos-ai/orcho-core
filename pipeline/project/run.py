@@ -582,6 +582,7 @@ class _PipelineRun:
     # ``False`` so test fixtures that construct ``_PipelineRun``
     # directly don't have to track yet another field.
     no_interactive: bool = False
+    unattended: bool = False
 
     # Populated during the run
     research_hypothesis: str | None = None

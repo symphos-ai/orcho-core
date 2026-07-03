@@ -1616,6 +1616,7 @@ def apply_phase_handoff_resume(
 #: ``run.state.extras`` slot carrying the in-memory CI advisor lifecycle counters
 #: + last-advice fields. Read by the final DONE/HALTED summary (T4).
 _CI_ADVICE_AGGREGATE_KEY = "_ci_agent_advice"
+_UNATTENDED_BLOCK_KEY = "phase_handoff_unattended"
 
 
 def _ci_advice_aggregate(run: Any) -> dict[str, Any]:
@@ -1669,6 +1670,45 @@ def _persist_ci_advice_aggregate(run: Any, agg: dict[str, Any]) -> None:
     run.session[_CI_ADVICE_AGGREGATE_KEY] = dict(agg)
     if run.output_dir:
         save_session(run.output_dir, run.session)
+
+
+def _record_unattended_halt(run: Any, signal: Any, resolution: Any) -> None:
+    from pipeline.project.handoff_noninteractive import UNATTENDED_HALT_REASON
+
+    run.session[_UNATTENDED_BLOCK_KEY] = {
+        "reason": resolution.reason,
+        "note": resolution.note,
+        "handoff_id": str(getattr(signal, "handoff_id", "") or ""),
+        "phase": str(getattr(signal, "phase", "") or ""),
+        "trigger": str(getattr(signal, "trigger", "") or ""),
+    }
+    run.state.phase_handoff_request = None
+    run.state.halt = True
+    run.state.halt_reason = UNATTENDED_HALT_REASON
+    run._dispatch_active = False
+
+
+def _resolve_unattended_handoff(
+    run: Any,
+    signal: Any,
+    *,
+    ci_stop_state: str = "",
+    ci_stop_reason: str = "",
+) -> Any | None:
+    if not getattr(run, "unattended", False):
+        return None
+    from pipeline.control.handoff_prompt import HandoffDecisionInput
+    from pipeline.project.handoff_noninteractive import resolve_unattended_handoff
+
+    resolution = resolve_unattended_handoff(
+        signal,
+        ci_stop_state=ci_stop_state,
+        ci_stop_reason=ci_stop_reason,
+    )
+    if resolution.kind == "continue":
+        return HandoffDecisionInput(action="continue", note=resolution.note)
+    _record_unattended_halt(run, signal, resolution)
+    return None
 
 
 # ── interactive prompt loop ───────────────────────────────────────────────
@@ -1727,53 +1767,78 @@ def process_pending_phase_handoffs(
                 policy.auto_retry_with_agent
                 and _handoff_advice.advice_actions_available(signal)
             ):
-                return PhaseHandoffLoopResult(
-                    profile=profile,
-                    session=run.session,
-                    paused=True,
-                    continue_dispatch=False,
-                    halted=False,
+                decision_input = _resolve_unattended_handoff(
+                    run,
+                    signal,
+                    ci_stop_state="needs_operator",
+                    ci_stop_reason="advice_ineligible",
                 )
-            from pipeline.project import handoff_advice_ci as _ci
-
-            agg = _ci_advice_aggregate(run)
-            budget_remaining = policy.max_agent_retries - int(agg["retries"])
-            ci_outcome = _ci.handle_ci_advice(
-                run, signal, policy,
-                budget_remaining=budget_remaining,
-                prev_findings_fingerprint=prev_fingerprint,
-            )
-            _record_ci_advice_fields(agg, ci_outcome)
-            if ci_outcome.findings_fingerprint:
-                prev_fingerprint = ci_outcome.findings_fingerprint
-            if ci_outcome.outcome == "stop":
-                agg["stopped"] = int(agg["stopped"]) + 1
-                _persist_ci_advice_aggregate(run, agg)
-                if ci_outcome.state == "halt":
-                    # Route the CI halt through the SAME handler-halt tail a
-                    # gate-abort uses: set ``state.halt`` + clear the pending
-                    # request and let the loop fall through to the caller's
-                    # ``run.finalize()``, which renders the HALTED summary
-                    # (including the ``Agent advice`` block) and clears the
-                    # pending handoff via ``mark_run_halted``. No parallel halt
-                    # path, no decision artifact (the advisor recommended halt).
-                    run.state.phase_handoff_request = None
-                    run.state.halt = True
-                    run.state.halt_reason = "phase_handoff_halt"
-                    run._dispatch_active = False
+                if decision_input is not None:
+                    ci_retry_active = False
+                    agg = None
+                elif getattr(run, "unattended", False):
                     continue
-                return PhaseHandoffLoopResult(
-                    profile=profile,
-                    session=run.session,
-                    paused=True,
-                    continue_dispatch=False,
-                    halted=False,
+                else:
+                    return PhaseHandoffLoopResult(
+                        profile=profile,
+                        session=run.session,
+                        paused=True,
+                        continue_dispatch=False,
+                        halted=False,
+                    )
+            else:
+                from pipeline.project import handoff_advice_ci as _ci
+
+                agg = _ci_advice_aggregate(run)
+                budget_remaining = policy.max_agent_retries - int(agg["retries"])
+                ci_outcome = _ci.handle_ci_advice(
+                    run, signal, policy,
+                    budget_remaining=budget_remaining,
+                    prev_findings_fingerprint=prev_fingerprint,
                 )
-            # proceed: count the retry and flow the ci_agent decision through the
-            # shared decide + resume path below — no parallel repair branch.
-            agg["retries"] = int(agg["retries"]) + 1
-            decision_input = ci_outcome.decision_input
-            ci_retry_active = True
+                _record_ci_advice_fields(agg, ci_outcome)
+                if ci_outcome.findings_fingerprint:
+                    prev_fingerprint = ci_outcome.findings_fingerprint
+                if ci_outcome.outcome == "stop":
+                    agg["stopped"] = int(agg["stopped"]) + 1
+                    _persist_ci_advice_aggregate(run, agg)
+                    if ci_outcome.state == "halt":
+                        # Route the CI halt through the SAME handler-halt tail a
+                        # gate-abort uses: set ``state.halt`` + clear the pending
+                        # request and let the loop fall through to the caller's
+                        # ``run.finalize()``, which renders the HALTED summary
+                        # (including the ``Agent advice`` block) and clears the
+                        # pending handoff via ``mark_run_halted``. No parallel halt
+                        # path, no decision artifact (the advisor recommended halt).
+                        run.state.phase_handoff_request = None
+                        run.state.halt = True
+                        run.state.halt_reason = "phase_handoff_halt"
+                        run._dispatch_active = False
+                        continue
+                    decision_input = _resolve_unattended_handoff(
+                        run,
+                        signal,
+                        ci_stop_state=ci_outcome.state,
+                        ci_stop_reason=ci_outcome.reason,
+                    )
+                    if decision_input is not None:
+                        ci_retry_active = False
+                    elif getattr(run, "unattended", False):
+                        continue
+                    else:
+                        return PhaseHandoffLoopResult(
+                            profile=profile,
+                            session=run.session,
+                            paused=True,
+                            continue_dispatch=False,
+                            halted=False,
+                        )
+                else:
+                    # proceed: count the retry and flow the ci_agent decision through the
+                    # shared decide + resume path below — no parallel repair branch.
+                    agg["retries"] = int(agg["retries"]) + 1
+                    decision_input = ci_outcome.decision_input
+                    ci_retry_active = True
         else:
             # Advisory eligibility is policy: computed here (trigger + verdict +
             # retry_feedback + findings/last_output), never inside the pure prompt.
@@ -1873,11 +1938,17 @@ def process_pending_phase_handoffs(
         # checkpoint/preflight resume path gets the same banners; only the
         # non-retry transition notes are printed here.
         if decision_input.action == PhaseHandoffAction.CONTINUE.value:
-            print(paint(
-                "  ↳ Continuing original profile after "
-                "manual override...",
-                C.GREY,
-            ))
+            if getattr(run, "unattended", False):
+                message = (
+                    "  ↳ Continuing original profile after unattended "
+                    "policy decision..."
+                )
+            else:
+                message = (
+                    "  ↳ Continuing original profile after "
+                    "manual override..."
+                )
+            print(paint(message, C.GREY))
         elif decision_input.action == PhaseHandoffAction.HALT.value:
             print(paint("  ↳ Halting run synchronously...", C.GREY))
 

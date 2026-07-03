@@ -117,6 +117,7 @@ class ProjectRunRequest:
     presentation: PresentationPolicy = PresentationPolicy.TERMINAL
     render_phase_outputs: bool = False
     auto_waiver_allowed: bool = False
+    unattended: bool = False
 
     def __post_init__(self) -> None:
         """Coerce + validate the presentation field (ADR 0046).

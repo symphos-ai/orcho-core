@@ -2,7 +2,7 @@
 
 The dataclass mirrors ``run_pipeline`` **modulo
 ``_REQUEST_ONLY_FIELDS``** (currently ``{"presentation",
-"render_phase_outputs"}``). These tests
+"render_phase_outputs", ...}``). These tests
 lock the contract so drift in either direction surfaces here, not in
 some distant integration test:
 
@@ -59,8 +59,12 @@ from pipeline.project_orchestrator import run_pipeline
 #     the implement-phase substance-repair fallback record a synthetic
 #     waiver and continue instead of pausing; request-only because the
 #     ``run_pipeline`` back-compat surface is frozen.
+#   * ``unattended`` — ADR 0120. CLI-only autonomy signal for explicit
+#     ``--no-interactive`` runs. Supervisors may still use
+#     ``no_interactive=True`` without opting out of pending handoffs.
 _REQUEST_ONLY_FIELDS = {
     "presentation", "render_phase_outputs", "auto_waiver_allowed",
+    "unattended",
 }
 
 # ── pinned signature reference ────────────────────────────────────────────
