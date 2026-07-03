@@ -407,6 +407,37 @@ def test_unattended_advice_ineligible_auto_continues(tmp_path, wired):
     assert len(wired.decide.calls) == 1
     assert wired.decide.calls[0].action == "continue"
     assert "auto-decided by unattended policy" in wired.decide.calls[0].note
+    assert "ci_stop=advice_ineligible" in wired.decide.calls[0].note
+    assert wired.advisor_calls.n == 0
+
+
+def test_unattended_always_handoff_approved_verdict_auto_continues(
+    tmp_path, wired,
+):
+    # ``human_feedback_always`` fires on an APPROVED verdict too (trigger =
+    # "approved") — the only continue-at-approved scenario. Advice is
+    # ineligible for approved verdicts, so the unattended policy must
+    # auto-continue without invoking the advisor.
+    wired.install_advice(_advice())
+    resume = _ResumeScript(["resolve"])
+    wired.monkeypatch.setattr(
+        handoff_mod, "apply_phase_handoff_resume_with_banners", resume,
+    )
+    signal = _signal(
+        phase="validate_plan",
+        trigger="approved",
+        available_actions=("continue", "retry_feedback", "halt"),
+    )
+    signal.verdict = "APPROVED"
+    signal.approved = True
+    run = _run(tmp_path, signal, parsed_plan=_plan(), unattended=True)
+
+    result = process_pending_phase_handoffs(run, profile="P", ctx="C")
+
+    assert result.continue_dispatch is True
+    assert len(wired.decide.calls) == 1
+    assert wired.decide.calls[0].action == "continue"
+    assert "auto-decided by unattended policy" in wired.decide.calls[0].note
     assert wired.advisor_calls.n == 0
 
 

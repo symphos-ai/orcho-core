@@ -98,15 +98,10 @@ _PROJECT_GROUP_EXCLUDED_CHILDREN = {
 }
 
 
-def _run_project_from_cli(**kwargs: object) -> dict:
-    """Dispatch through the typed request while preserving the legacy shim."""
-    request = ProjectRunRequest.from_kwargs(**kwargs)
-    return run_project_pipeline(request).session
-
-
 def run_pipeline(**kwargs: object) -> dict:
     """CLI patch seam that routes through the typed project boundary."""
-    return _run_project_from_cli(**kwargs)
+    request = ProjectRunRequest.from_kwargs(**kwargs)
+    return run_project_pipeline(request).session
 
 
 def _looks_like_single_project(path: Path) -> bool:

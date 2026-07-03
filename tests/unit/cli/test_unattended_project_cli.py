@@ -24,7 +24,7 @@ def test_cli_dispatch_threads_unattended_request_only(
         fake_run_project_pipeline,
     )
 
-    session = project_cli._run_project_from_cli(
+    session = project_cli.run_pipeline(
         task="do it",
         project_dir=str(tmp_path),
         no_interactive=True,

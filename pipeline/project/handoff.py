@@ -1767,10 +1767,12 @@ def process_pending_phase_handoffs(
                 policy.auto_retry_with_agent
                 and _handoff_advice.advice_actions_available(signal)
             ):
+                # No advisor ran on this path — advice was ineligible before
+                # invocation, so the provenance note carries only the reason,
+                # not a CI stop *state*.
                 decision_input = _resolve_unattended_handoff(
                     run,
                     signal,
-                    ci_stop_state="needs_operator",
                     ci_stop_reason="advice_ineligible",
                 )
                 if decision_input is not None:
