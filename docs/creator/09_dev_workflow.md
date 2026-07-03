@@ -52,46 +52,20 @@ orcho()     { (source "$ORCHO_CORE/.venv/bin/activate" \
 
 orcho-dev() { (source "$ORCHO_CORE_DEV/.venv/bin/activate" \
               && "$ORCHO_CORE_DEV/.venv/bin/python" -m cli.orcho "$@"); }
-
-orcho-promote() {
-    echo "🚀 Promoting DEV → STABLE..."
-    local branch
-    branch="$(cd "$ORCHO_CORE_DEV" && git rev-parse --abbrev-ref HEAD)" || {
-        echo "❌ Cannot read current branch in $ORCHO_CORE_DEV"; return 1
-    }
-    if [[ "$branch" != "main" ]]; then
-        echo "❌ DEV is on '$branch', not 'main'. STABLE only tracks main."
-        echo "   Merge into main first:"
-        echo "     cd \"$ORCHO_CORE_DEV\" && git switch main && git merge --ff-only $branch && git push"
-        echo "   Then re-run orcho-promote."
-        return 1
-    fi
-
-    echo "1️⃣  Push DEV (main) to GitHub..."
-    (cd "$ORCHO_CORE_DEV" && git push) || { echo "❌ Push failed"; return 1; }
-    echo "2️⃣  Pull into STABLE..."
-    (cd "$ORCHO_CORE" && git pull) || { echo "❌ Pull failed"; return 1; }
-    echo "3️⃣  Reinstall deps in STABLE venv..."
-    # --force-reinstall so a version bump in pyproject.toml actually
-    # lands in importlib.metadata (plain ``-e .`` skips when sources
-    # haven't changed). Do not use --no-deps: STABLE must receive
-    # normal runtime dependencies declared by orcho-core.
-    (cd "$ORCHO_CORE" && source "$ORCHO_CORE/.venv/bin/activate" \
-        && pip install --force-reinstall -e "." -q) \
-        || { echo "❌ Install failed"; return 1; }
-    echo "4️⃣  Installed package versions..."
-    "$ORCHO_CORE/.venv/bin/python" - <<'PYVERSIONS'
-import importlib.metadata as md
-
-for package in ("orcho-core", "tiktoken"):
-    try:
-        print(f"   {package}: {md.version(package)}")
-    except md.PackageNotFoundError:
-        print(f"   {package}: NOT INSTALLED")
-PYVERSIONS
-    echo "✅ Done! STABLE is now at: $(cd $ORCHO_CORE && git log --oneline -1)"
-}
 ```
+
+orcho-core **ships the promote helper as an executable** at
+[`shell/orcho-promote`](../../shell/orcho-promote), so you don't paste a shell
+function into your dotfiles. Put it on your `PATH` once:
+
+```bash
+ln -s "$ORCHO_CORE_DEV/shell/orcho-promote" ~/.local/bin/orcho-promote
+```
+
+It defaults DEV to the repo it ships in and STABLE to `$ORCHO_CORE`
+(`$HOME/.local/share/orcho-core`); override either via the env vars above.
+Because it is a real command, not a shell function, `orcho-promote` then
+resolves from any shell — no `~/.zshrc` reload needed after an update.
 
 | Command | Which code it uses | When |
 |---|---|---|
@@ -153,7 +127,9 @@ cd "$HOME/.local/share/orcho-core"
 python3 -m venv .venv
 .venv/bin/python -m pip install -e "."
 
-# 5. Add the variables and facades to ~/.zshrc (see the section above).
+# 5. Add the variables and facades to ~/.zshrc (see the section above),
+#    and symlink the shipped promote helper onto your PATH:
+ln -s "$HOME/www/orcho/orcho-core/shell/orcho-promote" ~/.local/bin/orcho-promote
 ```
 
 ## Daily loop
@@ -288,11 +264,11 @@ If you accidentally run `pip install -e "."` in DEV without `[dev]`, pytest disa
 | `orcho-promote` immediately prints `❌ DEV is on '<branch>', not 'main'` | DEV is on a feature branch; STABLE only tracks main | Merge into main: `git switch main && git merge --ff-only <branch> && git push`, then re-run `orcho-promote` |
 | `orcho-promote` step 1 fails with "src refspec main does not match any" | DEV `cwd` points somewhere other than the repo (e.g. the parent monorepo `~/www/orcho`) | Fix `ORCHO_CORE_DEV` in `~/.zshrc` so it points at the repo itself (`~/www/orcho/orcho-core`) |
 | `orcho-promote` step 3 fails with "does not appear to be a Python project" | The subshell did not `cd` before `pip install` | Make sure the function contains `(cd "$ORCHO_CORE" && source ... && pip install ...)` |
-| `orcho-promote` warning `does not provide the extra 'web'` | Old version of the function with `.[web]` — the extra was removed after web moved to `orcho-web` | Update the function to `pip install -e "."` (see the section above) |
+| `orcho-promote` warning `does not provide the extra 'web'` | A stale hand-written function with `.[web]` — the extra was removed after web moved to `orcho-web` | Switch to the shipped `shell/orcho-promote` (it uses plain `pip install -e "."`, no `[web]` extra) |
 | `orcho-dev` fails with `No module named cli.orcho` | DEV venv has no editable install | `cd "$ORCHO_CORE_DEV" && .venv/bin/python -m pip install -e ".[dev]"` |
 | STABLE `orcho run` shows old behavior after a promote | Most likely an in-flight run (see the adjacent section) or nothing changed in `pyproject.toml` | Restart the run; if that does not help — `pip install --force-reinstall -e "."` in STABLE |
-| `importlib.metadata.version('orcho-core')` returns the old version after a version bump | Old `orcho-promote` without `--force-reinstall` — pip skips the install when sources have not changed and leaves stale `*.dist-info` | Update the function in `~/.zshrc` to `pip install --force-reinstall -e "."` (see the section above) |
-| A new runtime dependency does not import in STABLE after a promote | The old `orcho-promote` used `--no-deps`, so pip reinstalled only orcho-core | Remove `--no-deps` from the function and re-run `orcho-promote` |
+| `importlib.metadata.version('orcho-core')` returns the old version after a version bump | A stale hand-written `orcho-promote` without `--force-reinstall` — pip skips the install when sources have not changed and leaves stale `*.dist-info` | Switch to the shipped `shell/orcho-promote` (it uses `--force-reinstall`) |
+| A new runtime dependency does not import in STABLE after a promote | A stale hand-written `orcho-promote` used `--no-deps`, so pip reinstalled only orcho-core | Switch to the shipped `shell/orcho-promote` (it does not use `--no-deps`) |
 | `orcho run` prints `pytest: command not found` somewhere | There are no tests in STABLE — this is a symptom of a different problem | Do not fix it by promoting; run tests only from DEV |
 
 ## Related docs
