@@ -1,4 +1,9 @@
+from core.infra.platform import venv_python_subpath
 from pipeline.skills import SkillTrustPolicy
+
+# Platform-correct venv interpreter (``.venv/Scripts/python.exe`` on Windows,
+# ``.venv/bin/python`` elsewhere); resolved on the host running verification.
+_VENV_PY = venv_python_subpath()
 
 PLUGIN = {
     "name": "orcho-core",
@@ -19,10 +24,10 @@ PLUGIN = {
     "work_mode": "pro",
     "verification_envs": {
         "core-local": {
-            "python": "{project}/.venv/bin/python",
+            "python": f"{{project}}/{_VENV_PY}",
             "cwd": "{checkout}",
             "assertions": [
-                {"file_exists": "{project}/.venv/bin/python"},
+                {"file_exists": f"{{project}}/{_VENV_PY}"},
                 {
                     "import": "pipeline",
                     "path_equals": "{checkout}/pipeline/__init__.py",

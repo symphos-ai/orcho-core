@@ -38,6 +38,18 @@ _IS_WINDOWS: bool = sys.platform == "win32"
 _SELF_CORE_DIR: Path = Path(__file__).parent.parent
 
 
+def venv_python_subpath() -> str:
+    """Relative POSIX-style path to a venv's Python interpreter for this OS.
+
+    ``.venv/Scripts/python.exe`` on Windows, ``.venv/bin/python`` elsewhere.
+    Forward slashes so the result composes cleanly both into ``Path`` joins
+    and into ``{checkout}``/``{project}`` placeholder templates.
+    """
+    if _IS_WINDOWS:
+        return ".venv/Scripts/python.exe"
+    return ".venv/bin/python"
+
+
 # ── Engine roots ──────────────────────────────────────────────────────────────
 
 def engine_home() -> Path:

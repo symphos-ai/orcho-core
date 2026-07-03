@@ -793,7 +793,10 @@ class MetricsCollector:
         d = Path(output_dir)
         d.mkdir(parents=True, exist_ok=True)
         f = d / "metrics.json"
-        f.write_text(json.dumps(self.as_dict(), indent=2, ensure_ascii=False))
+        f.write_text(
+            json.dumps(self.as_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return f
 
     def load_from_disk(self, path: Path | str) -> int:

@@ -421,7 +421,7 @@ class _MockClaude:
         produced via ``plan()``. Returned as raw text so callers can run
         the real ``parse_plan`` against it."""
         plugin_name, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         summary = _mock_plan_content(
             project, task, cwd, plugin_name, file_hints, language,
             revised=revised,
@@ -475,7 +475,7 @@ class _MockClaude:
     def plan(self, task: str, cwd: str = "", codemap: str = ""):
         """Return a mock ParsedPlan with realistic file hints."""
         plugin_name, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         summary = _mock_plan_content(
             project, task, cwd, plugin_name, file_hints, language,
             revised=False,
@@ -492,7 +492,7 @@ class _MockClaude:
     def hypothesize(self, task: str, cwd: str = "", codemap: str = "") -> str:
         """Fast mock hypothesis — always plausible, triggers 'approved' in QA."""
         _, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         files = _mock_plan_files(project, cwd, file_hints, language)
         files_hint = "\n".join(f"  - {f}" for f in files[:3]) or "  - (project files)"
         language_note = f" ({language})" if language else ""
@@ -1093,7 +1093,7 @@ def _cross_plan_json(prompt: str) -> str:
 
 def _claude_content(prompt: str, cwd: str = "") -> str:
     p = prompt.lower()
-    project = cwd.split("/")[-1] if cwd else "project"
+    project = Path(cwd).name if cwd else "project"
     plugin_name, file_hints, language = _load_plugin_hints(cwd)
 
     # Cross-plan (ADR 0054): plan/replan across multiple codebases emits a
