@@ -72,6 +72,14 @@ connect your project → first run.
 
 ## Install
 
+Choose an install path:
+
+| Path | Use when | Command |
+| --- | --- | --- |
+| Native CLI with `pipx` | You want Orcho commands on your shell `PATH` without installing them into a project environment. | `pipx install orcho` |
+| Docker | You want an isolated container for trying Orcho, running CI-like checks, or exposing `orcho-mcp` over stdio. | `docker pull ghcr.io/symphos-ai/orcho` |
+| Direct package dependency | You intentionally want only the engine package in a virtualenv, CI image, devcontainer, or custom image. | `python -m pip install orcho-core` |
+
 If `pipx` is missing, install it first. On macOS with Homebrew:
 
 ```bash
@@ -97,6 +105,25 @@ orcho --help
 Since `orcho` 0.1.1 this installs the full set — the core CLI and the MCP
 server (`orcho-mcp`). The `[mcp]`/`[all]` extras remain as no-op back-compat
 aliases.
+
+### Containerized install
+
+Use Docker when you want to try Orcho without installing its Python package or
+agent CLIs on the host:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
+
+orcho run --project /workspace --task "Add input validation to the login endpoint."
+```
+
+The container image includes the core CLI and MCP server. See
+[`orcho` Docker docs](https://github.com/symphos-ai/orcho/tree/main/docker)
+for credential bootstrap, MCP stdio setup, and custom project toolchains.
 
 ### Direct engine dependency
 

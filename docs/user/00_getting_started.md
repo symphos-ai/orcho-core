@@ -34,40 +34,55 @@ The MCP path additionally needs an MCP-aware client.
 
 ## 2. Install Orcho
 
-Once the packages are published, install the core CLI with:
+For most local use, install the `orcho` distribution with `pipx`. It installs
+the core CLI and the MCP server while keeping them out of your project
+environment:
 
 ```bash
 pipx install orcho
 orcho --help
 ```
 
-If you do not use `pipx`, install it into your chosen Python environment:
+If you want to try Orcho in a container, pull the official image and mount the
+project plus an explicit credential directory:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
+```
+
+If you intentionally want Orcho in a project-managed environment, install it
+with `pip`:
 
 ```bash
 python -m pip install orcho
 ```
 
-MCP is an optional control surface. Install it through extras when you need
-the MCP server command:
+For a minimal engine-only dependency, install `orcho-core` directly:
 
 ```bash
-pipx install 'orcho[mcp]'
-pipx install 'orcho[all]'
+python -m pip install orcho-core
 ```
 
-The source-checkout path for contributors and pre-package testers lives
-in a separate guide: [early_adopter_install.md](early_adopter_install.md).
+`orcho[mcp]` and `orcho[all]` remain as back-compat aliases; plain `orcho`
+already includes the MCP server. The source-checkout path for contributors and
+pre-package testers lives in a separate guide:
+[early_adopter_install.md](early_adopter_install.md).
 
 After installing, verify:
 
 ```bash
 orcho --help
-orcho-mcp --help      # if orcho[mcp] is installed
+orcho-mcp --help
 ```
 
 For MCP it matters that the MCP client can start the server command. With
 `pipx`, use the absolute path printed by `command -v orcho-mcp`; with a
-source checkout, see `ORCHO_MCP_COMMAND` in
+Docker, register a `docker run ... orcho-mcp` stdio server; with a source
+checkout, see `ORCHO_MCP_COMMAND` in
 [early_adopter_install.md](early_adopter_install.md).
 
 ## 3. Create a workspace next to your project
