@@ -285,6 +285,121 @@ def test_render_helpers_emit_color_under_force_color(
     assert C.RESET in out
 
 
+# ── Test 2c: cross final-acceptance structured render ─────────────────
+
+
+def _cfa_entry(*, approved: bool):
+    """Build a cross final-acceptance phase-log entry the way the runner
+    does — through the real gate result → ``result_to_phase_log_entry``
+    projection — so the render test exercises the actual dual-shape dict.
+    """
+    from pipeline.cross_project.final_acceptance import (
+        CrossFinalAcceptanceResult,
+        result_to_phase_log_entry,
+    )
+    from pipeline.release_parser import (
+        ContractStatus,
+        ParsedRelease,
+        ReleaseBlocker,
+    )
+
+    if approved:
+        parsed = ParsedRelease(
+            verdict="APPROVED",
+            ship_ready=True,
+            short_summary="Mock release gate: change is ship-ready.",
+            release_blockers=(),
+            verification_gaps=(),
+            contract_status=ContractStatus(
+                task_contract="satisfied",
+                interfaces="not_applicable",
+                persistence="not_applicable",
+                tests="sufficient",
+            ),
+            source="json",
+        )
+    else:
+        parsed = ParsedRelease(
+            verdict="REJECTED",
+            ship_ready=False,
+            short_summary="Project [web] is not ship-ready.",
+            release_blockers=(
+                ReleaseBlocker(
+                    id="CFA_CHILD_REJECTED_web",
+                    severity="P1",
+                    title="Project [web] is not ship-ready",
+                    body="The [web] release gate rejected the change.",
+                    required_fix="Address the [web] release blockers.",
+                    why_blocks_release="Cannot ship while an alias rejects.",
+                ),
+            ),
+            verification_gaps=(),
+            contract_status=ContractStatus(
+                task_contract="incomplete",
+                interfaces="not_applicable",
+                persistence="not_applicable",
+                tests="weak",
+            ),
+            source="json",
+        )
+    result = CrossFinalAcceptanceResult(
+        parsed=parsed,
+        source="precondition" if not approved else "agent",
+        raw_output="",
+        rendered="# System release gate\n\n**Verdict:** REJECTED",
+        duration_s=0.0,
+    )
+    return result_to_phase_log_entry(result)
+
+
+def test_cfa_block_renders_structured_fields_not_raw_markdown() -> None:
+    """The cross final-acceptance verdict must render as the same
+    structured, ANSI-styled block the single-project ``final_acceptance``
+    path uses — aligned ``verdict`` / ``ship_ready`` / summary / contract
+    status fields — not a raw markdown dump with literal ``#`` / ``**``
+    headings."""
+    from core.io.ansi import strip_ansi
+    from pipeline.cross_project.rendering import (
+        render_cross_final_acceptance_block,
+    )
+
+    plain = strip_ansi(
+        render_cross_final_acceptance_block(_cfa_entry(approved=True)),
+    )
+
+    # Structured fields the mono renderer emits.
+    assert "verdict" in plain and "APPROVED" in plain
+    assert "ship_ready" in plain and "yes" in plain
+    assert "Contract status" in plain
+    assert "task_contract" in plain and "satisfied" in plain
+
+    # No raw release-markdown markers leaked to the terminal.
+    assert "# System release gate" not in plain
+    assert "**Verdict:**" not in plain
+    assert "**Ship-ready:**" not in plain
+
+
+def test_cfa_block_renders_release_blockers_structurally() -> None:
+    """A REJECTED verdict surfaces its release blockers through the
+    structured renderer (id, title, why-blocks-release) rather than the
+    raw ``### CFA_… [P1]`` markdown headings."""
+    from core.io.ansi import strip_ansi
+    from pipeline.cross_project.rendering import (
+        render_cross_final_acceptance_block,
+    )
+
+    plain = strip_ansi(
+        render_cross_final_acceptance_block(_cfa_entry(approved=False)),
+    )
+
+    assert "verdict" in plain and "REJECTED" in plain
+    assert "Release blockers" in plain
+    assert "CFA_CHILD_REJECTED_web" in plain
+    assert "why blocks release" in plain
+    # The raw markdown blocker heading form must not appear.
+    assert "### CFA_CHILD_REJECTED_web" not in plain
+
+
 # ── Test 3: re-export surface ─────────────────────────────────────────
 
 

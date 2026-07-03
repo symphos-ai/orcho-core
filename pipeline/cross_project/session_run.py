@@ -53,7 +53,11 @@ from pipeline.cross_project.prompts import (
     _ORCHESTRATOR_ROOT,
     set_orchestrator_root as _set_orchestrator_root,
 )
-from pipeline.cross_project.rendering import paint, silent_renderers
+from pipeline.cross_project.rendering import (
+    paint,
+    render_cross_final_acceptance_block,
+    silent_renderers,
+)
 from pipeline.cross_project.run_setup import (
     _read_plan_file,
     render_cross_pipeline_header,
@@ -590,7 +594,18 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
         if _cfa_language.strip().lower().startswith(("ru", "rus", "russian", "рус"))
         else "Cross-final-acceptance verdict"
     )
-    r.preview(_cfa_label, _cfa_result.rendered, r.C.MAGENTA)
+    # Render the verdict as a structured, ANSI-styled block (parity with
+    # the single-project final_acceptance path) rather than dumping the
+    # raw release markdown. ``_cfa_result.rendered`` (the markdown) is
+    # still persisted to the phase log / evidence unchanged; only the
+    # terminal presentation changes here.
+    from pipeline.cross_project.final_acceptance import (
+        result_to_phase_log_entry,
+    )
+    _cfa_block = render_cross_final_acceptance_block(
+        result_to_phase_log_entry(_cfa_result),
+    )
+    r.preview(_cfa_label, _cfa_block, r.C.MAGENTA)
     _print_cross_checks_usage(ctx.cross_phase_usage, terminal=ctx.terminal)
     _events.emit(
         "cross_final_acceptance.verdict",
