@@ -22,11 +22,14 @@ from core.io.retry import (
     AgentAccessError,
     AgentAuthenticationError,
     AgentCallError,
+    AgentCancelledError,
+    AgentProcessKilledError,
     ApiConnectionError,
     ApiTimeoutError,
     ContextOverflowError,
     RateLimitError,
     SystemResourceError,
+    classify_from_exit,
 )
 from pipeline.project.run import _failure_metadata_for_exception
 from pipeline.run_state.provider_runtime import (
@@ -98,6 +101,35 @@ def test_predicate_true_for_typed_transients(exc: Exception) -> None:
     assert is_provider_runtime_failure(exc) is True
 
 
+def test_kill_signal_is_provider_runtime() -> None:
+    # AgentProcessKilledError subclasses SystemResourceError, so the isinstance
+    # predicate over _PROVIDER_RUNTIME_TYPES includes it automatically.
+    exc = classify_from_exit(-9, "")
+    assert isinstance(exc, AgentProcessKilledError)
+    assert is_provider_runtime_failure(exc) is True
+
+
+def test_cancel_signal_is_not_provider_runtime() -> None:
+    # AgentCancelledError is a direct AgentCallError subclass (not a
+    # SystemResourceError), so it is excluded from the recoverable set.
+    exc = classify_from_exit(-15, "")
+    assert isinstance(exc, AgentCancelledError)
+    assert is_provider_runtime_failure(exc) is False
+
+
+def test_build_names_signal_for_kill() -> None:
+    # provider_message must carry the signal name (from str(exc)), not a bare
+    # exit code, so the durable record is diagnosable after logs are gone.
+    exc = classify_from_exit(-9, "")
+    failure = build_provider_runtime_failure(
+        exc, failed_phase="implement", runtime="claude", model="opus",
+    )
+    assert failure["failure_kind"] == "provider_runtime"
+    assert failure["recoverable"] is True
+    assert failure["recommended_action"] == RECOMMENDED_ACTION
+    assert "SIGKILL" in failure["provider_message"]
+
+
 @pytest.mark.parametrize(
     "exc",
     [
@@ -130,6 +162,24 @@ def test_routes_typed_transient_to_provider_runtime(exc: Exception, needle: str)
     assert meta["recommended_action"] == "resume_or_retry_phase"
     assert meta["failed_phase"] == "implement"
     assert needle in meta["provider_message"]
+
+
+def test_routes_kill_signal_to_provider_runtime() -> None:
+    meta = _meta(classify_from_exit(-9, ""))
+    assert meta["failure_kind"] == "provider_runtime"
+    assert meta["recoverable"] is True
+    assert meta["recommended_action"] == "resume_or_retry_phase"
+    assert "SIGKILL" in meta["provider_message"]
+
+
+def test_routes_cancel_signal_to_generic_excerpt() -> None:
+    # Cancel is not provider_runtime and not recoverable — it takes the same
+    # durable stderr_excerpt branch as generic/auth/context-overflow.
+    meta = _meta(classify_from_exit(-15, ""))
+    assert meta.get("failure_kind") != "provider_runtime"
+    assert "recoverable" not in meta
+    assert "stderr_excerpt" in meta
+    assert "SIGTERM" in meta["stderr_excerpt"]
 
 
 def test_access_error_is_not_provider_runtime() -> None:

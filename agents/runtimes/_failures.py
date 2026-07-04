@@ -52,13 +52,18 @@ from core.io.retry import (
 # non-zero exit is not something a blind retry fixes, and the user asked for a
 # controlled halt rather than a continued run. Only the transient transport
 # shapes — connection drops, rate limits, timeouts — get a bounded retry
-# before the typed error propagates and the FSM records the halt.
+# before the typed error propagates and the FSM records the halt. A kill-shaped
+# process death (SIGKILL/SIGSEGV/SIGABRT, e.g. the OOM killer) is likewise
+# transient: it gets one bounded retry via process_killed_max_retries while
+# generic exits stay 0. Cancel-shaped death (SIGINT/SIGTERM) is never retried
+# by construction (AgentCancelledError pins its budget to 0 under any config).
 RUNTIME_RETRY_CONFIG = RetryConfig(
     max_retries=0,
     connection_max_retries=2,
     rate_limit_max_retries=2,
     timeout_max_retries=1,
     context_overflow_max_retries=0,
+    process_killed_max_retries=1,
 )
 
 
