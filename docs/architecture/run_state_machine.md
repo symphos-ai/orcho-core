@@ -67,10 +67,18 @@ own. The writer never owns every side effect.
 | `awaiting_phase_handoff` | operator `retry_feedback` | `running` | `retry_feedback_handoff` | cleared | decision artifact, human feedback marker, checkpoint invalidation, plan/repair loop dispatch |
 | `awaiting_phase_handoff` | operator `halt` | `halted` | `mark_run_halted` | cleared | decision artifact, `run.end`, checkpoint terminal write |
 | `running` | normal success | `done` | `mark_run_done` | cleared | `run.end`, checkpoint terminal write, final save |
+| `running` | plan-only tail (planning/research) | `awaiting_human_review` | `mark_run_awaiting_review` (via `resolve_terminal_outcome`) | preserved | `run.end`; the plan artifact is the operator's review subject |
 | `running` | final acceptance no-diff halt | `halted` | `mark_run_halted` | cleared | `run.end`, checkpoint terminal write, no-diff outcome text |
 | `running` | policy / delivery halt | `halted` | `mark_run_halted` | cleared | `run.end`, checkpoint terminal write, halt reason |
 | `running` | phase failure | `failed` | `mark_run_failed` | preserved | `run.end`, checkpoint terminal write, failure evidence |
+| `running` | stalled command escalation | `failed` | `mark_run_stalled` | preserved | `run.end`, checkpoint terminal write, stall diagnostics (ADR 0103) |
 | any live status | process exit / atexit interruption | `interrupted` | `mark_run_interrupted` | preserved | best-effort save only |
+
+Which of `done` / `awaiting_human_review` / `halted` closes a clean run is not
+decided at the call sites: finalization routes through the pure reducer
+`pipeline/run_state/terminal_outcome.py` (`resolve_terminal_outcome`,
+`apply_no_diff_terminal` — ADR 0115), and the writers above only apply its
+decision.
 
 Important boundaries:
 
