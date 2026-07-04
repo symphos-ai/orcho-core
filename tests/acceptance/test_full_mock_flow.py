@@ -3077,6 +3077,66 @@ class TestStage5_PhaseHandoffResume:
         # Implement only ran in the resume subprocess — single attempt.
         assert attempts_by_phase.get("implement") == [1]
 
+    def test_retry_feedback_resume_summary_replays_persisted_decision(
+        self, project, run_dir, capsys,
+    ) -> None:
+        """Summary resume banner replays the ACTUALLY-persisted decision.
+
+        The ``↺ resume from checkpoint`` line must surface the operator's
+        stored ``retry_feedback`` action + feedback, read from the handoff
+        decision artifact — not a synthetic ``human_feedback`` state field,
+        which the checkpoint never carries. Without threading the real
+        artifact the decision-replay field silently vanishes, so this test
+        fails if the resume line drops back to a bare phase-count banner.
+        The round *result* is intentionally absent: the banner prints during
+        checkpoint hydration, before the replayed round runs.
+        """
+        from core.io.ansi import strip_ansi
+        from core.observability.logging import apply_output_mode, get_output_mode
+        from sdk.phase_handoff import phase_handoff_decide
+
+        s_pause = self._pause_on_rejected_plan(project, run_dir)
+        handoff_id = s_pause["phase_handoff"]["id"]
+        run_id = self._parent_run_id(run_dir)
+
+        feedback = "add rollback steps to the plan"
+        phase_handoff_decide(
+            run_dir.name, handoff_id, "retry_feedback",
+            feedback=feedback,
+            runs_dir=run_dir.parent, cwd=None,
+        )
+
+        from agents.runtimes import MockAgentProvider
+        provider2 = MockAgentProvider(latency=0.0)
+        provider2.codex = lambda m, **_kw: _AlwaysApproved()
+
+        _before = get_output_mode()
+        lp, hu, gd = _patches()
+        try:
+            apply_output_mode("summary")
+            capsys.readouterr()  # drop the default-mode pause output
+            with lp, hu, gd, patch(
+                "pipeline.project.profile_dispatch.maybe_run_hypothesis",
+                return_value=(None, []),
+            ):
+                run_pipeline(
+                    task="Retry with feedback",
+                    project_dir=str(project),
+                    output_dir=run_dir,
+                    profile_name="feature",
+                    resume_from=run_id,
+                    hypothesis_enabled=False,
+                    provider=provider2,
+                )
+            out = strip_ansi(capsys.readouterr().out)
+        finally:
+            apply_output_mode(_before)
+
+        resume = [ln for ln in out.splitlines() if "resume from checkpoint" in ln]
+        assert resume, f"summary resume banner missing:\n{out}"
+        assert "decision replay: retry_feedback" in resume[0], resume[0]
+        assert feedback in resume[0], resume[0]
+
     def test_retry_feedback_rejected_again_chains_new_handoff(
         self, project, run_dir,
     ) -> None:

@@ -1003,8 +1003,15 @@ def test_print_gate_live_block_mirrors_plain_output_log(
     tmp_path: Path,
 ) -> None:
     from agents.stream import set_agent_log
+    from core.observability import logging as _logging
     from pipeline.project.run import _print_gate_live_block
 
+    # This test pins the full multi-line live block on stdout; ``summary``
+    # (the default run-output mode) collapses it to a one-line presenter
+    # card. Force ``live`` so the framed block renders; the output.log
+    # mirror asserted below is mode-independent either way.
+    _mode_before = _logging.get_output_mode()
+    _logging._output_mode = "live"
     log_path = tmp_path / "output.log"
     set_agent_log(log_path)
     try:
@@ -1014,6 +1021,7 @@ def test_print_gate_live_block_mirrors_plain_output_log(
         ))
     finally:
         set_agent_log(None)
+        _logging._output_mode = _mode_before
 
     terminal = capsys.readouterr().out
     assert "Official verification gates" in terminal
@@ -1066,6 +1074,62 @@ def test_live_block_errors_line_is_compact() -> None:
 def test_live_block_not_attempted_is_empty() -> None:
     result = ReceiptAutoRunResult(attempted=False, reason="dry_run")
     assert render_gate_live_block(result, hook_label="pre-final auto-run") == ()
+
+
+# ── summary gate line: glyph reflects all unsuccessful states ─────────────
+
+
+def test_gate_summary_line_all_pass_is_ok() -> None:
+    from core.io.ansi import strip_ansi
+    from pipeline.project.run import _gate_summary_line
+
+    line = strip_ansi(_gate_summary_line((
+        "Verification gates -- after_phase(implement)",
+        "commands: lint PASS · unit PASS",
+    )))
+    assert line.startswith("✓ gates")
+    assert "lint PASS" in line
+
+
+def test_gate_summary_line_missing_stale_is_failure() -> None:
+    from core.io.ansi import strip_ansi
+    from pipeline.project.run import _gate_summary_line
+
+    # A residual required receipt (MISSING/STALE) is blocking: it must not
+    # render as a success ``✓``. Regression guard for F1.
+    line = strip_ansi(_gate_summary_line((
+        "Verification gates -- after_phase(implement)",
+        "commands: lint MISSING/STALE · unit PASS",
+    )))
+    assert line.startswith("✗ gates")
+    assert "lint MISSING/STALE" in line
+
+
+def test_gate_summary_line_executor_errors_is_failure() -> None:
+    from core.io.ansi import strip_ansi
+    from pipeline.project.run import _gate_summary_line
+
+    # An ``errors: N`` body line means the pass captured executor errors; the
+    # summary glyph must be ``✗`` even when every gate token reads PASS.
+    line = strip_ansi(_gate_summary_line((
+        "Verification gates -- after_phase(implement)",
+        "commands: lint PASS",
+        "errors: 2",
+    )))
+    assert line.startswith("✗ gates")
+
+
+def test_gate_summary_line_skipped_manual_and_fresh_stay_ok() -> None:
+    from core.io.ansi import strip_ansi
+    from pipeline.project.run import _gate_summary_line
+
+    # SKIPPED MANUAL and FRESH are not failures; a block with only those and
+    # PASS tokens keeps the success glyph.
+    line = strip_ansi(_gate_summary_line((
+        "Verification gates -- before_delivery",
+        "commands: lint PASS · unit FRESH · e2e SKIPPED MANUAL",
+    )))
+    assert line.startswith("✓ gates")
 
 
 # ── verification_timeline: DONE render (T2) ───────────────────────────────
@@ -1180,6 +1244,9 @@ def test_stage9_live_block_printed_in_terminal(
         "pipeline.project.gate_repair.evaluate_pre_phase_gates",
         lambda *a, **k: None,
     )
+    # Pin the full live block: ``summary`` (the default) collapses it to a
+    # one-line presenter card. monkeypatch auto-restores the mode.
+    monkeypatch.setattr("core.observability.logging._output_mode", "live")
     result = ReceiptAutoRunResult(
         attempted=True,
         reason="pre-final",
@@ -1257,6 +1324,9 @@ def test_correction_review_materializes_receipts_before_review(
         "pipeline.project.gate_repair.evaluate_pre_phase_gates",
         lambda *a, **k: None,
     )
+    # Pin the full live block: ``summary`` (the default) collapses it to a
+    # one-line presenter card. monkeypatch auto-restores the mode.
+    monkeypatch.setattr("core.observability.logging._output_mode", "live")
     calls: list[dict[str, Any]] = []
     result = ReceiptAutoRunResult(
         attempted=True,

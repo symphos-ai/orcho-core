@@ -637,6 +637,11 @@ def run_dag_sequential(
                     skill=res.skill,
                     error=res.error,
                 )
+                # Close the ▶ START this subtask already printed inside
+                # ``_run_single_subtask`` before it raised.
+                _emit_subtask_summary(
+                    "incomplete", sub, reason=f"failed — {res.error}",
+                )
             if binding is not None:
                 bindings.append(binding)
             # P7: a subtask is "done" only when it neither raised nor left its
@@ -844,6 +849,38 @@ def _log_subtask_marker(
         mark_phase_header_fresh()
 
 
+def _emit_subtask_summary(
+    kind: str,
+    sub: SubTask,
+    *,
+    met: int = 0,
+    total: int = 0,
+    summary: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Print one compact subtask line — summary mode only.
+
+    Additive to the durable ``ORCHO subtask`` section written by
+    :func:`_log_subtask_marker`. In live/debug that section already echoes
+    to stdout, so this branch is skipped (no double print); in summary the
+    section's stdout echo is off and only this compact line prints. The
+    ``output.log`` file sink is written identically in every mode — this
+    print never touches it. ``kind`` is ``start`` (``▶``), ``done``
+    (``✓``), or ``incomplete`` (``⚠``).
+    """
+    from core.observability.logging import get_output_mode
+    if get_output_mode() != "summary":
+        return
+    from core.io import summary_lines
+    if kind == "start":
+        line = summary_lines.subtask_start(sub.id, sub.goal)
+    elif kind == "done":
+        line = summary_lines.subtask_done(sub.id, met, total, summary)
+    else:  # "incomplete"
+        line = summary_lines.subtask_incomplete(sub.id, reason or "")
+    print(f"  {line}")
+
+
 def _run_single_subtask(
     sub: SubTask,
     plugin: PluginConfig,
@@ -918,6 +955,7 @@ def _run_single_subtask(
         prompt_chars=prompt_chars,
         **_static_marker_facts,
     )
+    _emit_subtask_summary("start", sub)
     _events.emit(
         "subtask.start",
         subtask_id=sub.id,
@@ -945,6 +983,9 @@ def _run_single_subtask(
             duration=0.0,
             prompt_chars=prompt_chars,
             **_static_marker_facts,
+        )
+        _emit_subtask_summary(
+            "done", sub, met=0, total=len(sub.done_criteria), summary="dry run",
         )
         _events.emit(
             "subtask.end",
@@ -1081,6 +1122,24 @@ def _run_single_subtask(
         _log_attestation_detail(
             sub, attestation, attestation_error, index=index, total=total,
         )
+    # Summary arc: close this subtask's ▶ START line with ✓ (valid
+    # attestation) or ⚠ (hard failure / incomplete attestation).
+    if err is not None:
+        _emit_subtask_summary("incomplete", sub, reason=f"failed — {err}")
+    elif attestation_error is not None:
+        _emit_subtask_summary(
+            "incomplete", sub,
+            reason=f"attestation INCOMPLETE — {attestation_error}",
+        )
+    elif attestation is not None:
+        _emit_subtask_summary(
+            "done", sub,
+            met=sum(1 for c in attestation.criteria if c.met),
+            total=len(attestation.criteria),
+            summary=attestation.summary,
+        )
+    else:
+        _emit_subtask_summary("done", sub)
 
     # ``ok`` is the honest "fully succeeded" signal for event consumers
     # (dashboards, watchers): a subtask whose runtime invocation returned but

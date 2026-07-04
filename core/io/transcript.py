@@ -29,6 +29,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from core.io import summary_lines
 from core.io.ansi import C, paint
 
 if TYPE_CHECKING:
@@ -458,11 +459,45 @@ def render_phase_header(
     global _phase_header_fresh, _last_phase_header_color
     _phase_header_fresh = True
     _last_phase_header_color = color
+    # Summary mode collapses the triple-line ────/[id] TITLE/──── banner
+    # to a single grammar line (``▶ plan`` at start, ``✓|✗ plan · STATUS``
+    # at a terminal boundary). live/debug keep the full banner byte-for-byte.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        return _render_phase_header_summary(phase_id, status)
     head_bits = [paint(f"[{phase_id}] {title}", color, C.BOLD)]
     if status:
         head_bits.append(_status_chip(status))
     head = "  ".join(head_bits)
     return f"\n{_line(color, THIN_RULE)}\n{head}\n{_line(color, THIN_RULE)}"
+
+
+# Terminal phase statuses map a header call to a phase-END line (``✓|✗``)
+# instead of a start (``▶``). ``True`` → success glyph, ``False`` → failure.
+# Non-terminal statuses (``running`` / ``None``) render as a start.
+_TERMINAL_PHASE_STATUS: dict[str, bool] = {
+    "approved": True,
+    "passed": True,
+    "ok": True,
+    "rejected": False,
+    "halted": False,
+    "failed": False,
+}
+
+
+def _render_phase_header_summary(phase_id: str, status: str | None) -> str:
+    """Render the compact summary-mode phase line via the presenter.
+
+    ``phase_id`` is the display header (``PLAN`` / ``VALIDATE_PLAN`` / …);
+    the phase name is its lowercase form. A terminal ``status`` yields a
+    phase-end verdict line; anything else is a phase start.
+    """
+    phase = phase_id.lower()
+    if status is not None:
+        ok = _TERMINAL_PHASE_STATUS.get(status.lower())
+        if ok is not None:
+            return summary_lines.phase_end(phase, ok, status.upper())
+    return summary_lines.phase_start(phase)
 
 
 # ── Agent invocation ───────────────────────────────────────────────────
@@ -993,7 +1028,15 @@ def render_implement_summary(
 
     All sections are optional — when nothing concrete is known (dry-run,
     no git, no parsed summary) the block degrades to just the title line.
+
+    Summary mode collapses the block to one presenter line
+    (``✓ implement · d/t subtasks · F files``); the per-subtask lines are
+    printed separately by the subtask runner, so this line never repeats
+    them.
     """
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        return _render_implement_summary_line(files_touched, progress)
     files_list = list(files_touched)
 
     parts: list[str] = [_line(C.CYAN + C.BOLD, f"  {title}")]
@@ -1051,6 +1094,22 @@ def render_implement_summary(
     return "\n".join(parts)
 
 
+def _render_implement_summary_line(
+    files_touched: Iterable[str],
+    progress: Mapping[str, int] | None,
+) -> str:
+    """Render the one-line implement rollup via the presenter.
+
+    Counts come from the ``progress`` mapping (``completed`` / ``total``)
+    and the ``files_touched`` length; both degrade to ``0`` when unknown.
+    """
+    prog = progress or {}
+    completed = int(prog.get("completed", 0) or 0)
+    total = int(prog.get("total", 0) or 0)
+    files = len(list(files_touched))
+    return summary_lines.implement_done(completed, total, files)
+
+
 # ── Parse failure ──────────────────────────────────────────────────────
 
 
@@ -1090,6 +1149,8 @@ def render_review_block(
     review: Mapping[str, Any],
     *,
     title: str | None = "Review",
+    phase: str | None = None,
+    round: int | None = None,  # noqa: A002 — grammar term; not shadowing a used builtin
 ) -> str:
     """Render a typed reviewer JSON contract structurally.
 
@@ -1109,7 +1170,16 @@ def render_review_block(
     writes into evidence — there is no separate release renderer for
     the terminal. When ``release_blockers`` is present it supersedes
     the review-shape ``findings`` mirror to avoid double-printing.
+
+    ``phase`` / ``round`` steer the summary-mode single line only (see
+    :func:`_render_review_summary`); the full live/debug block ignores
+    them and keeps its byte-identical shape.
     """
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        return _render_review_summary(
+            review, phase=phase or _summary_review_phase(title), round=round,
+        )
     verdict = str(review.get("verdict") or "")
     summary = str(review.get("short_summary") or "")
     findings = list(review.get("findings") or ())
@@ -1174,6 +1244,73 @@ def render_review_block(
         parts.extend(_render_contract_status_lines(contract_status))
 
     return "\n".join(parts)
+
+
+# Known reviewer-phase titles → canonical phase token for the summary line.
+# Any other title degrades to its lowercase/underscored form so a new
+# reviewer surface still produces a grammar-valid ``✓ <phase> · …`` line.
+_REVIEW_TITLE_TO_PHASE = {
+    "plan validation": "validate_plan",
+    "review": "review_changes",
+    "final acceptance": "final_acceptance",
+}
+
+# Reject-family verdicts drive the reject-shaped headline (leading finding
+# id/severity). Approve-family verdicts fall through to summary/ship_ready.
+_SUMMARY_REJECT_VERDICTS = {
+    "REJECTED", "FAIL", "FAILED", "BLOCKED", "CHANGES_REQUESTED",
+}
+
+
+def _summary_review_phase(title: str | None) -> str:
+    """Map a reviewer block ``title`` to its summary phase token."""
+    if not title:
+        return "review"
+    key = title.strip().lower()
+    return _REVIEW_TITLE_TO_PHASE.get(key, key.replace(" ", "_"))
+
+
+def _summary_finding_lead(finding: Mapping[str, Any]) -> str | None:
+    """``F1 P1 <title>`` — the lead finding descriptor for a reject line."""
+    fid = str(finding.get("id") or "")
+    sev = str(finding.get("severity") or "")
+    ftitle = str(finding.get("title") or "")
+    lead = " ".join(x for x in (fid, sev, ftitle) if x)
+    return lead or None
+
+
+def _render_review_summary(
+    review: Mapping[str, Any], *, phase: str, round: int | None,  # noqa: A002
+) -> str:
+    """Render the one-line summary form of a reviewer contract.
+
+    Serves validate_plan / review_changes / final_acceptance: a single
+    ``✓|✗ <phase> · <VERDICT>`` line, extended with a free-text headline
+    (parse error, lead finding on reject, ship-ready flag or short
+    summary on approve) and an ``R<n>`` round token when ``round > 1``.
+    """
+    verdict = str(review.get("verdict") or "")
+    verdict_up = verdict.upper() or "UNKNOWN"
+    ship_ready = review.get("ship_ready")
+    parse_error = review.get("parse_error")
+    primary = list(review.get("release_blockers") or ()) or list(
+        review.get("findings") or ()
+    )
+    short_summary = str(review.get("short_summary") or "")
+
+    if parse_error:
+        headline = str(parse_error)
+    elif verdict_up in _SUMMARY_REJECT_VERDICTS and primary:
+        headline = _summary_finding_lead(primary[0]) or short_summary or None
+    elif ship_ready is not None:
+        headline = f"ship_ready {'yes' if ship_ready else 'no'}"
+    else:
+        headline = short_summary or None
+
+    rnd = round if (round is not None and round > 1) else None
+    return summary_lines.verdict_line(
+        phase, verdict_up, headline=headline, round=rnd,
+    )
 
 
 def _render_finding_lines(finding: Mapping[str, Any]) -> list[str]:
@@ -1256,7 +1393,14 @@ def render_plan_block(plan: Mapping[str, Any], *, title: str = "Plan") -> str:
     ``owned_files``, ``commands_to_run``, ``risks``, ``review_focus``,
     ``mcp_context``, ``tasks``. Bodies are preserved in full — the
     block carries every contract field, never just counters.
+
+    Summary mode collapses the whole block to the presenter's one-line
+    contract counters (``┌ plan · tasks … · acceptance A · risks R``);
+    the full lists stay in live/debug and in the ``plan.md`` artifact.
     """
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        return _render_plan_summary(plan)
     summary = str(plan.get("short_summary") or plan.get("plan_summary") or "")
     planning_context = str(plan.get("planning_context") or "")
     goal = str(plan.get("goal") or "")
@@ -1322,6 +1466,19 @@ def render_plan_block(plan: Mapping[str, Any], *, title: str = "Plan") -> str:
             parts.extend(_render_task_lines(task))
 
     return "\n".join(parts)
+
+
+def _render_plan_summary(plan: Mapping[str, Any]) -> str:
+    """Render the one-line plan-contract counters via the presenter."""
+    tasks = list(plan.get("tasks") or ())
+    acceptance = list(plan.get("acceptance_criteria") or ())
+    risks = list(plan.get("risks") or ())
+    task_ids = [
+        tid
+        for t in tasks
+        if isinstance(t, Mapping) and (tid := str(t.get("id") or ""))
+    ]
+    return summary_lines.plan_contract(task_ids, len(acceptance), len(risks))
 
 
 def _render_bullet_section(title: str, items: list[Any]) -> list[str]:
