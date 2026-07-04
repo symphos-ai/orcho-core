@@ -1,4 +1,7 @@
-# ADR 0090 — Run handoff advice (Stage 0): interactive `advice` and `retry_with_advice`
+# ADR 0124 — Run handoff advice (Stage 0): interactive `advice` and `retry_with_advice`
+
+> Renumbered from ADR 0090 to resolve a number collision with
+> [ADR 0090 — require gate, no silent green](0090-require-gate-no-silent-green.md).
 
 - Status: Accepted
 - Date: 2026-06-13

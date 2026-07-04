@@ -78,6 +78,34 @@ because they may still carry envelope identity.
 it after `take_last_prompt_turn()` and render each `segment.text` with the
 owning part metadata.
 
+## Prompt layering and the ablation mode
+
+Composition has two layers with different owners (`pipeline/prompts/modes.py`):
+
+1. **Professional prompt layer** — user-editable composable parts
+   (`core/_prompts/{roles,tasks,formats}/*.md` plus workspace/project
+   overrides) rendered through the composer: persona, method, presentation.
+2. **System-tail layer** — code-owned parser contracts, handoff and
+   review-target policy, language posture, cross-project grammar. Always
+   attached; never user-overridable.
+
+Builders accept an internal `professional_prompt_mode` kwarg
+(`ProfessionalPromptMode`) that toggles only the first layer:
+
+- `FULL` — composed role/task/format + system-tail (production default;
+  every existing caller);
+- `MINIMAL_WITH_FORMAT` — code-owned minimal phase intent + the format part
+  + system-tail (isolates the method's value from presentation);
+- `MINIMAL` — code-owned minimal phase intent + system-tail.
+
+The minimal intents live in `pipeline/prompts/minimal_intents.py`: not
+user-editable, not project-overridable, agent vocabulary only. They are the
+baseline an eval harness compares the professional layer against. This is
+not a user-facing feature — there is no profile field, CLI flag, or MCP
+option — and disabling the system-tail is deliberately impossible, because
+that would test protocol breakage, not prompt quality. Guarded by
+`tests/unit/pipeline/prompts/test_professional_prompt_ablation.py`.
+
 ## Full lifecycle
 
 The normal flow is:
@@ -88,12 +116,18 @@ The normal flow is:
 4. `assemble_cache_first_segments(...)` orders parts by cache breadth and
    returns a source `PromptTurn`.
 5. Optional edits happen through `PromptTurnEditor`.
-6. A session-aware invoke helper selects full vs delta using the source
+6. The session-disposition projection
+   (`pipeline/runtime/session_disposition.py`,
+   [ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md))
+   maps the phase's `session_continuity` policy (`fresh_only` /
+   `loop_continue` / `same_zone_continue`) plus follow-on signals onto
+   continue-versus-fresh. Only a continued session is a delta candidate.
+7. A session-aware invoke helper selects full vs delta using the source
    turn's envelope.
-7. The effective turn is published with `set_last_prompt_turn(effective_turn)`.
-8. The runtime receives only `effective_turn.text`.
-9. The adapter performs one `take_last_prompt_turn()` and renders trace/debug
-   from the same effective turn that was sent.
+8. The effective turn is published with `set_last_prompt_turn(effective_turn)`.
+9. The runtime receives only `effective_turn.text`.
+10. The adapter performs one `take_last_prompt_turn()` and renders trace/debug
+    from the same effective turn that was sent.
 
 ```mermaid
 flowchart TD
@@ -164,16 +198,22 @@ The receipt is a claim, not proof. The prompt text explicitly tells the
 reviewer to verify it against the fresh subject and not to repeat an old
 finding without fresh evidence.
 
-The next resumed review receives two parts:
+The next resumed review receives a freshness packet:
 
 | Part id | Layer / cache | Source | Body |
 | --- | --- | --- | --- |
 | `repair_receipt:latest` | `TURN` / `NONE` | `artifact` | Rendered `RepairReceipt`. |
 | `current_review_subject:latest` | `TURN` / `NONE` | `artifact` | Phase-owned fresh subject projection. |
+| `verification_receipt:latest` | `TURN` / `NONE` | `artifact` | Developer-side verification-environment digest (ADR 0076): interpreter, cwd, checks, commands the implement/repair phase actually ran. Code-review loop only. |
+| `verification_readiness:final_acceptance` | `TURN` / `NONE` | `artifact` | Declared-receipt readiness digest (ADR 0082): required receipts classified present / missing / failed / stale. Final acceptance only. |
 
-Because both parts are `TURN` / `NONE`, the delta selector always keeps them
-on the wire when they are present. Stable method parts may be omitted on a
-resumed session; the repair receipt and current subject may not.
+Because every packet part is `TURN` / `NONE`, the delta selector always keeps
+them on the wire when they are present. Stable method parts may be omitted on
+a resumed session; the packet parts may not.
+
+The typed plan views ride the same way: `plan_contract` and `plan_tasks` are
+attached as `TURN` / `NONE` parts (not prepended raw text), so a resumed delta
+render cannot drop the plan contract from the wire.
 
 ### Plan loop
 
@@ -292,8 +332,9 @@ When debugging a prompt issue, ask these questions in order:
 6. Was cache/session selection based on the source envelope?
 7. If delta was selected, did `render_selected(...)` receive parts from the
    same source turn by object identity?
-8. For review after repair, did the effective prompt contain
-   `repair_receipt:latest` and `current_review_subject:latest`?
+8. For review after repair, did the effective prompt contain the freshness
+   packet (`repair_receipt:latest`, `current_review_subject:latest`, and the
+   applicable verification digest parts)?
 
 ## Regression tests and guards
 
@@ -352,6 +393,14 @@ This document is the implementation guide. The design records are:
   task from the wire on resumed plan/validate rounds;
 - [ADR 0066](../adr/0066-repair-receipt-re-review-protocol.md): repair receipt
   and current subject packet for resumed re-review;
+- [ADR 0067](../adr/0067-session-aware-subtask-dag-implementation.md):
+  session-aware subtask-DAG rendering — per-subtask prompts
+  (`pipeline/prompts/subtask.py`) over one continued implement session;
+- [ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md):
+  session-disposition policy — the continue-versus-fresh decision that
+  precedes any delta selection;
 - ADR 0026: prompt-part metadata and session semantics;
 - ADR 0028: cache-first wire layout;
-- ADR 0055: session-aware delta rendering.
+- ADR 0055: session-aware delta rendering;
+- ADR 0076: developer-side verification-environment receipt digest;
+- ADR 0082: final-acceptance verification-readiness digest.

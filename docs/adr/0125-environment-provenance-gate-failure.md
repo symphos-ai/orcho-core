@@ -1,4 +1,7 @@
-# ADR 0106 — Environment-provenance failure downgrades its phase gate to FAIL
+# ADR 0125 — Environment-provenance failure downgrades its phase gate to FAIL
+
+> Renumbered from ADR 0106 to resolve a number collision with
+> [ADR 0106 — rejected final-acceptance terminal semantics](0106-rejected-release-terminal-and-override.md).
 
 Status: Accepted
 

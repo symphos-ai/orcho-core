@@ -202,7 +202,7 @@ class TestEnvironmentChecks:
     ) -> None:
         # A core checkout (local `pipeline/__init__.py` present) whose
         # interpreter imports `pipeline` from OUTSIDE the checkout must still
-        # fail — the load-bearing ADR 0106 invariant is preserved (branch a).
+        # fail — the load-bearing ADR 0125 invariant is preserved (branch a).
         import subprocess
 
         checkout = tmp_path / "checkout"

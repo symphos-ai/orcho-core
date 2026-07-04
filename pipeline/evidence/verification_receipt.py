@@ -104,7 +104,7 @@ def collect_environment_checks(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Probe the verification environment and return ``(checks, commands)``.
 
-    Project-aware provenance selection (ADR 0106 / 0108), in order:
+    Project-aware provenance selection (ADR 0125 / 0108), in order:
 
     (a) **Core checkout** — when ``{cwd}/pipeline/__init__.py`` exists, run the
         ``pipeline_import`` import-invariant in a subprocess from ``cwd`` (which

@@ -1,4 +1,4 @@
-"""Unit tests for the live verification-gate render model (ADR 0095 / 0106).
+"""Unit tests for the live verification-gate render model (ADR 0095 / 0125).
 
 Pins the environment-provenance downgrade on the *live* DONE/HALTED surface
 (:mod:`pipeline.project.verification_timeline`), the companion to the typed SDK
