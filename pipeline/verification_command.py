@@ -37,7 +37,11 @@ from pipeline.verification_dependencies import (
     capture_dependency_provenance,
     changed_files_fingerprint,
 )
-from pipeline.verification_env import resolve_env_runtime, run_env_assertions
+from pipeline.verification_env import (
+    map_python_token,
+    resolve_env_runtime,
+    run_env_assertions,
+)
 
 # Command wall-clock budget. A hung command degrades to a failed receipt
 # (exit_code=None) rather than blocking the run indefinitely.
@@ -147,9 +151,7 @@ def _resolve_argv(
     argv: list[str] = []
     for tok in raw_argv:
         resolved = resolve_placeholders(tok, ctx)
-        if resolved == "python":
-            resolved = python
-        argv.append(resolved)
+        argv.append(map_python_token(resolved, python))
     return argv
 
 

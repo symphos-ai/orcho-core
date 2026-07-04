@@ -54,6 +54,20 @@ RUN_SCOPED_ENV_CHANNELS: tuple[str, ...] = (
 )
 
 
+def map_python_token(token: str, python: str) -> str:
+    """Map a bare ``python`` argv token to the declared/resolved interpreter.
+
+    Single source of truth for the bare-``python`` substitution shared by the
+    Stage 2 version-assertion engine (:func:`_version_assert`) and the Stage 3
+    command executor (:func:`pipeline.verification_command._resolve_argv`). Only
+    the token literally equal to ``python`` is remapped; every other token
+    (explicit paths, other executables) is returned unchanged. This lets a
+    contract write bare ``python`` and still resolve the declared interpreter
+    even when it is not on ``PATH``.
+    """
+    return python if token == "python" else token
+
+
 def resolve_env_runtime(
     env_spec: dict[str, Any],
     ctx: PlaceholderContext,
@@ -223,7 +237,9 @@ def _evaluate(
         )
 
     if "version" in raw:
-        return _version_assert(raw, eff_cwd=eff_cwd, sub_env=sub_env, ctx=ctx)
+        return _version_assert(
+            raw, python=python, eff_cwd=eff_cwd, sub_env=sub_env, ctx=ctx,
+        )
 
     keys = sorted(str(k) for k in raw)
     return _result(
@@ -282,6 +298,7 @@ def _path_assert(path: str, eff_cwd: str, kind: str) -> dict[str, Any]:
 def _version_assert(
     raw: dict[str, Any],
     *,
+    python: str,
     eff_cwd: str,
     sub_env: dict[str, str],
     ctx: PlaceholderContext,
@@ -294,6 +311,7 @@ def _version_assert(
             "version must be a non-empty argv list",
         )
     argv = [resolve_placeholders(str(a), ctx) for a in argv_raw]
+    argv = [map_python_token(a, python) for a in argv]
     rc, out, err, exc = _run(argv, eff_cwd, sub_env)
     if exc is not None:
         return _result(
