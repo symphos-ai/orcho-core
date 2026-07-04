@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parents[2]
@@ -64,6 +65,7 @@ def _run(
     env = {
         **os.environ,
         "ORCHO_DEMO_ROOT": str(demo_root),
+        "ORCHO_DEMO_CORE_PYTHON": sys.executable,
         "ORCHO_DEMO_PORT": "8799",
         "ORCHO_DEMO_PYTHON": str(fake_bin / "fake-python"),
         "ORCHO_DEMO_NPM": str(fake_bin / "npm"),
@@ -273,6 +275,7 @@ class TestBootstrapDemo1B:
             env={
                 **os.environ,
                 "ORCHO_DEMO_ROOT": str(demo_root),
+                "ORCHO_DEMO_CORE_PYTHON": sys.executable,
                 "ORCHO_DEMO_PORT": "8799",
                 "ORCHO_DEMO_PYTHON": str(fake_bin / "fake-python"),
                 "ORCHO_DEMO_NPM": str(fake_bin / "npm"),
@@ -308,6 +311,7 @@ class TestBootstrapDemo1B:
             env={
                 **os.environ,
                 "ORCHO_DEMO_ROOT": str(demo_root),
+                "ORCHO_DEMO_CORE_PYTHON": sys.executable,
                 "ORCHO_DEMO_PORT": "8799",
                 "ORCHO_DEMO_PYTHON": str(fake_bin / "fake-python"),
                 "ORCHO_DEMO_NPM": str(fake_bin / "npm"),
