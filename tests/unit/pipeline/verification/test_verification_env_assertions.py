@@ -142,6 +142,58 @@ class TestVersionAssertion:
         a = _only(run_env_assertions("ci", spec, _ctx()))
         assert a["passed"] is False
 
+    def test_bare_python_resolves_declared_interpreter_under_stripped_path(
+        self, tmp_path: Path,
+    ) -> None:
+        # A bare ``python`` argv token resolves to the declared interpreter, so
+        # the assertion passes even when ``python`` is not on the subprocess
+        # PATH. The declared ``python`` is a real interpreter (sys.executable);
+        # PATH is overridden to an empty dir that has no ``python`` binary.
+        empty_dir = tmp_path / "empty-path"
+        empty_dir.mkdir()
+        major = str(sys.version_info[0])
+        spec = {
+            "python": sys.executable,
+            "cwd": str(tmp_path),
+            "env": {"PATH": str(empty_dir)},
+            "assertions": [
+                {"version": ["python", "--version"], "contains": major},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["kind"] == "version_contains"
+        assert a["passed"] is True
+
+    def test_bare_python_version_mismatch_still_fails(self, tmp_path: Path) -> None:
+        # Even resolved to the declared interpreter, a substring the real output
+        # never contains keeps the assertion a genuine failure.
+        spec = {
+            "python": sys.executable,
+            "cwd": str(tmp_path),
+            "assertions": [
+                {"version": ["python", "--version"], "contains": "ZZ-nope"},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["passed"] is False
+
+    def test_bare_python_nonexistent_declared_interpreter_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        # A declared interpreter that does not exist is a real subprocess error,
+        # not silently neutralised by the bare-``python`` mapping.
+        major = str(sys.version_info[0])
+        spec = {
+            "python": str(tmp_path / "no-such-python"),
+            "cwd": str(tmp_path),
+            "assertions": [
+                {"version": ["python", "--version"], "contains": major},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["passed"] is False
+        assert "subprocess error" in a["detail"]
+
 
 class TestDegradation:
     def test_unknown_key_is_failed_not_crash(self, tmp_path: Path) -> None:
