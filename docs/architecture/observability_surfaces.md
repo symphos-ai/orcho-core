@@ -42,6 +42,14 @@ then promote them into `session.phases.*` with the round-side
 | `context_pressure` | how full the runtime's window is, with explicit source label from the context source hierarchy | `phases.<phase>.context_pressure` |
 | `runtime_compaction` | runtime auto-compacted itself (observe-only — present only when the runtime emits the event) | `phases.<phase>.runtime_compaction` |
 
+Alongside the five durable surfaces there is one deliberately **transient**
+container: `AgentInvocationOutcome`
+(`pipeline/observability/invocation_outcome.py`) normalizes one invocation's
+usage (tokens, cost, cache split, duration) for consumers that render while
+the run is alive — the live per-call card and the `subtask_dag` markers. It
+is never written to `session.json`; the durable record of the same call is
+the five sibling surfaces plus `metrics.json`.
+
 ### Round-side split convention
 
 For the review / repair loop, each side of the round writes its own
@@ -121,7 +129,7 @@ summary field set).
 | `surface_count` | `int` | defaults to `1` (ADR 0027 reservation) | reserved for fanout work |
 | `phase_key` | `str` \| `None` | writer-stamped, ADR 0035 | session-key phase argument; differs from `trace_surface` only on CHAIN `repair_changes` |
 | `round` | `int` \| `None` | writer-stamped, ADR 0035 | loop counter at invoke time; `None` for single-shot phases outside a `LoopStep` |
-| `continue_session` | `bool` \| `None` | writer-stamped, ADR 0035 | `True` when resuming the prior provider session |
+| `continue_session` | `bool` | writer-stamped, ADR 0035 | always stamped as a real boolean (`bool(continue_session)`); `True` when resuming the prior provider session |
 
 The evidence summary (`evidence/prompt_render.py:summarize_trace_for_evidence`)
 projects this durable shape into a flatter consumer-facing dict:
@@ -289,6 +297,8 @@ banner is not re-synthesised above every subtask invocation — each subtask's
 | Did the runtime auto-compact this turn? | Check `session.phases.<phase>.runtime_compaction`; the key is absent when the runtime emitted no compaction event. |
 | How is per-call duration measured? | `_session_aware_invoke` wraps `agent.invoke` with `time.monotonic()` — user-perceived turn-around, includes runtime-internal retries |
 | Which events should an MCP/SILENT consumer follow? | [`docs/reference/event_registry.md`](../reference/event_registry.md); `agent.tool_use`, `agent.mcp_tool_call`, `agent.contract_ready`, and `agent.summary` are the live agent signals. |
+| Why did the run stop — what do `halt_reason` values mean? | Not an observability surface: the machine-readable halt taxonomy (`phase_handoff_halt`, `signal:<NAME>`, `abnormal_exit:<rc>`, `correction_not_converging`, …) lives in `meta.json` and is owned by the run-state layer — see [Run state](run_state.md) and `pipeline/run_state/setup_failure.py`. |
+| Where does one invocation's usage come from in the live card? | `pipeline/observability/invocation_outcome.py::AgentInvocationOutcome` — transient, render-only; the durable equivalents are the five surfaces + `metrics.json`. |
 
 ## Practical tuning guide
 

@@ -263,6 +263,25 @@ contract; `raw_response` preserves the model's JSON for re-validation.
 Malformed structured output is downgraded to `REJECTED` with a
 `parse_error` field — the contract is the gate, not prose heuristics.
 
+## After the gate: cross delivery and resume (pointers)
+
+Two shipped mechanisms sit after `cross_final_acceptance` and are documented
+by their ADRs rather than re-narrated here:
+
+- **Cross delivery** ([ADR 0119](../adr/0119-delivery-branch-policy.md);
+  `pipeline/cross_project/cross_delivery.py`) — runs only on the
+  CFA-approved/override path, delivers per alias with a
+  continue-on-failure loop, and aggregates to an overall outcome that
+  finalization maps onto the terminal status (`ok`/`disabled` → `done`,
+  `partial` → `cross_delivery_partial`, `failed` → `cross_delivery_failed`,
+  `halted` → `halted`).
+- **CFA pause/resume** (ADR 0038 cross parity; `cfa_gate.py`) — the gate
+  outcome is a typed enum (`approved_terminal` / `paused` /
+  `override_continue` / `halted` / `retry_consumed`); a paused resume
+  preserves the operator override marker, and settle-time clears the
+  `pending_gate` residue through the single run-state eviction point
+  (ADR 0115).
+
 ## Improvement Plan
 
 1. **Done (REA-2).** Event contract keeps cross-project as a first-class
