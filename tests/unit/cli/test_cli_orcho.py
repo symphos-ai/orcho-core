@@ -671,7 +671,7 @@ class TestCmdPrompts:
             "tasks/final_acceptance",
             # ADR 0085: correction profile entry-gate triage procedure.
             "tasks/correction_triage",
-            # ADR 0090: interactive phase-handoff advisor procedure.
+            # ADR 0124: interactive phase-handoff advisor procedure.
             "tasks/handoff_advice",
             "tasks/validate_plan",
             "tasks/plan",

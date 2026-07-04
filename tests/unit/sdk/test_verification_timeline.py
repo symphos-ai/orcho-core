@@ -54,7 +54,7 @@ _EMPTY_PLUGIN = "PLUGIN = {}\n"
 
 # A contract whose required ``env-provenance`` gate is scheduled at
 # after_phase(implement), so a failed implement verification_environment receipt
-# downgrades it (ADR 0106).
+# downgrades it (ADR 0125).
 _PROV_PLUGIN = '''\
 PLUGIN = {
     "verification_envs": {"ci": {}},
@@ -366,7 +366,7 @@ class TestFresh:
 
 
 class TestEnvironmentProvenance:
-    """ADR 0106: a failed verification_environment phase receipt downgrades the
+    """ADR 0125: a failed verification_environment phase receipt downgrades the
     gate scheduled at that phase to FAIL with self-sufficient operator-evidence,
     even when the gate's own command receipt is present/fresh."""
 

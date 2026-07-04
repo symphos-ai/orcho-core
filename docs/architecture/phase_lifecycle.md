@@ -201,7 +201,7 @@ accepted, feeds the generated feedback through the **same**
 pseudo-actions never enter `available_actions` or
 `phase_handoff_decide`; the recommendation is persisted under
 `<run_dir>/phase_handoff_advice/` and linked from the decision's `note`.
-See [ADR 0090](../adr/0090-handoff-advice-stage0.md) and the
+See [ADR 0124](../adr/0124-handoff-advice-stage0.md) and the
 `phase_handoff_advice/` section in
 [run_state.md](run_state.md).
 
@@ -214,7 +214,7 @@ sources, all flowing through the **one** decide + resume path above:
 
 - **`human`** — the operator typed the feedback at the canonical menu.
 - **`agent_advice`** — Stage 0: an operator accepted (or edited) an
-  advisor recommendation at the TTY ([ADR 0090](../adr/0090-handoff-advice-stage0.md)).
+  advisor recommendation at the TTY ([ADR 0124](../adr/0124-handoff-advice-stage0.md)).
 - **`ci_agent`** — Stage 1: in a **non-interactive** run a
   policy-controlled, prompt-free sub-flow auto-applies an advisor
   recommendation under a bounded `max_agent_retries` budget and audited

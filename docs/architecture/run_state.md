@@ -300,7 +300,7 @@ new terminal mutation.
 The interactive TTY handoff menu can offer two **UI pseudo-actions** —
 `advice` and `retry_with_advice` — on top of the four canonical actions when
 the pause is rejected/incomplete-eligible (see
-[ADR 0090](../adr/0090-handoff-advice-stage0.md)). These are not canonical
+[ADR 0124](../adr/0124-handoff-advice-stage0.md)). These are not canonical
 actions: they never enter `available_actions`, are never accepted by
 `phase_handoff_decide`, and never appear in a decision artifact's `action`
 field.

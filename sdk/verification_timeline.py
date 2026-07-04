@@ -90,7 +90,7 @@ class GateProjection:
 
     ``detail`` is a human-readable operator note, empty for an ordinary gate. It
     is populated when an environment-provenance break downgrades the gate to
-    ``FAIL`` (ADR 0106): it names the failing ``verification_environment`` check
+    ``FAIL`` (ADR 0125): it names the failing ``verification_environment`` check
     and its expected/actual, e.g. ``"pipeline_import: expected <X> actual <Y>"``,
     while ``receipt_path`` then points at that phase receipt.
     """
@@ -382,7 +382,7 @@ def _project_with_contract(
 
     parent_runs = _durable_parent_sources(meta)
     # The single effective classification (ADR 0108): the shared overlay folds the
-    # ADR 0106 environment-provenance downgrade onto the base receipt
+    # ADR 0125 environment-provenance downgrade onto the base receipt
     # classification, so this projection no longer recomputes the rule itself — a
     # phase-scheduled gate whose verification_environment receipt recorded a failed
     # check arrives here already classified ``failed`` with the operator-evidence
@@ -425,7 +425,7 @@ def _project_with_contract(
         source_run_id = cls.source_run_id or ""
         is_inherited = bool(source_run_id and source_run_id != run_id)
 
-        # The overlaid classification already carries the ADR 0106 downgrade: a
+        # The overlaid classification already carries the ADR 0125 downgrade: a
         # provenance break arrives as ``failed`` with the operator-evidence on its
         # ``reason`` and ``path`` repointed at the phase receipt. A manual gate is
         # never blocking — ``_gate_status`` maps it to SKIPPED regardless of the

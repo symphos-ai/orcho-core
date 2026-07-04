@@ -531,7 +531,7 @@ def _run_level_projection(
             plan = None
 
         # The single effective classification (ADR 0108): the shared overlay folds
-        # the ADR 0106 environment-provenance downgrade onto the base receipt
+        # the ADR 0125 environment-provenance downgrade onto the base receipt
         # classification, so this live render and the typed SDK projection consume
         # the SAME rule and can never diverge. A phase-scheduled gate whose
         # verification_environment receipt recorded a failed check arrives already

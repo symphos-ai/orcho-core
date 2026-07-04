@@ -383,7 +383,7 @@ class ProvenanceGateFailure:
     receipt recorded a failing check (e.g. ``pipeline_import``) is downgraded to
     failed regardless of its own command-receipt state — a passing command
     receipt produced by an interpreter that imported the wrong tree is not real
-    proof (ADR 0106). ``detail`` is the human-readable
+    proof (ADR 0125). ``detail`` is the human-readable
     ``"<check>: expected <X> actual <Y>"`` string; ``receipt_path`` points at the
     failing phase receipt so an operator needs no raw logs.
     """
@@ -465,7 +465,7 @@ def apply_environment_provenance(
     contract: VerificationContract,
     run_dir: Path | str,
 ) -> dict[str, ReceiptClassification]:
-    """Overlay the ADR 0106 environment-provenance downgrade onto a classification.
+    """Overlay the ADR 0125 environment-provenance downgrade onto a classification.
 
     The single effective classification the four official surfaces share: given a
     ready ``command -> ReceiptClassification`` map from

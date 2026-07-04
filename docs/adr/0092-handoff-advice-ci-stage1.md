@@ -4,7 +4,7 @@
 - Date: 2026-06-13
 - Relates to: ADR 0031 (generic phase-handoff contract — the four canonical
   actions, `available_actions`, the strict decision-artifact reader, and the
-  `decide ≠ resume` split this builds on), ADR 0090 (handoff advice Stage 0 —
+  `decide ≠ resume` split this builds on), ADR 0124 (handoff advice Stage 0 —
   the interactive `advice` / `retry_with_advice` pseudo-actions, the durable
   advice artifact, and the `note`-based provenance this stage reuses verbatim),
   ADR 0070 (auto-correction follow-up loop — the unattended counterpart this
@@ -13,7 +13,7 @@
 
 ## Context
 
-ADR 0090 (Stage 0) closed the rejected/incomplete handoff loop **for an
+ADR 0124 (Stage 0) closed the rejected/incomplete handoff loop **for an
 operator at a TTY**: a read-only advisor recommends the smallest honest way
 forward and, when the operator accepts, the generated feedback flows through the
 existing `retry_feedback` decide + resume path. Stage 0 was deliberately

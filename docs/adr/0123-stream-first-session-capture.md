@@ -1,4 +1,7 @@
-# ADR 0060 — Stream-first session capture for resumable interrupted phases
+# ADR 0123 — Stream-first session capture for resumable interrupted phases
+
+> Renumbered from ADR 0060 to resolve a number collision with
+> [ADR 0060 — PromptTurn canonical render surface](0060-prompt-turn-canonical-render-surface.md).
 
 - **Status:** Proposed
 - **Date:** 2026-05-31
