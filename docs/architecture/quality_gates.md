@@ -150,7 +150,7 @@ Quality gates and phase handoff are **independent concepts**:
 
 | Concept | Owner | Fires when | Outcome |
 |---------|-------|-----------|---------|
-| **Quality gate** | `pipeline.quality_gates.QualityGateRunner` (post-handler, pre-adapter) | A registered post-phase check (`tests`, future inferential gates) produces a `QualityGateResult`. | Mutates state per `FailStrategy` (`HALT` / `FEED_INTO_NEXT` / `TRIGGER_REPLAN` / `INFORMATIONAL`); the FSM advances to the next stage. |
+| **Quality gate** | the FSM gates stage — `_fire_step_quality_gates` in `pipeline/runtime/runner.py`, dispatching handlers from `pipeline.quality_gates.QualityGateRegistry` (post-handler, pre-adapter) | A registered post-phase check (`tests`, future inferential gates) produces a `QualityGateResult`. | Mutates state per `FailStrategy` (`HALT` / `FEED_INTO_NEXT` / `TRIGGER_REPLAN` / `INFORMATIONAL`); the FSM advances to the next stage. |
 | **Phase handoff** | Loop dispatcher (post-FSM, end-of-round) | A `PhaseStep.handoff` policy declares a trigger condition the verdict + loop state satisfies (see [phase_lifecycle.md § Phase handoff](phase_lifecycle.md#phase-handoff--declarative-pause-point)). | Persists `meta.phase_handoff`, status flips to `awaiting_phase_handoff`, subprocess exits rc=4. Resumed via `phase_handoff_decide` + `orcho_run_resume`. |
 
 A `HALT` gate ends the run with `status="halted"`; a phase handoff
