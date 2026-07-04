@@ -43,7 +43,6 @@ stateDiagram-v2
 
 | Stage | Owner | Phase introduced | Short-circuit outcomes |
 |-------|-------|------------------|------------------------|
-| `entry` | runtime | Phase 2 | — |
 | `before_review` | HumanReview backend | Phase 8 | HALTED / SKIPPED / RETRY_REQUESTED |
 | `execute` | ExecutionMode dispatcher | Phase 2 | FAILED on exception |
 | `gates` | QualityGateRunner | Phase 4 | HALTED on `on_fail=HALT` |

@@ -6,8 +6,9 @@
 ## What orcho is
 
 **Autonomous multi-agent pipeline orchestrator.** Given a task and a
-project, orcho runs a configurable pipeline of phases (PLAN → BUILD →
-REVIEW → FIX → FINAL_ACCEPTANCE + variants), each backed by an LLM-powered
+project, orcho runs a configurable pipeline of phases (`plan` →
+`validate_plan` → `implement` → `review_changes` ⇄ `repair_changes` →
+`final_acceptance`, plus profile variants), each backed by an LLM-powered
 agent. Output: working code in the project's git tree, ADR documents,
 deliverables manifest, audit-able event log.
 
@@ -57,10 +58,14 @@ Profile { name, kind, variant, description, steps }
     CUSTOM       ─────────  (plugin-defined, variant arbitrary)
 ```
 
-The profile namespace is flat: names like `lite`, `advanced`, `plan`,
-`review`, and `task` all resolve through the same loader. Phase 6 exposes
-that directly as `orcho run --profile <name>`; the legacy single-project
-`--mode` shim was removed.
+The profile namespace is flat: every name resolves through the same
+loader as `orcho run --profile <name>`; the legacy single-project `--mode`
+shim was removed. The shipped catalog (`core/_config/pipeline_profiles_v2.json`)
+carries nine operator-facing work-kind profiles — `small_task`, `feature`,
+`complex_feature`, `refactor`, `migration`, `planning`, `research`,
+`delivery_audit`, `code_review` — plus the internal `task` and `correction`
+profiles. `kind` / `variant` above are schema axes on the Profile object,
+not catalog names.
 
 These shipped flat profiles are **not** the target semantic profiles. ADR 0064
 keeps an accepted `SemanticProfile × OperatingMode → resolver → RunShape`
@@ -143,13 +148,13 @@ land* — modelled as closed enums distinct from `SemanticProfile`
                            │
             ┌──────────────┴──────────────┐
             │  ExecutionMode dispatcher   │
-            │  (linear | dag | plugin)    │
+            │  (linear | plugin modes)    │
             └──────────────┬──────────────┘
                            │
             ┌──────────────┴──────────────┐
             │  IAgentRuntime              │ ← orcho.agent_runtimes
-            │  (claude / codex / gemini   │   entry_points
-            │   / forge / mock / native)  │
+            │  (claude / codex / gemini;  │   entry_points
+            │   mock = internal test kit) │
             └─────────────────────────────┘
 ```
 
@@ -293,6 +298,33 @@ See [observability_surfaces.md](observability_surfaces.md) for the
 single-page navigator that ties the surfaces, the taxonomy layer,
 the context source hierarchy, and the CLI modes together.
 
+## Newer control axes (pointers)
+
+Axes added after the sections above were written; each is documented at its
+own home rather than re-narrated here:
+
+- **Session disposition** — per-phase `session_continuity` policy
+  (`fresh_only` / `loop_continue` / `same_zone_continue`) decides
+  continue-vs-fresh before any prompt delta selection
+  ([ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md);
+  [Prompt Engine](prompt_engine.md)).
+- **Event-sourced run state** — `events.jsonl` is truth, `meta.json` a
+  cache; terminal writers, consistency repair, and the ADR 0115
+  terminal-outcome reducer live in `pipeline/run_state/`
+  ([Run state](run_state.md)).
+- **Verification receipts** — the declared proof contract that can block
+  delivery (`require`-policy gates; ADR 0090/0117 family)
+  ([Verification contract](verification_contract.md)).
+- **Delivery branch policy and providers** — `approve` never auto-commits
+  onto the default branch; publishing intent is durable
+  (ADR 0119 / [ADR 0121](../adr/0121-git-provider-delivery-publishing.md),
+  `orcho.delivery_providers` entry-point group).
+- **Unattended runs** — CLI `--no-interactive` auto-continues advisory
+  handoffs and turns authoritative ones into typed halts
+  ([ADR 0120](../adr/0120-unattended-no-interactive-phase-handoffs.md)).
+- **Correction follow-ups** — a rejected release triages into a typed
+  correction profile (`correction_triage` phase, ADR 0085/0111).
+
 ## Where next
 
 - [Type reference](../reference/types.md) — full type inventory
@@ -300,10 +332,15 @@ the context source hierarchy, and the CLI modes together.
   topology and event identity
 - [Phase lifecycle](phase_lifecycle.md) — FSM stages, gates, adapters,
   checkpointing, and metrics
-- [Execution modes](execution_modes.md) — linear vs DAG execution dispatch
+- [Execution modes](execution_modes.md) — the per-step execution registry
+  (`linear` + plugin modes) and the policy-owned subtask delivery
 - [Session shape](session_shape.md) — `phase_log` to `session.json`
   promotion
 - [Quality gates](quality_gates.md) — gate result shape and fail policy
+- [Run state](run_state.md) — recorded state, terminal writers, repair
+- [Verification contract](verification_contract.md) — declared proof,
+  receipts, and the delivery gate
+- [Sandbox](sandbox.md) — launch-layer hygiene and the isolation envelope
 - [Project documentation strategy](project_documentation_strategy.md) — docs
   as durable delivery memory, with indexing as a later layer
 - [Observability surfaces](observability_surfaces.md) — what Orcho

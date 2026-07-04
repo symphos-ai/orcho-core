@@ -122,9 +122,9 @@ the adapter fired.
 
 Phase 5d deleted those loop methods. The derived data moved into
 handlers / callbacks, and the lifecycle FSM now auto-fires the registered
-adapter in its phase-end stage
-(`default_on_phase_end_before_checkpoint` in `pipeline/lifecycle.py` —
-after the handler, before the checkpoint write);
+adapter in its `adapter` stage
+(`PhaseLifecycle._fire_adapter` in `pipeline/lifecycle.py` — stage 8,
+after the handler and gates, before the checkpoint write);
 `_PipelineRun._on_phase_end` keeps only timer/banner duties and the
 legacy fallback. Direct adapter calls remain only for special
 pre-profile helpers such as hypothesis.
