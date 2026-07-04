@@ -313,6 +313,65 @@ class TestParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["run", "--task", "x", "--task-file", "f.md", "--project", "/p"])
 
+    def test_version_flag_prints_versions_and_exits_zero(
+        self,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["--version"])
+        assert excinfo.value.code == 0
+        out = capsys.readouterr().out
+        assert "orcho-core" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# --version string composition
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVersionString:
+    @staticmethod
+    def _fake_version(known: dict[str, str]):
+        from importlib import metadata
+
+        def version(name: str) -> str:
+            try:
+                return known[name]
+            except KeyError:
+                raise metadata.PackageNotFoundError(name) from None
+
+        return version
+
+    def test_core_and_mcp_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version",
+            self._fake_version({"orcho-core": "1.2.3", "orcho-mcp": "4.5.6"}),
+        )
+        assert orcho._version_string() == "orcho-core 1.2.3\norcho-mcp 4.5.6"
+
+    def test_mcp_absent_is_omitted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version",
+            self._fake_version({"orcho-core": "1.2.3"}),
+        )
+        assert orcho._version_string() == "orcho-core 1.2.3"
+
+    def test_core_metadata_missing_degrades_gracefully(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version", self._fake_version({}),
+        )
+        out = orcho._version_string()
+        assert out.startswith("orcho-core ")
+        assert "package metadata not found" in out
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_run facade
