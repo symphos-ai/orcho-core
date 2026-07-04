@@ -565,7 +565,33 @@ def _print_review_preview(state: PipelineState, phase_log_key: str, title: str) 
             payload[key] = log[key]
     if "parse_error" in log:
         payload["parse_error"] = log["parse_error"]
-    print(_render_review_block(payload, title=title))
+    print(_render_review_block(
+        payload, title=title, round=_review_round(state, phase_log_key, log),
+    ))
+
+
+def _review_round(
+    state: PipelineState, phase_log_key: str, log: dict,
+) -> int | None:
+    """Resolve the reviewer round number for the summary ``R<n>`` token.
+
+    Only the round-bearing reviewer loops carry a meaningful round:
+    ``validate_plan`` mirrors ``plan_round`` as ``attempt`` in its phase
+    log, and ``review_changes`` tracks ``repair_round`` in ``state.extras``.
+    ``final_acceptance`` has no round concept, so it stays ``None`` (never
+    an ``R<n>``). The summary renderer only surfaces the token when
+    ``round > 1``.
+    """
+    if phase_log_key == "validate_plan":
+        raw = log.get("attempt")
+    elif phase_log_key == "review_changes":
+        raw = log.get("attempt") or state.extras.get("repair_round")
+    else:
+        return None
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_fix_runtime_config(state: PipelineState) -> dict:

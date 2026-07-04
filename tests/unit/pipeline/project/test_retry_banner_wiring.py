@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from pipeline.control.handoff_banners import RetryOutcome
 from pipeline.project.handoff import (
     PhaseHandoffResumeOutcome,
@@ -22,6 +24,25 @@ from pipeline.project.handoff import (
     _classify_retry_outcome,
     _finish_retry_banner,
 )
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode():
+    """Pin the full multi-line banner shape.
+
+    ``summary`` (the default run-output mode) collapses the retry banners
+    emitted by ``_begin_retry_banner`` / ``_finish_retry_banner`` to a
+    two-line presenter card; this file asserts the full banner, so force
+    ``live`` and restore.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before
 
 
 def _run_with_events(tmp_path: Path, kinds: list[str]) -> SimpleNamespace:

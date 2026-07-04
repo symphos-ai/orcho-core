@@ -115,6 +115,14 @@ def _print_gate_live_block(lines: tuple[str, ...]) -> None:
     from agents.stream import append_agent_log_section
 
     append_agent_log_section(lines[0], "\n".join(lines[1:]))
+    # Summary mode: collapse the framed block to a single presenter line.
+    # The durable ``output.log`` mirror above runs in every mode, so this
+    # is purely a stdout substitution; live/debug keep the multi-line block
+    # below byte-identical. Branch strictly on ``get_output_mode``.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        print(_gate_summary_line(lines))
+        return
     print()
     print(paint("+-- Official verification gates", C.CYAN, C.BOLD))
     print(paint(f"| {lines[0]}", C.CYAN, C.BOLD))
@@ -125,6 +133,108 @@ def _print_gate_live_block(lines: tuple[str, ...]) -> None:
         print(f"| {line}")
     print(paint("+-- durable receipts for this run", C.GREY))
     print()
+
+
+def _gate_summary_line(lines: tuple[str, ...]) -> str:
+    """Collapse one gate live block into a single presenter line.
+
+    Parses the pre-rendered block: the header carries the timing/hook
+    label, each ``envs:`` / ``commands:`` body line carries the
+    ``name PASS|FAIL`` gate tokens, and an optional ``receipts:`` line
+    carries the durable receipt paths (whose parent is the run's receipts
+    directory). Gate names, verdicts, and the receipts path are structured
+    tokens — the presenter never truncates them. ``ok`` drives the
+    ``✓``/``✗`` glyph and is false when any gate token is unsuccessful
+    (``FAIL`` or a residual ``MISSING/STALE``) or when the pass captured
+    executor errors (an ``errors: N`` body line). On success the presenter
+    shows the
+    receipts *directory*; on failure this collapses to the *specific*
+    failing receipt file when it can be matched by gate name, so a
+    ``✗ gates … · receipt → <path>`` line points at the real failing proof
+    rather than only its parent directory.
+    """
+    from core.io import summary_lines
+
+    header = lines[0]
+    timing = header.removeprefix("Verification gates").lstrip(" —-") or header
+    result_parts: list[str] = []
+    receipt_paths: list[str] = []
+    failing_names: list[str] = []
+    has_errors = False
+    for line in lines[1:]:
+        if line.startswith("receipts: "):
+            receipt_paths.extend(
+                p for p in line[len("receipts: "):].split(" · ") if p
+            )
+            continue
+        if line.startswith("errors: "):
+            has_errors = True
+            result_parts.append(line)
+            continue
+        body = line
+        for prefix in ("envs: ", "commands: "):
+            if line.startswith(prefix):
+                body = line[len(prefix):]
+                break
+        result_parts.append(body)
+        failing_names.extend(_failing_gate_names(body))
+    results = " · ".join(result_parts)
+    ok = not failing_names and not has_errors
+    receipts_path = _gate_receipts_reference(receipt_paths, failing_names, ok=ok)
+    return summary_lines.gates_line(timing, results, receipts_path, ok)
+
+
+# Gate-token statuses that mean the gate did not succeed. ``FAIL`` is an
+# executed failure; ``MISSING/STALE`` is a residual required receipt that was
+# never satisfied — both must break the summary ``✓`` glyph. ``FRESH``,
+# ``PASS`` and ``SKIPPED MANUAL`` are not failures.
+_FAILING_GATE_STATUSES: frozenset[str] = frozenset({"FAIL", "MISSING/STALE"})
+
+
+def _failing_gate_names(body: str) -> list[str]:
+    """Extract the ``name`` of each unsuccessful ``name STATUS`` gate token.
+
+    Gate tokens are ``·``-joined ``name STATUS`` pairs; ``STATUS`` is the
+    final whitespace-delimited word (``PASS``/``FAIL``/``MISSING/STALE``/…)
+    and everything before it is the gate name (which itself may contain
+    spaces). A token counts as failing when its status is in
+    :data:`_FAILING_GATE_STATUSES` (``FAIL`` or a residual ``MISSING/STALE``).
+    """
+    names: list[str] = []
+    for token in body.split(" · "):
+        parts = token.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1] in _FAILING_GATE_STATUSES:
+            names.append(parts[0].strip())
+    return names
+
+
+def _gate_receipts_reference(
+    receipt_paths: list[str], failing_names: list[str], *, ok: bool,
+) -> str:
+    """Pick the receipts reference for the summary gate line.
+
+    On success (or when no receipt paths are known) return the receipts
+    *directory* — the parent of the first receipt path. On failure, try to
+    match a failing gate name to its specific receipt file (by sanitized
+    filename stem, covering both command receipts ``<stem>.json`` and env
+    receipts ``verify_env_<stem>.json``) and return that concrete file so
+    the operator lands on the real failing proof; fall back to the
+    directory when no path matches.
+    """
+    if not receipt_paths:
+        return ""
+    receipts_dir = str(Path(receipt_paths[0]).parent)
+    if ok:
+        return receipts_dir
+    from pipeline.evidence.verification_receipt import _sanitize_filename_stem
+
+    for name in failing_names:
+        stem = _sanitize_filename_stem(name)
+        candidates = {stem, f"verify_env_{stem}"}
+        for path in receipt_paths:
+            if Path(path).stem in candidates:
+                return path
+    return receipts_dir
 
 
 def _auto_run_required_receipts_live(
@@ -1439,9 +1549,27 @@ class _PipelineRun:
             self, "_presentation", PresentationPolicy.TERMINAL,
         )
         if presentation is PresentationPolicy.TERMINAL:
-            render_delivery_outcome(
-                decision, output_fn=print, run_dir=self.output_dir,
-            )
+            from core.observability.logging import get_output_mode
+
+            if (
+                get_output_mode() == "summary"
+                and decision.status == "committed"
+            ):
+                # Summary mode collapses the multi-line committed outcome to
+                # the presenter's one-line ``✓ delivery · committed <sha>``.
+                # live/debug keep ``render_delivery_outcome`` byte-identical;
+                # non-committed terminal statuses fall through to it in every
+                # mode (they carry no summary grammar line).
+                from core.io import summary_lines
+
+                print(summary_lines.delivery_line(
+                    (decision.commit_sha or "")[:7],
+                    decision.delivery_branch or None,
+                ))
+            else:
+                render_delivery_outcome(
+                    decision, output_fn=print, run_dir=self.output_dir,
+                )
 
     # ── Phase blocks ────────────────────────────────────────────────────────
     # Phase execution happens declaratively via ``dispatch_via_v2_profile`` →

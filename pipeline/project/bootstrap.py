@@ -536,6 +536,45 @@ def init_session_with_atexit(
 # ── checkpoint hydration ─────────────────────────────────────────────────
 
 
+def _resume_decision_replay(
+    run_dir: Path | None,
+) -> tuple[str | None, str | None]:
+    """Best-effort ``(action, feedback)`` for the summary resume replay field.
+
+    Reads the active handoff id from ``meta.phase_handoff`` and loads the
+    persisted decision artifact — the SAME artifact the resume replays — via
+    the shared decision loader. Returns ``(None, None)`` when the resume is
+    not a handoff/retry_feedback replay or the decision cannot be read yet, so
+    the presenter simply omits the decision-replay field.
+
+    The round *result* is intentionally not surfaced here: this runs during
+    checkpoint hydration, before the replayed round executes, so the outcome
+    is not yet known. Only the persisted decision (action + operator feedback)
+    is real at this point.
+    """
+    if run_dir is None:
+        return None, None
+    meta_path = run_dir / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    handoff = meta.get("phase_handoff")
+    if not isinstance(handoff, dict):
+        return None, None
+    handoff_id = handoff.get("id")
+    if not handoff_id:
+        return None, None
+    try:
+        from pipeline.project.handoff import load_handoff_decision_validated
+        decision = load_handoff_decision_validated(run_dir, str(handoff_id))
+    except Exception:
+        # Presentation-only: a missing/corrupt artifact still fails the real
+        # resume path downstream — the banner must not be the crash site.
+        return None, None
+    return decision.action, (decision.feedback or None)
+
+
 def init_checkpoint_with_resume(
     *,
     output_dir: Path | None,
@@ -584,10 +623,25 @@ def init_checkpoint_with_resume(
         _resumed_state = _ckpt.load(resume_from)
         if _resumed_state.completed:
             if presentation is PresentationPolicy.TERMINAL:
-                success(
-                    f"Resuming from checkpoint: {len(_resumed_state.completed)} "
-                    f"phases completed ({', '.join(_resumed_state.completed)})"
-                )
+                from core.observability.logging import get_output_mode
+                if get_output_mode() == "summary":
+                    # Summary: a one-line resume banner via the presenter. The
+                    # decision-replay field is sourced from the actually
+                    # persisted handoff decision artifact (the same one resume
+                    # replays), not a synthetic state field — a plain
+                    # quality-gate resume with no active handoff omits it.
+                    from core.io import summary_lines
+                    _action, _fb = _resume_decision_replay(output_dir)
+                    print(summary_lines.resume_line(
+                        len(_resumed_state.completed),
+                        decision_action=_action,
+                        decision_feedback=_fb,
+                    ))
+                else:
+                    success(
+                        f"Resuming from checkpoint: {len(_resumed_state.completed)} "
+                        f"phases completed ({', '.join(_resumed_state.completed)})"
+                    )
             for _ph_key, _ph_val in (_resumed_state.phases or {}).items():
                 session["phases"].setdefault(_ph_key, _ph_val)
             meta_path = output_dir / "meta.json"

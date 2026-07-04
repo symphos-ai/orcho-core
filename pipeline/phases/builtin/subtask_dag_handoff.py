@@ -139,6 +139,15 @@ def _log_subtask_auto_repair_banner(
         separator_codes=(C.GREY,),
         exit_codes=(C.GREY,),
     )
+    # Summary mode: an additional compact one-line card next to the durable
+    # section above. The section's stdout echo is off in summary (only the
+    # file sink runs), so there is no double print; live/debug skip this
+    # branch entirely and keep the full multi-line block byte-identical.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        from core.io import summary_lines
+        mode = "retry_feedback" if retry_mode else "auto_repair"
+        print(f"  {summary_lines.autofix_line(mode, incomplete_ids, attempts, on_exhausted)}")
 
 
 @dataclass(frozen=True)

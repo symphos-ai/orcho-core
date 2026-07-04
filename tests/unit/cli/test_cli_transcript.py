@@ -100,6 +100,26 @@ def _reset_phase_continuity() -> Iterator[None]:
         set_verbose(verbose_before)
 
 
+@pytest.fixture(autouse=True)
+def _live_transcript_mode() -> Iterator[None]:
+    """Pin the full-fidelity (live) transcript shape for this file.
+
+    The default run-output mode is ``summary`` — the compact append-only
+    arc. Every renderer pinned here (phase header, review/plan/implement
+    blocks, synthesised invocation titles) is the live/debug form, so
+    force ``live`` for the whole module and restore afterwards. The
+    summary grammar is pinned separately by the acceptance goldens.
+    """
+    from core.observability import logging as _logging
+
+    before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = before
+
+
 @pytest.fixture
 def force_color() -> Iterator[None]:
     """Opt-in: force-enable color for tests that pin raw ANSI codes."""

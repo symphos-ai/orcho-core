@@ -207,6 +207,7 @@ def test_run_project_pipeline_silent_done_path_emits_nothing(
 def test_silent_run_can_render_phase_output_previews(
     _silent_project: Path, tmp_path: Path,
     capsys: pytest.CaptureFixture,
+    _live_output_mode_for_full_transcript: None,
 ) -> None:
     """Cross terminal dispatch uses this shape: child run shell stays
     SILENT, but parsed phase response blocks retain mono-run parity."""
@@ -463,6 +464,7 @@ def test_silent_policy_threads_through_every_silent_path_module() -> None:
 def test_run_project_pipeline_terminal_default_preserves_transcript(
     _silent_project: Path, tmp_path: Path,
     capsys: pytest.CaptureFixture,
+    _live_output_mode_for_full_transcript: None,
 ) -> None:
     """Default ``presentation=TERMINAL`` (the CLI / SDK back-compat
     path) must emit the legacy transcript shape byte-identical to the
@@ -502,3 +504,24 @@ def test_run_project_pipeline_terminal_default_preserves_transcript(
             f"TERMINAL transcript must contain legacy marker {marker!r}; "
             f"got stdout: {captured.out[:500]!r}"
         )
+
+
+@pytest.fixture
+def _live_output_mode_for_full_transcript():
+    """Pin the full live transcript shape (T2 summary reconciliation).
+
+    ``summary`` is the default run-output mode — the compact append-only
+    arc that collapses phase headers to ``▶ <phase>`` and the review /
+    plan / implement outcome blocks to single lines. Opt-in (NOT autouse):
+    only the transcript-shape tests here request it. The SILENT
+    ``emits_nothing`` tests must stay mode-agnostic — SILENT suppresses
+    output in every mode — so they do not take this fixture.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before

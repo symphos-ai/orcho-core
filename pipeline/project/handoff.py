@@ -476,10 +476,24 @@ def apply_phase_handoff_pause(run: Any) -> None:
                 signal.round > signal.loop_max_rounds and not signal.approved
             ),
         )
-        warn(
-            f"Phase handoff requested for {label}: "
-            f"trigger={signal.trigger!r}. Pausing for human decision."
-        )
+        from core.observability.logging import get_output_mode
+        if get_output_mode() == "summary":
+            # Summary: a two-line handoff pause card via the presenter. The
+            # run parks awaiting the operator decision (no feedback yet).
+            from core.io import summary_lines
+            verdict = "APPROVED" if signal.approved else "REJECTED"
+            head = summary_lines.handoff_line(
+                signal.handoff_id, signal.trigger, verdict,
+            )
+            action = summary_lines.handoff_action_line(
+                "await decision", note="run parks awaiting_phase_handoff",
+            )
+            print(f"{head}\n  {action}")
+        else:
+            warn(
+                f"Phase handoff requested for {label}: "
+                f"trigger={signal.trigger!r}. Pausing for human decision."
+            )
     request_active_handoff(run.session, payload=payload)
     if run._ckpt:
         run._ckpt.set_status(PipelineStatus.AWAITING_PHASE_HANDOFF)
