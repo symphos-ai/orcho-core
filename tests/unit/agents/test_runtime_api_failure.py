@@ -29,7 +29,10 @@ from core.io.retry import (
     AgentAccessError,
     AgentAuthenticationError,
     AgentCallError,
+    AgentCancelledError,
+    AgentProcessKilledError,
     ApiConnectionError,
+    SystemResourceError,
     classify_error,
     classify_from_exit,
 )
@@ -125,6 +128,22 @@ class TestRaiseOnRuntimeFailure:
     def test_connection_nonzero_raises_connection_error(self) -> None:
         with pytest.raises(ApiConnectionError):
             self._call(returncode=1, stderr="connection refused")
+
+    @pytest.mark.parametrize("returncode", [-9, 137])
+    def test_kill_signal_raises_process_killed_error(self, returncode: int) -> None:
+        # Signal-death shape with no classifiable stderr text → kill-type,
+        # which is a SystemResourceError subclass (auto provider_runtime).
+        with pytest.raises(AgentProcessKilledError) as excinfo:
+            self._call(returncode=returncode, stderr="")
+        assert isinstance(excinfo.value, SystemResourceError)
+        assert "SIGKILL" in str(excinfo.value)
+
+    @pytest.mark.parametrize("returncode", [-15, -2])
+    def test_cancel_signal_raises_cancelled_error(self, returncode: int) -> None:
+        with pytest.raises(AgentCancelledError) as excinfo:
+            self._call(returncode=returncode, stderr="")
+        # Cancel-type must NOT be a SystemResourceError (never recoverable).
+        assert not isinstance(excinfo.value, SystemResourceError)
 
     def test_exit_zero_transport_reply_raises_connection_error(self) -> None:
         # The transcript case: CLI exits 0 but the model's own reply IS the
@@ -334,3 +353,43 @@ class TestRuntimesHaltOnApiFailure:
         out = ClaudeAgent(model="claude-test").invoke("hi", "/project")
         assert out == '{"verdict":"REJECTED"}'
         assert calls["n"] == 1
+
+
+# ── run_invoke_with_retry: kill retries once under RUNTIME_RETRY_CONFIG ───────
+
+class TestRunInvokeWithRetrySignalBudget:
+    """RUNTIME_RETRY_CONFIG gives a kill-shaped death exactly one retry while a
+    cancel-shaped death is never retried (generic non-zero exits stay 0)."""
+
+    def test_runtime_config_pins_kill_budget_to_one(self) -> None:
+        # The budget is intentional, not an inherited default.
+        assert _failures.RUNTIME_RETRY_CONFIG.process_killed_max_retries == 1
+
+    def test_kill_is_retried_exactly_once_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Killed by SIGKILL (OOM), no classifiable stderr → kill-type.
+                raise classify_from_exit(-9, "")
+            return "recovered"
+
+        out = _failures.run_invoke_with_retry(attempt, runtime="claude")
+        assert out == "recovered"
+        assert calls["n"] == 2  # one kill + one successful retry
+
+    def test_cancel_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            raise classify_from_exit(-15, "")
+
+        with pytest.raises(AgentCancelledError):
+            _failures.run_invoke_with_retry(attempt, runtime="claude")
+        assert calls["n"] == 1  # no retry

@@ -10,7 +10,12 @@ the historical empty-meta behaviour.
 
 from __future__ import annotations
 
-from core.io.retry import AgentAccessError, AgentCallError, RateLimitError
+from core.io.retry import (
+    AgentAccessError,
+    AgentCallError,
+    RateLimitError,
+    classify_from_exit,
+)
 from pipeline.project.run import _failure_metadata_for_exception
 
 
@@ -52,6 +57,26 @@ def test_typed_transient_error_classifies_provider_runtime() -> None:
     assert meta["recommended_action"] == "resume_or_retry_phase"
     assert "429 too many requests" in meta["provider_message"]
     assert "stderr_excerpt" not in meta
+
+
+def test_kill_signal_classifies_provider_runtime_and_names_signal() -> None:
+    # A kill-shaped signal death routes to provider_runtime (via the
+    # SystemResourceError subclass) with the signal name in provider_message —
+    # not a bare ``exit=-9``.
+    meta = _meta(classify_from_exit(-9, ""))
+    assert meta["failure_kind"] == "provider_runtime"
+    assert meta["recoverable"] is True
+    assert "SIGKILL" in meta["provider_message"]
+    assert meta["provider_message"] != "exit=-9"
+
+
+def test_cancel_signal_takes_generic_excerpt_branch() -> None:
+    # A cancel-shaped signal death is neither provider_runtime nor recoverable;
+    # it falls to the durable stderr_excerpt branch like generic/auth failures.
+    meta = _meta(classify_from_exit(-15, ""))
+    assert meta.get("failure_kind") != "provider_runtime"
+    assert "recoverable" not in meta
+    assert "SIGTERM" in meta["stderr_excerpt"]
 
 
 def test_empty_stderr_omits_excerpt_key() -> None:
