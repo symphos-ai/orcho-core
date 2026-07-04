@@ -25,9 +25,11 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+from importlib import metadata
 from pathlib import Path
 
 # Bootstrap: ensure the engine root is on sys.path so `python -m cli.orcho`
@@ -132,6 +134,22 @@ def _positive_int(value: str) -> int:
             f"must be a positive integer, got {n}",
         )
     return n
+
+
+def _version_string() -> str:
+    """Installed package versions for ``--version``.
+
+    orcho-core degrades to an explanatory note when package metadata is
+    absent (source checkout run without an install); orcho-mcp is listed
+    only when it is installed alongside.
+    """
+    try:
+        lines = [f"orcho-core {metadata.version('orcho-core')}"]
+    except metadata.PackageNotFoundError:
+        lines = ["orcho-core (version unknown: package metadata not found)"]
+    with contextlib.suppress(metadata.PackageNotFoundError):
+        lines.append(f"orcho-mcp {metadata.version('orcho-mcp')}")
+    return "\n".join(lines)
 
 
 def _nonempty_str(value: str) -> str:
@@ -845,6 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
         description=TAGLINE,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=QUICK_HELP,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_version_string(),
+        help="Show installed orcho package versions and exit",
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
