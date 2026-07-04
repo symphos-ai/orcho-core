@@ -228,6 +228,31 @@ def cmd_web(args: argparse.Namespace) -> int:
     return web_main(argv)
 
 
+def cmd_tui(args: argparse.Namespace) -> int:
+    """Delegate to the ``orcho-tui`` package, which owns the terminal UI."""
+    try:
+        from orcho_tui.cli import main as tui_main
+    except ImportError:
+        # The terminal UI is an optional component. The `tui` command is always
+        # reserved by the CLI; a selective install just needs the extra pulled in.
+        print(
+            'orcho-tui is not installed.\n'
+            'Install it with:  pip install "orcho[tui]"   (or: pip install orcho-tui)',
+            file=sys.stderr,
+        )
+        return 1
+    argv: list[str] = []
+    if getattr(args, "run_id", None):
+        argv += ["--run-id", args.run_id]
+    if getattr(args, "run_dir", None):
+        argv += ["--run-dir", args.run_dir]
+    if getattr(args, "follow", False):
+        argv.append("--follow")
+    if getattr(args, "replay", False):
+        argv.append("--replay")
+    return tui_main(argv)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Read/report handlers — route through _run_cli
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1407,6 +1432,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run Streamlit without auto-opening a browser",
     )
     p_web.set_defaults(func=cmd_web)
+
+    # ── tui ───────────────────────────────────────────────────────────────────
+    p_tui = sub.add_parser(
+        "tui", help="Open the terminal UI to watch or steer a run"
+    )
+    p_tui.add_argument(
+        "--run-id", help="Run id to open (resolved against the workspace)."
+    )
+    p_tui.add_argument(
+        "--run-dir", help="Path to a run directory to open."
+    )
+    p_tui_mode = p_tui.add_mutually_exclusive_group()
+    p_tui_mode.add_argument(
+        "--follow", action="store_true", help="Follow a live run."
+    )
+    p_tui_mode.add_argument(
+        "--replay", action="store_true", help="Replay a finished run."
+    )
+    p_tui.set_defaults(func=cmd_tui)
 
     # ── verify ────────────────────────────────────────────────────────────────
     p_verify = sub.add_parser(

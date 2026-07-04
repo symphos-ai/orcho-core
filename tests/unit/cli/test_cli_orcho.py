@@ -271,6 +271,21 @@ class TestParser:
         assert args.projects == ["unity:/u", "api:/a"]
         assert args.profile == "lite"
 
+    def test_tui_subcommand(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["tui", "--run-dir", "/x", "--follow"])
+        assert args.command == "tui"
+        assert args.run_dir == "/x"
+        assert args.follow is True
+        assert args.replay is False
+        from cli.orcho import cmd_tui
+        assert args.func is cmd_tui
+
+    def test_tui_follow_replay_mutually_exclusive(self) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["tui", "--follow", "--replay"])
+
     def test_status_no_run_id(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["status"])
@@ -4158,3 +4173,45 @@ class TestVerboseHelpGroups:
             assert f"[{name.upper()}]" in out, name
         assert "OTHER" in out
         assert "[HELP]" in out
+
+
+class TestTuiDispatch:
+    """``orcho tui`` delegates to the optional ``orcho-tui`` package, mirroring
+    ``orcho web`` → ``orcho-web``: a lazy, guarded import so ``orcho-core`` keeps
+    no hard dependency on its sibling."""
+
+    def test_not_installed_prints_install_hint(self, monkeypatch, capsys) -> None:
+        import argparse
+        import builtins
+
+        from cli.orcho import cmd_tui
+
+        real_import = builtins.__import__
+
+        def _no_orcho_tui(name, *a, **k):
+            if name.startswith("orcho_tui"):
+                raise ImportError("no orcho_tui")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_orcho_tui)
+        args = argparse.Namespace(run_id=None, run_dir="/x", follow=False, replay=False)
+        assert cmd_tui(args) == 1
+        assert "orcho-tui is not installed" in capsys.readouterr().err
+
+    def test_dispatch_translates_argv(self, monkeypatch) -> None:
+        import argparse
+        import sys
+        import types
+
+        from cli.orcho import cmd_tui
+
+        seen: dict[str, list[str]] = {}
+        fake = types.ModuleType("orcho_tui.cli")
+        fake.main = lambda argv: (seen.__setitem__("argv", argv), 0)[1]
+        pkg = types.ModuleType("orcho_tui")
+        monkeypatch.setitem(sys.modules, "orcho_tui", pkg)
+        monkeypatch.setitem(sys.modules, "orcho_tui.cli", fake)
+
+        args = argparse.Namespace(run_id="r1", run_dir=None, follow=True, replay=False)
+        assert cmd_tui(args) == 0
+        assert seen["argv"] == ["--run-id", "r1", "--follow"]
