@@ -42,7 +42,8 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Maintenance", [
         ("repair-state", "inspect and safely apply known run-state repairs"),
     ]),
-    ("Dashboard", [
+    ("Interfaces", [
+        ("tui", "open the terminal UI to watch or steer a run"),
         ("web", "start the Streamlit web dashboard"),
     ]),
 ]
