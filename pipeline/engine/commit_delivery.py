@@ -38,6 +38,7 @@ from pipeline.engine.delivery_branch import (
     publish_delivery_branch,
     resolve_delivery_branch,
 )
+from pipeline.engine.delivery_publish import publish_delivery
 from pipeline.engine.run_diff import resolve_git_root
 from pipeline.run_state.release_verdict import is_release_blocked
 
@@ -674,7 +675,8 @@ def apply_commit_delivery(
         delivery_outcome = _resolve_delivery_branch_outcome(decision, commit_config)
         if delivery_outcome.plan == "publish":
             return _deliver_published_branch(
-                decision, delivery_outcome, run_dir=run_dir,
+                decision, delivery_outcome,
+                run_dir=run_dir, commit_config=commit_config,
             )
 
     retries = 0
@@ -924,8 +926,9 @@ def _deliver_published_branch(
     outcome: DeliveryBranchOutcome,
     *,
     run_dir: Path,
+    commit_config: Mapping[str, Any] | None = None,
 ) -> CommitDeliveryDecision:
-    """Execute a ``worktree_branch`` publish (ADR 0119).
+    """Execute a ``worktree_branch`` publish (ADR 0119 + ADR 0121).
 
     Commits the run's own work onto its branch inside the disposable run
     worktree, then publishes (rebase onto fresh default) via
@@ -934,6 +937,14 @@ def _deliver_published_branch(
     audit artifact records the real branch commit (``artifact_commit_sha``) to
     satisfy its schema. Non-fatal rebase/offline diagnostics ride along on
     ``delivery_warnings`` / ``delivery_notices``.
+
+    ADR 0121: this is the single point that hands the published branch to a
+    registered git-provider plugin via :func:`publish_delivery` (push +
+    pull-request over the already-signed commit). An opened ``pr_url`` folds
+    into ``delivery_notices`` as a string — no new wire field — and any publish
+    warning folds into ``delivery_warnings``. A disabled gate, missing provider,
+    or provider failure degrades to a "branch ready" notice / warning and the
+    delivery status stays ``committed``.
     """
     branch_sha, error = _commit_run_branch(decision)
     if error is not None:
@@ -948,6 +959,19 @@ def _deliver_published_branch(
         project_path=decision.project_path,
         outcome=outcome,
     )
+    result = publish_delivery(
+        published.pr_intent,
+        branch=published.delivery_branch,
+        cwd=decision.source_path,
+        commit_config=commit_config,
+    )
+    if result.pr_url:
+        delivery_notices = published.notices + (f"PR opened: {result.pr_url}",)
+    else:
+        delivery_notices = published.notices + (
+            f"delivery branch {published.delivery_branch} is ready; "
+            "open a pull request or push it manually",
+        )
     return _persist(
         decision,
         run_dir=run_dir,
@@ -956,8 +980,8 @@ def _deliver_published_branch(
         artifact_commit_sha=branch_sha,
         delivery_branch=published.delivery_branch,
         pr_intent=published.pr_intent,
-        delivery_warnings=published.warnings,
-        delivery_notices=published.notices,
+        delivery_warnings=published.warnings + result.warnings,
+        delivery_notices=delivery_notices,
     )
 
 

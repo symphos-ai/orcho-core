@@ -75,6 +75,11 @@ class DeliveryPrIntent:
     base: str
     title: str
     suggested_command: str
+    # ADR 0121 — full pull-request body a provider plugin may use (lifted from
+    # the release summary). Kept OUT of ``to_dict`` so the durable/wire shape is
+    # byte-identical to the ADR 0119 record; it is an in-process hint for the
+    # publisher only.
+    body: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -534,6 +539,7 @@ def _build_pr_intent(
         base=base,
         title=title,
         suggested_command=f"git push -u {remote} {branch}",
+        body=(release_summary or "").strip(),
     )
 
 
