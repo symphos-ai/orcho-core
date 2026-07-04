@@ -1770,6 +1770,111 @@ class TestWorkspaceInitNoInteractive:
         err = capsys.readouterr().err
         assert "individual project repo" in err
 
+    # --- delivery setup hint (T3) ----------------------------------------
+
+    @staticmethod
+    def _group_with_child(tmp_path: Path) -> Path:
+        """A group root holding one detectable child project."""
+        root = tmp_path / "group"
+        child = root / "proj"
+        child.mkdir(parents=True)
+        (child / "pyproject.toml").write_text("[project]\nname='proj'\n")
+        return root
+
+    def test_prints_delivery_setup_hint_when_helper_returns_hint(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: ["install the gh CLI to enable auto-push"],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Delivery setup:" in out
+        assert "install the gh CLI to enable auto-push" in out
+
+    def test_no_hint_printed_when_helper_returns_empty(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: [],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        assert rc == 0
+        assert "Delivery setup:" not in capsys.readouterr().out
+
+    def test_dry_run_shows_hint_without_writing_files(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: ["install the gh CLI to enable auto-push"],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=True,
+            force=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "install the gh CLI to enable auto-push" in out
+        # --dry-run must not create the workspace layout on disk.
+        assert not (root / "workspace-orchestrator").exists()
+
+    def test_helper_exception_does_not_change_exit_code_or_print(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+
+        def _boom(project_dir, **_):
+            raise RuntimeError("hint probe exploded")
+
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            _boom,
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        # Detection failure never disturbs the init outcome.
+        assert rc == 0
+        assert "Delivery setup:" not in capsys.readouterr().out
+
 
 class TestFormatWorkspaceInitColorPolicy:
     """T3 color-policy guards for format_workspace_init.

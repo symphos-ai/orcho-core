@@ -18,9 +18,11 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pipeline.engine.delivery_branch import DeliveryPrIntent
 from pipeline.engine.delivery_publish import PublishResult
@@ -38,6 +40,67 @@ _GH_MISSING = (
 
 # Seconds before a provider shell-out is abandoned (network calls can hang).
 _COMMAND_TIMEOUT = 120.0
+
+
+def _is_github_remote(url: str) -> bool:
+    """True when ``url`` points at a ``github.com`` git remote.
+
+    Accepts the two forms Orcho emits and consumes:
+
+    * ssh scp-like — ``git@github.com:owner/repo`` (optionally ``.git``)
+    * https — ``https://github.com/owner/repo`` (optionally ``.git``)
+
+    The host must be exactly ``github.com`` (case-insensitive). GitHub
+    Enterprise / self-hosted hosts (e.g. ``github.example.com``) are
+    intentionally out of scope: we do not try to guess self-hosted install
+    hostnames here, so they read as non-github and keep the generic path.
+    """
+    return _remote_host(url) == "github.com"
+
+
+def _remote_host(url: str) -> str | None:
+    """Best-effort lowercase host for a git remote URL, or ``None``.
+
+    Handles scheme URLs (``https://``, ``ssh://``) via :func:`urlsplit` and the
+    scp-like ``[user@]host:path`` shorthand that has no scheme.
+    """
+    text = (url or "").strip()
+    if not text:
+        return None
+    if "://" in text:
+        try:
+            host = urlsplit(text).hostname
+        except ValueError:
+            return None
+        return host.lower() if host else None
+    # scp-like syntax: ``[user@]host:path`` (host ends at the first ``:``).
+    match = re.match(r"^(?:[^@/]+@)?([^/:]+):", text)
+    return match.group(1).lower() if match else None
+
+
+def _gh_install_hint() -> str:
+    """Platform-appropriate one-liner for installing the ``gh`` CLI.
+
+    Text only — this NEVER installs anything. On macOS it suggests Homebrew;
+    elsewhere it points at the official download page rather than guessing a
+    package manager.
+    """
+    if sys.platform == "darwin":
+        return "install the gh CLI with `brew install gh`"
+    return "install the gh CLI from https://cli.github.com"
+
+
+def _gh_setup_recommendation() -> str:
+    """Full setup recommendation: how to install/authenticate + what it buys.
+
+    Descriptive text only; forming it performs no installation, authentication,
+    or PATH changes.
+    """
+    return (
+        f"GitHub remote detected: {_gh_install_hint()} and authenticate it "
+        "(gh auth login) so Orcho can auto-push the delivery branch + open a "
+        "PR on delivery"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +186,28 @@ class GitHubDeliveryProvider:
                 warnings=(f"github delivery provider error: {exc}",),
             )
 
+    def setup_hint(self, project_dir: Path) -> str | None:
+        """Recommend gh setup when a GitHub remote exists but gh is not ready.
+
+        Optional :class:`~pipeline.engine.delivery_publish.DeliveryPublisher`
+        capability (ADR 0121, T1). Returns a human-readable recommendation only
+        when ``project_dir``'s ``origin`` is a github.com remote AND the ``gh``
+        CLI is missing or unauthenticated — the case where this provider *could*
+        help but is not ready. Returns ``None`` for a non-github remote, when gh
+        is already usable, or on any error. Best-effort and text-only: it never
+        installs, authenticates, pushes, commits, or raises.
+        """
+        try:
+            cwd = Path(project_dir)
+            origin = self._run(["git", "remote", "get-url", "origin"], cwd)
+            if not origin.ok or not _is_github_remote(origin.stdout):
+                return None
+            if self._gh_ready(cwd):
+                return None
+            return _gh_setup_recommendation()
+        except Exception:  # noqa: BLE001 — setup hints are strictly best-effort
+            return None
+
     # --- internal ---------------------------------------------------------
 
     def _publish(
@@ -134,7 +219,10 @@ class GitHubDeliveryProvider:
         remote: str,
     ) -> PublishResult:
         if not self._gh_available(cwd):
-            return PublishResult(pushed=False, warnings=(_GH_MISSING,))
+            return PublishResult(
+                pushed=False,
+                warnings=(self._gh_missing_warning(remote, cwd),),
+            )
 
         auth = self._run(["gh", "auth", "status"], cwd)
         if not auth.ok:
@@ -187,6 +275,32 @@ class GitHubDeliveryProvider:
                 ),
             )
         return PublishResult(pushed=True, pr_url=pr_url)
+
+    def _gh_missing_warning(self, remote: str, cwd: Path) -> str:
+        """Warning text when ``gh`` is unavailable at push time.
+
+        On a github.com ``remote`` the generic message is sharpened with an
+        install hint so the operator knows how to enable auto-push + PR opening.
+        On any other remote the provider-neutral :data:`_GH_MISSING` stays.
+        """
+        if not self._remote_is_github(remote, cwd):
+            return _GH_MISSING
+        return (
+            "gh CLI not found; delivery branch not pushed and no pull request "
+            f"opened. {_gh_install_hint()} and authenticate it (gh auth login) "
+            "to enable auto-push + open a PR on delivery"
+        )
+
+    def _remote_is_github(self, remote: str, cwd: Path) -> bool:
+        """True when ``remote`` resolves to a github.com URL in ``cwd``."""
+        url = self._run(["git", "remote", "get-url", remote], cwd)
+        return url.ok and _is_github_remote(url.stdout)
+
+    def _gh_ready(self, cwd: Path) -> bool:
+        """True only when ``gh`` is installed AND authenticated in ``cwd``."""
+        if not self._gh_available(cwd):
+            return False
+        return self._run(["gh", "auth", "status"], cwd).ok
 
     def _gh_available(self, cwd: Path) -> bool:
         return self._run(["gh", "--version"], cwd).ok

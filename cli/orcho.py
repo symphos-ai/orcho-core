@@ -579,6 +579,48 @@ def cmd_repair_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_delivery_setup_hints(result, project_group_root: str) -> None:
+    """Best-effort: print one delivery setup hint after ``workspace init``.
+
+    Gathers candidate project directories from the init ``result`` (detected +
+    interactively-confirmed projects, plus the group root itself when it is a
+    git repo), asks the provider-neutral
+    :func:`~pipeline.engine.delivery_publish.collect_delivery_setup_hints`
+    helper for setup advice, and prints the first non-empty hint once.
+
+    The CLI carries no provider knowledge: all remote detection and hint
+    wording live behind the helper. Every step is wrapped so a detection
+    failure prints nothing and never disturbs the init exit code — this is a
+    courtesy nudge, not part of the init contract. It only reads, so it is safe
+    on ``--dry-run`` where it surfaces the same advice in the preview.
+    """
+    try:
+        from pipeline.engine.delivery_publish import collect_delivery_setup_hints
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: str) -> None:
+            if path and path not in seen:
+                seen.add(path)
+                candidates.append(path)
+
+        for proj in getattr(result, "detected_projects", ()):
+            _add(getattr(proj, "path", ""))
+        for proj in getattr(result, "extra_projects", ()):
+            _add(getattr(proj, "path", ""))
+        if project_group_root and (Path(project_group_root) / ".git").exists():
+            _add(project_group_root)
+
+        for path in candidates:
+            hints = collect_delivery_setup_hints(Path(path))
+            if hints:
+                print(f"\nDelivery setup:\n  {hints[0]}")
+                return
+    except Exception:  # noqa: BLE001 — a hint must never break workspace init
+        return
+
+
 def cmd_workspace_init(args: argparse.Namespace) -> int:
     """Bootstrap an Orcho workspace under a project-group directory."""
     from sdk.workspace import (
@@ -632,6 +674,7 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
     print(format_workspace_init(result))
+    _emit_delivery_setup_hints(result, project_group_root)
     return 0
 
 

@@ -14,10 +14,15 @@ import tomllib
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from pipeline.engine.delivery_branch import DeliveryPrIntent
+from pipeline.engine.delivery_providers import github as github_provider
 from pipeline.engine.delivery_providers.github import (
     CommandResult,
     GitHubDeliveryProvider,
+    _gh_install_hint,
+    _is_github_remote,
 )
 from pipeline.entry_points import discover_entry_points
 
@@ -45,6 +50,8 @@ class _StubRunner:
         push_ok: bool = True,
         pr_ok: bool = True,
         pr_stdout: str = "https://github.com/acme/widget/pull/9\n",
+        remote_url: str = "https://github.com/acme/widget.git",
+        remote_ok: bool = True,
     ) -> None:
         self.calls: list[list[str]] = []
         self._gh_available = gh_available
@@ -52,6 +59,8 @@ class _StubRunner:
         self._push_ok = push_ok
         self._pr_ok = pr_ok
         self._pr_stdout = pr_stdout
+        self._remote_url = remote_url
+        self._remote_ok = remote_ok
 
     def __call__(self, argv: Sequence[str], cwd: Path) -> CommandResult:
         argv = list(argv)
@@ -66,6 +75,12 @@ class _StubRunner:
             return CommandResult(
                 ok=self._authed,
                 stderr="" if self._authed else "not logged in to any GitHub hosts",
+            )
+        if argv[:3] == ["git", "remote", "get-url"]:
+            return CommandResult(
+                ok=self._remote_ok,
+                stdout=self._remote_url if self._remote_ok else "",
+                stderr="" if self._remote_ok else "error: No such remote 'origin'",
             )
         if argv[:2] == ["git", "push"]:
             return CommandResult(
@@ -188,6 +203,175 @@ def test_publish_never_raises_on_runner_exception(tmp_path: Path) -> None:
 
     assert result.pushed is False
     assert result.warnings and "subprocess exploded" in result.warnings[0]
+
+
+# --- github remote detection ---------------------------------------------
+
+
+def test_is_github_remote_accepts_ssh_scp_form() -> None:
+    assert _is_github_remote("git@github.com:acme/widget.git")
+    assert _is_github_remote("git@github.com:acme/widget")
+    # Host match is case-insensitive.
+    assert _is_github_remote("git@GitHub.com:acme/widget.git")
+
+
+def test_is_github_remote_accepts_https_form() -> None:
+    assert _is_github_remote("https://github.com/acme/widget.git")
+    assert _is_github_remote("https://github.com/acme/widget")
+    assert _is_github_remote("https://GITHUB.com/acme/widget")
+
+
+def test_is_github_remote_rejects_non_github_and_enterprise() -> None:
+    assert not _is_github_remote("git@gitlab.com:acme/widget.git")
+    assert not _is_github_remote("https://gitlab.com/acme/widget.git")
+    assert not _is_github_remote("https://bitbucket.org/acme/widget")
+    # Look-alike hosts must not match github.com.
+    assert not _is_github_remote("https://github.example.com/acme/widget")
+    assert not _is_github_remote("https://notgithub.com/acme/widget")
+    assert not _is_github_remote("git@github.com.evil.example:acme/widget")
+
+
+def test_is_github_remote_rejects_empty_and_garbage() -> None:
+    assert not _is_github_remote("")
+    assert not _is_github_remote("   ")
+    assert not _is_github_remote("not a url")
+
+
+# --- gh install hint (platform branches) ---------------------------------
+
+
+def test_gh_install_hint_uses_brew_on_macos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(github_provider.sys, "platform", "darwin")
+    hint = _gh_install_hint()
+    assert "brew install gh" in hint
+
+
+def test_gh_install_hint_points_at_cli_site_off_macos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(github_provider.sys, "platform", "linux")
+    hint = _gh_install_hint()
+    assert "brew" not in hint
+    assert hint == "install the gh CLI from https://cli.github.com"
+
+
+# --- setup_hint (optional provider capability) ---------------------------
+
+
+def test_setup_hint_recommends_when_github_remote_and_gh_missing(
+    tmp_path: Path,
+) -> None:
+    runner = _StubRunner(
+        remote_url="https://github.com/acme/widget.git", gh_available=False
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    hint = provider.setup_hint(tmp_path)
+
+    assert hint is not None
+    assert "GitHub" in hint
+    # It never tries to push or open a PR while probing.
+    assert not runner.ran(["git", "push"])
+    assert not runner.ran(["gh", "pr", "create"])
+
+
+def test_setup_hint_recommends_when_github_remote_and_gh_unauthenticated(
+    tmp_path: Path,
+) -> None:
+    runner = _StubRunner(
+        remote_url="git@github.com:acme/widget.git",
+        gh_available=True,
+        authed=False,
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    assert provider.setup_hint(tmp_path) is not None
+
+
+def test_setup_hint_none_when_github_remote_and_gh_ready(
+    tmp_path: Path,
+) -> None:
+    runner = _StubRunner(
+        remote_url="https://github.com/acme/widget.git",
+        gh_available=True,
+        authed=True,
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    assert provider.setup_hint(tmp_path) is None
+
+
+def test_setup_hint_none_for_non_github_remote(tmp_path: Path) -> None:
+    runner = _StubRunner(
+        remote_url="git@gitlab.com:acme/widget.git", gh_available=False
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    assert provider.setup_hint(tmp_path) is None
+
+
+def test_setup_hint_none_when_no_remote(tmp_path: Path) -> None:
+    runner = _StubRunner(remote_ok=False, gh_available=False)
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    assert provider.setup_hint(tmp_path) is None
+
+
+def test_setup_hint_none_on_runner_error(tmp_path: Path) -> None:
+    def _boom(argv: Sequence[str], cwd: Path) -> CommandResult:
+        raise RuntimeError("runner exploded")
+
+    provider = GitHubDeliveryProvider(runner=_boom)
+
+    assert provider.setup_hint(tmp_path) is None
+
+
+# --- sharpened degrade wording (gh missing at push time) -----------------
+
+
+def test_degrade_on_github_remote_includes_install_hint(
+    tmp_path: Path,
+) -> None:
+    runner = _StubRunner(
+        gh_available=False, remote_url="https://github.com/acme/widget.git"
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    result = provider.publish(
+        _intent(), branch="orcho/deliver/r1-add-x", cwd=tmp_path, remote="origin"
+    )
+
+    assert result.pushed is False
+    assert result.warnings
+    warning = result.warnings[0]
+    assert "gh CLI not found" in warning
+    # The install hint is surfaced for a GitHub remote.
+    assert "gh" in warning and "install the gh CLI" in warning
+    assert not runner.ran(["git", "push"])
+
+
+def test_degrade_on_non_github_remote_keeps_generic_message(
+    tmp_path: Path,
+) -> None:
+    runner = _StubRunner(
+        gh_available=False, remote_url="git@gitlab.com:acme/widget.git"
+    )
+    provider = GitHubDeliveryProvider(runner=runner)
+
+    result = provider.publish(
+        _intent(), branch="orcho/deliver/r1-add-x", cwd=tmp_path, remote="origin"
+    )
+
+    assert result.pushed is False
+    assert result.warnings
+    warning = result.warnings[0]
+    # Provider-neutral generic message: no install hint, no brew/cli.github.com.
+    assert "push the branch and open a pull request manually" in warning
+    assert "brew install gh" not in warning
+    assert "https://cli.github.com" not in warning
+    assert not runner.ran(["git", "push"])
 
 
 # --- default runner against fake gh / git on a temporary PATH ------------

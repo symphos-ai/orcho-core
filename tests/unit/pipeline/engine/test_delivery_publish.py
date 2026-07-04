@@ -29,6 +29,7 @@ from pipeline.engine.delivery_branch import DeliveryPrIntent
 from pipeline.engine.delivery_publish import (
     DELIVERY_PROVIDER_GROUP,
     PublishResult,
+    collect_delivery_setup_hints,
     publish_delivery,
 )
 
@@ -357,6 +358,120 @@ def test_provider_error_records_warning_and_stays_committed(
 
     assert delivered.status == "committed"
     assert any("provider blew up" in w for w in delivered.delivery_warnings)
+
+
+# --- collect_delivery_setup_hints() (provider-neutral, no git) -----------
+
+
+class _HintProvider:
+    """Provider exposing an optional ``setup_hint`` (string / None / raises)."""
+
+    def __init__(
+        self, *, hint: str | None = "install the thing", raises: bool = False
+    ) -> None:
+        self._hint = hint
+        self._raises = raises
+        self.calls: list[Path] = []
+
+    def publish(self, *_: object, **__: object) -> PublishResult:  # pragma: no cover
+        return PublishResult(pushed=False)
+
+    def setup_hint(self, project_dir: Path) -> str | None:
+        self.calls.append(project_dir)
+        if self._raises:
+            raise RuntimeError("hint probe blew up")
+        return self._hint
+
+
+class _NoHintProvider:
+    """Legal provider WITHOUT a ``setup_hint`` method (optional capability)."""
+
+    def publish(self, *_: object, **__: object) -> PublishResult:  # pragma: no cover
+        return PublishResult(pushed=False)
+
+
+def test_collect_hints_gathers_from_capable_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _HintProvider(hint="install gh and authenticate")
+    _register(monkeypatch, github=provider)
+
+    hints = collect_delivery_setup_hints(Path("/proj"))
+
+    assert hints == ["install gh and authenticate"]
+    assert provider.calls == [Path("/proj")]
+
+
+def test_collect_hints_skips_provider_without_setup_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(monkeypatch, plain=_NoHintProvider())
+
+    assert collect_delivery_setup_hints(Path("/proj")) == []
+
+
+def test_collect_hints_skips_none_returning_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(monkeypatch, github=_HintProvider(hint=None))
+
+    assert collect_delivery_setup_hints(Path("/proj")) == []
+
+
+def test_collect_hints_swallows_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    good = _HintProvider(hint="do the good setup")
+    bad = _HintProvider(raises=True)
+    _register(monkeypatch, boom=bad, ok=good)
+
+    # The raising provider is silently skipped; the healthy one still surfaces.
+    assert collect_delivery_setup_hints(Path("/proj")) == ["do the good setup"]
+
+
+def test_collect_hints_deduplicates_in_discovery_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(
+        monkeypatch,
+        a=_HintProvider(hint="same hint"),
+        b=_HintProvider(hint="other hint"),
+        c=_HintProvider(hint="same hint"),
+    )
+
+    hints = collect_delivery_setup_hints(Path("/proj"))
+
+    assert hints == ["same hint", "other hint"]
+
+
+def test_collect_hints_empty_registry_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(monkeypatch)  # no providers
+
+    assert collect_delivery_setup_hints(Path("/proj")) == []
+
+
+def test_collect_hints_discovery_failure_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _explode(*_: object, **__: object) -> dict[str, object]:
+        raise RuntimeError("discovery is down")
+
+    monkeypatch.setattr(delivery_publish, "discover_entry_points", _explode)
+
+    assert collect_delivery_setup_hints(Path("/proj")) == []
+
+
+def test_collect_hints_non_callable_setup_hint_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A provider whose ``setup_hint`` attribute is not callable must not crash
+    # the collector; it is treated the same as a provider without the method.
+    weird = SimpleNamespace(setup_hint="not-callable")
+    _register(monkeypatch, weird=weird)
+
+    assert collect_delivery_setup_hints(Path("/proj")) == []
 
 
 # --- guard: provider execution lives only in a provider plugin -----------

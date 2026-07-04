@@ -22,8 +22,9 @@ explicit gate and a plugin boundary:
   gate produces no provider work at all.
 
 This module owns provider resolution and the publish call; it never names or
-executes a provider binary (``gh`` / ``git push`` live only inside a registered
-provider package). The commit site keeps a thin call into
+executes a provider binary (all binary detection, authentication, push, and
+pull-request creation live only inside a registered provider package). The
+commit site keeps a thin call into
 :func:`publish_delivery` and folds the result into the delivery decision's
 notices/warnings.
 """
@@ -41,6 +42,7 @@ __all__ = [
     "DELIVERY_PROVIDER_GROUP",
     "DeliveryPublisher",
     "PublishResult",
+    "collect_delivery_setup_hints",
     "publish_delivery",
 ]
 
@@ -90,6 +92,25 @@ class DeliveryPublisher(Protocol):
         cwd: Path,
         remote: str,
     ) -> PublishResult:
+        ...
+
+    # --- optional -------------------------------------------------------
+    # ``setup_hint`` is an OPTIONAL provider capability: providers that do
+    # not implement it are fully legal ``DeliveryPublisher`` plugins. The
+    # collector below duck-types the method with ``getattr`` + ``callable``
+    # rather than requiring it, so this signature documents the contract
+    # without forcing every provider to satisfy it.
+    def setup_hint(self, project_dir: Path) -> str | None:
+        """Return a human-readable setup hint, or ``None``.
+
+        A provider returns a non-empty hint string when it *could* help
+        deliver from ``project_dir`` but is not yet ready — for example a
+        remote of its kind exists, yet the provider CLI is not installed or
+        not authenticated. It returns ``None`` when it has nothing to
+        suggest (wrong remote kind, already ready, not applicable). The
+        hint is descriptive text only; a provider must never install,
+        authenticate, or mutate anything to produce it, and must not raise.
+        """
         ...
 
 
@@ -147,6 +168,59 @@ def publish_delivery(
             warnings=("delivery publish provider returned an invalid result",),
         )
     return result
+
+
+def collect_delivery_setup_hints(
+    project_dir: Path,
+    *,
+    commit_config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Gather provider setup hints for ``project_dir`` (provider-neutral).
+
+    Walks every provider registered under :data:`DELIVERY_PROVIDER_GROUP`
+    and, for each one that exposes a callable ``setup_hint``, asks it whether
+    it has a setup recommendation for ``project_dir`` (see
+    :meth:`DeliveryPublisher.setup_hint`). Non-empty hints are collected in
+    discovery order, de-duplicated so the same string never repeats.
+
+    This is strictly best-effort:
+
+    * A provider without ``setup_hint`` is skipped silently — the method is
+      optional.
+    * Any exception a provider raises is swallowed and that provider is
+      skipped; one broken provider never suppresses the others' hints.
+    * Discovery failure returns an empty list rather than raising.
+
+    ``commit_config`` is accepted for symmetry with :func:`publish_delivery`
+    (a future provider selection/gate could consult it) but is not required:
+    setup guidance is useful independent of the publish gate, so hints are
+    collected regardless of ``commit.publish``. This function is
+    provider-agnostic — it names no specific provider or CLI.
+    """
+    _ = commit_config  # reserved for future symmetry; intentionally unused
+    try:
+        providers = discover_entry_points(DELIVERY_PROVIDER_GROUP)
+    except Exception:  # noqa: BLE001 — discovery must never crash the caller
+        return []
+
+    hints: list[str] = []
+    seen: set[str] = set()
+    for provider in providers.values():
+        hint_fn = getattr(provider, "setup_hint", None)
+        if not callable(hint_fn):
+            continue
+        try:
+            hint = hint_fn(project_dir)
+        except Exception:  # noqa: BLE001 — a provider hint must never crash
+            continue
+        if not hint:
+            continue
+        text = str(hint)
+        if text in seen:
+            continue
+        seen.add(text)
+        hints.append(text)
+    return hints
 
 
 def _resolve_provider(
