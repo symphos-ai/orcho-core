@@ -99,6 +99,14 @@ gemini = "agents.runtimes.gemini:GeminiAgent"
 # itself ships no built-in entries — this group is purely third-party.
 [project.entry-points."orcho.skills"]
 
+# ADR 0121 — git-provider delivery publishing. A registered provider pushes an
+# approved delivery branch and opens a pull request over the existing signed
+# commit. Core resolves this group by name (or the sole registration) and never
+# shells a provider itself; any embedder can register an alternative provider
+# under the same group.
+[project.entry-points."orcho.delivery_providers"]
+github = "pipeline.engine.delivery_providers.github:GitHubDeliveryProvider"
+
 [project.entry-points."orcho.phases"]
 # Workflow-semantic phase IDs per ADR 0022.
 plan             = "pipeline.phases.builtin:_phase_plan"

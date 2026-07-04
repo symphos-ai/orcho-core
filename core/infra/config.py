@@ -702,6 +702,16 @@ class AppConfig:
             # delivery branch instead of a commit on the default. ``bypass`` is
             # the explicit opt-out (prior "commit onto current HEAD" behavior).
             "branch_policy": "worktree_branch",
+            # ADR 0121 — after an approved worktree_branch delivery, a
+            # registered git-provider plugin may push the published branch and
+            # open a pull request over the already-signed commit. ``auto``
+            # (default) publishes when a provider is registered and enabled;
+            # ``off`` keeps the ADR 0119 behavior (local branch only, no
+            # provider ever resolved or invoked). ``publish_provider`` names one
+            # provider when several are registered; ``None`` auto-selects the
+            # sole registration.
+            "publish": "auto",
+            "publish_provider": None,
             "interactive_default": "apply",
             "auto_in_ci": "approve",
             # ADR 0100 — provider-neutral parking switch. ``auto`` keeps the
