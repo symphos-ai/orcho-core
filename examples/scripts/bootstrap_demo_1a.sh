@@ -24,12 +24,20 @@ printf -v project_arg "%q" "$project_dir"
 printf -v workspace_arg "%q" "$workspace_dir"
 
 run_workspace_init() {
-  local py_bin="$core_dir/.venv/bin/python"
-  if [[ ! -x "$py_bin" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      py_bin="python3"
-    else
-      py_bin="python"
+  # Interpreter resolution: an explicit ORCHO_DEMO_CORE_PYTHON wins (lets
+  # tests and callers pin the interpreter that actually has orcho's
+  # dependencies), then the repo venv, then bare python3. The bare fallback
+  # requires a python3 new enough for this package — a stale system python3
+  # (e.g. macOS/Xcode 3.9) fails at import time.
+  local py_bin="${ORCHO_DEMO_CORE_PYTHON:-}"
+  if [[ -z "$py_bin" ]]; then
+    py_bin="$core_dir/.venv/bin/python"
+    if [[ ! -x "$py_bin" ]]; then
+      if command -v python3 >/dev/null 2>&1; then
+        py_bin="python3"
+      else
+        py_bin="python"
+      fi
     fi
   fi
   PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \

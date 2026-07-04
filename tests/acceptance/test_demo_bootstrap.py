@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parents[2]
@@ -28,7 +29,14 @@ def _run(demo_root: Path, *, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(SCRIPT)],
         cwd=CORE_DIR,
-        env={**os.environ, "ORCHO_DEMO_ROOT": str(demo_root)},
+        env={
+            **os.environ,
+            "ORCHO_DEMO_ROOT": str(demo_root),
+            # Pin the orcho interpreter to the one running this test: the
+            # script's bare-python3 fallback breaks on hosts whose system
+            # python3 is too old for this package.
+            "ORCHO_DEMO_CORE_PYTHON": sys.executable,
+        },
         capture_output=True,
         text=True,
         check=check,
