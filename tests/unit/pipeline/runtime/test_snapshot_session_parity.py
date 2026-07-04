@@ -66,6 +66,24 @@ def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_run_scoped_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the engine's run-scoped env channels for hermetic shape snapshots.
+
+    An orchestrated gate process (or a stale interactive shell — see
+    ``pipeline/project/auto_detect.py``) can carry ``ORCHO_AUTODETECT_DECISION``
+    / ``ORCHO_WORK_MODE``; a session built under them grows an ``auto_detect``
+    block the golden fixtures do not pin, failing these tests for code that is
+    green in a clean shell. The engine-side strip lives in
+    ``pipeline.verification_env.RUN_SCOPED_ENV_CHANNELS``; this fixture keeps
+    the snapshots hermetic regardless of how pytest was launched.
+    """
+    from pipeline.verification_env import RUN_SCOPED_ENV_CHANNELS
+
+    for key in RUN_SCOPED_ENV_CHANNELS:
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_session_shape_normalizer_masks_prompt_size_estimates() -> None:
     """Shape snapshots pin prompt topology, not exact prompt prose size."""
     normalized = normalize_session({
