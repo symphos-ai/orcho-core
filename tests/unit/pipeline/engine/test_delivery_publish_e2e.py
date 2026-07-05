@@ -29,10 +29,13 @@ from pathlib import Path
 
 import pytest
 
+from core.infra.config import AppConfig
 from core.io.git_helpers import create_worktree
+from pipeline.commit_message_parser import parse_commit_message
 from pipeline.engine import delivery_publish
 from pipeline.engine.commit_delivery import (
     apply_commit_delivery,
+    render_commit_message_prompt,
     resolve_commit_delivery,
 )
 from pipeline.engine.delivery_providers.github import (
@@ -257,3 +260,115 @@ def test_gh_missing_degrades_to_local_branch_notice(
     base = _git(repo, "rev-parse", "main")
     assert _git(repo, "rev-list", "--count", f"{base}..{branch}") == "1"
     assert "Signed-off-by:" in _git(repo, "log", "-1", "--format=%B", branch)
+
+
+# --- T5 --mock smoke: default config, operator=ru → English outward artifacts ─
+
+
+def test_mock_publish_outward_authors_english_commit_title_and_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default publish-outward config with a Russian operator language must ship
+    an English outward commit + PR (content_language default), carrying the run
+    id and the content_language message — never the operator release summary.
+
+    Emulates the run.py generator closure: the outward commit prompt is rendered
+    with ``body_language=cfg.content_language`` and a stub agent returns a
+    content_language commit-JSON. The default config (``release_summary`` +
+    ``publish=auto`` + ``worktree_branch``) still forces content_language
+    authorship on this publish-outward path (ADR 0121, T4), and the PR
+    title/body derive from that English message (T3).
+    """
+    monkeypatch.setenv("TASK_LANGUAGE", "Russian")   # operator language
+    monkeypatch.delenv("CONTENT_LANGUAGE", raising=False)  # content unset → English
+    AppConfig.load.cache_clear()
+    try:
+        cfg = AppConfig.load()
+        assert cfg.task_language == "Russian"
+        assert cfg.content_language == "English"
+
+        prompts_seen: list[str] = []
+
+        class _CommitMessageAgent:
+            def invoke(self, prompt: str, cwd: str, **_: object) -> str:
+                prompts_seen.append(prompt)
+                return (
+                    '{"subject": "fix(delivery): english outward message", '
+                    '"body": "Detailed English body.", "type": "fix", '
+                    '"scope": "delivery", "breaking": false}'
+                )
+
+        agent = _CommitMessageAgent()
+
+        def generator(decision: object) -> str:
+            # Mirror the run.py closure: content_language body-language directive.
+            prompt = render_commit_message_prompt(
+                decision, body_language=cfg.content_language,
+            )
+            raw = agent.invoke(
+                prompt,
+                str(decision.source_path),  # type: ignore[attr-defined]
+                mutates_artifacts=False,
+                continue_session=False,
+            )
+            return parse_commit_message(raw).render()
+
+        _register(monkeypatch, GitHubDeliveryProvider(runner=_gh_ok_runner))
+        repo, worktree, run_dir = _make_run(tmp_path)
+
+        commit_config: dict = {
+            "enabled": True,
+            "auto_in_ci": "approve",
+            "add_untracked": True,
+            "branch_policy": "worktree_branch",  # default publishable policy
+            "publish": "auto",
+            "default_strategy": "release_summary",  # default — NOT llm_generate
+        }
+        decision = resolve_commit_delivery(
+            project_dir=repo,
+            source_worktree=worktree,
+            run_dir=run_dir,
+            run_id=_RUN_ID,
+            session=_session("Русское операторское резюме"),  # operator summary
+            commit_config=commit_config,
+            no_interactive=True,
+            baseline_ref="HEAD",
+            commit_message_generator=generator,
+        )
+
+        # (1) The outward commit prompt carried the English (content_language)
+        # directive even though the operator language is Russian, and the forced
+        # content_language authorship produced the English commit message.
+        assert prompts_seen, "generator must be forced on the publish-outward path"
+        assert "in English" in prompts_seen[0]
+        assert "in Russian" not in prompts_seen[0]
+        assert decision.commit_message_strategy == "llm_generate"
+        assert decision.final_message is not None
+        assert decision.final_message.splitlines()[0] == (
+            "fix(delivery): english outward message"
+        )
+
+        delivered = apply_commit_delivery(
+            decision, run_dir=run_dir, commit_config=commit_config,
+        )
+        assert delivered.status == "committed"
+        intent = delivered.pr_intent
+        assert intent is not None
+
+        # (2) PR title == the commit headline.
+        assert intent.title == "fix(delivery): english outward message"
+        # (3) PR body carries the run id and the content_language message body,
+        # and NOT the operator (Russian) release summary.
+        assert _RUN_ID in intent.body
+        assert "Detailed English body." in intent.body
+        assert "Русское" not in intent.body
+        assert "Русское" not in intent.title
+
+        # The published commit itself is the English outward message.
+        branch = delivered.delivery_branch
+        assert branch is not None
+        commit_body = _git(repo, "log", "-1", "--format=%B", branch)
+        assert "fix(delivery): english outward message" in commit_body
+        assert "Русское" not in commit_body
+    finally:
+        AppConfig.load.cache_clear()

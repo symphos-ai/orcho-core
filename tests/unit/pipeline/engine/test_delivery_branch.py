@@ -450,6 +450,65 @@ def test_pr_intent_shape_is_provider_neutral(tmp_path: Path) -> None:
     assert set(intent.to_dict()) == {"branch", "base", "title", "suggested_command"}
 
 
+def test_pr_intent_uses_commit_message_not_operator_release_summary(
+    tmp_path: Path,
+) -> None:
+    # ADR 0121 (T3): title + body come from the outward (content_language)
+    # commit message; the operator-facing release_summary is decoupled and must
+    # NOT leak into the PR. A run-reference line points back at the run.
+    _, _, canonical = _make_origin_clone(tmp_path)
+    base = _git_out(canonical, "rev-parse", "HEAD")
+    run_wt = _add_run_worktree(canonical, tmp_path, "run12", base)
+    _commit_file(run_wt, "feature.txt", "run change\n", "run commit")
+
+    outcome = resolve_delivery_branch(
+        source_path=run_wt,
+        project_path=canonical,
+        run_id="R1",
+        base_ref=base,
+        branch_policy="worktree_branch",
+        release_summary="Русское резюме",
+        commit_message="fix(x): do thing\n\nEnglish body.",
+    )
+    intent = outcome.pr_intent
+    assert isinstance(intent, DeliveryPrIntent)
+    # Title is the commit subject, not the (Russian) release summary.
+    assert intent.title == "fix(x): do thing"
+    assert intent.title != "Русское резюме"
+    # Body is the commit body + a run reference, never the operator summary.
+    assert "English body." in intent.body
+    assert "R1" in intent.body
+    assert "Русское резюме" not in intent.body
+    # No new keys leak into the durable/wire shape.
+    assert set(intent.to_dict()) == {"branch", "base", "title", "suggested_command"}
+
+
+def test_pr_intent_falls_back_to_release_summary_without_commit_message(
+    tmp_path: Path,
+) -> None:
+    # No commit message composed → prior behavior: title = first line of the
+    # release summary, body = release summary + a run reference.
+    _, _, canonical = _make_origin_clone(tmp_path)
+    base = _git_out(canonical, "rev-parse", "HEAD")
+    run_wt = _add_run_worktree(canonical, tmp_path, "run13", base)
+    _commit_file(run_wt, "feature.txt", "run change\n", "run commit")
+
+    outcome = resolve_delivery_branch(
+        source_path=run_wt,
+        project_path=canonical,
+        run_id="R2",
+        base_ref=base,
+        branch_policy="worktree_branch",
+        release_summary="Ship it\n\nlonger details",
+    )
+    intent = outcome.pr_intent
+    assert isinstance(intent, DeliveryPrIntent)
+    assert intent.title == "Ship it"
+    assert "Ship it" in intent.body
+    assert "R2" in intent.body
+    assert set(intent.to_dict()) == {"branch", "base", "title", "suggested_command"}
+
+
 def test_normalize_branch_policy_defaults_and_validates() -> None:
     assert normalize_branch_policy(None) == "worktree_branch"
     assert normalize_branch_policy("") == "worktree_branch"

@@ -160,6 +160,32 @@ class TestPreRunDirtySection:
         assert app.pre_run_dirty["include_untracked"] == "prompt"
 
 
+class TestContentLanguage:
+    """``content_language`` governs outward delivery artifacts (commit /
+    PR), independent of the operator-facing task language."""
+
+    def test_default_is_english(self) -> None:
+        config.AppConfig.load.cache_clear()
+        app = config.AppConfig.load()
+        assert app.content_language == "English"
+
+    def test_json_field_overrides(self) -> None:
+        cfg = config.AppConfig(
+            phases={}, timeouts={}, session={}, codemap={}, hypothesis={},
+            language={"content_language": "ru"}, artifacts={}, pipeline={},
+        )
+        assert cfg.content_language == "ru"
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CONTENT_LANGUAGE", "ru")
+        config.AppConfig.load.cache_clear()
+        try:
+            assert config.AppConfig.load().content_language == "ru"
+        finally:
+            monkeypatch.delenv("CONTENT_LANGUAGE", raising=False)
+            config.AppConfig.load.cache_clear()
+
+
 class TestCommitSection:
     def test_defaults_present_on_app_config(self) -> None:
         config.AppConfig.load.cache_clear()

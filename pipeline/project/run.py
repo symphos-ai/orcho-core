@@ -1416,14 +1416,16 @@ class _PipelineRun:
         app_cfg = config.AppConfig.load()
 
         def commit_message_generator(decision):
-            if app_cfg.commit.get("default_strategy") != "llm_generate":
-                return None
+            # Strategy is decided upstream by ``resolve_commit_delivery`` /
+            # ``_resolve_final_commit_message`` (configured llm_generate OR a
+            # forced publish-outward path); the generator no longer self-disables
+            # on ``default_strategy`` — it only needs an available agent.
             agent = getattr(self.phase_config, "final_acceptance_agent", None)
             if agent is None:
                 return None
             prompt = render_commit_message_prompt(
                 decision,
-                body_language=app_cfg.task_language,
+                body_language=app_cfg.content_language,
             )
             try:
                 raw = agent.invoke(

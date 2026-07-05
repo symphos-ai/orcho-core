@@ -31,6 +31,7 @@ from core.io.journey_prompt import (
     title,
 )
 from core.io.terminal_input import stdio_interactive
+from pipeline.engine import delivery_branch as _delivery_branch
 from pipeline.engine.delivery_branch import (
     DeliveryBranchOutcome,
     DeliveryPrIntent,
@@ -623,10 +624,17 @@ def resolve_commit_delivery(
         **release_fields,
     )
     if action == "approve":
+        # On a publish-outward delivery (a PR will be opened) force
+        # content_language authorship of the outward commit message even when
+        # ``default_strategy`` is not ``llm_generate`` — the operator language
+        # must never leak into a public commit / PR (ADR 0121). The bypass /
+        # publish-off local-commit path keeps its configured strategy verbatim.
+        force_llm = _will_open_pr(cfg) and commit_message_generator is not None
         final_message, actual_strategy = _resolve_final_commit_message(
             decision,
             configured_strategy=commit_message_strategy,
             generator=commit_message_generator,
+            force_llm=force_llm,
         )
         decision = replace(
             decision,
@@ -910,6 +918,7 @@ def _resolve_delivery_branch_outcome(
         branch_policy=cfg.get("branch_policy"),
         named_branch=cfg.get("branch_name"),
         release_summary=decision.release_summary,
+        commit_message=decision.final_message,
     )
 
 
@@ -1653,16 +1662,39 @@ def _commit_message_strategy(cfg: Mapping[str, Any]) -> str:
     return "release_summary"
 
 
+def _will_open_pr(cfg: Mapping[str, Any]) -> bool:
+    """True when this delivery is on a publish-outward path (opens a PR).
+
+    A run publishes outward unless publication is explicitly turned off
+    (``publish=off``) or the branch policy is the ``bypass`` opt-out (commit onto
+    the current HEAD, no branch/PR intent). On that outward path the outward
+    commit message must be authored in ``content_language`` regardless of the
+    configured ``default_strategy`` — so the operator language never leaks into
+    a public commit / PR (ADR 0121).
+    """
+    publish = str(cfg.get("publish", "auto")).strip().lower()
+    if publish == "off":
+        return False
+    # Consult ``normalize_branch_policy`` through the ``delivery_branch`` module
+    # (not a direct import binding) so this stays consistent with the *actual*
+    # branch decision made by ``resolve_delivery_branch`` — including any embedder
+    # / test seam that overrides the policy. A ``bypass`` delivery commits onto
+    # the current HEAD with no branch or PR intent, so it is not publish-outward.
+    policy = _delivery_branch.normalize_branch_policy(cfg.get("branch_policy"))
+    return policy != "bypass"
+
+
 def _resolve_final_commit_message(
     decision: CommitDeliveryDecision,
     *,
     configured_strategy: str,
     generator: CommitMessageGenerator | None,
+    force_llm: bool = False,
 ) -> tuple[str, str]:
     fallback = _message_from_release_summary(
         decision.release_summary, decision.run_id,
     )
-    if configured_strategy == "llm_generate" and generator is not None:
+    if (configured_strategy == "llm_generate" or force_llm) and generator is not None:
         generated = generator(decision)
         if isinstance(generated, str) and generated.strip():
             return generated.strip(), "llm_generate"

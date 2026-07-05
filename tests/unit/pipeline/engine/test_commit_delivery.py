@@ -2258,3 +2258,233 @@ def test_named_delivery_branch_roots_at_base_ref(
     tree = _git_str(repo, "ls-tree", "-r", "--name-only", "release/v9").split()
     assert "app.txt" in tree
     assert _git_str(repo, "show", "release/v9:app.txt") == "base\nrun"
+
+
+# ── T2: content_language body-language + strategy-guard removal ──────────────
+
+
+def _commit_prompt_decision(base: Path) -> CommitDeliveryDecision:
+    """A minimal decision usable to render the llm_generate commit prompt."""
+    return CommitDeliveryDecision(
+        action="approve",
+        status="pending",
+        run_id="r1",
+        decision_id="r1",
+        project_path=base,
+        source_path=base,
+        baseline_ref="HEAD",
+        release_summary="сводка релиза",
+        patch_text="diff --git a/a.py b/a.py\n",
+        changed_paths=("a.py",),
+        decided_at="2026-06-04T00:00:00+00:00",
+    )
+
+
+def test_commit_message_directive_english_when_content_language_unset(
+    tmp_path: Path,
+) -> None:
+    """operator=Russian but content_language unset → default English, so the
+    outward commit-message directive is English (fail-safe for public repos)."""
+    from core.infra.config import AppConfig
+
+    cfg = AppConfig(
+        phases={}, timeouts={}, session={}, codemap={}, hypothesis={},
+        language={"task_language": "Russian"}, artifacts={}, pipeline={},
+    )
+    assert cfg.content_language == "English"
+    prompt = commit_delivery.render_commit_message_prompt(
+        _commit_prompt_decision(tmp_path),
+        body_language=cfg.content_language,
+    )
+    assert "in English" in prompt
+    assert "in Russian" not in prompt
+
+
+def test_commit_message_directive_russian_when_content_language_ru(
+    tmp_path: Path,
+) -> None:
+    """content_language=ru flips the outward directive to Russian."""
+    from core.infra.config import AppConfig
+
+    cfg = AppConfig(
+        phases={}, timeouts={}, session={}, codemap={}, hypothesis={},
+        language={"task_language": "Russian", "content_language": "ru"},
+        artifacts={}, pipeline={},
+    )
+    assert cfg.content_language == "ru"
+    prompt = commit_delivery.render_commit_message_prompt(
+        _commit_prompt_decision(tmp_path),
+        body_language=cfg.content_language,
+    )
+    assert "in ru" in prompt
+
+
+def test_commit_message_generator_not_disabled_by_release_summary_strategy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """The run.py generator closure no longer self-disables when
+    ``default_strategy`` != 'llm_generate'. With an available agent it renders
+    the prompt, invokes the agent, and returns the parsed message even under
+    ``default_strategy='release_summary'`` — strategy is decided upstream by
+    ``resolve_commit_delivery``, not the generator. It also uses
+    ``content_language`` (default English) for the body-language directive
+    while the operator language is Russian."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir(parents=True)
+
+    class _CommitMessageAgent:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def invoke(self, prompt: str, cwd: str, **kwargs: object) -> str:
+            self.calls.append({"prompt": prompt, "cwd": cwd, **kwargs})
+            return (
+                '{"subject": "fix(delivery): generated message", '
+                '"body": "", "type": "fix", "scope": "delivery", '
+                '"breaking": false}'
+            )
+
+    agent = _CommitMessageAgent()
+    generated: list[str | None] = []
+
+    def resolve_with_generator(**kwargs: object) -> CommitDeliveryDecision:
+        decision = _commit_prompt_decision(worktree)
+        decision = dataclasses.replace(decision, project_path=project_dir)
+        generator = kwargs["commit_message_generator"]
+        assert callable(generator)
+        generated.append(generator(decision))
+        return decision
+
+    monkeypatch.setattr(
+        commit_delivery, "resolve_commit_delivery", resolve_with_generator,
+    )
+    monkeypatch.setattr(
+        commit_delivery,
+        "apply_commit_delivery",
+        lambda decision, **_kwargs: dataclasses.replace(
+            decision,
+            status="committed",
+            final_message=generated[-1],
+            commit_message_strategy="llm_generate",
+        ),
+    )
+    # default_strategy='release_summary' is the pre-change self-disable trigger.
+    monkeypatch.setattr(
+        "pipeline.project.run.config.AppConfig.load",
+        lambda: SimpleNamespace(
+            commit={"enabled": True, "default_strategy": "release_summary"},
+            task_language="Russian",
+            content_language="English",
+        ),
+    )
+
+    stub = SimpleNamespace(
+        output_dir=run_dir,
+        session={"status": "done"},
+        project_path=project_dir,
+        parent_run_id=None,
+        project_alias=None,
+        no_interactive=True,
+        worktree_context=None,
+        session_ts="r1",
+        phase_config=SimpleNamespace(final_acceptance_agent=agent),
+        _commit_delivery_baseline=lambda: "HEAD",
+    )
+
+    _PipelineRun._run_commit_delivery(stub, diff_cwd=worktree)
+
+    # Generator returned a real message (NOT None) despite release_summary.
+    assert generated == ["fix(delivery): generated message\n"]
+    assert agent.calls, "agent must be invoked when a final_acceptance agent exists"
+    # content_language (English) drove the directive, not the Russian operator lang.
+    assert "in English" in str(agent.calls[0]["prompt"])
+
+
+# ── T4: publish-outward forces content_language authorship ───────────────────
+
+
+def test_publish_outward_forces_llm_authorship_over_release_summary(
+    tmp_path: Path,
+) -> None:
+    """On a publish-outward path (publish!=off AND branch policy!=bypass) the
+    outward commit message is authored via the generator even when
+    ``default_strategy='release_summary'`` — the operator (Russian) summary must
+    not become the public commit message."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    calls: list[object] = []
+
+    def generator(decision: CommitDeliveryDecision) -> str:
+        calls.append(decision)
+        return "fix(delivery): english outward message\n"
+
+    decision = resolve_commit_delivery(
+        project_dir=repo,
+        source_worktree=worktree,
+        run_dir=run_dir,
+        run_id="r1",
+        session=_session("Русское операторское резюме"),
+        commit_config={
+            "enabled": True,
+            "auto_in_ci": "approve",
+            "add_untracked": True,
+            "default_strategy": "release_summary",  # NOT llm_generate
+            "publish": "auto",
+            "branch_policy": "worktree_branch",  # publishable (!= bypass)
+        },
+        no_interactive=True,
+        commit_message_generator=generator,
+    )
+
+    assert calls, "generator must be forced on the publish-outward path"
+    assert decision.final_message == "fix(delivery): english outward message"
+    assert decision.commit_message_strategy == "llm_generate"
+    assert "Русское" not in (decision.final_message or "")
+
+
+def test_non_publish_path_keeps_release_summary_strategy(tmp_path: Path) -> None:
+    """The non-publishing paths (branch policy ``bypass`` OR ``publish=off``)
+    keep the configured ``release_summary`` strategy verbatim — the generator is
+    never force-invoked, so the local commit behaviour is unchanged."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    calls: list[object] = []
+
+    def generator(decision: CommitDeliveryDecision) -> str:
+        calls.append(decision)
+        return "fix(delivery): english outward message\n"
+
+    for non_publish in ({"branch_policy": "bypass"}, {"publish": "off"}):
+        calls.clear()
+        decision = resolve_commit_delivery(
+            project_dir=repo,
+            source_worktree=worktree,
+            run_dir=run_dir,
+            run_id="r1",
+            session=_session("docs: keep summary default"),
+            commit_config={
+                "enabled": True,
+                "auto_in_ci": "approve",
+                "add_untracked": True,
+                "default_strategy": "release_summary",
+                **non_publish,
+            },
+            no_interactive=True,
+            commit_message_generator=generator,
+        )
+        assert not calls, f"generator must NOT be forced for {non_publish}"
+        assert decision.commit_message_strategy == "release_summary"
+        assert decision.final_message == "docs: keep summary default"

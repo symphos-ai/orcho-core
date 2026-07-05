@@ -166,6 +166,7 @@ def resolve_delivery_branch(
     branch_policy: object,
     named_branch: str | None = None,
     release_summary: str = "",
+    commit_message: str | None = None,
     remote: str = "origin",
 ) -> DeliveryBranchOutcome:
     """Resolve the delivery branch for a finished run (ADR 0119).
@@ -206,7 +207,12 @@ def resolve_delivery_branch(
                 commit_branch=target,
                 delivery_branch=target,
                 pr_intent=_build_pr_intent(
-                    target, default_branch, release_summary, remote=remote
+                    target,
+                    default_branch,
+                    release_summary,
+                    remote=remote,
+                    commit_message=commit_message,
+                    run_id=run_id,
                 ),
             )
         # A ``named`` policy with no branch supplied is a misconfiguration; fall
@@ -219,6 +225,7 @@ def resolve_delivery_branch(
             in_place=in_place,
             default_branch=default_branch,
             release_summary=release_summary,
+            commit_message=commit_message,
             remote=remote,
             requested_policy="named",
             extra_notices=(
@@ -236,6 +243,7 @@ def resolve_delivery_branch(
         in_place=in_place,
         default_branch=default_branch,
         release_summary=release_summary,
+        commit_message=commit_message,
         remote=remote,
         requested_policy=policy,
     )
@@ -322,6 +330,7 @@ def _resolve_protect_default(
     release_summary: str,
     remote: str,
     requested_policy: BranchPolicy,
+    commit_message: str | None = None,
     extra_notices: tuple[str, ...] = (),
 ) -> DeliveryBranchOutcome:
     """worktree_branch / protect_default resolution (ADR 0119 table).
@@ -350,7 +359,12 @@ def _resolve_protect_default(
                 base_ref=base_ref,
                 delivery_branch=deliver,
                 pr_intent=_build_pr_intent(
-                    deliver, default_branch, release_summary, remote=remote
+                    deliver,
+                    default_branch,
+                    release_summary,
+                    remote=remote,
+                    commit_message=commit_message,
+                    run_id=run_id,
                 ),
                 notices=notices,
             )
@@ -367,7 +381,12 @@ def _resolve_protect_default(
             commit_branch=deliver,
             delivery_branch=deliver,
             pr_intent=_build_pr_intent(
-                deliver, default_branch, release_summary, remote=remote
+                deliver,
+                default_branch,
+                release_summary,
+                remote=remote,
+                commit_message=commit_message,
+                run_id=run_id,
             ),
             notices=notices,
         )
@@ -392,7 +411,12 @@ def _resolve_protect_default(
             base_ref=base_ref,
             delivery_branch=current,
             pr_intent=_build_pr_intent(
-                current, default_branch, release_summary, remote=remote
+                current,
+                default_branch,
+                release_summary,
+                remote=remote,
+                commit_message=commit_message,
+                run_id=run_id,
             ),
             notices=notices,
         )
@@ -408,7 +432,12 @@ def _resolve_protect_default(
         commit_branch=deliver,
         delivery_branch=deliver,
         pr_intent=_build_pr_intent(
-            deliver, default_branch, release_summary, remote=remote
+            deliver,
+            default_branch,
+            release_summary,
+            remote=remote,
+            commit_message=commit_message,
+            run_id=run_id,
         ),
         notices=notices,
     )
@@ -527,20 +556,69 @@ def _build_pr_intent(
     release_summary: str,
     *,
     remote: str,
+    commit_message: str | None = None,
+    run_id: str | None = None,
 ) -> DeliveryPrIntent:
-    """Build the provider-neutral PR intent (ADR 0119).
+    """Build the provider-neutral PR intent (ADR 0119 / 0121).
+
+    Title and body are lifted from the outward commit message (the
+    ``content_language`` message authored for delivery, ADR 0121) when one is
+    available: the title is the commit subject and the body is the commit body
+    (falling back to the subject for a subject-only message). The
+    operator-facing ``release_summary`` is used only as a fallback when no
+    commit message was composed — it is never mixed into a commit-derived PR
+    body. A run-reference line is always appended so the PR points back at the
+    originating Orcho run.
 
     The suggested command is plain ``git`` — core names no ``gh`` / ``glab``
     binary and encodes no provider API.
     """
-    title = _pr_title(release_summary, branch)
+    message = (commit_message or "").strip()
+    if message:
+        subject, commit_body = _split_commit_message(message)
+        title = subject or _pr_title(release_summary, branch)
+        pr_body = commit_body or subject
+    else:
+        title = _pr_title(release_summary, branch)
+        pr_body = (release_summary or "").strip()
+    pr_body = _append_run_reference(pr_body, run_id)
     return DeliveryPrIntent(
         branch=branch,
         base=base,
         title=title,
         suggested_command=f"git push -u {remote} {branch}",
-        body=(release_summary or "").strip(),
+        body=pr_body,
     )
+
+
+def _split_commit_message(message: str) -> tuple[str, str]:
+    """Split a commit message into ``(subject, body)``.
+
+    ``subject`` is the first non-empty line; ``body`` is everything after the
+    blank line that follows the subject (standard git convention). A
+    subject-only message yields an empty body.
+    """
+    lines = message.strip("\n").splitlines()
+    subject = ""
+    idx = 0
+    for i, line in enumerate(lines):
+        if line.strip():
+            subject = line.strip()
+            idx = i
+            break
+    body_lines = lines[idx + 1:]
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+    return subject, "\n".join(body_lines).strip()
+
+
+def _append_run_reference(body: str, run_id: str | None) -> str:
+    """Append an ``Orcho run: <run_id>`` reference line to a PR body."""
+    run_id = (run_id or "").strip()
+    if not run_id:
+        return body
+    reference = f"Orcho run: {run_id}"
+    return f"{body}\n\n{reference}" if body else reference
 
 
 # --- helpers -------------------------------------------------------------
