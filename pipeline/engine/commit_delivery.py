@@ -153,6 +153,12 @@ class CommitDeliveryDecision:
     # :mod:`pipeline.engine.delivery_branch`.
     delivery_branch: str | None = None
     pr_intent: DeliveryPrIntent | None = None
+    # ADR 0119/0121 — typed machine-readable twin of the human-readable
+    # 'PR opened: {url}' line in ``delivery_notices``. Both are derived from the
+    # same :attr:`PublishResult.pr_url` at the single publish site
+    # (:func:`_deliver_published_branch`); ``None`` whenever no PR was opened
+    # (no provider, gh absent, offline, apply-draft, bypass, push-without-PR).
+    pr_url: str | None = None
     # ADR 0119 — non-fatal delivery-branch diagnostics (rebase conflict,
     # offline/no-remote degrade). Persisted onto the decision (and to_dict) so an
     # operator sees them; empty on the no-op / commit-in-place paths, so those
@@ -233,6 +239,10 @@ class CommitDeliveryDecision:
             out["delivery_branch"] = self.delivery_branch
         if self.pr_intent is not None:
             out["pr_intent"] = self.pr_intent.to_dict()
+        # SDK-parity: the typed twin of the 'PR opened' notice is always keyed
+        # (value when a PR was opened, ``None`` otherwise) so downstream
+        # projections can read it without re-parsing ``delivery_notices``.
+        out["pr_url"] = self.pr_url
         if self.delivery_warnings:
             out["delivery_warnings"] = list(self.delivery_warnings)
         if self.delivery_notices:
@@ -980,6 +990,9 @@ def _deliver_published_branch(
         artifact_commit_sha=branch_sha,
         delivery_branch=published.delivery_branch,
         pr_intent=published.pr_intent,
+        # Same ``result.pr_url`` that shaped the 'PR opened' notice above;
+        # ``None`` when no PR was opened. Never re-parsed from notices.
+        pr_url=result.pr_url,
         delivery_warnings=published.warnings + result.warnings,
         delivery_notices=delivery_notices,
     )
@@ -1153,6 +1166,7 @@ def _persist(
     action: CommitDeliveryAction | None = None,
     delivery_branch: str | None = None,
     pr_intent: DeliveryPrIntent | None = None,
+    pr_url: str | None = None,
     delivery_warnings: tuple[str, ...] = (),
     delivery_notices: tuple[str, ...] = (),
     artifact_commit_sha: str | None = None,
@@ -1240,6 +1254,8 @@ def _persist(
         # ADR 0119 delivery-branch outcome travels with the delivered decision.
         delivery_branch=delivery_branch,
         pr_intent=pr_intent,
+        # ADR 0121 — typed twin of the 'PR opened' notice, from PublishResult.
+        pr_url=pr_url,
         delivery_warnings=delivery_warnings,
         delivery_notices=delivery_notices,
     )

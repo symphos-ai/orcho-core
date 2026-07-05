@@ -870,6 +870,9 @@ def _finalize(
         # + ``pr_intent`` surface the published-branch outcome alongside it.
         delivery_branch=applied.delivery_branch,
         pr_intent=_pr_intent_projection(applied.pr_intent),
+        # ADR 0121 — provider-neutral opened-PR URL from the applied decision;
+        # ``None`` for any delivery without an opened PR.
+        pr_url=applied.pr_url,
         blocker=blocker,
         # The SDK never starts a correction follow-up synchronously
         # (``drive_correction_followups`` is TTY-only): a ``fix`` here only

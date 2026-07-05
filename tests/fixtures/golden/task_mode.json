@@ -13,6 +13,7 @@
     ],
     "final_message": "Mock release gate: change is ship-ready in mock mode.",
     "include_untracked": true,
+    "pr_url": null,
     "project_path": "<PROJECT>",
     "release_summary": "Mock release gate: change is ship-ready in mock mode.",
     "release_verdict": "APPROVED",

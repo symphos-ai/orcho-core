@@ -271,6 +271,11 @@ class DeliveryDecisionResult:
     # instead. Both are ``None`` on a commit-onto-checkout decision.
     delivery_branch: str | None = None
     pr_intent: DeliveryPrIntent | None = None
+    # ADR 0119/0121 — additive: provider-neutral URL of the opened pull request
+    # (the typed twin of the core decision's 'PR opened' notice). ``None``
+    # whenever no PR was opened (commit-onto-checkout, bypass, no provider,
+    # offline). Mirrors ``CommitDeliveryDecision.pr_url``.
+    pr_url: str | None = None
     blocker: str | None = None
     followup_run_id: str | None = None
     # Per-alias companion files (``[alias]/rel``) implicated by a delivery-scope
