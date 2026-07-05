@@ -10,7 +10,6 @@ reads from stdin (`input()`); the prompt loop lives in
 from __future__ import annotations
 
 import textwrap
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from core.io.journey_prompt import (
@@ -270,8 +269,9 @@ def _render_menu(
 
 # Provider-neutral labels for the three explicit topology choices. The order is
 # the Expected-UX order; the operator picks 1/2/3 (see
-# ``cli._profile_prompt.resolve_topology_choice``). Choice 1 never starts a
-# cross run inside the current mono process — it surfaces a directive.
+# ``cli._profile_prompt.resolve_topology_choice``). Choice 1 never converts the
+# current mono process into a cross run — it stops the mono run and launches a
+# fresh cross run (see ``cli._cross_launch``).
 _TOPOLOGY_CHOICE_LINES = (
     "1) Start cross run with these projects [recommended]",
     "2) Continue mono run and allow expanded delivery",
@@ -303,15 +303,3 @@ def render_autodetect_result(
     print(bold("Choices", color=color))
     for line in _TOPOLOGY_CHOICE_LINES:
         print(f"  {line}")
-
-
-def format_cross_directive(projects: Sequence[str]) -> str:
-    """Ready-to-edit ``orcho cross`` command for the projected ``projects``.
-
-    The aliases are projected by the topology heuristic; the operator supplies
-    each repo path (``<alias>:<path>``) and confirms explicitly. Mirrors the
-    existing ``orcho cross --projects … --task '…'`` hint shape and stays
-    provider-neutral.
-    """
-    args = " ".join(f"{alias}:<path>" for alias in projects)
-    return f"orcho cross --projects {args} --task '...'"

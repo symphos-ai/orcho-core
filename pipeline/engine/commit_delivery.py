@@ -1767,6 +1767,92 @@ _OUTCOME_SILENT: frozenset[str] = frozenset(
 )
 
 
+def _render_published_branch(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render the ADR 0119/0121 published-branch ``committed`` outcome.
+
+    The canonical checkout is never touched here (``commit_sha is None``): the
+    run's work rides a pushed ``orcho/deliver/…`` branch. Show the branch and
+    either the opened PR or the manual-publish fallback, and state plainly that
+    the project checkout was not modified. Degrade reasons ride on
+    ``delivery_warnings`` and are surfaced by :func:`_render_delivery_diagnostics`.
+    """
+    head = green_bold("✓ Pushed delivery branch", color=color)
+    output_fn(f"{head} {decision.delivery_branch}")
+    if decision.pr_url:
+        output_fn(f"  → PR opened: {decision.pr_url}")
+    else:
+        output_fn(
+            "  "
+            + help_line(
+                f"Delivery branch {decision.delivery_branch} is ready — "
+                "open a pull request or push it manually.",
+                color=color,
+            ),
+        )
+    output_fn(
+        "  " + help_line("Project checkout was not modified.", color=color),
+    )
+
+
+def _render_checkout_commit(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render the local checkout-commit ``committed`` outcome.
+
+    A real commit landed on the canonical checkout (``commit_sha`` set, no
+    ``delivery_branch`` — the ``apply``-style / bypass local-commit path).
+    Wording and the ``  + <path>`` block stay byte-identical to the
+    pre-ADR-0119 output.
+    """
+    sha7 = (decision.commit_sha or "")[:7]
+    first_line = ""
+    if decision.final_message:
+        first_line = decision.final_message.splitlines()[0]
+    head = green_bold("✓ Committed", color=color)
+    output_fn(f"{head} to project checkout {sha7}: {first_line}")
+    staged = list(decision.files_staged)
+    staged_set = set(decision.files_staged)
+    extras = [
+        u for u in decision.untracked_delivered if u not in staged_set
+    ]
+    for path in staged + extras:
+        output_fn(f"  + {path}")
+
+
+def _render_delivery_diagnostics(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Surface non-fatal delivery diagnostics on a terminal outcome.
+
+    ``delivery_warnings`` (degrade reasons: provider disabled / missing /
+    offline / failed, rebase conflicts) are always shown, one compact line
+    each, so a degraded publish is visible instead of swallowed.
+    ``delivery_notices`` are shown too, except those already represented by the
+    published-branch block: the ``PR opened:`` notice (rendered as ``→ PR
+    opened``) and the ``… is ready; open a pull request …`` notice (rendered as
+    the manual-publish fallback) are dropped to avoid double-printing.
+    """
+    for warning in decision.delivery_warnings:
+        output_fn(f"  {bold(f'⚠ {warning}', color=color)}")
+    for notice in decision.delivery_notices:
+        if notice.startswith("PR opened:"):
+            continue
+        if "is ready; open a pull request" in notice:
+            continue
+        output_fn("  " + help_line(notice, color=color))
+
+
 def render_delivery_outcome(
     decision: CommitDeliveryDecision,
     *,
@@ -1778,7 +1864,13 @@ def render_delivery_outcome(
     Pre-terminal statuses (``disabled``, ``not_applicable``, ``no_diff``,
     ``pending``) are silent: the caller is still mid-flow and the next
     step owns the user-visible signal. All other statuses are terminal
-    and print exactly one block describing what happened.
+    and print one block describing what happened, followed by any
+    non-fatal delivery diagnostics (:func:`_render_delivery_diagnostics`).
+
+    The ``committed`` status has two shapes (ADR 0119/0121): a pushed
+    delivery branch (``delivery_branch`` set, ``commit_sha is None``) and a
+    real checkout commit (``commit_sha`` set, no ``delivery_branch``). Each
+    renders an accurate, non-overlapping block.
     """
     status = decision.status
     if status in _OUTCOME_SILENT:
@@ -1786,22 +1878,15 @@ def render_delivery_outcome(
     color = is_color_active()
 
     if status == "committed":
-        sha7 = (decision.commit_sha or "")[:7]
-        first_line = ""
-        if decision.final_message:
-            first_line = decision.final_message.splitlines()[0]
-        head = green_bold("✓ Committed", color=color)
-        output_fn(f"{head} to project checkout {sha7}: {first_line}")
-        staged = list(decision.files_staged)
-        staged_set = set(decision.files_staged)
-        extras = [
-            u for u in decision.untracked_delivered if u not in staged_set
-        ]
-        for path in staged + extras:
-            output_fn(f"  + {path}")
-        return
-
-    if status == "applied_uncommitted":
+        if decision.delivery_branch:
+            _render_published_branch(
+                decision, output_fn=output_fn, color=color,
+            )
+        else:
+            _render_checkout_commit(
+                decision, output_fn=output_fn, color=color,
+            )
+    elif status == "applied_uncommitted":
         head = bold("📥 Applied to project checkout (no commit)", color=color)
         output_fn(f"{head} — operator will commit manually")
         changed = list(decision.changed_paths)
@@ -1818,9 +1903,7 @@ def render_delivery_outcome(
                 color=color,
             ),
         )
-        return
-
-    if status == "skipped":
+    elif status == "skipped":
         if run_dir is not None:
             location: Path | str = run_dir
         elif decision.artifact_path is not None:
@@ -1829,33 +1912,23 @@ def render_delivery_outcome(
             location = "(unknown)"
         head = bold("⏭ Delivery skipped", color=color)
         output_fn(f"{head} — diff retained at {location}")
-        return
-
-    if status == "halted":
+    elif status == "halted":
         head = bold("🛑 Delivery halted", color=color)
         output_fn(
             f"{head} — run marked HALTED (halt_reason=commit_decision_halt)",
         )
-        return
-
-    if status == "fix_requested":
+    elif status == "fix_requested":
         head = bold("🔧 Correction follow-up requested", color=color)
         output_fn(
             f"{head} — worktree retained at {decision.source_path}",
         )
-        return
-
-    if status == "commit_failed":
+    elif status == "commit_failed":
         head = bold("✗ Commit failed", color=color)
         output_fn(f"{head}: {decision.error or ''}")
-        return
-
-    if status == "apply_failed":
+    elif status == "apply_failed":
         head = bold("✗ Apply failed", color=color)
         output_fn(f"{head}: {decision.error or ''}")
-        return
-
-    if status == "target_dirty":
+    elif status == "target_dirty":
         head = bold("⚠ Delivery aborted", color=color)
         sample = list(decision.target_dirty_paths[:3])
         joined = ", ".join(sample)
@@ -1863,12 +1936,11 @@ def render_delivery_outcome(
         output_fn(
             f"{head} — project checkout was dirty: {joined}{suffix}",
         )
-        return
-
-    if status == "verification_blocked":
+    elif status == "verification_blocked":
         head = bold("🛑 Delivery blocked — verification incomplete", color=color)
         output_fn(f"{head}: {decision.error or ''}")
-        return
+
+    _render_delivery_diagnostics(decision, output_fn=output_fn, color=color)
 
 
 def _prompt_action(

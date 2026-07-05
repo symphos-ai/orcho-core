@@ -20,7 +20,6 @@ from cli._profile_menu import (
     AUTO_DETECT_CHOICE,
     _print_profile_details,
     _render_menu,
-    format_cross_directive,
     render_autodetect_result,
 )
 from core.io.ansi import C, get_color_enabled, is_color_active
@@ -40,19 +39,18 @@ _CROSS_CONFIDENCE_FLOOR = 0.7
 class CrossRunRequested(Exception):
     """Raised when the operator picks 'Start cross run' in the auto-detect block.
 
-    This is an explicit *terminal directive*, not a mono-run continuation: the
-    current ``orcho run`` invocation must NOT fall through into ``run_pipeline``
-    and must NOT persist a cross ``delivery_scope`` on a mono run that never
-    starts. The CLI catches it, leaves the already-printed ``orcho cross``
-    command on screen, and exits cleanly so the operator starts the cross run
-    deliberately. Carries the projected delivery projects and the ready command
-    string for callers / tests that want them.
+    This is an explicit *terminal directive* for the current mono invocation,
+    not a mono-run continuation: ``orcho run`` must NOT fall through into
+    ``run_pipeline`` and must NOT persist a cross ``delivery_scope`` on a mono
+    run that never starts. The CLI catches it and launches a *fresh* cross
+    process from the projected projects (see :mod:`cli._cross_launch`), which is
+    what keeps the mono run from ever starting (F2). Carries the projected
+    delivery-project aliases for the launcher / tests.
     """
 
-    def __init__(self, *, projects: tuple[str, ...], command: str) -> None:
+    def __init__(self, *, projects: tuple[str, ...]) -> None:
         self.projects = projects
-        self.command = command
-        super().__init__(command)
+        super().__init__(", ".join(projects))
 
 
 class ProfilePromptResult(enum.Enum):
@@ -364,16 +362,12 @@ def resolve_topology_choice(
     choice = TopologyChoice.from_number(number)
 
     if choice is TopologyChoice.START_CROSS:
-        # Explicit terminal directive — the current mono process is NEVER
-        # converted into a cross run, and a cross ``delivery_scope`` is NEVER
-        # persisted on this mono run (F2). Print the ready command and raise so
-        # the caller stops before ``run_pipeline``; the operator starts the
-        # cross run deliberately.
-        command = format_cross_directive(resolution.delivery_projects)
-        print(bold("To start the cross run, run:", color=color))
-        print(f"  {command}")
-        raise CrossRunRequested(
-            projects=resolution.delivery_projects, command=command,
-        )
+        # Terminal directive for THIS mono process: it must not fall through
+        # into ``run_pipeline`` and must never persist a cross ``delivery_scope``
+        # on a mono run that never starts (F2). Raise so the caller stops here
+        # and launches a *fresh* cross run from the projected projects. Path
+        # resolution + launch live at the caller (``cli._cross_launch``), which
+        # has the task text and the current project path.
+        raise CrossRunRequested(projects=resolution.delivery_projects)
 
     return apply_topology_choice(resolution, choice)
