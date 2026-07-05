@@ -226,6 +226,22 @@ def test_delivery_line_with_and_without_branch():
     assert line == "✓ delivery · committed abc1234 · branch feature/x"
 
 
+def test_delivery_line_published_branch_with_pr():
+    line = _strip(sl.delivery_line(
+        "", "orcho/deliver/r1-x", pr_url="https://example/pr/1", color=False,
+    ))
+    assert line == (
+        "✓ delivery · PR https://example/pr/1 · branch orcho/deliver/r1-x"
+    )
+    assert "committed" not in line
+
+
+def test_delivery_line_published_branch_without_pr():
+    line = _strip(sl.delivery_line("", "orcho/deliver/r1-x", color=False))
+    assert line == "✓ delivery · branch orcho/deliver/r1-x"
+    assert "committed" not in line
+
+
 # ── truncation contract ──────────────────────────────────────────────────
 
 

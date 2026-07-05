@@ -411,6 +411,7 @@ def delivery_line(
     sha: str,
     branch: str | None = None,
     *,
+    pr_url: str | None = None,
     color: bool | None = None,
     stream: TextIO | None = None,
 ) -> str:
@@ -418,9 +419,20 @@ def delivery_line(
 
     ``sha`` and ``branch`` are structured refs and read in full; each
     carries its own label (``committed`` / ``branch``).
+
+    A published-branch delivery (ADR 0119/0121) never touches the canonical
+    checkout, so it carries no ``sha``. Pass an empty ``sha`` and the line
+    takes the published shape — ``✓ delivery · PR {pr_url} · branch {branch}``
+    when a PR was opened, or ``✓ delivery · branch {branch}`` when it degraded
+    to a pushed-branch-only publish — instead of a misleading
+    ``committed <empty>``.
     """
     glyph = _glyph(GLYPH_OK, C.GREEN, color=color, stream=stream)
-    parts = [f"{glyph} delivery", f"committed {sha}"]
+    parts = [f"{glyph} delivery"]
+    if sha:
+        parts.append(f"committed {sha}")
+    elif pr_url:
+        parts.append(f"PR {pr_url}")
     if branch:
         parts.append(f"branch {branch}")
     return _join(parts, color=color, stream=stream)

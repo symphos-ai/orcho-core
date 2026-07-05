@@ -1067,14 +1067,24 @@ Examples:
             _autodetect_resolution = resolve_topology_choice(
                 _autodetect_resolution, interactive=_interactive,
             )
-        except CrossRunRequested:
-            # Operator chose 'Start cross run' in the auto-detect block. This is
-            # an explicit terminal directive: do NOT convert this mono process
-            # into a cross run and do NOT persist a cross delivery_scope on a
-            # mono run that never starts. The ready ``orcho cross`` command was
-            # already printed; exit cleanly so the operator launches it
-            # deliberately.
-            sys.exit(0)
+        except CrossRunRequested as _cross_directive:
+            # Operator chose 'Start cross run' in the auto-detect block. F2 holds:
+            # this mono process never becomes a cross run in place and never
+            # persists a cross delivery_scope on a mono run that never starts.
+            # Resolve the projected aliases to repo paths and launch a *fresh*
+            # cross process, carrying the task through — replacing this process
+            # rather than mutating it is what keeps the mono run from starting.
+            from cli._cross_launch import launch_cross_from_directive
+            sys.exit(
+                launch_cross_from_directive(
+                    projects=_cross_directive.projects,
+                    task=task,
+                    current_project=str(args.project or Path.cwd()),
+                    model=getattr(args, "model", None),
+                    mock=getattr(args, "mock", False),
+                    interactive=_interactive,
+                )
+            )
         # Pin the resolved profile to what the run actually starts with. The
         # resolved ``actual_mode`` is NOT written to ORCHO_WORK_MODE here: it is
         # scoped around ``run_pipeline`` by ``scoped_autodetect_decision_env``

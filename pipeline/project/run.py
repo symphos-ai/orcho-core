@@ -1565,6 +1565,7 @@ class _PipelineRun:
                 print(summary_lines.delivery_line(
                     (decision.commit_sha or "")[:7],
                     decision.delivery_branch or None,
+                    pr_url=decision.pr_url,
                 ))
             else:
                 render_delivery_outcome(

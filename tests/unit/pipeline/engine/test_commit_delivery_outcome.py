@@ -206,6 +206,62 @@ def test_target_dirty_truncates_with_ellipsis_when_more_than_three() -> None:
     ]
 
 
+# ── published-branch committed shape (ADR 0119 / 0121) ───────────────────
+
+
+def test_committed_published_branch_renders_branch_and_pr() -> None:
+    """A pushed delivery branch with an opened PR shows the branch and the
+    PR URL and must NOT claim a project-checkout commit."""
+    lines, out = _capture()
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha=None,
+        delivery_branch="orcho/deliver/r1-abc",
+        pr_url="https://example.test/pr/45",
+        # the typed twin of pr_url — must not be double-printed by the
+        # diagnostics tail.
+        delivery_notices=("PR opened: https://example.test/pr/45",),
+    )
+
+    render_delivery_outcome(decision, output_fn=out)
+
+    joined = "\n".join(lines)
+    assert "orcho/deliver/r1-abc" in joined
+    assert "https://example.test/pr/45" in joined
+    assert joined.count("https://example.test/pr/45") == 1
+    assert "Committed to project checkout" not in joined
+    assert any("Project checkout was not modified" in line for line in lines)
+
+
+def test_committed_published_branch_fallback_shows_degrade_reason() -> None:
+    """When no PR was opened (pr_url=None), the fallback line and the degrade
+    reason carried on ``delivery_warnings`` must both be visible."""
+    lines, out = _capture()
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha=None,
+        delivery_branch="orcho/deliver/r1-abc",
+        pr_url=None,
+        delivery_warnings=("publish skipped: git provider offline",),
+        delivery_notices=(
+            "delivery branch orcho/deliver/r1-abc is ready; "
+            "open a pull request or push it manually",
+        ),
+    )
+
+    render_delivery_outcome(decision, output_fn=out)
+
+    joined = "\n".join(lines)
+    assert "Committed to project checkout" not in joined
+    assert "orcho/deliver/r1-abc" in joined
+    assert "open a pull request or push it manually" in joined
+    # the degrade reason from delivery_warnings is surfaced, not swallowed.
+    assert "git provider offline" in joined
+    assert any("Project checkout was not modified" in line for line in lines)
+
+
 # ── 4 silent statuses ───────────────────────────────────────────────────
 
 

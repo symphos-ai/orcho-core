@@ -7,7 +7,7 @@ pick to a delivery scope:
 
 * the three choices map to ``CROSS`` / ``EXPANDED_MONO`` / ``STRICT_MONO``;
 * choice 1 (start cross) never starts a cross pipeline inside the current mono
-  process — it only surfaces the explicit ``orcho cross`` directive;
+  process — it raises ``CrossRunRequested`` so the caller launches a fresh one;
 * a non-interactive context shows no block, never starts cross, and never
   widens delivery (``delivery_scope`` stays ``strict_mono``);
 * a non-cross / low-confidence resolution is returned unchanged.
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from cli._profile_menu import format_cross_directive, render_autodetect_result
+from cli._profile_menu import render_autodetect_result
 from cli._profile_prompt import CrossRunRequested, resolve_topology_choice
 from pipeline.runtime.run_shape import (
     DeliveryScope,
@@ -99,27 +99,27 @@ def test_block_lists_three_choices_and_projects(
     assert "orcho-core, orcho-mcp" in out
 
 
-# ── choice 1 surfaces a directive, never starts cross in-process ─────────────
+# ── choice 1 raises a launch directive, never mutates the mono run ───────────
 
 
-def test_choice_cross_is_terminal_directive_not_a_mono_run(
+def test_choice_cross_raises_launch_directive_not_a_mono_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Choice 1 (start cross) raises a terminal directive instead of returning a
     # cross-scoped resolution: the current mono run must NOT continue and must
-    # NOT persist delivery_scope=cross. Only the ready ``orcho cross`` command
-    # is printed; no cross pipeline is launched in-process here.
+    # NOT persist delivery_scope=cross. The caller launches a fresh cross run
+    # from ``.projects``; no copy-paste template is printed here anymore.
     res = _cross_resolution()
     with pytest.raises(CrossRunRequested) as excinfo:
         resolve_topology_choice(
             res, interactive=True, color=False, choice_fn=lambda: 1,
         )
     assert excinfo.value.projects == ("orcho-core", "orcho-mcp")
-    assert "orcho cross --projects" in excinfo.value.command
     out = capsys.readouterr().out
-    assert "orcho cross --projects" in out
-    assert "orcho-core:<path>" in out
-    assert "orcho-mcp:<path>" in out
+    # The result block still renders, but the old manual-launch template is gone.
+    assert "Auto-detect result" in out
+    assert "To start the cross run" not in out
+    assert "<path>" not in out
 
 
 # ── non-interactive: record only, no cross, no widening ──────────────────────
@@ -184,13 +184,6 @@ def test_low_confidence_cross_is_not_offered(
 
 
 # ── pure rendering helpers ───────────────────────────────────────────────────
-
-
-def test_format_cross_directive_projects_aliases() -> None:
-    cmd = format_cross_directive(("orcho-core", "orcho-mcp"))
-    assert cmd == (
-        "orcho cross --projects orcho-core:<path> orcho-mcp:<path> --task '...'"
-    )
 
 
 def test_render_autodetect_result_is_provider_neutral(
