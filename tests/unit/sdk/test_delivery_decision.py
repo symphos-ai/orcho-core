@@ -1097,6 +1097,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
         "commit_sha",
         "delivery_branch",
         "pr_intent",
+        "pr_url",
         "blocker",
         "followup_run_id",
         "scope_disclosure",
@@ -1115,6 +1116,8 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     # branch-publish fields stay null.
     assert payload["delivery_branch"] is None
     assert payload["pr_intent"] is None
+    # No PR was opened on the commit-onto-checkout path.
+    assert payload["pr_url"] is None
     # Volatile but structurally pinned.
     assert isinstance(payload["commit_sha"], str) and payload["commit_sha"]
     assert isinstance(payload["artifact_paths"], list)
@@ -1201,6 +1204,38 @@ def test_worktree_branch_publish_projects_delivery_branch_and_pr_intent(
         "title": intent.title,
         "suggested_command": intent.suggested_command,
     }
+    # No git-provider is registered in the test env, so no PR was opened.
+    assert result.pr_url is None
+    assert payload["pr_url"] is None
+
+
+def test_worktree_branch_publish_projects_pr_url_when_pr_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a git-provider opens a PR during the publish, the SDK projection
+    carries its ``pr_url`` — sourced from the applied decision's ``pr_url``, not
+    re-parsed from the human-readable delivery notice."""
+    import pipeline.engine.commit_delivery as _cd
+    import pipeline.engine.delivery_branch as _db
+    from pipeline.engine.delivery_publish import PublishResult
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "worktree_branch")
+    pr_url = "https://example.invalid/pr/7"
+    monkeypatch.setattr(
+        _cd, "publish_delivery",
+        lambda *a, **k: PublishResult(pushed=True, pr_url=pr_url),
+    )
+
+    runs_dir, _, _ = _park(tmp_path)
+
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+
+    assert result.accepted is True
+    assert result.status == "committed"
+    assert result.pr_url == pr_url
+    from sdk._jsonable import to_jsonable
+
+    assert to_jsonable(result)["pr_url"] == pr_url
 
 
 def test_bypass_projection_carries_commit_sha_not_branch(tmp_path: Path) -> None:
@@ -1216,3 +1251,5 @@ def test_bypass_projection_carries_commit_sha_not_branch(tmp_path: Path) -> None
     # No branch was published, so both additive fields stay None.
     assert result.delivery_branch is None
     assert result.pr_intent is None
+    # No PR opened on the commit-onto-checkout path.
+    assert result.pr_url is None

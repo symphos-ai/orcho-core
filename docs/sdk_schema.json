@@ -458,6 +458,12 @@
         {
           "default": "None",
           "default_factory": null,
+          "name": "pr_url",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
           "name": "blocker",
           "type": "str | None"
         },

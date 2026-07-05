@@ -2063,6 +2063,50 @@ def test_worktree_branch_publishes_and_leaves_canonical_untouched(
     payload = delivered.to_dict()
     assert payload["delivery_branch"] == delivered.delivery_branch
     assert "commit_sha" not in payload
+    # No git-provider is registered in the test env, so no PR was opened:
+    # the typed twin stays None and the notice invites a manual PR.
+    assert delivered.pr_url is None
+    assert payload["pr_url"] is None
+    assert any(
+        "open a pull request" in notice for notice in delivered.delivery_notices
+    )
+
+
+def test_worktree_branch_pr_url_rides_typed_field_and_dict(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """When a git-provider opens a PR, its ``pr_url`` lands on the typed decision
+    field and to_dict projection — derived from the same ``PublishResult.pr_url``
+    that shapes the human-readable 'PR opened' notice, never re-parsed from it."""
+    from pipeline.engine.delivery_publish import PublishResult
+
+    pr_url = "https://example.invalid/pr/42"
+    monkeypatch.setattr(
+        commit_delivery,
+        "publish_delivery",
+        lambda *a, **k: PublishResult(pushed=True, pr_url=pr_url),
+    )
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply_with_policy(
+        repo=repo, worktree=worktree, run_dir=run_dir,
+        branch_policy="worktree_branch",
+    )
+
+    assert delivered.status == "committed"
+    # Typed twin carries the URL, and so does the serialized projection.
+    assert delivered.pr_url == pr_url
+    assert delivered.to_dict()["pr_url"] == pr_url
+    # The human-readable 'PR opened' notice is preserved (not removed).
+    assert any(
+        notice == f"PR opened: {pr_url}"
+        for notice in delivered.delivery_notices
+    )
 
 
 def test_protect_default_in_place_head_default_creates_delivery_branch(
