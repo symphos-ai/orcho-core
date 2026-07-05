@@ -236,9 +236,12 @@ def _render_menu(
     if include_auto_detect:
         number += 1
         ordered_names.append(AUTO_DETECT_CHOICE)
+        # When offered (the ``orcho run`` picker), auto-detect is the default
+        # choice: it leads the menu and carries the ``[default]`` chip, and a
+        # bare Enter selects it (see ``prompt_for_profile_if_needed``).
         print(
             f"  {bold(str(number), color=color)}) "
-            f"{bold(AUTO_DETECT_CHOICE, color=color)}"
+            f"{bold(AUTO_DETECT_CHOICE, color=color)} {default_chip(color=color)}"
         )
         print(f"     {grey(_AUTO_DETECT_SUBTITLE, color=color)}")
     for header, members in _menu_sections(names, profiles):
@@ -247,9 +250,13 @@ def _render_menu(
         for name in members:
             number += 1
             ordered_names.append(name)
+            # ``feature`` carries the default chip only in menus without
+            # auto-detect (e.g. ``orcho cross``); when auto-detect leads the
+            # menu it owns the default.
             chip = (
                 f" {default_chip(color=color)}"
-                if name == DEFAULT_PROFILE_NAME else ""
+                if name == DEFAULT_PROFILE_NAME and not include_auto_detect
+                else ""
             )
             print(f"  {bold(str(number), color=color)}) {bold(name, color=color)}{chip}")
             subtitle = _row_subtitle(profiles[name])

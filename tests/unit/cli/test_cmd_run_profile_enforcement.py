@@ -245,10 +245,24 @@ class TestCmdRunEnforcement:
     ) -> None:
         _force_stdin_tty(monkeypatch, True)
         _patch_catalog(monkeypatch, _catalog())
-        _patch_input(monkeypatch, "")  # ABORTED
+        _patch_input(monkeypatch, None)  # ^D / ^C at the picker → ABORTED
         code = cli.orcho.cmd_run(_ns())
         assert code == 0
         assert self.calls == []
+
+    def test_empty_selects_auto_detect_and_runs(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The orcho run picker offers auto-detect as the default choice: a
+        # bare Enter selects it and the pipeline proceeds with the
+        # ``auto-detect`` selector (resolved downstream), not an abort.
+        _force_stdin_tty(monkeypatch, True)
+        _patch_catalog(monkeypatch, _catalog())
+        _patch_input(monkeypatch, "")  # bare Enter → auto-detect
+        code = cli.orcho.cmd_run(_ns())
+        assert code == 0
+        assert len(self.calls) == 1
+        assert self.calls[0].profile == "auto-detect"
 
     def test_non_tty_returns_two_and_skips_pipeline(
         self, monkeypatch: pytest.MonkeyPatch,

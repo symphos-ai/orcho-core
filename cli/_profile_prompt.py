@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from cli._profile_menu import (
+    AUTO_DETECT_CHOICE,
     _print_profile_details,
     _render_menu,
     format_cross_directive,
@@ -170,9 +171,10 @@ def prompt_for_profile_if_needed(
     )
 
     count = len(ordered_names)
+    empty_hint = "empty for auto-detect" if include_auto_detect else "empty to abort"
     prompt = bold(
         f"Select profile [1-{count}] — number or name "
-        "(?N for details, empty to abort): ",
+        f"(?N for details, {empty_hint}): ",
         color=color,
     )
     invalid = 0
@@ -184,6 +186,12 @@ def prompt_for_profile_if_needed(
             return ProfilePromptResult.ABORTED
         choice = drain_paste_burst(raw, stdin=sys.stdin).strip()
         if not choice:
+            if include_auto_detect:
+                # Default choice: a bare Enter runs auto-detect (it leads the
+                # menu and carries the [default] chip). The detector then
+                # recommends a work kind / operating mode.
+                args.profile = AUTO_DETECT_CHOICE
+                return ProfilePromptResult.SELECTED
             print()  # newline for clean shell prompt
             return ProfilePromptResult.ABORTED
         if choice.startswith("?"):
