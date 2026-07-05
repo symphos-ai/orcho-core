@@ -351,6 +351,47 @@ def _build_subtask_usage_records(
     return records
 
 
+def _append_receipt_state_records(
+    records: list[dict[str, Any]],
+    latest_receipt_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Complete the per-subtask breakdown into a full receipt state mirror.
+
+    :func:`_build_subtask_usage_records` is driven off real invocation captures,
+    so a subtask produces a record ONLY when its runtime published a usable
+    ``last_invocation_outcome``. Two classes of subtask are therefore missing
+    from it: skipped subtasks (unsatisfied dependency / stop-on-failure
+    short-circuit — no agent invocation at all), and any run subtask whose
+    runtime did not surface metered usage (unmetered failed/done invocation).
+
+    ``metrics["subtasks"]["implement"]`` is the SINGLE authoritative source the
+    finalization rollup counts completed/failed/skipped from, so it must be a
+    COMPLETE state slice — not a partial one seeded with only some states. A
+    partial slice is worse than none: its mere presence makes finalization treat
+    it as authoritative and drop the meta/receipt fallback, so a state present in
+    the receipts but absent from the slice (e.g. an unmetered ``failed``) would
+    be miscounted as ``incomplete``.
+
+    Fill every subtask the usage breakdown did not already cover with a
+    state-only marker (``{"subtask_id", "state": <receipt state>}``) carrying NO
+    usage fields — honoring the acceptance contract's honesty rule (unknown
+    values are omitted, never invented) and keeping ``sum(records) == phase
+    rollup`` intact (a stateless marker contributes zero usage). A subtask that
+    produced a real usage record keeps that record's terminal state.
+    """
+    recorded_ids = {rec.get("subtask_id") for rec in records}
+    for receipt in latest_receipt_by_id.values():
+        sid = receipt.get("subtask_id")
+        if sid in recorded_ids:
+            continue
+        state = receipt.get("state")
+        marker: dict[str, Any] = {"subtask_id": sid}
+        if state:
+            marker["state"] = str(state)
+        records.append(marker)
+        recorded_ids.add(sid)
+
+
 def _resolve_implement_handoff_policy(state: PipelineState):
     """Return the active implement step's ``PhaseHandoffPolicy`` or ``None``.
 
@@ -933,6 +974,16 @@ def _run_subtask_dag_implement(
         subtask_usage_captures,
         latest_receipt_by_id,
     )
+    # Complete the breakdown into a full receipt state mirror. Subtasks with no
+    # metered usage capture — skipped ones (never invoked) AND run subtasks whose
+    # runtime surfaced no usable outcome — are absent from the usage breakdown
+    # above. The metrics slice is the single authoritative source the
+    # finalization rollup counts completed/failed/skipped from, so it must carry
+    # EVERY subtask's final state (a partial slice would make finalization drop
+    # its meta/receipt fallback and miscount a missing state as incomplete).
+    # Append a state-only marker (no invented usage) per uncovered receipt id,
+    # preserving DAG (receipt) order.
+    _append_receipt_state_records(subtask_records, latest_receipt_by_id)
     if subtask_records:
         entry["subtask_metrics"] = subtask_records
 

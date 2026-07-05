@@ -309,37 +309,103 @@ def _format_count_map(counts: Mapping[str, int], order: tuple[str, ...]) -> str:
     return ", ".join(parts) if parts else "none"
 
 
-def _task_counts(phases: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
+def _subtask_state_records(metrics: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    """Return the ``metrics["subtasks"]["implement"]`` per-subtask records.
+
+    This is the cross-segment deduped slice: ``record_subtask_usage`` merges by
+    ``subtask_id`` across every resume segment, so each subtask appears once with
+    its accumulated usage and its final ``state``. Returns ``[]`` for whole-plan /
+    non-subtask runs (no ``subtasks`` key) so the caller falls back to meta.
+    """
+    if not isinstance(metrics, Mapping):
+        return []
+    subtasks = metrics.get("subtasks")
+    if not isinstance(subtasks, Mapping):
+        return []
+    rows = subtasks.get("implement")
+    if not isinstance(rows, list):
+        return []
+    return [rec for rec in rows if isinstance(rec, Mapping)]
+
+
+def _task_counts(
+    phases: Mapping[str, Any],
+    metrics: Mapping[str, Any] | None = None,
+) -> tuple[int, int, int, int, int]:
     implement = phases.get("implement")
     impl = implement if isinstance(implement, Mapping) else {}
     meta = impl.get("meta")
     if not isinstance(meta, Mapping):
         meta = {}
-    planned = _as_int(meta.get("subtask_count"))
-    completed = _as_int(meta.get("completed_count"))
-    failed = _as_int(meta.get("failed_count"))
-    skipped = _as_int(meta.get("skipped_count"))
-    receipts = impl.get("implementation_receipts")
-    incomplete = (
-        sum(
-            1 for item in receipts
-            if isinstance(item, Mapping) and item.get("state") != "done"
-        )
-        if isinstance(receipts, list)
-        else 0
-    )
 
+    # planned: the plan total is authoritative and survives resume segmentation
+    # (``_latest_mapping`` normalizes a list-of-attempts plan to its last
+    # attempt). ``meta.subtask_count`` — the last implement wave only — is just
+    # the fallback for whole-plan / non-subtask runs that carry no plan total.
+    plan = _latest_mapping(phases.get("plan"))
+    planned = _as_int(plan.get("total_atomic_tasks"))
     if planned == 0:
-        plan = _latest_mapping(phases.get("plan"))
-        planned = _as_int(plan.get("total_atomic_tasks"))
+        planned = _as_int(meta.get("subtask_count"))
 
-    # A direct (whole-plan) implement carries no subtask-DAG meta, so its
-    # completed/failed counters never populate. When such an implement
-    # succeeded (output present, no guardrail_blocked/failed/error), the planned
-    # task is delivered: count it as completed so Tasks/ROI read 1/1, not 0/1.
-    # A stopped/failed whole-plan implement keeps the zeroed counters.
-    if planned and _implement_whole_plan_delivered(phases):
-        completed, failed, skipped, incomplete = planned, 0, 0, 0
+    # completed/failed/skipped: the cross-segment deduped subtask slice is the
+    # SINGLE authoritative source. ``metrics["subtasks"]["implement"]`` carries
+    # one final record per subtask across ALL resume segments (merged by
+    # subtask_id), so counting it by final ``state`` reports honest N/M
+    # regardless of how many resume waves ran — not just the last wave's meta
+    # counters. Skipped subtasks (no agent invocation, no usage) are folded into
+    # this slice upstream as state-only records (see subtask_dag
+    # ``_append_skipped_subtask_records``), so completed/failed/skipped ALL come
+    # from the slice — the raw ``implementation_receipts`` are never consulted as
+    # a second source here (that could show skipped beyond the deduped slice and
+    # push the bucket sum past ``planned``). Records without a terminal state
+    # (e.g. an incomplete subtask that never produced a done/failed receipt) are
+    # folded into ``incomplete``.
+    records = _subtask_state_records(metrics)
+    if records:
+        # A non-empty subtask slice is authoritative: presence of the list — not
+        # of a terminal state — selects this path. Records without a terminal
+        # done/failed/skipped state are honest incomplete work, not a reason to
+        # drop back to meta.
+        state_by_id: dict[Any, str] = {}
+        for rec in records:
+            # Defensive re-dedup: the slice is merged-by-id upstream, but if a
+            # raw retry pair (failed then done for one subtask_id) ever reaches
+            # here, last record wins so a retried subtask is counted once by
+            # final state.
+            state_by_id[rec.get("subtask_id")] = str(rec.get("state") or "")
+        states = list(state_by_id.values())
+        completed = sum(1 for state in states if state == "done")
+        failed = sum(1 for state in states if state == "failed")
+        skipped = sum(1 for state in states if state == "skipped")
+        # incomplete = plan tasks without a terminal done/failed/skipped state,
+        # clamped ≥0 so the four buckets never exceed the accounted work.
+        accounted = max(planned, len(states))
+        incomplete = max(accounted - completed - failed - skipped, 0)
+    else:
+        # No subtask slice (whole-plan / non-subtask run): fall back to the
+        # last-wave meta counters and the implement receipts.
+        completed = _as_int(meta.get("completed_count"))
+        failed = _as_int(meta.get("failed_count"))
+        skipped = _as_int(meta.get("skipped_count"))
+        receipts = impl.get("implementation_receipts")
+        incomplete = (
+            sum(
+                1 for item in receipts
+                if isinstance(item, Mapping) and item.get("state") != "done"
+            )
+            if isinstance(receipts, list)
+            else 0
+        )
+
+        # A direct (whole-plan) implement carries no subtask-DAG meta, so its
+        # completed/failed counters never populate. When such an implement
+        # succeeded (output present, no guardrail_blocked/failed/error), the
+        # planned task is delivered: count it as completed so Tasks/ROI read
+        # 1/1, not 0/1. A stopped/failed whole-plan implement keeps the zeroed
+        # counters. This collapse is scoped to the no-slice branch: an
+        # authoritative subtask slice must never be overwritten by planned/0/0/0.
+        if planned and _implement_whole_plan_delivered(phases):
+            completed, failed, skipped, incomplete = planned, 0, 0, 0
 
     return planned, completed, failed, skipped, incomplete
 
@@ -834,7 +900,10 @@ def _scope_expansion_summary_lines(phases: Mapping[str, Any]) -> tuple[str, ...]
     return tuple(f"  {line}" for line in render_scope_expansion_lines(evidence))
 
 
-def _render_evidence_summary(session: Mapping[str, Any]) -> tuple[str, ...]:
+def _render_evidence_summary(
+    session: Mapping[str, Any],
+    metrics: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
     """Return compact end-of-run evidence summary lines.
 
     This is deliberately a light terminal/reporting projection, not a new gate.
@@ -842,13 +911,18 @@ def _render_evidence_summary(session: Mapping[str, Any]) -> tuple[str, ...]:
     attempt for its phase. In normal repair loops that corresponds to fixed;
     in operator-accepted paths it may mean waived/accepted, so the label stays
     slightly broader than "fixed".
+
+    ``metrics`` is the run metrics dict; its cross-segment
+    ``subtasks.implement`` slice drives the honest per-subtask task counts. It
+    is optional (defaults to no slice) so session-only callers — which carry no
+    subtask-DAG breakdown — keep reading the meta fallback path unchanged.
     """
     auto_detect_line = _auto_detect_summary_line(session.get("auto_detect"))
     phases = session.get("phases")
     if not isinstance(phases, Mapping):
         return (auto_detect_line,) if auto_detect_line else ()
 
-    planned, completed, failed, skipped, incomplete = _task_counts(phases)
+    planned, completed, failed, skipped, incomplete = _task_counts(phases, metrics)
     correction_kind = _correction_kind(phases)
     if correction_kind and planned == completed == failed == skipped == incomplete == 0:
         task_line = "  Tasks: correction follow-up (no subtask plan)"
@@ -962,7 +1036,7 @@ def _render_roi_summary(
     phases = session.get("phases")
     if not isinstance(phases, Mapping):
         phases = {}
-    planned, completed, _failed, _skipped, _incomplete = _task_counts(phases)
+    planned, completed, _failed, _skipped, _incomplete = _task_counts(phases, metrics)
     review_findings, _active_review_findings = _finding_totals(phases)
     run_findings = _run_finding_summary(session, phases)
     tokens_in = _as_int(metrics.get("total_tokens_in"))
@@ -1091,6 +1165,15 @@ def _subtask_usage_rows(
     rows = ["Subtask usage:"]
     for rec in rows_data:
         if not isinstance(rec, Mapping):
+            continue
+        # State-only markers (skipped subtasks, or run subtasks whose runtime
+        # surfaced no metered usage) ride in the slice so the rollup can count
+        # their final state, but they carry no usage fields and consumed no
+        # budget the operator can attribute — they never belong in the "who
+        # spent what" usage block.
+        if not any(
+            key in rec for key in ("tokens_in", "tokens_out", "total_tokens")
+        ):
             continue
         sid = str(rec.get("subtask_id", "?"))
         tokens_in = _as_int(rec.get("tokens_in"))
@@ -2154,7 +2237,7 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         no_change_outcome=run.session.get("no_change_outcome")
         if isinstance(run.session.get("no_change_outcome"), Mapping)
         else None,
-        evidence_summary_lines=_render_evidence_summary(run.session),
+        evidence_summary_lines=_render_evidence_summary(run.session, metrics_dict),
         roi_summary_line=_render_roi_summary(
             run.session,
             metrics_dict,

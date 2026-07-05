@@ -1048,6 +1048,51 @@ class TestBuildHandler:
         receipts = state.phase_log["implement"]["implementation_receipts"]
         assert receipts[0]["state"] == "failed"
 
+    def test_subtask_dag_metrics_slice_is_complete_receipt_state_mirror(self) -> None:
+        # R1: ``subtask_metrics`` must be a COMPLETE state slice, not a partial
+        # one. A raising invoke publishes NO metered ``last_invocation_outcome``,
+        # so ``_build_subtask_usage_records`` emits no record for the failed t1;
+        # t2 is skipped (unsatisfied dependency) and never invokes at all. BOTH
+        # must be folded into the slice as state-only markers — otherwise a
+        # slice holding only ``skipped`` would still read non-empty and make
+        # finalization miscount the unmetered ``failed`` as incomplete.
+        class FailingDeveloper(_FakeDeveloper):
+            def invoke(self, *args, **kwargs) -> str:
+                super().invoke(*args, **kwargs)
+                raise RuntimeError("boom")
+
+        agent = FailingDeveloper()
+        state = _state(
+            parsed_plan=_parsed_plan(
+                SubTask(id="t1", goal="Do it."),
+                SubTask(id="t2", goal="Then this.", depends_on=("t1",)),
+            ),
+            registry=_agent_registry(agent),
+            extras={"implementation_execution": "subtask_dag"},
+            phase_config=_StubPhaseConfig(implement_agent=agent),
+        )
+
+        default_registry().get("implement")(state)
+
+        log = state.phase_log["implement"]
+        # t1 failed, t2 skipped after the unsatisfied dependency.
+        receipt_states = {
+            r["subtask_id"]: r["state"]
+            for r in log["implementation_receipts"]
+        }
+        assert receipt_states == {"t1": "failed", "t2": "skipped"}
+
+        records = {r["subtask_id"]: r for r in log["subtask_metrics"]}
+        # Every receipt state is mirrored: both the unmetered failed subtask and
+        # the skipped one appear as state-only markers — no invented usage fields
+        # (honesty rule), just the terminal state.
+        assert records["t1"]["state"] == "failed"
+        assert records["t2"]["state"] == "skipped"
+        for sid in ("t1", "t2"):
+            assert "tokens_in" not in records[sid]
+            assert "total_tokens" not in records[sid]
+            assert "invocations" not in records[sid]
+
     def test_subtask_dag_integrated_output_preserves_incomplete_output(self) -> None:
         from pipeline.dag_runner import DagRunResult, SubTaskResult
         from pipeline.phases.builtin.subtask_dag import _integrated_subtask_output
