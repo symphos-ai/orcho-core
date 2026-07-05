@@ -171,6 +171,20 @@ with `<!-- TODO(orcho-phase-X): expand -->`.
 Pipeline phases use granular versioned names such as `5`, `5c`, `5e`, `5e5`,
 `7c`, `7d`, and `7e`. Preserve the existing naming scheme.
 
+### DCO Sign-Off On Direct Commits
+
+This public repo enforces DCO (a `Signed-off-by:` trailer matching the
+committer identity) on every commit in a PR's `base..HEAD`. Orcho's own
+delivery engine (`resolve_commit_delivery`, mono and cross) already signs its
+commits automatically — no action needed there.
+
+When an agent or operator commits directly to this repo outside an Orcho run
+(hand-authored fixes, PR branches, hotfixes), **always use `git commit -s`**
+(or an equivalent trailer). Forgetting this is a recurring, entirely
+avoidable failure mode: the PR goes red on the `signoff` check and the commit
+has to be amended and force-pushed after the fact. Add the sign-off up front
+instead of reacting to the red check.
+
 ### ADR Discipline
 
 Protocol-level changes need an ADR in `docs/adr/` using the next free number.
