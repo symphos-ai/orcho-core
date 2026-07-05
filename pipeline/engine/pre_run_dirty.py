@@ -391,7 +391,7 @@ def _commit_dirty_checkout(
             decided_at=decided_at,
         )
     message = f"chore: checkpoint dirty work before orcho run {run_id}"
-    commit = _run_git(project_dir, ["commit", "-m", message])
+    commit = _run_git(project_dir, ["commit", "-s", "-m", message])
     if not commit.ok:
         error = commit.error
         reset = _run_git(project_dir, ["reset"])
