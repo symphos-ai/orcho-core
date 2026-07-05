@@ -712,7 +712,7 @@ class AppConfig:
             # sole registration.
             "publish": "auto",
             "publish_provider": None,
-            "interactive_default": "apply",
+            "interactive_default": "approve",
             "auto_in_ci": "approve",
             # ADR 0100 — provider-neutral parking switch. ``auto`` keeps the
             # historical CLI/CI behavior byte-identical; ``defer`` parks a

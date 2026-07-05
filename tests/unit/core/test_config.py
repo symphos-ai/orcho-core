@@ -166,6 +166,6 @@ class TestCommitSection:
         app = config.AppConfig.load()
         assert app.commit["enabled"] is True
         assert app.commit["default_strategy"] == "release_summary"
-        assert app.commit["interactive_default"] == "apply"
+        assert app.commit["interactive_default"] == "approve"
         assert app.commit["auto_in_ci"] == "approve"
         assert app.commit["add_untracked"] is True
