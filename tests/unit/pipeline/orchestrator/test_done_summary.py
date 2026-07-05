@@ -427,6 +427,385 @@ def test_evidence_summary_does_not_count_failed_whole_plan_implement() -> None:
     )
 
 
+def _done_subtask(sid: str, state: str = "done") -> dict:
+    # A per-subtask usage record as emitted into
+    # ``metrics["subtasks"]["implement"]`` — usage plus the final ``state``.
+    rec: dict[str, Any] = {
+        "subtask_id": sid,
+        "tokens_in": 10,
+        "tokens_out": 5,
+        "total_tokens": 15,
+    }
+    if state:
+        rec["state"] = state
+    return rec
+
+
+def _state_marker(sid: str, state: str = "skipped") -> dict:
+    # A state-only slice marker: no usage fields, just the terminal state.
+    # subtask_dag ``_append_receipt_state_records`` emits these into
+    # ``metrics["subtasks"]["implement"]`` for every subtask with no metered
+    # usage capture — skipped ones AND run subtasks whose runtime surfaced no
+    # usable outcome — so the slice is a COMPLETE receipt state mirror.
+    return {"subtask_id": sid, "state": state}
+
+
+def _skipped_subtask(sid: str) -> dict:
+    return _state_marker(sid, "skipped")
+
+
+def test_task_counts_resume_golden_full_reads_plan_total_and_slice() -> None:
+    # Full delivery across resume segments: the plan attempt list carries
+    # total_atomic_tasks=6, the LAST implement wave's meta only saw 3 subtasks,
+    # but the cross-segment subtasks slice records all 6 as done. planned must
+    # come from the plan total (6), completed from the deduped slice (6) — never
+    # the last wave's meta (3). Both the Tasks line and the ROI line must agree.
+    session = {
+        "phases": {
+            "plan": [
+                {"total_atomic_tasks": 6},
+                {"total_atomic_tasks": 6},
+            ],
+            "implement": {
+                "meta": {"subtask_count": 3, "completed_count": 3},
+                "output": "built",
+            },
+        },
+    }
+    metrics = {
+        "total_tokens_in": 120_000,
+        "total_tokens_out": 3_456,
+        "total_tokens": 123_456,
+        "subtasks": {
+            "implement": [_done_subtask(f"T{n}") for n in range(1, 7)],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 6 completed · 0 failed · 0 incomplete"
+    )
+
+    roi = _render_roi_summary(session, metrics, include_accounting=False)
+    assert "6/6 tasks" in roi
+
+
+def test_task_counts_multi_segment_partial_counts_all_segments() -> None:
+    # F1 core: a PARTIAL multi-segment resume. planned=6 from the plan total;
+    # the subtasks slice holds 4 done (from EARLIER waves) + 1 failed + 1
+    # incomplete (no terminal state) from the residual wave. Release is NOT
+    # approved so the whole-plan collapse must NOT fire. completed must reflect
+    # every segment's done receipts (4), not the last wave's meta (1) and not
+    # the plan total (6).
+    session = {
+        "status": "halted",
+        "phases": {
+            "plan": {"total_atomic_tasks": 6},
+            "implement": {
+                # Last wave only saw a single completion — proves the count is
+                # NOT taken from meta.completed_count.
+                "meta": {"subtask_count": 2, "completed_count": 1},
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [
+                _done_subtask("T1"),
+                _done_subtask("T2"),
+                _done_subtask("T3"),
+                _done_subtask("T4"),
+                _done_subtask("T5", state="failed"),
+                _done_subtask("T6", state=""),  # incomplete: no terminal state
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 4 completed · 1 failed · 1 incomplete"
+    )
+    # Collapse did not fire: it would have zeroed failed/incomplete to 6/0/0/0.
+    assert "6 completed" not in summary[1]
+    assert "1 completed" not in summary[1]
+
+    roi = _render_roi_summary(session, metrics, include_accounting=False)
+    assert "4/6 tasks" in roi
+
+
+def test_task_counts_slice_dedupes_retried_subtask_by_final_state() -> None:
+    # No double count: a raw retry pair (T4 failed then T4 done) for one
+    # subtask_id must collapse to the FINAL state (done), so T4 is counted once
+    # as completed — never once as failed AND once as completed.
+    session = {
+        "phases": {
+            "plan": {"total_atomic_tasks": 6},
+            "implement": {"meta": {"subtask_count": 6, "completed_count": 6}},
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [
+                _done_subtask("T1"),
+                _done_subtask("T2"),
+                _done_subtask("T3"),
+                _done_subtask("T4", state="failed"),
+                _done_subtask("T4", state="done"),  # retry -> final state wins
+                _done_subtask("T5"),
+                _done_subtask("T6"),
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 6 completed · 0 failed · 0 incomplete"
+    )
+
+
+def test_task_counts_non_resumed_full_dag_reads_slice() -> None:
+    # A single-segment full DAG (plan as a single mapping, all subtasks done)
+    # reports 6/6 from the slice.
+    session = {
+        "phases": {
+            "plan": {"total_atomic_tasks": 6},
+            "implement": {"meta": {"subtask_count": 6, "completed_count": 6}},
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [_done_subtask(f"T{n}") for n in range(1, 7)],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 6 completed · 0 failed · 0 incomplete"
+    )
+    assert "6/6 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
+def test_task_counts_whole_plan_without_slice_stays_one_of_one() -> None:
+    # Regression: a direct whole-plan implement carries NO subtasks slice. The
+    # meta-fallback + whole-plan collapse path must still read 1/1.
+    session = {
+        "phases": {
+            "plan": {"total_atomic_tasks": 1},
+            "implement": {"output": "built", "meta": {"session_id": "s1"}},
+        },
+    }
+    metrics = {"total_tokens": 123_456}  # no ``subtasks`` key
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 1 planned · 1 completed · 0 failed · 0 incomplete"
+    )
+    assert "1/1 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
+def test_task_counts_all_non_terminal_slice_counts_as_incomplete() -> None:
+    # F1 regression: a non-empty subtasks slice whose records carry NO terminal
+    # state must stay on the metrics path — every record is honest incomplete
+    # work. It must NOT fall back to meta.completed_count (1 here), which would
+    # print "1 completed · 0 incomplete" instead of "0 completed · 6 incomplete".
+    session = {
+        "status": "halted",
+        "phases": {
+            "plan": {"total_atomic_tasks": 6},
+            "implement": {
+                "meta": {"subtask_count": 6, "completed_count": 1},
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [_done_subtask(f"T{n}", state="") for n in range(1, 7)],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 0 completed · 0 failed · 6 incomplete"
+    )
+    assert "0/6 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
+def test_task_counts_skipped_dependency_read_from_metrics_slice() -> None:
+    # A skipped subtask never invokes an agent (its dependency failed / a
+    # stop-on-failure wave short-circuited it), so it produces NO usage capture.
+    # subtask_dag folds it into the metrics slice as a state-only ``skipped``
+    # marker so the slice stays the SINGLE authoritative source. With T1 failed
+    # and T2 skipped both in the slice, the rollup reads 1 failed · 1 skipped ·
+    # 0 incomplete — with no second read of the raw implement receipts.
+    session = {
+        "status": "halted",
+        "phases": {
+            "plan": {"total_atomic_tasks": 2},
+            "implement": {
+                "meta": {
+                    "subtask_count": 2,
+                    "completed_count": 0,
+                    "failed_count": 1,
+                    "skipped_count": 1,
+                },
+                "implementation_receipts": [
+                    {"subtask_id": "T1", "state": "failed"},
+                    {"subtask_id": "T2", "state": "skipped"},
+                ],
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            # The ran-and-failed subtask has a usage record; the skipped one is a
+            # state-only marker folded in upstream.
+            "implement": [
+                _done_subtask("T1", state="failed"),
+                _skipped_subtask("T2"),
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 2 planned · 0 completed · 1 failed · 1 skipped · 0 incomplete"
+    )
+    # The skipped subtask must not be silently misclassified as incomplete.
+    assert "incomplete" in summary[1] and "0 incomplete" in summary[1]
+    assert "0/2 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
+def test_task_counts_unmetered_slice_counts_failed_and_skipped_states() -> None:
+    # R1 (review): when a runtime surfaces no metered usage, subtask_dag folds
+    # BOTH the failed and the skipped subtask into the slice as state-only
+    # markers so it stays a COMPLETE state mirror — never a skipped-only partial
+    # slice. Given that complete slice (no usage on either record), the rollup
+    # must read 1 failed · 1 skipped · 0 incomplete — the unmetered failed
+    # subtask must NOT be miscounted as incomplete.
+    session = {
+        "status": "halted",
+        "phases": {
+            "plan": {"total_atomic_tasks": 2},
+            "implement": {
+                "meta": {
+                    "subtask_count": 2,
+                    "completed_count": 0,
+                    "failed_count": 1,
+                    "skipped_count": 1,
+                },
+                "implementation_receipts": [
+                    {"subtask_id": "T1", "state": "failed"},
+                    {"subtask_id": "T2", "state": "skipped"},
+                ],
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            # Neither record carries usage: the runtime published no metered
+            # outcome, so both ride the slice as state-only markers.
+            "implement": [
+                _state_marker("T1", "failed"),
+                _state_marker("T2", "skipped"),
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 2 planned · 0 completed · 1 failed · 1 skipped · 0 incomplete"
+    )
+    assert "0/2 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+    # The unmetered subtasks carry no usage, so the "Subtask usage" block is
+    # omitted entirely rather than rendering hollow tokens=0 rows.
+    assert _subtask_usage_rows(metrics, include_accounting=False) == ()
+
+
+def test_task_counts_slice_is_sole_source_raw_skip_receipts_ignored() -> None:
+    # R1 (release gate): with a metrics slice present, completed/failed/skipped
+    # come ONLY from the deduped slice — the raw ``implementation_receipts`` are
+    # never consulted as a second source. Here the slice resolves T1 and T2 as
+    # done, but the raw receipts carry stale/partial ``skipped`` markers,
+    # including T3 which the authoritative slice never contains. If receipts were
+    # overlaid, T2 could flip to skipped and T3 would appear as a phantom third
+    # bucket entry, pushing the bucket sum past ``planned`` (2). They must be
+    # ignored: the run reads 2 planned · 2 completed · 0 skipped · 0 incomplete.
+    session = {
+        "phases": {
+            "plan": {"total_atomic_tasks": 2},
+            "implement": {
+                "meta": {"subtask_count": 2, "completed_count": 2},
+                "implementation_receipts": [
+                    {"subtask_id": "T2", "state": "skipped"},
+                    {"subtask_id": "T3", "state": "skipped"},
+                ],
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [
+                _done_subtask("T1"),
+                _done_subtask("T2"),
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 2 planned · 2 completed · 0 failed · 0 incomplete"
+    )
+    assert "2/2 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
+def test_task_counts_whole_plan_collapse_never_overwrites_slice() -> None:
+    # F2 regression: an implement with output present and meta WITHOUT a positive
+    # subtask_count makes `_implement_whole_plan_delivered` return true. But a
+    # non-empty subtasks slice is authoritative and the collapse must not fire —
+    # a partial 2 done + 1 failed + 1 incomplete slice must stay honest, not be
+    # rewritten to planned/0/0/0.
+    session = {
+        "phases": {
+            "plan": {"total_atomic_tasks": 6},
+            "implement": {
+                "output": "built",
+                "meta": {"session_id": "s1"},
+            },
+        },
+    }
+    metrics = {
+        "subtasks": {
+            "implement": [
+                _done_subtask("T1"),
+                _done_subtask("T2"),
+                _done_subtask("T3", state="failed"),
+                _done_subtask("T4", state=""),
+            ],
+        },
+    }
+
+    summary = _render_evidence_summary(session, metrics)
+    assert summary[1] == (
+        "  Tasks: 6 planned · 2 completed · 1 failed · 3 incomplete"
+    )
+    assert "6 completed" not in summary[1]
+    assert "2/6 tasks" in _render_roi_summary(
+        session, metrics, include_accounting=False,
+    )
+
+
 def test_evidence_summary_reports_rejected_release_correction_request() -> None:
     summary = _render_evidence_summary({
         "status": "halted",
@@ -867,6 +1246,51 @@ def test_subtask_usage_rows_render_per_subtask_block() -> None:
         "  T2-modify              "
         "tokens=2,300 (in=2,000 out=300) api-equiv=$0.34 time=23.4s tools=7",
     )
+
+
+def test_subtask_usage_rows_skips_state_only_skipped_records() -> None:
+    # Skipped subtasks ride the slice as state-only markers so the rollup can
+    # count them, but they consumed no budget — the "Subtask usage" block is
+    # about who spent what, so a skipped marker must not render a hollow
+    # tokens=0 row.
+    metrics = {
+        "subtasks": {
+            "implement": [
+                {
+                    "subtask_id": "T1-register",
+                    "tokens_in": 1000,
+                    "tokens_out": 200,
+                    "total_tokens": 1200,
+                    "duration_s": 12.3,
+                    "tool_calls": 4,
+                },
+                {"subtask_id": "T2-skipped", "state": "skipped"},
+            ],
+        },
+    }
+
+    rows = _subtask_usage_rows(metrics, include_accounting=False)
+    assert rows == (
+        "Subtask usage:",
+        "  T1-register            "
+        "tokens=1,200 (in=1,000 out=200) time=12.3s tools=4",
+    )
+    assert not any("T2-skipped" in row for row in rows)
+
+
+def test_subtask_usage_rows_all_skipped_renders_no_block() -> None:
+    # A wave where every subtask was skipped (all state-only markers) has no
+    # budget consumer to show, so the block is omitted entirely rather than
+    # rendering a bare "Subtask usage:" header.
+    metrics = {
+        "subtasks": {
+            "implement": [
+                {"subtask_id": "T1", "state": "skipped"},
+                {"subtask_id": "T2", "state": "skipped"},
+            ],
+        },
+    }
+    assert _subtask_usage_rows(metrics, include_accounting=True) == ()
 
 
 def test_subtask_usage_rows_empty_without_records() -> None:
