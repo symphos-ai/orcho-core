@@ -1080,6 +1080,8 @@ Examples:
                     projects=_cross_directive.projects,
                     task=task,
                     current_project=str(args.project or Path.cwd()),
+                    profile=_autodetect_resolution.actual_profile.value,
+                    work_mode=_autodetect_resolution.actual_mode.value,
                     model=getattr(args, "model", None),
                     mock=getattr(args, "mock", False),
                     interactive=_interactive,

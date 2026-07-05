@@ -6,7 +6,8 @@ topology and the operator picks 'Start cross run':
 * alias → path resolution (current alias = current path; siblings resolve to
   ``<current>/../<alias>``; a missing sibling is prompted for once; an
   unresolved alias yields ``None``);
-* ``build_cross_argv`` shape (projects pairs + task, plus forwarded model/mock);
+* ``build_cross_argv`` shape (projects pairs + task, plus forwarded
+  profile/model/mock);
 * ``launch_cross_from_directive`` end-to-end with an injected launcher — a
   resolvable layout launches and returns the child code; an unresolved layout
   returns ``2`` and never launches.
@@ -16,6 +17,7 @@ No real cross process is spawned — ``launch_fn`` is injected.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -123,8 +125,12 @@ def test_build_cross_argv_carries_projects_and_task() -> None:
 
 def test_build_cross_argv_forwards_model_and_mock() -> None:
     pairs = {"orcho-core": Path("/a/core"), "orcho-mcp": Path("/a/mcp")}
-    argv = build_cross_argv(pairs, "t", model="opus", mock=True)
-    assert argv[-3:] == ["--model", "opus", "--mock"]
+    argv = build_cross_argv(
+        pairs, "t", profile="small_task", model="opus", mock=True,
+    )
+    assert argv[-5:] == [
+        "--profile", "small_task", "--model", "opus", "--mock",
+    ]
     assert "--task" in argv and "t" in argv
 
 
@@ -132,20 +138,27 @@ def test_build_cross_argv_forwards_model_and_mock() -> None:
 
 
 def test_launch_resolves_and_dispatches_fresh_process(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base = _layout(tmp_path, "orcho-core", "orcho-mcp")
-    captured: dict[str, list[str]] = {}
+    monkeypatch.setenv("ORCHO_WORK_MODE", "previous")
+    captured: dict[str, list[str] | str | None] = {}
 
     def _launch(argv: list[str]) -> int:
         captured["argv"] = argv
+        captured["work_mode"] = os.environ.get("ORCHO_WORK_MODE")
         return 7
 
     code = launch_cross_from_directive(
         projects=("orcho-core", "orcho-mcp"),
         task="wire change end to end",
         current_project=str(base / "orcho-core"),
+        profile="small_task",
+        work_mode="governed",
         model="opus",
+        mock=True,
         interactive=True,
         color=False,
         prompt_fn=_never_prompt,
@@ -157,10 +170,18 @@ def test_launch_resolves_and_dispatches_fresh_process(
     assert f"orcho-core:{(base / 'orcho-core').resolve()}" in argv
     assert f"orcho-mcp:{(base / 'orcho-mcp').resolve()}" in argv
     assert argv[argv.index("--task") + 1] == "wire change end to end"
-    assert argv[-2:] == ["--model", "opus"]
+    assert argv[-5:] == [
+        "--profile", "small_task", "--model", "opus", "--mock",
+    ]
+    assert captured["work_mode"] == "governed"
+    assert os.environ["ORCHO_WORK_MODE"] == "previous"
     # The banner echoes the resolved command, not a <path> template.
     out = capsys.readouterr().out
     assert "Starting cross run" in out
+    assert "ORCHO_WORK_MODE=governed" in out
+    assert "--profile small_task" in out
+    assert "--model opus" in out
+    assert "--mock" in out
     assert "<path>" not in out
 
 

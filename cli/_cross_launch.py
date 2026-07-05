@@ -17,9 +17,12 @@ resolve every path stops with a manual-launch hint instead of guessing.
 
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from core.io.ansi import C, get_color_enabled, is_color_active, paint
@@ -28,6 +31,11 @@ from core.io.journey_prompt import bold
 # How many characters of the task text to echo in the launch banner before
 # eliding. The full task is always forwarded to the cross process unchanged.
 _TASK_PREVIEW = 60
+
+# Keep this helper import-light: ``pipeline.project.auto_detect`` owns the same
+# env name, but importing project dispatch here would make the launch helper less
+# leaf-like than it needs to be.
+_WORK_MODE_ENV = "ORCHO_WORK_MODE"
 
 
 def resolve_project_paths(
@@ -74,6 +82,7 @@ def build_cross_argv(
     pairs: dict[str, Path],
     task: str,
     *,
+    profile: str | None = None,
     model: str | None = None,
     mock: bool = False,
 ) -> list[str]:
@@ -86,6 +95,8 @@ def build_cross_argv(
     argv: list[str] = ["--projects"]
     argv += [f"{alias}:{path}" for alias, path in pairs.items()]
     argv += ["--task", task]
+    if profile:
+        argv += ["--profile", profile]
     if model:
         argv += ["--model", model]
     if mock:
@@ -134,11 +145,29 @@ def _task_preview(task: str) -> str:
     return flattened
 
 
-def _format_command(pairs: dict[str, Path], task: str) -> str:
+def _format_command(
+    pairs: dict[str, Path],
+    task: str,
+    *,
+    profile: str | None = None,
+    model: str | None = None,
+    mock: bool = False,
+    work_mode: str | None = None,
+) -> str:
     """Human-readable echo of the cross command that is about to launch."""
 
-    args = " ".join(f"{alias}:{path}" for alias, path in pairs.items())
-    return f"orcho cross --projects {args} --task '{_task_preview(task)}'"
+    argv = ["orcho", "cross", "--projects"]
+    argv += [f"{alias}:{path}" for alias, path in pairs.items()]
+    argv += ["--task", _task_preview(task)]
+    if profile:
+        argv += ["--profile", profile]
+    if model:
+        argv += ["--model", model]
+    if mock:
+        argv.append("--mock")
+    if work_mode:
+        argv = [f"{_WORK_MODE_ENV}={work_mode}", *argv]
+    return shlex.join(argv)
 
 
 def _format_manual_hint(projects: Sequence[str]) -> str:
@@ -148,11 +177,29 @@ def _format_manual_hint(projects: Sequence[str]) -> str:
     return f"orcho cross --projects {args} --task '...'"
 
 
+@contextmanager
+def _scoped_env(key: str, value: str | None):
+    """Temporarily set one env var while the fresh child process starts."""
+
+    previous = os.environ.get(key)
+    if value:
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 def launch_cross_from_directive(
     *,
     projects: Sequence[str],
     task: str,
     current_project: str,
+    profile: str | None = None,
+    work_mode: str | None = None,
     model: str | None = None,
     mock: bool = False,
     interactive: bool,
@@ -191,8 +238,22 @@ def launch_cross_from_directive(
         return 2
 
     print(bold("Starting cross run:", color=color))
-    print(f"  {_format_command(pairs, task)}")
-    return launch_fn(build_cross_argv(pairs, task, model=model, mock=mock))
+    print(
+        "  "
+        + _format_command(
+            pairs,
+            task,
+            profile=profile,
+            model=model,
+            mock=mock,
+            work_mode=work_mode,
+        )
+    )
+    argv = build_cross_argv(
+        pairs, task, profile=profile, model=model, mock=mock,
+    )
+    with _scoped_env(_WORK_MODE_ENV, work_mode):
+        return launch_fn(argv)
 
 
 __all__ = [
