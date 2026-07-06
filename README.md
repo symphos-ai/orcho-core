@@ -1,4 +1,4 @@
-# Orcho — Multi-Agent Pipeline Engine
+# Orcho — Production Harness for Agentic Software Delivery
 
 [![PyPI](https://img.shields.io/pypi/v/orcho-core.svg)](https://pypi.org/project/orcho-core/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/orcho-core/)
@@ -9,7 +9,8 @@
 [![codecov](https://codecov.io/gh/symphos-ai/orcho-core/branch/main/graph/badge.svg)](https://codecov.io/gh/symphos-ai/orcho-core)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/symphos-ai/orcho-core/badge)](https://scorecard.dev/viewer/?uri=github.com/symphos-ai/orcho-core)
 
-**Orcho** — local-first control plane for agentic software delivery.
+**Orcho** is a production harness and control plane for agentic software
+delivery.
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
