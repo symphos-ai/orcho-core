@@ -918,6 +918,7 @@ class _PipelineRun:
             emit_phase_log_end(
                 name, st,
                 terminal=self._presentation is PresentationPolicy.TERMINAL,
+                phases=self.session.get("phases"),
             )
 
     def _on_phase_end(self, name: str, st: PipelineState) -> None:
@@ -1019,6 +1020,7 @@ class _PipelineRun:
         emit_phase_log_end(
             name, st,
             terminal=self._presentation is PresentationPolicy.TERMINAL,
+            phases=self.session.get("phases"),
         )
 
         # Legacy mock plan_*.md fallback. The PLAN handler now renders the
