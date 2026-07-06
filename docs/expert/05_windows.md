@@ -23,14 +23,16 @@ MCP server, isolated from any project environment. In **PowerShell**:
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath
-py -m pipx install orcho
 ```
 
-`py -m pipx` is used deliberately: `pipx ensurepath` updates `PATH` for **new**
-shells only, so a bare `pipx` (and the installed `orcho`) is not yet on `PATH`
-in this window. **Open a new PowerShell window**, then verify:
+**Now close this PowerShell window and open a new one.** `pipx ensurepath`
+updates `PATH` for *new* shells only, so `pipx` (and, after install, `orcho`)
+are not on `PATH` in the current window — a fresh window is required before the
+next step. (`py -m pipx` is used above precisely because bare `pipx` is not yet
+resolvable.) In the new window:
 
 ```powershell
+pipx install orcho
 orcho --help
 ```
 

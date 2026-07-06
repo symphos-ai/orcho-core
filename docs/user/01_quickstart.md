@@ -19,15 +19,15 @@ itself. The selected profile may need a second CLI for reviewer phases.
 
 For the native CLI path, install the `orcho` distribution with `pipx` (core CLI
 + MCP server). Pick your OS. Note: `pipx ensurepath` only updates `PATH` for
-**new** shells, so these blocks invoke pipx as `python -m pipx` and you should
-open a new terminal before running the installed `orcho`.
+**new** shells, so after it you must reopen your terminal before `pipx` and the
+installed `orcho` resolve — the `↻` line marks where.
 
 ```bash
 # macOS
 brew install pipx        # skip if pipx is already installed
 pipx ensurepath
+# ↻ reopen your terminal so the installed `orcho` is on PATH:
 pipx install orcho
-# open a new terminal, then:
 orcho --help
 ```
 
@@ -35,8 +35,8 @@ orcho --help
 # Linux
 python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
 python3 -m pipx ensurepath
-python3 -m pipx install orcho
-# open a new terminal, then:
+# ↻ reopen your terminal so `pipx` (and later `orcho`) are on PATH:
+pipx install orcho
 orcho --help
 ```
 
@@ -44,9 +44,9 @@ orcho --help
 # Windows (native, PowerShell — supported and exercised in CI)
 py -m pip install --user pipx
 py -m pipx ensurepath
-py -m pipx install orcho
-# ensurepath added orcho to PATH for new shells only —
-# open a NEW PowerShell window, then verify:
+# ↻ IMPORTANT: close this window and open a NEW PowerShell now — `ensurepath`
+#   only updates PATH for new shells, so `pipx` is not found until you reopen.
+pipx install orcho
 orcho --help
 ```
 
