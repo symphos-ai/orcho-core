@@ -521,3 +521,87 @@ def test_finalizer_maps_disabled_to_done(tmp_path: Path) -> None:
     result = _finalize_with_delivery(tmp_path, "disabled")
     assert result.status == "done"
     assert result.halt_reason is None
+
+
+# ── outward commit-message language (parity with mono #48) ────────────
+
+
+class _FakeReleaseAgent:
+    """Stand-in for the cross release (CFA) agent: records the prompt it
+    was handed and returns a fixed ``llm_generate`` commit-message JSON."""
+
+    def __init__(self, subject: str) -> None:
+        self._subject = subject
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str, cwd: str, **_kw) -> str:
+        self.prompts.append(prompt)
+        return (
+            '{"subject": "' + self._subject + '", "body": "cross body", '
+            '"type": "feat", "breaking": false}'
+        )
+
+
+def _llm_app_cfg(content_language: str = "English") -> SimpleNamespace:
+    # ``default_strategy=llm_generate`` makes the local (bypass) commit route
+    # consult the generator without needing a real PR push; ``content_language``
+    # is what the generator must render the outward message in.
+    cfg = _app_cfg(branch_policy="bypass")
+    cfg.commit["default_strategy"] = "llm_generate"
+    cfg.content_language = content_language
+    return cfg
+
+
+def test_release_agent_authors_content_language_commit_message(
+    tmp_path: Path,
+) -> None:
+    """With a release agent wired, the alias commit subject comes from the
+    generator (rendered in ``content_language``), NOT the operator-language
+    release summary — the cross counterpart of the mono #48 language split."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    session = {"phases": {"projects": {"api": api_child}}}
+    agent = _FakeReleaseAgent("wire cross commit language")
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_llm_app_cfg("English"),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+        release_agent=agent,
+    )
+
+    assert result.overall == "ok"
+    subjects = _git_log_subjects(api_repo)
+    # The generated Conventional-Commits header landed as the commit subject,
+    # not the ``fix: deliver change`` release summary.
+    assert any("feat: wire cross commit language" in s for s in subjects)
+    assert not any("deliver change" in s for s in subjects)
+    # The generator was driven with the content_language contract.
+    assert agent.prompts and "English" in agent.prompts[0]
+
+
+def test_no_release_agent_falls_back_to_release_summary(
+    tmp_path: Path,
+) -> None:
+    """Null-safe: without a release agent the generator is ``None`` and the
+    existing release-summary fallback is used verbatim — no regression."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    session = {"phases": {"projects": {"api": api_child}}}
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_llm_app_cfg("English"),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+        # release_agent omitted -> None
+    )
+
+    assert result.overall == "ok"
+    subjects = _git_log_subjects(api_repo)
+    assert any("deliver change" in s for s in subjects)
