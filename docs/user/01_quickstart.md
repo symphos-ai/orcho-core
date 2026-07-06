@@ -17,15 +17,37 @@ tool (for example Claude CLI or Codex CLI). It must be a CLI tool that
 Orcho can invoke from a terminal; an IDE or a chat app is not enough by
 itself. The selected profile may need a second CLI for reviewer phases.
 
-For the native CLI path, install the `orcho` distribution with `pipx`. This
-installs the core CLI and the MCP server:
+For the native CLI path, install the `orcho` distribution with `pipx` (core CLI
++ MCP server). Pick your OS:
 
 ```bash
+# macOS
+brew install pipx        # skip if pipx is already installed
+pipx ensurepath
 pipx install orcho
 orcho --help
 ```
 
-For an isolated container path:
+```bash
+# Linux
+python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
+python3 -m pipx ensurepath
+pipx install orcho
+orcho --help
+```
+
+```powershell
+# Windows (native, PowerShell — supported and exercised in CI)
+py -m pip install --user pipx
+py -m pipx ensurepath
+pipx install orcho
+orcho --help
+```
+
+Windows-specific detail (WSL2, agent-CLI paths, output streaming) lives in
+[../expert/05_windows.md](../expert/05_windows.md).
+
+For an isolated container path (OS-agnostic):
 
 ```bash
 docker pull ghcr.io/symphos-ai/orcho
@@ -38,8 +60,16 @@ alias orcho='docker run --rm -it \
 If you prefer a project-managed Python environment:
 
 ```bash
+# macOS / Linux
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install orcho
+```
+
+```powershell
+# native Windows / PowerShell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install orcho
 ```
 
@@ -78,8 +108,16 @@ Create or pick a parent folder for your project:
 ```
 
 ```bash
+# macOS / Linux (and WSL2 / Git Bash on Windows)
 orcho workspace init ~/www/my-workspace
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
+```
+
+```powershell
+# native Windows / PowerShell — orcho-env.sh is bash, so set the vars directly
+orcho workspace init $HOME\www\my-workspace
+$env:ORCHO_WORKSPACE = "$HOME\www\my-workspace\workspace-orchestrator"
+$env:ORCHO_RUNSPACE  = "$env:ORCHO_WORKSPACE\runspace"
 ```
 
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`

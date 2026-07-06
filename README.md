@@ -39,11 +39,95 @@ Zero project-specific code — all project context comes through `plugin.py`.
 
 ---
 
+## Install
+
+`orcho` is the native CLI distribution — it installs the core CLI **and** the
+MCP server (`orcho-mcp`). The recommended path is `pipx`, which keeps the CLI
+isolated from any project environment. Pick your OS below, or jump to the
+OS-agnostic [Docker](#docker) / [direct engine](#direct-engine-dependency)
+paths.
+
+Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
+least one code-agent CLI (`claude`, `codex`, or `gemini`) on `PATH`.
+
+### macOS
+
+```bash
+brew install pipx        # skip if pipx is already installed
+pipx ensurepath
+pipx install orcho
+orcho --help
+```
+
+### Linux
+
+```bash
+python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
+python3 -m pipx ensurepath
+pipx install orcho
+orcho --help
+```
+
+### Windows
+
+Native Windows is supported and exercised in CI. Install
+[Python 3.12+](https://python.org) and [Git for Windows](https://git-scm.com/download/win)
+first, then, in **PowerShell**:
+
+```powershell
+py -m pip install --user pipx
+py -m pipx ensurepath
+pipx install orcho
+orcho --help
+```
+
+Prefer a Unix shell? Install into **WSL2** using the Linux steps above. Full
+Windows notes — agent-CLI paths, WSL2 layout, and pipe-based output streaming —
+are in [docs/expert/05_windows.md](docs/expert/05_windows.md).
+
+### Docker
+
+OS-agnostic. Use Docker to try Orcho without installing its Python package or
+agent CLIs on the host:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
+
+orcho run --project /workspace --task "Add input validation to the login endpoint."
+```
+
+The image includes the core CLI and MCP server. See
+[`orcho` Docker docs](https://github.com/symphos-ai/orcho/tree/main/docker)
+for credential bootstrap, MCP stdio setup, and custom project toolchains.
+
+### Direct engine dependency
+
+OS-agnostic. Use `pip` when you intentionally want `orcho-core` in the active
+virtualenv, CI image, devcontainer, or custom image:
+
+```bash
+python -m pip install orcho-core
+```
+
+The `orcho` distribution depends on `orcho-core`; most CLI users should start
+with `orcho`, while integrators can depend on `orcho-core` directly. The
+`orcho[mcp]`/`orcho[all]` extras remain as no-op back-compat aliases.
+
+For source-checkout setup, tests, and contribution workflow, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## Try the golden mock demo
 
-The fastest zero-API proof is the single-project CLI demo. It creates a
-disposable git-backed fixture, runs the full mock pipeline, reviews the
-diff, and writes evidence:
+Once `orcho` is installed (see [Install](#install) above), the fastest zero-API
+proof is the single-project CLI demo. It creates a disposable git-backed
+fixture, runs the full mock pipeline, reviews the diff, and writes evidence.
+The bootstrap script is `bash` (macOS, Linux, or WSL2 / Git Bash on Windows):
 
 ```bash
 examples/scripts/bootstrap_demo_1a.sh
@@ -67,78 +151,6 @@ Full walkthrough: [docs/demos/demo-1a-single-project-cli.md](docs/demos/demo-1a-
 
 The full path from zero to the first result: prerequisites → install →
 connect your project → first run.
-
----
-
-## Install
-
-Choose an install path:
-
-| Path | Use when | Command |
-| --- | --- | --- |
-| Native CLI with `pipx` | You want Orcho commands on your shell `PATH` without installing them into a project environment. | `pipx install orcho` |
-| Docker | You want an isolated container for trying Orcho, running CI-like checks, or exposing `orcho-mcp` over stdio. | `docker pull ghcr.io/symphos-ai/orcho` |
-| Direct package dependency | You intentionally want only the engine package in a virtualenv, CI image, devcontainer, or custom image. | `python -m pip install orcho-core` |
-
-If `pipx` is missing, install it first. On macOS with Homebrew:
-
-```bash
-brew install pipx
-pipx ensurepath
-exec zsh -l
-```
-
-For Linux or Windows, use the
-[official pipx installation guide](https://pipx.pypa.io/stable/installation/).
-
-### Recommended CLI install
-
-Use the `orcho` distribution when you want the public command set available
-from your shell. `pipx` keeps the CLI isolated from the current project or
-Python environment.
-
-```bash
-pipx install orcho
-orcho --help
-```
-
-Since `orcho` 0.1.1 this installs the full set — the core CLI and the MCP
-server (`orcho-mcp`). The `[mcp]`/`[all]` extras remain as no-op back-compat
-aliases.
-
-### Containerized install
-
-Use Docker when you want to try Orcho without installing its Python package or
-agent CLIs on the host:
-
-```bash
-docker pull ghcr.io/symphos-ai/orcho
-alias orcho='docker run --rm -it \
-  -v "$PWD":/workspace \
-  -v ~/.orcho-auth:/agent-auth:ro \
-  ghcr.io/symphos-ai/orcho orcho'
-
-orcho run --project /workspace --task "Add input validation to the login endpoint."
-```
-
-The container image includes the core CLI and MCP server. See
-[`orcho` Docker docs](https://github.com/symphos-ai/orcho/tree/main/docker)
-for credential bootstrap, MCP stdio setup, and custom project toolchains.
-
-### Direct engine dependency
-
-Use `pip` when you intentionally want `orcho-core` in the active virtual
-environment, CI image, devcontainer, or Docker image.
-
-```bash
-python -m pip install orcho-core
-```
-
-The `orcho` distribution depends on `orcho-core`; most CLI users should start
-with `orcho`, while integrators can depend on `orcho-core` directly.
-
-For source checkout setup, tests, and contribution workflow, see
-[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
