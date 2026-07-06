@@ -576,7 +576,10 @@ def _skip_phase(
 
 
 #: Resume-skip reason (a phase already committed earlier in this run).
-_RESUME_SKIP_REASON = "completed earlier in this run (resumed)"
+#: Public so the render seam can gate the resume-summary line on this exact
+#: reason without duplicating the literal (see
+#: ``pipeline.project.profile_dispatch.emit_phase_log_end``).
+RESUME_SKIP_REASON = "completed earlier in this run (resumed)"
 
 
 def _skip_completed_phase(
@@ -592,7 +595,7 @@ def _skip_completed_phase(
     operators expect a "phase X completed (skipped on resume)" line.
     """
     _skip_phase(
-        step, state, _RESUME_SKIP_REASON,
+        step, state, RESUME_SKIP_REASON,
         on_phase_start=on_phase_start,
         on_phase_end=on_phase_end,
     )
