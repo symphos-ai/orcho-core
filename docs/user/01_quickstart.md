@@ -18,13 +18,16 @@ Orcho can invoke from a terminal; an IDE or a chat app is not enough by
 itself. The selected profile may need a second CLI for reviewer phases.
 
 For the native CLI path, install the `orcho` distribution with `pipx` (core CLI
-+ MCP server). Pick your OS:
++ MCP server). Pick your OS. Note: `pipx ensurepath` only updates `PATH` for
+**new** shells, so these blocks invoke pipx as `python -m pipx` and you should
+open a new terminal before running the installed `orcho`.
 
 ```bash
 # macOS
 brew install pipx        # skip if pipx is already installed
 pipx ensurepath
 pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -32,7 +35,8 @@ orcho --help
 # Linux
 python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
 python3 -m pipx ensurepath
-pipx install orcho
+python3 -m pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -40,7 +44,9 @@ orcho --help
 # Windows (native, PowerShell — supported and exercised in CI)
 py -m pip install --user pipx
 py -m pipx ensurepath
-pipx install orcho
+py -m pipx install orcho
+# ensurepath added orcho to PATH for new shells only —
+# open a NEW PowerShell window, then verify:
 orcho --help
 ```
 

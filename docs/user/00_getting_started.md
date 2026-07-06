@@ -36,7 +36,11 @@ The MCP path additionally needs an MCP-aware client.
 
 For most local use, install the `orcho` distribution with `pipx`. It installs
 the core CLI and the MCP server while keeping them out of your project
-environment. Pick your OS:
+environment. Pick your OS.
+
+`pipx ensurepath` updates `PATH` for **future** shells, not the current one, so
+the blocks below call pipx as `python -m pipx` and you should **open a new
+terminal** before the installed `orcho` command resolves.
 
 **macOS**
 
@@ -44,6 +48,7 @@ environment. Pick your OS:
 brew install pipx        # skip if pipx is already installed
 pipx ensurepath
 pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -52,7 +57,8 @@ orcho --help
 ```bash
 python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
 python3 -m pipx ensurepath
-pipx install orcho
+python3 -m pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -61,7 +67,9 @@ orcho --help
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath
-pipx install orcho
+py -m pipx install orcho
+# ensurepath added orcho to PATH for new shells only —
+# open a NEW PowerShell window, then verify:
 orcho --help
 ```
 

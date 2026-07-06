@@ -50,12 +50,18 @@ paths.
 Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
 least one code-agent CLI (`claude`, `codex`, or `gemini`) on `PATH`.
 
+> `pipx ensurepath` updates `PATH` for **future** shells, not the one you run it
+> in. So the commands below invoke pipx as `python -m pipx` (which works
+> regardless of `PATH`), and you should **open a new terminal** before the
+> installed `orcho` command resolves.
+
 ### macOS
 
 ```bash
 brew install pipx        # skip if pipx is already installed
 pipx ensurepath
 pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -64,7 +70,8 @@ orcho --help
 ```bash
 python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
 python3 -m pipx ensurepath
-pipx install orcho
+python3 -m pipx install orcho
+# open a new terminal, then:
 orcho --help
 ```
 
@@ -77,7 +84,9 @@ first, then, in **PowerShell**:
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath
-pipx install orcho
+py -m pipx install orcho
+# ensurepath added orcho to PATH for new shells only —
+# open a NEW PowerShell window, then verify:
 orcho --help
 ```
 
