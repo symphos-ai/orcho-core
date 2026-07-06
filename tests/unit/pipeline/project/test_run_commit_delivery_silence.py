@@ -58,14 +58,10 @@ def test_parent_run_id_makes_commit_delivery_silent(
         f"sub-pipeline leaked stdout: {captured.out!r}"
     )
     for marker in (
-        "✓ Committed",
-        "📥 Applied",
-        "⏭ Delivery skipped",
-        "🛑 Delivery halted",
-        "🔧 Correction follow-up",
-        "✗ Commit failed",
-        "✗ Apply failed",
-        "⚠ Delivery aborted",
+        "📦",
+        "DELIVERY —",
+        "COMMITTED TO YOUR CHECKOUT",
+        "PULL REQUEST OPENED",
     ):
         assert marker not in captured.out
     # No state mutation either — the gate was skipped, not executed.
@@ -91,14 +87,10 @@ def test_project_alias_makes_commit_delivery_silent(
         f"cross-project alias leaked stdout: {captured.out!r}"
     )
     for marker in (
-        "✓ Committed",
-        "📥 Applied",
-        "⏭ Delivery skipped",
-        "🛑 Delivery halted",
-        "🔧 Correction follow-up",
-        "✗ Commit failed",
-        "✗ Apply failed",
-        "⚠ Delivery aborted",
+        "📦",
+        "DELIVERY —",
+        "COMMITTED TO YOUR CHECKOUT",
+        "PULL REQUEST OPENED",
     ):
         assert marker not in captured.out
     assert "commit_delivery" not in stub.session

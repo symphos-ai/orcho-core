@@ -98,11 +98,11 @@ def test_prompt_block_precedes_outcome_on_skip(
     assert "What do you want to do?" in out, (
         f"prompt block missing from stdout: {out!r}"
     )
-    assert "Delivery skipped" in out, (
+    assert "DELIVERY — SKIPPED" in out, (
         f"outcome line missing from stdout: {out!r}"
     )
     assert out.index("What do you want to do?") < out.index(
-        "Delivery skipped",
+        "DELIVERY — SKIPPED",
     ), (
         "outcome printed before prompt — ordering contract violated:\n"
         f"{out!r}"

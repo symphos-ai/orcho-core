@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from core.contracts.commit_decision_schema import validate_decision_dict
+from core.io.ansi import C, paint
 from core.io.git_helpers import apply_patch_to_checkout, worktree_diff_against_base
 from core.io.journey_prompt import (
     bold,
     default_chip,
     divider,
-    green_bold,
     help_line,
     is_color_active,
     title,
@@ -1918,6 +1918,40 @@ _OUTCOME_SILENT: frozenset[str] = frozenset(
 )
 
 
+_DELIVERY_BANNER_WIDTH = 68
+
+
+def _delivery_banner(
+    headline: str,
+    rows: tuple[tuple[str, str], ...],
+    *,
+    tone: str,
+    output_fn: Callable[[str], None],
+    color: bool,
+    extra_lines: tuple[str, ...] = (),
+) -> None:
+    """Render a framed, tone-coloured delivery banner.
+
+    A ruled box (``═`` × 68) around a bold headline that names the delivery
+    disposition — PULL REQUEST OPENED / BRANCH PUSHED / COMMITTED TO YOUR
+    CHECKOUT / SKIPPED / HALTED / FAILED — so the operator cannot miss what
+    became of the run's work. ``rows`` are ``(label, value)`` pairs with the
+    labels aligned; ``extra_lines`` are already-formatted trailing lines (e.g.
+    a ``  + path`` block) shown between the rows and the closing rule.
+    """
+    rule = paint(_DELIVERY_BANNER_WIDTH * "═", tone, color=color)
+    output_fn("")
+    output_fn(rule)
+    output_fn(paint(f"  📦  DELIVERY — {headline}", tone, C.BOLD, color=color))
+    output_fn(rule)
+    label_w = max((len(label) for label, _ in rows), default=0)
+    for label, value in rows:
+        output_fn(f"   {bold(label.ljust(label_w), color=color)}   {value}")
+    for line in extra_lines:
+        output_fn(line)
+    output_fn(rule)
+
+
 def _render_published_branch(
     decision: CommitDeliveryDecision,
     *,
@@ -1927,27 +1961,41 @@ def _render_published_branch(
     """Render the ADR 0119/0121 published-branch ``committed`` outcome.
 
     The canonical checkout is never touched here (``commit_sha is None``): the
-    run's work rides a pushed ``orcho/deliver/…`` branch. Show the branch and
-    either the opened PR or the manual-publish fallback, and state plainly that
-    the project checkout was not modified. Degrade reasons ride on
-    ``delivery_warnings`` and are surfaced by :func:`_render_delivery_diagnostics`.
+    run's work rides a pushed ``orcho/deliver/…`` branch. The banner headline
+    states the disposition outright — a PR was opened, or the branch is pushed
+    and still needs a PR. Degrade reasons ride on ``delivery_warnings`` and are
+    surfaced under the banner by :func:`_render_delivery_diagnostics`.
     """
-    head = green_bold("✓ Pushed delivery branch", color=color)
-    output_fn(f"{head} {decision.delivery_branch}")
-    if decision.pr_url:
-        output_fn(f"  → PR opened: {decision.pr_url}")
-    else:
-        output_fn(
-            "  "
-            + help_line(
-                f"Delivery branch {decision.delivery_branch} is ready — "
-                "open a pull request or push it manually.",
-                color=color,
-            ),
-        )
-    output_fn(
-        "  " + help_line("Project checkout was not modified.", color=color),
+    checkout_note = help_line(
+        "not modified — your working tree is untouched", color=color,
     )
+    if decision.pr_url:
+        _delivery_banner(
+            "PULL REQUEST OPENED",
+            (
+                ("PR", decision.pr_url),
+                ("Branch", decision.delivery_branch or ""),
+                ("Checkout", checkout_note),
+            ),
+            tone=C.GREEN,
+            output_fn=output_fn,
+            color=color,
+        )
+    else:
+        _delivery_banner(
+            "BRANCH PUSHED  ·  no PR yet",
+            (
+                ("Branch", f"{decision.delivery_branch or ''}  (pushed)"),
+                ("Next", paint(
+                    "open a pull request or push it manually",
+                    C.YELLOW, color=color,
+                )),
+                ("Checkout", checkout_note),
+            ),
+            tone=C.GREEN,
+            output_fn=output_fn,
+            color=color,
+        )
 
 
 def _render_checkout_commit(
@@ -1959,23 +2007,31 @@ def _render_checkout_commit(
     """Render the local checkout-commit ``committed`` outcome.
 
     A real commit landed on the canonical checkout (``commit_sha`` set, no
-    ``delivery_branch`` — the ``apply``-style / bypass local-commit path).
-    Wording and the ``  + <path>`` block stay byte-identical to the
-    pre-ADR-0119 output.
+    ``delivery_branch`` — the ``apply``-style / bypass local-commit path). The
+    ``  + <path>`` block follows the banner rows.
     """
     sha7 = (decision.commit_sha or "")[:7]
     first_line = ""
     if decision.final_message:
         first_line = decision.final_message.splitlines()[0]
-    head = green_bold("✓ Committed", color=color)
-    output_fn(f"{head} to project checkout {sha7}: {first_line}")
     staged = list(decision.files_staged)
     staged_set = set(decision.files_staged)
     extras = [
         u for u in decision.untracked_delivered if u not in staged_set
     ]
-    for path in staged + extras:
-        output_fn(f"  + {path}")
+    _delivery_banner(
+        "COMMITTED TO YOUR CHECKOUT",
+        (
+            ("Commit", f"{sha7}  {first_line}".rstrip()),
+            ("Where", help_line(
+                "project checkout — working tree changed", color=color,
+            )),
+        ),
+        tone=C.GREEN,
+        output_fn=output_fn,
+        color=color,
+        extra_lines=tuple(f"   + {path}" for path in staged + extras),
+    )
 
 
 def _render_delivery_diagnostics(
@@ -2038,21 +2094,24 @@ def render_delivery_outcome(
                 decision, output_fn=output_fn, color=color,
             )
     elif status == "applied_uncommitted":
-        head = bold("📥 Applied to project checkout (no commit)", color=color)
-        output_fn(f"{head} — operator will commit manually")
         changed = list(decision.changed_paths)
         changed_set = set(decision.changed_paths)
         extras = [
             u for u in decision.untracked_delivered if u not in changed_set
         ]
-        for path in changed + extras:
-            output_fn(f"  + {path}")
-        output_fn(
-            "  "
-            + help_line(
-                f"Review with: git -C {decision.project_path} status",
-                color=color,
-            ),
+        file_lines = tuple(f"   + {path}" for path in changed + extras)
+        review = "   " + help_line(
+            f"Review with: git -C {decision.project_path} status", color=color,
+        )
+        _delivery_banner(
+            "APPLIED TO CHECKOUT  ·  no commit",
+            (("Where", help_line(
+                "project checkout — commit it manually", color=color,
+            )),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
+            extra_lines=file_lines + (review,),
         )
     elif status == "skipped":
         if run_dir is not None:
@@ -2061,35 +2120,64 @@ def render_delivery_outcome(
             location = decision.artifact_path.parent
         else:
             location = "(unknown)"
-        head = bold("⏭ Delivery skipped", color=color)
-        output_fn(f"{head} — diff retained at {location}")
+        _delivery_banner(
+            "SKIPPED  ·  diff retained",
+            (("Diff", str(location)),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
+        )
     elif status == "halted":
-        head = bold("🛑 Delivery halted", color=color)
-        output_fn(
-            f"{head} — run marked HALTED (halt_reason=commit_decision_halt)",
+        _delivery_banner(
+            "HALTED  ·  nothing delivered",
+            (("Reason", "commit_decision_halt"),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
         )
     elif status == "fix_requested":
-        head = bold("🔧 Correction follow-up requested", color=color)
-        output_fn(
-            f"{head} — worktree retained at {decision.source_path}",
+        _delivery_banner(
+            "CORRECTION FOLLOW-UP REQUESTED",
+            (("Worktree", str(decision.source_path)),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
         )
     elif status == "commit_failed":
-        head = bold("✗ Commit failed", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
+        _delivery_banner(
+            "COMMIT FAILED",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
     elif status == "apply_failed":
-        head = bold("✗ Apply failed", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
+        _delivery_banner(
+            "APPLY FAILED",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
     elif status == "target_dirty":
-        head = bold("⚠ Delivery aborted", color=color)
         sample = list(decision.target_dirty_paths[:3])
         joined = ", ".join(sample)
         suffix = "..." if len(decision.target_dirty_paths) > 3 else ""
-        output_fn(
-            f"{head} — project checkout was dirty: {joined}{suffix}",
+        _delivery_banner(
+            "ABORTED  ·  checkout was dirty",
+            (("Dirty", f"{joined}{suffix}"),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
         )
     elif status == "verification_blocked":
-        head = bold("🛑 Delivery blocked — verification incomplete", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
+        _delivery_banner(
+            "BLOCKED  ·  verification incomplete",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
 
     _render_delivery_diagnostics(decision, output_fn=output_fn, color=color)
 
