@@ -572,6 +572,17 @@ def resolve_commit_delivery(
         # mirror release_blocked — default to fix so a bare Enter never delivers.
         default_action = "fix"
     if interactive:
+        # Read-only: classify where an ``approve`` would land so the menu tells
+        # the truth. ``apply_commit_delivery`` re-resolves the policy for the real
+        # transport, so this never changes delivery behavior.
+        destination = _menu_destination(
+            source_worktree=source_worktree,
+            project_dir=project_dir,
+            run_id=run_id,
+            baseline_ref=baseline_ref,
+            cfg=cfg,
+            release_summary=release_summary,
+        )
         action = _prompt_action(
             default_action=default_action,
             release_summary=release_summary,
@@ -590,6 +601,7 @@ def resolve_commit_delivery(
             verification_manual_only=_verification_prompt_manual_only(
                 verification_gate,
             ),
+            destination=destination,
         )
     elif decision_action is not None:
         # ADR 0100 — operator choice injected out of band (decide_delivery).
@@ -1747,35 +1759,142 @@ def _message_from_release_summary(summary: str, run_id: str) -> str:
     return subject
 
 
-_DELIVERY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("1", "✅", "approve",
-     "Apply the diff to the project checkout AND create a commit."),
-    ("2", "📥", "apply",
-     "Apply the diff to the project checkout, leave it uncommitted "
-     "for a later operator-owned commit."),
-    ("3", "⏭",  "skip",
-     "Don't deliver — finish the run as DONE (success). The diff stays in "
-     "the retained run artifacts; you can deliver it manually later."),
-    ("4", "🛑", "halt",
-     "Don't deliver and mark the run HALTED (not a success). Use when "
-     "something is wrong and the run should be flagged, not counted as done."),
-)
+# Destination tokens describe where an ``approve`` will actually land, so the
+# delivery menu wording matches the ADR 0119 branch policy that
+# ``apply_commit_delivery`` independently re-resolves. ``resolve_commit_delivery``
+# derives the token from a read-only ``resolve_delivery_branch`` outcome;
+# ``fallback`` is used when that read fails, so the wording never lies about a
+# publish (checkout untouched) as a plain checkout commit.
+_DESTINATION_CHECKOUT_COMMIT = "checkout_commit"
+_DESTINATION_PUBLISHED_BRANCH = "published_branch"
+_DESTINATION_BRANCH_IN_CHECKOUT = "branch_in_checkout"
+_DESTINATION_FALLBACK = "fallback"
 
-_CORRECTION_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("1", "🔧", "fix",
-     "Continue with a correction follow-up in the same retained worktree."),
-    ("2", "✅", "approve",
-     "Override final acceptance, apply the diff to the project checkout, "
-     "AND create a commit."),
-    ("3", "📥", "apply",
-     "Override final acceptance, apply the diff to the project checkout, "
-     "and leave it uncommitted."),
-    ("4", "⏭", "skip",
-     "Retain artifacts and do not deliver. The run is not marked correction-ready."),
-    ("5", "🛑", "halt",
-     "Don't deliver and mark the run HALTED. Use when the run should be "
-     "flagged as wrong, not corrected."),
-)
+
+def _menu_destination(
+    *,
+    source_worktree: Path,
+    project_dir: Path,
+    run_id: str,
+    baseline_ref: str,
+    cfg: Mapping[str, Any],
+    release_summary: str,
+) -> str:
+    """Read-only classification of where an ``approve`` will land (menu wording).
+
+    Independently re-resolves the ADR 0119 delivery-branch policy for DISPLAY
+    only — ``apply_commit_delivery`` resolves it again for the real transport, so
+    this changes no behavior. ``resolve_delivery_branch`` only reads git
+    (``detect_default_branch``); it writes nothing. Any failure falls back to a
+    generic honest wording so the menu never claims a checkout commit for a
+    publish.
+    """
+    try:
+        outcome = resolve_delivery_branch(
+            source_path=source_worktree,
+            project_path=project_dir,
+            run_id=run_id,
+            base_ref=baseline_ref,
+            branch_policy=cfg.get("branch_policy"),
+            named_branch=cfg.get("branch_name"),
+            release_summary=release_summary,
+        )
+    except Exception:
+        return _DESTINATION_FALLBACK
+    if outcome.plan == "publish":
+        return _DESTINATION_PUBLISHED_BRANCH
+    if outcome.plan == "commit_on_branch":
+        return _DESTINATION_BRANCH_IN_CHECKOUT
+    return _DESTINATION_CHECKOUT_COMMIT
+
+
+def _approve_helptext(destination: str, *, correction: bool) -> str:
+    """``approve`` menu description, tailored to the resolved destination."""
+    if destination == _DESTINATION_CHECKOUT_COMMIT:
+        # Preserve the shipped bypass / commit-in-place wording byte-for-byte.
+        if correction:
+            return (
+                "Override final acceptance, apply the diff to the project "
+                "checkout, AND create a commit."
+            )
+        return "Apply the diff to the project checkout AND create a commit."
+    if destination == _DESTINATION_PUBLISHED_BRANCH:
+        body = (
+            "commit onto a delivery branch, push it, and open a pull request "
+            "— your project checkout is NOT modified."
+        )
+    elif destination == _DESTINATION_BRANCH_IN_CHECKOUT:
+        body = (
+            "commit onto a delivery branch in your project checkout and open a "
+            "pull request."
+        )
+    else:  # fallback — honest for both publish and in-place under the policy.
+        body = (
+            "commit — under the branch policy this pushes an orcho/deliver "
+            "branch and opens a PR on protected targets, or commits to your "
+            "checkout otherwise."
+        )
+    if correction:
+        return "Override final acceptance, " + body
+    return body[0].upper() + body[1:]
+
+
+def _apply_helptext(destination: str, *, correction: bool) -> str:
+    """``apply`` menu description; clarified only for the publish destination."""
+    if destination == _DESTINATION_PUBLISHED_BRANCH:
+        if correction:
+            return (
+                "Override final acceptance, apply the diff to your project "
+                "checkout, uncommitted, for a later operator-owned commit."
+            )
+        return (
+            "Apply the diff to your project checkout, uncommitted, for a later "
+            "operator-owned commit."
+        )
+    if correction:
+        return (
+            "Override final acceptance, apply the diff to the project checkout, "
+            "and leave it uncommitted."
+        )
+    return (
+        "Apply the diff to the project checkout, leave it uncommitted "
+        "for a later operator-owned commit."
+    )
+
+
+def _delivery_menu_options(
+    *, correction: bool, destination: str,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Build the delivery / correction menu rows.
+
+    ids, glyphs, actions, and aliases are identical across destinations; only the
+    ``approve`` and ``apply`` descriptions are tailored so the menu tells the
+    truth about where the diff lands.
+    """
+    approve = _approve_helptext(destination, correction=correction)
+    apply_text = _apply_helptext(destination, correction=correction)
+    if correction:
+        return (
+            ("1", "🔧", "fix",
+             "Continue with a correction follow-up in the same retained worktree."),
+            ("2", "✅", "approve", approve),
+            ("3", "📥", "apply", apply_text),
+            ("4", "⏭", "skip",
+             "Retain artifacts and do not deliver. The run is not marked correction-ready."),
+            ("5", "🛑", "halt",
+             "Don't deliver and mark the run HALTED. Use when the run should be "
+             "flagged as wrong, not corrected."),
+        )
+    return (
+        ("1", "✅", "approve", approve),
+        ("2", "📥", "apply", apply_text),
+        ("3", "⏭",  "skip",
+         "Don't deliver — finish the run as DONE (success). The diff stays in "
+         "the retained run artifacts; you can deliver it manually later."),
+        ("4", "🛑", "halt",
+         "Don't deliver and mark the run HALTED (not a success). Use when "
+         "something is wrong and the run should be flagged, not counted as done."),
+    )
 
 _DELIVERY_ALIASES: dict[str, str] = {
     "1": "approve", "a": "approve", "approve": "approve",
@@ -1990,12 +2109,13 @@ def _prompt_action(
     verification_suggest_hint: str = "",
     verification_garbage: tuple[str, ...] = (),
     verification_manual_only: tuple[str, ...] = (),
+    destination: str = _DESTINATION_CHECKOUT_COMMIT,
 ) -> str:
     color = is_color_active()
     # Either independent gate routes the operator to the correction menu (which
     # offers ``fix``); release_blocked keeps title priority when both apply.
     correction = release_blocked or verification_correction
-    options = _CORRECTION_OPTIONS if correction else _DELIVERY_OPTIONS
+    options = _delivery_menu_options(correction=correction, destination=destination)
     aliases = (
         _CORRECTION_ALIASES if correction else _DELIVERY_ALIASES
     )

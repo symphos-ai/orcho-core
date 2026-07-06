@@ -1017,6 +1017,67 @@ def _render_evidence_summary(
     return tuple(lines)
 
 
+_DELIVERY_NOT_DELIVERED_STATUSES: frozenset[str] = frozenset(
+    {
+        "halted",
+        "target_dirty",
+        "commit_failed",
+        "apply_failed",
+        "verification_blocked",
+    },
+)
+
+
+def _render_delivery_destination_lines(
+    session: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Return the compact ``Delivery: ...`` destination line for the DONE tail.
+
+    Read-only projection of the terminal ``commit_delivery`` audit record
+    (``CommitDeliveryDecision.to_dict()``). One scannable line names where the
+    diff landed. The wording shares the ADR 0119/0121 vocabulary with
+    ``_render_published_branch`` and ``core.io.summary_lines.delivery_line``
+    ('pushed delivery branch', 'PR', 'project checkout'). No terminal record —
+    or a non-terminal / unrecognised status — renders nothing so the tail stays
+    byte-identical when there is nothing to report. This never duplicates the
+    mid-run delivery block.
+    """
+    record = session.get("commit_delivery")
+    if not isinstance(record, Mapping):
+        return ()
+    status = str(record.get("status") or "")
+    if not status:
+        return ()
+    if status == "committed":
+        branch = str(record.get("delivery_branch") or "")
+        sha = str(record.get("commit_sha") or "")
+        pr_url = str(record.get("pr_url") or "")
+        if branch and not sha:
+            # Published / pushed delivery branch — the checkout was never touched.
+            if pr_url:
+                return (f"Delivery: pushed {branch} → PR {pr_url}",)
+            return (
+                f"Delivery: pushed {branch} → branch ready — "
+                "open a PR / push manually",
+            )
+        if sha and not branch:
+            return (f"Delivery: committed {sha[:7]} to project checkout",)
+        if sha and branch:
+            # A named / protect_default in-place commit lands on a delivery
+            # branch checked out in the project checkout.
+            if pr_url:
+                return (f"Delivery: committed {sha[:7]} onto {branch} → PR {pr_url}",)
+            return (f"Delivery: committed {sha[:7]} onto {branch}",)
+        return ("Delivery: committed to project checkout",)
+    if status == "applied_uncommitted":
+        return ("Delivery: applied to project checkout (uncommitted)",)
+    if status == "skipped":
+        return ("Delivery: skipped — diff retained",)
+    if status in _DELIVERY_NOT_DELIVERED_STATUSES:
+        return (f"Delivery: not delivered ({status})",)
+    return ()
+
+
 def _finding_totals(phases: Mapping[str, Any]) -> tuple[int, int]:
     summary = _review_finding_summary(phases)
     return summary.total, summary.active
@@ -1480,6 +1541,13 @@ class FinalizationResult:
     # the run produced no out-of-plan scope evidence. Defaulted so existing
     # construction sites and tests are unaffected.
     scope_expansion_lines: tuple[str, ...] = ()
+    # Compact 'Delivery: ...' destination line for the DONE tail, rendered from
+    # the terminal ``commit_delivery`` audit record. One scannable line naming
+    # where the diff landed (pushed delivery branch + PR / checkout commit /
+    # applied uncommitted / skipped / not delivered). Empty tuple when the run
+    # carries no terminal delivery record. Defaulted so existing construction
+    # sites and tests are unaffected.
+    delivery_summary_lines: tuple[str, ...] = ()
 
 
 # ── companion delivery caveat (T2) ────────────────────────────────────────
@@ -2282,6 +2350,9 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
             if isinstance(run.session.get("phases"), Mapping)
             else {}
         ),
+        # Compact 'Delivery: ...' destination line, read from the terminal
+        # ``commit_delivery`` audit record; empty when the run carries none.
+        delivery_summary_lines=_render_delivery_destination_lines(run.session),
     )
 
 
@@ -2413,6 +2484,13 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
         )
     for line in result.evidence_summary_lines:
         _done_line(line, color=C.MAGENTA, icon="•", icon_color=C.MAGENTA)
+
+    # Delivery destination line: where the diff actually landed (pushed delivery
+    # branch + PR / checkout commit / applied uncommitted / skipped / not
+    # delivered). Neutral cyan — a factual destination report, not a verdict.
+    # Empty tuple -> nothing (no terminal delivery record for this run).
+    for line in result.delivery_summary_lines:
+        _done_line(line, color=C.CYAN, icon="•", icon_color=C.CYAN)
 
     # Verification gates block (T3): the official auto-run / gate_rerun outcome,
     # sourced from durable receipt evidence. Neutral cyan header + grey detail
