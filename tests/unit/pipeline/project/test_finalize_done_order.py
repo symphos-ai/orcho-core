@@ -1450,6 +1450,112 @@ def test_atexit_interrupted_follows_policy(
     assert session["phase_handoff"] == {"id": "h1", "phase": "validate_plan"}
 
 
+# ── delivery destination line in the DONE tail ─────────────────────────────
+
+
+def _delivery_done_stub(
+    run_dir: Path, project_dir: Path, *, commit_delivery: dict
+) -> SimpleNamespace:
+    session = {
+        "status": "done",
+        "commit_delivery": commit_delivery,
+        "phases": {
+            "final_acceptance": {"verdict": "APPROVED", "ship_ready": True},
+        },
+    }
+    state = SimpleNamespace(halt=False, halt_reason=None, extras={}, phase_log={})
+    stub = _correction_stub(run_dir, project_dir, session=session, state=state)
+    stub.task = "# Orcho Task: delivery destination line"
+    stub.profile_name = "default"
+    return stub
+
+
+def test_done_tail_shows_pushed_delivery_branch_and_pr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir,
+        project_dir,
+        commit_delivery={
+            "status": "committed",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": "https://example.test/pr/9",
+        },
+    )
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert result.delivery_summary_lines == (
+        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/9",
+    )
+    assert (
+        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/9"
+        in out
+    )
+    assert "Pipeline complete" in out
+    # The delivery line lands in the DONE tail, right after the Evidence block.
+    assert out.index("Evidence") < out.index("Delivery: pushed")
+
+
+def test_done_tail_shows_checkout_commit_sha(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir,
+        project_dir,
+        commit_delivery={
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "pr_url": None,
+        },
+    )
+
+    finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert "Delivery: committed 0123456 to project checkout" in out
+
+
+def test_done_tail_shows_skipped_delivery(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir,
+        project_dir,
+        commit_delivery={"status": "skipped", "pr_url": None},
+    )
+
+    finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert "Delivery: skipped — diff retained" in out
+
+
 @pytest.fixture(autouse=True)
 def _live_output_mode_for_full_transcript():
     """Pin the full live transcript shape (T2 summary reconciliation).

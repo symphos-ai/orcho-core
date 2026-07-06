@@ -519,6 +519,95 @@ def test_interactive_default_is_apply_when_operator_accepts_default(
     assert decision.final_message is None
 
 
+def _menu_blob(
+    *,
+    repo: Path,
+    worktree: Path,
+    run_dir: Path,
+    monkeypatch,
+    branch_policy: str | None,
+) -> str:
+    """Render the interactive delivery menu and return its joined text."""
+    from core.io.ansi import strip_ansi
+
+    lines: list[str] = []
+    monkeypatch.setattr(commit_delivery, "stdio_interactive", lambda: True)
+    cfg: dict = {
+        "enabled": True,
+        "interactive_default": "skip",
+        "auto_in_ci": "approve",
+        "add_untracked": True,
+    }
+    if branch_policy is not None:
+        cfg["branch_policy"] = branch_policy
+    resolve_commit_delivery(
+        project_dir=repo,
+        source_worktree=worktree,
+        run_dir=run_dir,
+        run_id="r1",
+        session=_session(),
+        commit_config=cfg,
+        no_interactive=False,
+        input_fn=lambda _prompt: "",
+        output_fn=lines.append,
+    )
+    return strip_ansi("\n".join(lines))
+
+
+def test_interactive_menu_published_branch_describes_push_and_pr(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # An isolated (per_run) worktree under the default ``worktree_branch`` policy
+    # publishes the run branch and opens a PR — the checkout is never touched.
+    # The menu must say so and must NOT promise a checkout commit.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    blob = _menu_blob(
+        repo=repo,
+        worktree=worktree,
+        run_dir=run_dir,
+        monkeypatch=monkeypatch,
+        branch_policy=None,
+    )
+
+    assert "delivery branch" in blob
+    assert "open a pull request" in blob
+    assert "your project checkout is NOT modified" in blob
+    # The stale wording that lied about a publish as a checkout commit is gone.
+    assert "Apply the diff to the project checkout AND create a commit." not in blob
+
+
+def test_interactive_menu_bypass_keeps_checkout_commit_wording(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # ``bypass`` commits in place on the checkout, so the historical wording
+    # ("apply the diff to the project checkout AND create a commit") is correct
+    # and must be preserved.
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    blob = _menu_blob(
+        repo=repo,
+        worktree=worktree,
+        run_dir=run_dir,
+        monkeypatch=monkeypatch,
+        branch_policy="bypass",
+    )
+
+    assert "Apply the diff to the project checkout AND create a commit." in blob
+    assert "your project checkout is NOT modified" not in blob
+    assert "open a pull request" not in blob
+
+
 def test_interactive_prompt_marks_tracked_and_untracked_paths(
     tmp_path: Path,
     monkeypatch,

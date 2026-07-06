@@ -22,6 +22,7 @@ from pipeline.project.finalization import (
     FinalizationContext,
     _render_agent_advice_summary,
     _render_ci_agent_advice_summary,
+    _render_delivery_destination_lines,
     _render_evidence_summary,
     _scope_expansion_summary_lines,
     build_companion_delivery_caveat,
@@ -105,6 +106,78 @@ def _session_resolved() -> dict[str, Any]:
             ],
         },
     }
+
+
+# ── delivery destination line ───────────────────────────────────────────────
+
+
+def test_delivery_line_published_branch_shows_push_and_pr() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": "https://example.test/pr/7",
+        },
+    }
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/7",
+    )
+
+
+def test_delivery_line_published_branch_without_pr_is_actionable() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+        },
+    }
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: pushed orcho/deliver/r1-feature → "
+        "branch ready — open a PR / push manually",
+    )
+
+
+def test_delivery_line_checkout_commit_shows_sha7() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "pr_url": None,
+        },
+    }
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: committed 0123456 to project checkout",
+    )
+
+
+def test_delivery_line_applied_uncommitted() -> None:
+    session = {"commit_delivery": {"status": "applied_uncommitted", "pr_url": None}}
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: applied to project checkout (uncommitted)",
+    )
+
+
+def test_delivery_line_skipped() -> None:
+    session = {"commit_delivery": {"status": "skipped", "pr_url": None}}
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: skipped — diff retained",
+    )
+
+
+def test_delivery_line_halted_reports_not_delivered() -> None:
+    session = {"commit_delivery": {"status": "halted", "pr_url": None}}
+    assert _render_delivery_destination_lines(session) == (
+        "Delivery: not delivered (halted)",
+    )
+
+
+def test_delivery_line_absent_or_pending_renders_nothing() -> None:
+    assert _render_delivery_destination_lines({}) == ()
+    assert _render_delivery_destination_lines(
+        {"commit_delivery": {"status": "pending", "pr_url": None}}
+    ) == ()
+    assert _render_delivery_destination_lines({"commit_delivery": None}) == ()
 
 
 # ── omit when no advice ─────────────────────────────────────────────────────
