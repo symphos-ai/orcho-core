@@ -79,6 +79,7 @@ from cli._help import (
     render_verbose_header,
 )
 from cli._profile_prompt import require_profile_or_exit
+from cli._quality_gates import cmd_quality_gates
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
@@ -1292,6 +1293,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="List available workflow profiles",
     )
     p_workflows_list.set_defaults(func=cmd_workflows_list)
+
+    # ── quality-gates ─────────────────────────────────────────────────────────
+    p_qg = sub.add_parser(
+        "quality-gates",
+        help="Show the declared verification gate matrix (read-only)",
+    )
+    p_qg.add_argument(
+        "--profile", default=None,
+        help="Resolve when-stage against this profile's phases (else "
+             "warn/off gates are shown profile-dependent)",
+    )
+    p_qg.add_argument(
+        "--paths", nargs="+", default=None, metavar="GLOB",
+        help="Resolve on-path activation (active/dormant) for these globs/files",
+    )
+    p_qg.add_argument(
+        "--project", default=None,
+        help="Project dir whose plugin declares the verification contract "
+             "(default: current directory)",
+    )
+    p_qg.set_defaults(func=cmd_quality_gates)
 
     # ── prompts ───────────────────────────────────────────────────────────────
     p_prompts = sub.add_parser("prompts", help="Show prompt resolution chain")

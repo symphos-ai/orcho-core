@@ -22,6 +22,7 @@ from pipeline.verification_contract import VerificationContract
 from pipeline.verification_ledger import (
     GateLedgerRow,
     build_gate_ledger,
+    effective_stage,
     gate_run_mode,
     gate_timing,
 )
@@ -325,6 +326,168 @@ def test_resolve_accepts_prebuilt_plan_by_identity() -> None:
     # Only the identity present in plan.entries is active.
     assert rows[("before_phase", "plan")].resolved == "active"
     assert rows[("after_phase", "implement")].resolved == "dormant"
+
+
+# ── policy / kind carried on the row ────────────────────────────────────────
+
+
+def test_policy_carried_on_row() -> None:
+    ledger = build_gate_ledger(_reference_contract())
+    # baseline set declares warn (and the entry re-declares warn): warn gates.
+    assert _row(ledger, "lint").policy == "warn"
+    assert _row(ledger, "env-provenance").policy == "warn"
+    # require gate sets: require policy.
+    for gate in _NARROW + ("broad-non-e2e",):
+        assert _row(ledger, gate).policy == "require", gate
+    # e2e is scheduled manual_only with an explicit suggest policy.
+    assert _row(ledger, "e2e").policy == "suggest"
+
+
+def test_kind_carried_on_row() -> None:
+    ledger = build_gate_ledger(_reference_contract())
+    # env-provenance / lint declare cheap (and baseline default_cheap is true).
+    assert _row(ledger, "env-provenance").kind == "cheap"
+    assert _row(ledger, "lint").kind == "cheap"
+    # No cheap declared anywhere for these -> honest 'unknown'.
+    for gate in _NARROW + ("broad-non-e2e", "e2e"):
+        assert _row(ledger, gate).kind == "unknown", gate
+
+
+def test_policy_strictest_backing_default_when_entry_omits() -> None:
+    # A contract whose schedule entry omits policy so the strictest backing
+    # gate-set default_policy wins (require over warn).
+    verification = {
+        "default_env": "ci",
+        "commands": {"c": {"env": "ci", "run": "run c"}},
+        "gate_sets": {
+            "laxer": {"commands": ["c"], "default_policy": "warn"},
+            "stricter": {"commands": ["c"], "default_policy": "require"},
+        },
+        "selection": [{"always": ["laxer", "stricter"]}],
+        "schedule": [{"after_phase": "implement", "gate_sets": ["laxer", "stricter"]}],
+    }
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            work_mode="pro",
+            verification_envs={"ci": {"image": "python:3.12"}},
+            verification=verification,
+        ),
+    )
+    assert contract is not None
+    row = _row(build_gate_ledger(contract), "c")
+    assert row.policy == "require"
+
+
+def test_policy_unknown_when_undeclared_anywhere() -> None:
+    # No entry policy and no gate-set default_policy -> honest 'unknown'.
+    verification = {
+        "default_env": "ci",
+        "commands": {"c": {"env": "ci", "run": "run c"}},
+        "gate_sets": {"bare": {"commands": ["c"]}},
+        "selection": [{"always": ["bare"]}],
+        "schedule": [{"after_phase": "implement", "gate_sets": ["bare"]}],
+    }
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            work_mode="pro",
+            verification_envs={"ci": {"image": "python:3.12"}},
+            verification=verification,
+        ),
+    )
+    assert contract is not None
+    assert _row(build_gate_ledger(contract), "c").policy == "unknown"
+
+
+# ── effective_stage: the four gate classes × has_final_phase branches ────────
+
+
+def test_effective_stage_require_is_timing_hook() -> None:
+    # A required gate runs at its timing hook regardless of the profile.
+    for hfp in (True, False, None):
+        assert effective_stage("require", "after_phase", "implement", hfp) == (
+            "after_implement"
+        )
+        assert effective_stage("require", "before_delivery", "", hfp) == "delivery"
+
+
+def test_effective_stage_suggest_and_manual_are_operator() -> None:
+    # suggest policy, or a manual/resume hook, is operator-run — never auto.
+    assert effective_stage("suggest", "after_phase", "implement", True) == "operator"
+    assert effective_stage("warn", "manual_only", "", True) == "operator"
+    assert effective_stage("warn", "on_resume", "", False) == "operator"
+    # A require gate on a manual hook still reads operator (via gate_timing).
+    assert effective_stage("require", "manual_only", "", None) == "operator"
+
+
+def test_effective_stage_warn_off_branch_on_has_final_phase() -> None:
+    for policy in ("warn", "off"):
+        assert effective_stage(policy, "after_phase", "implement", True) == (
+            "pre-final"
+        )
+        assert effective_stage(policy, "after_phase", "implement", False) == (
+            "not auto-run"
+        )
+        assert effective_stage(policy, "after_phase", "implement", None) == (
+            "profile-dependent"
+        )
+
+
+def test_effective_stage_unknown_policy_follows_warn_off_branch() -> None:
+    # An undeclared (unknown) auto gate is not enforced inline, so it follows the
+    # same deferred branch as warn/off.
+    assert effective_stage("unknown", "after_phase", "implement", True) == "pre-final"
+    assert effective_stage("unknown", "after_phase", "implement", False) == (
+        "not auto-run"
+    )
+    assert effective_stage("unknown", "after_phase", "implement", None) == (
+        "profile-dependent"
+    )
+
+
+# ── when: derived onto each row via has_final_phase ──────────────────────────
+
+
+def test_when_require_gates_are_timing_hook_on_row() -> None:
+    for hfp in (True, False, None):
+        ledger = build_gate_ledger(_reference_contract(), has_final_phase=hfp)
+        for gate in _NARROW + ("broad-non-e2e",):
+            assert _row(ledger, gate).when == "after_implement", (gate, hfp)
+
+
+def test_when_warn_gates_track_has_final_phase_on_row() -> None:
+    true_ledger = build_gate_ledger(_reference_contract(), has_final_phase=True)
+    false_ledger = build_gate_ledger(_reference_contract(), has_final_phase=False)
+    none_ledger = build_gate_ledger(_reference_contract(), has_final_phase=None)
+    for gate in ("lint", "env-provenance"):
+        assert _row(true_ledger, gate).when == "pre-final", gate
+        assert _row(false_ledger, gate).when == "not auto-run", gate
+        assert _row(none_ledger, gate).when == "profile-dependent", gate
+
+
+def test_when_e2e_is_operator_regardless_of_profile() -> None:
+    for hfp in (True, False, None):
+        ledger = build_gate_ledger(_reference_contract(), has_final_phase=hfp)
+        assert _row(ledger, "e2e").when == "operator", hfp
+
+
+def test_when_defaults_to_empty_without_has_final_phase() -> None:
+    # No warn gate shows a timing hook; without has_final_phase the warn gates
+    # fall to the None (profile-dependent) branch, and no auto gate reads
+    # after_implement unless it is required.
+    ledger = build_gate_ledger(_reference_contract())
+    assert _row(ledger, "lint").when == "profile-dependent"
+    for gate in _NARROW + ("broad-non-e2e",):
+        assert _row(ledger, gate).when == "after_implement", gate
+
+
+def test_has_final_phase_does_not_affect_resolve_or_row_set() -> None:
+    base = build_gate_ledger(_reference_contract())
+    with_hfp = build_gate_ledger(_reference_contract(), has_final_phase=True)
+    # Same identities, same resolve (both unresolved at start).
+    assert {(r.gate, r.hook, r.phase) for r in base} == {
+        (r.gate, r.hook, r.phase) for r in with_hfp
+    }
+    assert all(r.resolved is None for r in with_hfp)
 
 
 # ── totality on empty contract ──────────────────────────────────────────────

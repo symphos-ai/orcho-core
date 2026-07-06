@@ -11,6 +11,7 @@ from core.io.verification_header import (
     GateRowView,
     VerificationHeaderView,
     build_verification_header_view,
+    render_gate_matrix,
     render_verification_header,
 )
 from pipeline.plugins import PluginConfig
@@ -433,8 +434,10 @@ def test_activation_rendered_as_on_path_manual_always() -> None:
     verification_line = next(
         ln for ln in out.splitlines() if "verification-unit" in ln
     )
-    assert "on-path: pipeline/verification*.py" in verification_line
-    assert "require" not in verification_line
+    # The activation cell is the trailing column and shows the globs; the gate's
+    # ``require`` now lives in its own restored ``policy`` column, not the
+    # activation cell — so the line ENDS with the on-path activation.
+    assert verification_line.rstrip().endswith("on-path: pipeline/verification*.py")
 
     lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
     assert lint_line.rstrip().endswith("always")
@@ -459,6 +462,88 @@ def test_gate_identity_separates_same_command_across_hooks() -> None:
     assert timings == ["after_implement", "delivery"]
 
 
+# ── when axis: derived from has_final_phase ────────────────────────────
+
+
+def test_when_require_is_timing_hook_warn_is_pre_final_with_final_phase() -> None:
+    # A profile WITH a final delivery phase: a required gate reads its timing hook
+    # (after_implement), a warn gate defers to pre-final, e2e is operator.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    assert _gate(view, "verification-unit").when == "after_implement"
+    assert _gate(view, "broad-non-e2e").when == "after_implement"
+    assert _gate(view, "lint").when == "pre-final"
+    assert _gate(view, "env-provenance").when == "pre-final"
+    assert _gate(view, "e2e").when == "operator"
+
+
+def test_when_warn_is_not_auto_run_without_final_phase() -> None:
+    # A fast / small_task-style profile with NO final phase: the warn gates are
+    # honestly 'not auto-run', while the required gates still read their hook.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=False,
+    )
+    assert view is not None
+    assert _gate(view, "lint").when == "not auto-run"
+    assert _gate(view, "env-provenance").when == "not auto-run"
+    assert _gate(view, "verification-unit").when == "after_implement"
+    assert _gate(view, "e2e").when == "operator"
+
+
+def test_when_profile_dependent_when_has_final_phase_unknown() -> None:
+    # Default (no has_final_phase): a warn gate is marked profile-dependent, not
+    # guessed; required gates are unaffected.
+    view = build_verification_header_view(_reference_contract())
+    assert view is not None
+    assert _gate(view, "lint").when == "profile-dependent"
+    assert _gate(view, "verification-unit").when == "after_implement"
+
+
+def test_when_rendered_in_matrix_distinguishes_require_from_warn() -> None:
+    # The rendered matrix carries the when column so require->after_implement is
+    # legibly distinct from warn->pre-final on the row itself.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    out = _strip(render_verification_header(view, compact=False))
+    assert "when" in out
+    ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
+    assert "after_implement" in ver_line
+    lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
+    assert "pre-final" in lint_line
+
+
+# ── render_gate_matrix: the shared, reusable formatter ─────────────────
+
+
+def test_render_gate_matrix_column_contract_and_reuse() -> None:
+    # render_gate_matrix is the single formatter the banner also uses: its header
+    # names the new column order and the banner reuses exactly its rows.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    matrix = render_gate_matrix(view.gates)
+    # Header row + one row per gate.
+    assert len(matrix) == len(view.gates) + 1
+    header = strip_ansi(matrix[0]).split()
+    assert header == ["gate", "when", "run", "policy", "kind", "activation"]
+    # The banner renders through the same helper: every matrix data row appears
+    # verbatim inside the banner output (indented under the ``gates`` label).
+    banner = _strip(render_verification_header(view, compact=False))
+    for data_row in matrix[1:]:
+        assert data_row in banner
+
+
+def test_render_gate_matrix_empty_is_empty_list() -> None:
+    # Empty gates -> the shared helper returns [] and leaves the "no gates"
+    # rendering to the caller (the banner shows ``gates  —``).
+    assert render_gate_matrix(()) == []
+
+
 # ── render_verification_header ─────────────────────────────────────────
 
 
@@ -474,6 +559,7 @@ def _warn_view() -> VerificationHeaderView:
                 policy="warn",
                 kind="cheap",
                 condition="always",
+                when="pre-final",
             ),
             GateRowView(
                 gate="e2e",
@@ -482,6 +568,7 @@ def _warn_view() -> VerificationHeaderView:
                 policy="require",
                 kind="unknown",
                 condition="operator",
+                when="operator",
             ),
         ),
         policy_source="auto-derived from mode/plugin defaults",
@@ -503,21 +590,24 @@ def test_structured_block_has_all_dimension_labels() -> None:
 
 def test_structured_matrix_has_separate_columns_per_gate() -> None:
     out = _strip(render_verification_header(_warn_view(), compact=False))
-    # The matrix header names the orthogonal columns; the misleading per-gate
-    # ``policy`` cell is replaced by the ``activation`` column.
-    assert "timing" in out
+    # The matrix header names the orthogonal columns: ``when`` supersedes the raw
+    # timing display, ``policy`` is restored as its own column, and ``activation``
+    # is the trailing column.
+    assert "when" in out
     assert "run" in out
+    assert "policy" in out
     assert "kind" in out
     assert "activation" in out
+    assert "timing" not in out  # the raw timing column is gone
     # Each gate row keeps command identity beside its own property cells, on a
     # single line — not a flat comma bucket fusing identity with properties.
     e2e_line = next(ln for ln in out.splitlines() if "e2e" in ln)
-    assert "operator" in e2e_line
-    assert "unknown" in e2e_line
-    # The operator gate's activation reads ``manual`` — never an unconditional
-    # ``require`` cell in the matrix.
-    assert "manual" in e2e_line
-    assert "require" not in e2e_line
+    assert "operator" in e2e_line  # its when stage
+    assert "unknown" in e2e_line   # its kind
+    assert "require" in e2e_line   # its restored policy column
+    # The operator gate's activation cell is the trailing column and reads
+    # ``manual``.
+    assert e2e_line.rstrip().endswith("manual")
     # The legacy flat command bucket and its label are gone.
     assert "lint, e2e" not in out
     assert "commands" not in out
