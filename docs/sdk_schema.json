@@ -1630,6 +1630,87 @@
       "slots": true
     },
     {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "variant",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "description",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "default_mode",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "isolated",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phases",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cross_gates",
+          "type": "dict[str, dict] | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hypothesis",
+          "type": "dict | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "semantic_profile",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recipe_kind",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "internal",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.profiles",
+      "name": "ProfileSummary",
+      "slots": true
+    },
+    {
       "bases": [
         "OrchoError"
       ],
@@ -3147,6 +3228,13 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.profiles",
+      "name": "catalogue_path",
+      "params": [],
+      "return": "Path"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.evidence",
       "name": "collect_evidence",
       "params": [
@@ -3989,6 +4077,13 @@
         }
       ],
       "return": "list[RunMetrics]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.profiles",
+      "name": "list_profiles",
+      "params": [],
+      "return": "tuple[ProfileSummary, ...]"
     },
     {
       "kind": "callable",
