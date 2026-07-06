@@ -8,21 +8,35 @@ labelled successor still collapsed every gate into one flat ``commands`` list
 that fused command identity with its timing, run mode, policy, and cost. This
 module instead renders a compact **gate matrix**: each row keeps the command
 identity in its own column, separate from four orthogonal columns —
-timing/hook, run mode (auto/manual), effective policy, and kind/cost — plus the
-unchanged mode / envs / policy-source / effect lines. A compact single line for
-tight terminals summarises the matrix as ``gates=N`` without expanding it.
+timing/hook, run mode (auto/manual), kind/cost, and the gate's **activation
+condition** — plus the unchanged mode / envs / policy-source / effect lines. A
+compact single line for tight terminals summarises the matrix as ``gates=N``
+without expanding it.
+
+The activation column replaces the old per-gate ``policy`` cell, which read a
+path-gated gate as an *unconditional* ``require`` even at run start when no diff
+is known. Each row now shows *when* the gate activates — ``always`` (baseline /
+broad), ``on-path: <globs>`` (a subsystem gate keyed on touched paths), or
+``manual`` (an operator/manual gate) — read from the shared gate ledger
+(:mod:`pipeline.verification_ledger`). The receipt-enforcement policy is still
+summarised once at the top (``policy`` / ``effect`` lines); it is a distinct
+dimension from *whether the gate is selected for this diff*.
 
 Design rules (mirrors :mod:`core.io.pipeline_block`):
 
 * **Pure presentation.** Nothing here executes ``verification.commands``,
   builds or reads a ``ScheduledGatePlan``, runs the ``work_mode`` transform,
-  reads or writes receipts, or blocks a transition. It only reads
-  already-validated, declared fields.
+  reads or writes receipts, or blocks a transition. The gate ledger is consumed
+  with ``changed_files=None`` (run start, no diff), so it resolves no plan and
+  every disposition stays ``None`` — the header only reads already-validated,
+  declared fields and the ledger's declared activation condition.
 * **No hard pipeline dependency.** The :class:`VerificationContract` is read
   duck-typed (``work_mode`` / ``verification_envs`` / ``commands`` /
-  ``schedule`` / ``gate_sets``); the type is only imported under
-  ``TYPE_CHECKING`` so ``core.io`` stays a sibling of the pipeline layer, not a
-  dependant.
+  ``schedule`` / ``gate_sets``); its type is only imported under
+  ``TYPE_CHECKING`` and the ledger projection is imported *lazily* inside the
+  builder, so ``core.io`` stays a sibling of the pipeline layer, not a
+  module-level dependant. The ledger owns the timing/run-mode derivation and the
+  activation condition; this module does not keep a second copy.
 * **Operator language, not schedule jargon.** A ``None`` schedule policy means
   "not set; derive later" — it is surfaced as ``auto-derived from mode/plugin
   defaults``, never as the raw ``schedule: derived`` token. Any property not
@@ -83,24 +97,34 @@ _COMPACT_WIDTH_THRESHOLD = 60
 class GateRowView:
     """One presentation-ready row of the gate matrix.
 
-    Each row keeps the command identity (``gate``) separate from four orthogonal
+    Each row keeps the command identity (``gate``) separate from its orthogonal
     columns so nothing collapses into a flat bucket:
 
     * ``timing`` — the hook/timing, e.g. ``after_implement`` (after_phase),
       ``before_<phase>`` (before_phase), ``delivery`` (before_delivery),
-      ``operator`` (manual_only), ``on_resume`` (on_resume).
+      ``operator`` (manual_only), ``on_resume`` (on_resume). Taken from the gate
+      ledger, not recomputed here.
     * ``run_mode`` — ``auto`` for before_phase/after_phase/before_delivery,
       ``manual`` for manual_only/on_resume. A manual_only gate is always legible
       as ``operator`` / ``manual``, never disguised as an ordinary auto gate.
-    * ``policy`` — the effective declared policy for this gate
-      (off|suggest|warn|require), or ``unknown`` when it would only resolve
-      after the work_mode transform we deliberately do not recompute here.
+    * ``policy`` — the effective declared receipt-enforcement policy for this
+      gate (off|suggest|warn|require), or ``unknown`` when it would only resolve
+      after the work_mode transform we deliberately do not recompute here. This
+      is a *distinct* dimension from activation and drives only the top-level
+      ``policy`` / ``effect`` summary; it is no longer a per-gate matrix cell.
     * ``kind`` — declared cost: ``cheap`` when the command (or its gate set)
       declares ``cheap: true``, else ``unknown``. No env-proof/targeted/broad
       taxonomy is invented without a declared source.
+    * ``condition`` / ``condition_paths`` — the gate's *activation condition*
+      read from the shared ledger: ``always`` (an ``always`` selection rule),
+      ``on_path`` (a subsystem ``paths`` rule — ``condition_paths`` carries the
+      union of its globs), ``operator`` (a manual/operator gate), or
+      ``task_kind``. Rendered as the matrix ``activation`` cell so a path-gated
+      gate never reads as an unconditional ``require``. Both default so a
+      directly-constructed row renders byte-identically.
 
     The gate identity is ``(gate, timing)`` derived from ``(command, hook,
-    phase)``; rows are deduplicated on that identity by the builder.
+    phase)``; rows are deduplicated on that identity by the ledger.
     """
 
     gate: str
@@ -108,6 +132,8 @@ class GateRowView:
     run_mode: str
     policy: str
     kind: str
+    condition: str = "always"
+    condition_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -212,8 +238,18 @@ def _strongest_policy(declared: list[str]) -> str | None:
 
 # ── gate matrix builder ────────────────────────────────────────────────
 #
-# A gate's identity is ``(command, hook, phase)``. Each schedule entry can name
-# its commands two ways, and BOTH must be expanded or whole gates vanish:
+# The row set, its ``(command, hook, phase)`` identity, and each row's timing /
+# run_mode / activation condition come from the shared gate ledger
+# (:mod:`pipeline.verification_ledger`) — the SINGLE source, so the header never
+# re-reads the raw ``contract.schedule`` to recover timing (no second
+# derivation). The ledger owns the dedup that keeps two schedule entries of one
+# command under different ``(hook, phase)`` as distinct rows.
+#
+# What the ledger deliberately does NOT carry is the receipt-enforcement
+# *policy* (off|suggest|warn|require) and the declared *cost* (cheap) — those are
+# this header's presentation dimension. They are joined onto the ledger rows by
+# identity from :func:`_receipt_meta_by_identity`, which expands each schedule
+# entry the same two ways a gate can name its commands:
 #   (a) ``entry.commands`` — commands listed directly on the entry, and
 #   (b) ``entry.gate_sets`` — each name resolved via
 #       ``contract.gate_sets[name].commands`` (names are validated at contract
@@ -221,28 +257,6 @@ def _strongest_policy(declared: list[str]) -> str | None:
 # A manual_only/operator gate is very often declared as
 # ``{"manual_only": true, "gate_sets": ["manuals"]}`` with an EMPTY
 # ``entry.commands``; without the gate_sets expansion such gates would be lost.
-
-# hook -> run mode. Phase-anchored and delivery hooks fire automatically; the
-# operator/resume hooks are run by a human. manual_only therefore reads as
-# ``manual`` (and ``operator`` timing), never as an ordinary auto gate.
-_RUN_MODE: dict[str, str] = {
-    "before_phase": "auto",
-    "after_phase": "auto",
-    "before_delivery": "auto",
-    "manual_only": "manual",
-    "on_resume": "manual",
-}
-
-
-def _timing(hook: str, phase: str) -> str:
-    """Operator-facing timing label for a hook (+ phase where it carries one)."""
-    if hook in ("before_phase", "after_phase") and phase:
-        return f"{hook.split('_')[0]}_{phase}"
-    if hook == "before_delivery":
-        return "delivery"
-    if hook == "manual_only":
-        return "operator"
-    return hook
 
 
 def _gate_policy(entry: ScheduleEntry, backing: list[GateSet]) -> str:
@@ -288,24 +302,22 @@ def _gate_kind(
     return "cheap" if cheap else _UNKNOWN
 
 
-def _build_gate_rows(
+def _receipt_meta_by_identity(
     contract: VerificationContract,
-) -> tuple[GateRowView, ...]:
-    """Project ``contract.schedule`` into the deduplicated gate matrix.
+) -> dict[tuple[str, str, str], tuple[str, str]]:
+    """Map each gate identity to its ``(policy, kind)`` receipt/cost metadata.
 
-    Commands not referenced by any schedule entry (neither in ``entry.commands``
-    nor via ``entry.gate_sets``) are omitted — the matrix is the *scheduled*
-    gates; unscheduled commands carry no timing/run_mode and are surfaced
-    elsewhere. Total on empty fields: a contract with no schedule yields ``()``.
+    Walks ``contract.schedule`` — the same first-wins expansion the ledger uses —
+    but ONLY to resolve the receipt-enforcement policy and declared cost, keyed by
+    ``(command, hook, phase)``. This is the header's own presentation dimension
+    (the ledger does not carry it); timing / run_mode / activation still come from
+    the ledger, so no timing is recomputed here.
     """
-    rows: list[GateRowView] = []
-    seen: set[tuple[str, str, str]] = set()
+    meta: dict[tuple[str, str, str], tuple[str, str]] = {}
     for entry in contract.schedule:
-        # Per command in this entry, collect EVERY backing gate set (in
-        # declaration order) so a command listed both directly and via a gate
-        # set keeps the gate set's declared defaults — the bare direct source no
-        # longer shadows the richer gate-set metadata. ``order`` preserves
-        # first-seen position (entry.commands first, then gate-set commands).
+        # Collect every backing gate set (declaration order) so a command listed
+        # both directly and via a gate set keeps the gate set's declared defaults —
+        # the bare direct source no longer shadows the richer gate-set metadata.
         backing: dict[str, list[GateSet]] = {}
         order: list[str] = []
         for cmd in entry.commands:
@@ -324,19 +336,52 @@ def _build_gate_rows(
 
         for command in order:
             identity = (command, entry.hook, entry.phase)
-            if identity in seen:
+            if identity in meta:
                 continue
-            seen.add(identity)
             sources = backing[command]
-            rows.append(
-                GateRowView(
-                    gate=command,
-                    timing=_timing(entry.hook, entry.phase),
-                    run_mode=_RUN_MODE.get(entry.hook, _UNKNOWN),
-                    policy=_gate_policy(entry, sources),
-                    kind=_gate_kind(contract, command, sources),
-                ),
+            meta[identity] = (
+                _gate_policy(entry, sources),
+                _gate_kind(contract, command, sources),
             )
+    return meta
+
+
+def _build_gate_rows(
+    contract: VerificationContract,
+) -> tuple[GateRowView, ...]:
+    """Project the shared gate ledger into the deduplicated gate matrix.
+
+    The row set, identity, timing, run_mode, and activation ``condition`` come
+    from :func:`pipeline.verification_ledger.build_gate_ledger` (consumed with
+    ``changed_files=None`` — run start, no diff, so no plan is resolved and no
+    disposition is computed). The receipt policy / declared cost columns are
+    joined by identity from :func:`_receipt_meta_by_identity`. This function
+    formats; it does not compute timing or disposition.
+
+    Commands not referenced by any schedule entry are omitted (only scheduled
+    gates are rows). Total on empty fields: a contract with no schedule yields
+    ``()``. The ledger is imported lazily so ``core.io`` keeps no module-level
+    dependency on the pipeline layer.
+    """
+    from pipeline.verification_ledger import build_gate_ledger
+
+    meta = _receipt_meta_by_identity(contract)
+    rows: list[GateRowView] = []
+    for row in build_gate_ledger(contract):
+        policy, kind = meta.get(
+            (row.gate, row.hook, row.phase), (_UNKNOWN, _UNKNOWN),
+        )
+        rows.append(
+            GateRowView(
+                gate=row.gate,
+                timing=row.timing,
+                run_mode=row.run_mode,
+                policy=policy,
+                kind=kind,
+                condition=row.condition,
+                condition_paths=row.condition_paths,
+            ),
+        )
     return tuple(rows)
 
 
@@ -350,16 +395,19 @@ def render_verification_header(
 
     Structured form (default; chosen automatically when the terminal is wide
     enough) — a gate matrix keeping each command's identity separate from its
-    orthogonal timing / run mode / policy / kind columns::
+    orthogonal timing / run mode / kind columns, with the gate's activation
+    condition (``always`` / ``on-path: <globs>`` / ``manual``) as the trailing
+    column so a path-gated gate never reads as an unconditional ``require``::
 
         Verification
           mode      pro
           envs      mcp-local-core
-          policy    auto-derived from mode/plugin defaults
-          effect    warn on missing/failed receipts
-          gates     gate           timing           run   policy   kind
-                    lint           after_implement  auto  warn     cheap
-                    e2e            operator         manual require  unknown
+          policy    declared in contract (require, warn)
+          effect    require receipts; missing/failed resolved at gate time
+          gates     gate               timing           run     kind     activation
+                    lint               after_implement  auto    cheap    always
+                    verification-unit  after_implement  auto    unknown  on-path: pipeline/verification*.py
+                    e2e                operator         manual  unknown  manual
 
     Compact form (``compact=True``, or auto on a narrow terminal): one line
     with semantic labels and ``·`` separators, the matrix summarised as
@@ -401,14 +449,41 @@ def render_verification_header(
 
 
 # Column order for the structured gate matrix; command identity stays first and
-# distinct from the four orthogonal property columns.
+# distinct from the orthogonal property columns. ``activation`` is last (and so
+# never width-padded) because its ``on-path: <globs>`` form can run long.
 _GATE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("gate", "gate"),
     ("timing", "timing"),
     ("run_mode", "run"),
-    ("policy", "policy"),
     ("kind", "kind"),
+    ("activation", "activation"),
 )
+
+
+def _activation_label(row: GateRowView) -> str:
+    """Operator-facing activation cell for a gate row.
+
+    ``always`` for an always-selected gate, ``manual`` for an operator/manual
+    gate, ``on-path: <globs>`` (union of the subsystem globs) for a path-gated
+    gate, and ``task-kind`` for a task-kind gate. This surfaces *when* the gate
+    activates so a subsystem gate is never read as an unconditional require.
+    """
+    if row.condition == "on_path":
+        if row.condition_paths:
+            return "on-path: " + ", ".join(row.condition_paths)
+        return "on-path"
+    if row.condition == "operator":
+        return "manual"
+    if row.condition == "task_kind":
+        return "task-kind"
+    return "always"
+
+
+def _gate_cell(row: GateRowView, attr: str) -> str:
+    """Value for one matrix column of a row (``activation`` is computed)."""
+    if attr == "activation":
+        return _activation_label(row)
+    return getattr(row, attr)
 
 
 def _gate_matrix_lines(
@@ -418,8 +493,10 @@ def _gate_matrix_lines(
 
     Empty matrix → a single ``gates  —`` line. Otherwise a header row of column
     names plus one row per gate, columns kept independent so command identity is
-    never fused with its timing/run_mode/policy/kind. A ``warn`` / ``require``
-    policy cell is the only colored value (restrained yellow); no all-green.
+    never fused with its timing/run_mode/kind/activation. The trailing
+    ``activation`` cell (``always`` / ``on-path: <globs>`` / ``manual``) is left
+    unpadded so a long glob list does not distort the matrix. No colored cell —
+    the header stays restrained; policy colour lives on the top ``effect`` line.
     """
     label = paint(f"{'gates':<8}", C.GREY, color=color)
     if not gates:
@@ -427,28 +504,24 @@ def _gate_matrix_lines(
 
     header = [name for _, name in _GATE_COLUMNS]
     cells = [
-        [getattr(g, attr) for attr, _ in _GATE_COLUMNS] for g in gates
+        [_gate_cell(g, attr) for attr, _ in _GATE_COLUMNS] for g in gates
     ]
     widths = [
         max(len(header[i]), *(len(row[i]) for row in cells))
         for i in range(len(_GATE_COLUMNS))
     ]
 
-    def _format(row: list[str], *, painted: bool) -> str:
-        parts: list[str] = []
-        for i, value in enumerate(row):
-            text = value.ljust(widths[i]) if i < len(row) - 1 else value
-            if painted and _GATE_COLUMNS[i][0] == "policy" and value in (
-                "warn", "require",
-            ):
-                text = paint(text, C.YELLOW, color=color)
-            parts.append(text)
+    def _format(row: list[str]) -> str:
+        parts = [
+            value.ljust(widths[i]) if i < len(row) - 1 else value
+            for i, value in enumerate(row)
+        ]
         return "  ".join(parts)
 
-    header_line = paint(_format(header, painted=False), C.GREY, color=color)
+    header_line = paint(_format(header), C.GREY, color=color)
     lines = [f"  {label}  {header_line}"]
     pad = " " * (8 + 4)  # align matrix rows under the header (2 + 8 label + 2)
-    lines.extend(pad + _format(row, painted=True) for row in cells)
+    lines.extend(pad + _format(row) for row in cells)
     return lines
 
 
