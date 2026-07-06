@@ -157,7 +157,23 @@ Use the CLI if you want to work directly from a shell:
 
 ```bash
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
+```
 
+Try it first with `--mock`. This runs the full pipeline end-to-end with a
+mock agent instead of a real model — no tokens spent, nothing calls your
+code-agent CLI — so you can watch the mechanics risk-free before the first
+real run:
+
+```bash
+orcho run --mock \
+  --task "Add input validation: return 400 if email is empty or not valid format" \
+  --project ~/www/my-workspace/my-project
+```
+
+Then the real run (this one calls your configured code-agent CLI and spends
+tokens):
+
+```bash
 orcho run \
   --task "Add input validation: return 400 if email is empty or not valid format" \
   --project ~/www/my-workspace/my-project
