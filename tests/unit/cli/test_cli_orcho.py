@@ -221,8 +221,12 @@ class TestParser:
             name for _, commands in COMMAND_GROUPS for name, _ in commands
         }
         # ``help`` is service-only and lives in the "More help" section, not
-        # in a command group; every other subcommand must be categorized.
-        assert grouped == sub_choices - {"help"}
+        # in a command group. ``web`` and ``tui`` are interface commands
+        # intentionally hidden from the advertised listing until their packages
+        # ship on PyPI (still registered + callable, just not advertised so a
+        # new user is never pointed at an uninstallable ``pip install``).
+        # Every OTHER subcommand must still be categorized.
+        assert grouped == sub_choices - {"help", "web", "tui"}
 
     def test_onboarding_lists_every_command_grouped(self) -> None:
         from cli._help import COMMAND_GROUPS, QUICK_HELP

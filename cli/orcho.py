@@ -20,7 +20,6 @@ Subcommands:
   orcho cost    — API-equivalent cost report
   orcho pricing — Show / refresh pricing table
   orcho prompts — Show prompt resolution chain
-  orcho web     — Launch the dashboard
 """
 from __future__ import annotations
 
@@ -1422,7 +1421,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_fine.set_defaults(func=cmd_workspace_fine_tune)
 
     # ── web ───────────────────────────────────────────────────────────────────
-    p_web = sub.add_parser("web", help="Start the Streamlit web dashboard")
+    # Hidden from help until the interface package ships on PyPI (advertising it
+    # would point users at an uninstallable ``pip install``). Still registered,
+    # so it remains callable for anyone who already has the package.
+    p_web = sub.add_parser("web", help=argparse.SUPPRESS)
     p_web.add_argument(
         "--port", "-p", type=int, default=8501,
         help="Порт для Streamlit (по умолчанию 8501)",
@@ -1434,9 +1436,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.set_defaults(func=cmd_web)
 
     # ── tui ───────────────────────────────────────────────────────────────────
-    p_tui = sub.add_parser(
-        "tui", help="Open the terminal UI to watch or steer a run"
-    )
+    # Hidden from help until the interface package ships on PyPI (see ``web``);
+    # still registered so an installed package stays callable.
+    p_tui = sub.add_parser("tui", help=argparse.SUPPRESS)
     p_tui.add_argument(
         "--run-id", help="Run id to open (resolved against the workspace)."
     )

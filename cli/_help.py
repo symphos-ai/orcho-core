@@ -42,10 +42,11 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Maintenance", [
         ("repair-state", "inspect and safely apply known run-state repairs"),
     ]),
-    ("Interfaces", [
-        ("tui", "open the terminal UI to watch or steer a run"),
-        ("web", "start the Streamlit web dashboard"),
-    ]),
+    # NOTE: the ``tui`` and ``web`` interface commands are intentionally
+    # omitted from the advertised listing until their packages ship on PyPI —
+    # advertising them here would point a new user at an uninstallable
+    # ``pip install``. The subcommands remain registered (hidden) in
+    # ``cli/orcho.py`` so anyone who already has the package can still call them.
 ]
 
 
@@ -108,7 +109,7 @@ def _compose_quick_help(header: Callable[[str], str]) -> str:
 
 {header("Run state:")}
   Runs are written under the active Orcho workspace.
-  Use `orcho status`, `orcho history`, `orcho evidence`, or `orcho web`.
+  Use `orcho status`, `orcho history`, or `orcho evidence`.
 
 {header("More help:")}
   orcho run --help
