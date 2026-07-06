@@ -46,6 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
+from core.io.ansi import C, paint
 from pipeline.runtime.run_shape import (
     DeliveryScope,
     OperatingMode,
@@ -445,13 +446,15 @@ def default_confirm(decision: AutoDetectDecision) -> SemanticProfile | None:
     of times, then accepts the recommendation. Never imported-time side
     effecting; only invoked on a real TTY confirm flow (tests inject a fake).
     """
-    print(
-        f"  auto-detect → {decision.recommended_profile.value} "
-        f"· {decision.recommended_mode.value} "
-        f"(confidence {decision.confidence:.2f})"
+    reco = paint(
+        f"{decision.recommended_profile.value} · {decision.recommended_mode.value}",
+        C.GREEN,
+        C.BOLD,
     )
+    conf = paint(f"(confidence {decision.confidence:.2f})", C.GREY)
+    print(f"  auto-detect {paint('→', C.GREEN)} {reco} {conf}")
     if decision.rationale:
-        print(f"     {decision.rationale}")
+        print(f"     {paint(decision.rationale, C.GREY)}")
     valid = {p.value for p in SemanticProfile}
     prompt = (
         "  [Enter] accept, or type a work kind "
