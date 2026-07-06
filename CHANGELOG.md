@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-06
+
+### Added
+
+- Native Windows support: a cross-platform stream transport lets `orcho run`
+  drive agents on Windows, and stdio is forced to UTF-8 so runs no longer crash
+  on Windows consoles.
+- The delivery outcome is framed as a prominent terminal banner, making the
+  change journey obvious at the end of a run.
+- A progress banner is shown while verification gates run.
+- Resume summarizes the completed phases it skips, so a resumed run reads
+  clearly instead of appearing to start mid-pipeline.
+- Public detached-launch SDK surface for embedders that start runs out of band.
+- `orcho tui` subcommand that delegates to the optional `orcho-tui` package.
+- Operating-modes reference matrix (fast / pro / governed).
+
+### Changed
+
+- The feature profile now defaults to the `pro` operating mode.
+- The `orcho run` profile picker defaults to auto-detect.
+- The interactive delivery gate now defaults to `approve` (Enter commits),
+  matching the non-interactive default.
+- The delivery decision and its SDK projection carry a typed `pr_url`.
+- Operator-facing output and published artifact language are kept separate, so
+  terminal messaging never leaks into committed artifacts.
+- Getting-started leads the first run with a free `--mock` dry run.
+
+### Fixed
+
+- The no-PR delivery banner is coloured yellow, not green, and default-branch
+  protection notices are clarified.
+- Run output accounts for ledger gate activation.
+- Unrecognized agent failures now produce an actionable message.
+- `web` and `tui` are hidden from CLI help until their packages ship.
+- Cross-project delivery authors its commit message in the configured content
+  language and no longer inherits the mono release-gate policy.
+- The full plan-task rollup is counted across resumes.
+- The pre-run-dirty checkpoint commit is signed off for DCO.
+
+### Documentation
+
+- Position Orcho as a production harness across the README and reference docs.
+- Separate install instructions by OS and document the DCO sign-off rule for
+  direct commits.
+
 ## 0.2.0 - 2026-07-05
 
 ### Added
