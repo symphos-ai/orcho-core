@@ -129,6 +129,18 @@ class TestClassifyError:
         result = classify_error(exc)
         assert "specific message" in str(result)
 
+    def test_unknown_error_carries_actionable_hint(self) -> None:
+        # The generic bucket is not auto-retried, so its message is the whole
+        # remediation surface: it must lead with an actionable next step (the
+        # terminal FAILED banner shows only the first line) while still
+        # preserving the raw detail for --output debug.
+        exc = RuntimeError("weird provider glitch xyz")
+        msg = str(classify_error(exc))
+        first_line = msg.splitlines()[0]
+        assert "--output debug" in first_line
+        assert "not retried" in first_line
+        assert "weird provider glitch xyz" in msg
+
 
 class TestClassifyFromExit:
     def test_exit_zero_returns_none(self) -> None:

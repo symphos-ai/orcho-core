@@ -92,6 +92,20 @@ Gemini CLI, the Claude app, and Antigravity see
 
 ## First run
 
+Start with a free dry run. `--mock` swaps the real model for a mock agent,
+so the whole plan → implement → review → repair cycle runs end-to-end
+without spending tokens or calling your code-agent CLI — the fastest way to
+see how Orcho behaves:
+
+```bash
+orcho run --mock \
+  --task "Add input validation to the login endpoint. Return 400 if email is empty." \
+  --project ~/www/my-workspace/my-project
+```
+
+Then the real run (drops `--mock`, so it calls your code-agent CLI and
+spends tokens):
+
 ```bash
 orcho run \
   --task "Add input validation to the login endpoint. Return 400 if email is empty." \

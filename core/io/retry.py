@@ -327,8 +327,19 @@ def classify_error(
                 stderr=stderr,
             )
 
+    # Unrecognized failure: no known-transient signature matched. By policy
+    # this bucket is NOT auto-retried (RUNTIME_RETRY_CONFIG pins generic
+    # max_retries=0) — an unclassified non-zero exit is usually deterministic
+    # (bad prompt, CLI misuse, a real error), so repeating it just burns
+    # tokens. That makes the MESSAGE the whole remediation surface, so lead
+    # with an actionable next step; the terminal FAILED banner only shows the
+    # first line, so the guidance must come before the raw detail (which is
+    # preserved for --output debug and the structured failure record).
     return AgentCallError(
-        f"Agent call failed: {str(exc)[:300]}",
+        "Agent call failed with an unrecognized error, so it was not retried "
+        "(only transient network / rate-limit / timeout failures auto-retry). "
+        "Re-run with --output debug for the full agent CLI output; if it looks "
+        f"transient, re-run the pipeline. Detail: {str(exc)[:300]}",
         exit_code=getattr(exc, "returncode", -1),
         stderr=stderr,
     )

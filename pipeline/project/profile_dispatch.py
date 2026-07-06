@@ -57,9 +57,11 @@ from pipeline.engine import maybe_run_hypothesis, save_session
 from pipeline.project.correction_route_display import (
     format_correction_route_decision,
 )
+from pipeline.project.resume_phase_summary import format_resume_phase_summary
 from pipeline.project.types import PresentationPolicy
 from pipeline.runtime import PipelineState
 from pipeline.runtime.handoff import HandoffOutcome, HandoffOutcomeKind
+from pipeline.runtime.runner import RESUME_SKIP_REASON
 
 # ── follow-up role mapping ────────────────────────────────────────────────
 
@@ -443,6 +445,7 @@ def followup_banner_suffix(name: str, st: PipelineState) -> str:
 
 def emit_phase_log_end(
     name: str, st: PipelineState, *, terminal: bool = True,
+    phases: Mapping[str, Any] | None = None,
 ) -> None:
     """Phase 5d-fixup: emit progress-log END entry paired with banner.
     Acceptance tests assert START + END pairs around each phase header.
@@ -470,7 +473,25 @@ def emit_phase_log_end(
         # ADR 0046 Phase C (site 9): the grey "↳ skipped: …" line is a
         # CLI courtesy chip; the structural signal is the skip_reason
         # mirrored into the ``phase.end`` event via ``outcome`` below.
-        print(paint(f"  ↳ skipped: {skipped_reason}", C.GREY))
+        #
+        # Resume-skip enrichment: when (and only when) the skip is the
+        # resume reason, replace the bare chip with a per-phase summary
+        # derived from the already-rehydrated ``session['phases']`` — the
+        # operator lost the live output, so surface what the phase produced.
+        # Strictly gated on ``RESUME_SKIP_REASON`` (every other skip line
+        # stays byte-identical) and best-effort (missing/partial/unknown →
+        # the summary is ``None`` and we fall back to the bare chip).
+        summary = (
+            format_resume_phase_summary(name, phases)
+            if skipped_reason == RESUME_SKIP_REASON
+            else None
+        )
+        if summary is not None:
+            print(paint(
+                f"  ↳ {name} — {summary}  (skipped on resume)", C.GREY,
+            ))
+        else:
+            print(paint(f"  ↳ skipped: {skipped_reason}", C.GREY))
     # Outcome string: shape inspected by tests but free-form. Keep the
     # minimal "ok" for completed phases and surface skip reasons for
     # intentionally empty banners.
