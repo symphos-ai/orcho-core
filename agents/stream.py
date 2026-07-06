@@ -1,14 +1,21 @@
 """
-agents/stream.py — PTY-based subprocess streaming + optional live log.
+agents/stream.py — cross-platform subprocess streaming + optional live log.
 
 Extracted from agents.py.
 
 Public surface:
     set_agent_log(path)        — redirect live stdout to a tail-able file
-    _stream_run(cmd, ...)      — run *cmd* over a PTY; returns (stdout, rc, stderr, dur)
+    _stream_run(cmd, ...)      — run *cmd*, streaming its output; returns
+                                 (stdout, rc, stderr, dur)
 
 The leading underscore on _stream_run is preserved for backward compat with
 existing callers (tests patch ``agents._stream_run``).
+
+The platform-specific byte source lives behind a transport seam
+(:mod:`agents.stream_transport`): a pseudo-terminal on POSIX so agent CLIs see
+a real TTY, and a thread-drained pipe on native Windows, which ships no ``pty``
+module. This module stays transport-agnostic — it owns line buffering, log
+fan-out, masking, and the idle/hard watchdogs.
 
 Sandbox integration (ADR 0034): when a ``sandbox_policy`` is passed in,
 the streamer uses :func:`pipeline.sandbox.select_launcher` to compute
@@ -19,10 +26,7 @@ its own retained protocol buffer.
 """
 
 import contextlib
-import errno
 import os
-import pty
-import select
 import signal
 import subprocess
 import sys
@@ -35,6 +39,7 @@ from agents.pty_diagnostics import (
     is_pty_exhaustion,
     render_pty_exhaustion_diagnostic,
 )
+from agents.stream_transport import select_transport
 
 if TYPE_CHECKING:
     from agents.stall_protocol import StallDiagnosticSink
@@ -54,6 +59,14 @@ class StreamAbort(RuntimeError):
 _agent_log: Path | None = None
 _stdout_echo: bool = False
 
+# Post-exit drain window. After the read loop stops on ``proc.poll()`` we give
+# the transport a bounded grace to surface any bytes still in flight (the
+# Windows reader thread can enqueue its final chunks + EOF just after the child
+# exits). The grace resets on every chunk and is only consumed in that race —
+# a clean EOF ends the drain immediately.
+_FINAL_DRAIN_SECONDS: float = 2.0
+_FINAL_DRAIN_POLL_S: float = 0.05
+
 
 def set_agent_log(path: Path | None) -> None:
     """Point streaming output to *path*. Pass None to disable."""
@@ -65,141 +78,6 @@ def set_stdout_echo(enabled: bool) -> None:
     """Echo streamed agent output to stdout in addition to ``output.log``."""
     global _stdout_echo
     _stdout_echo = bool(enabled)
-
-
-def write_agent_log_section(
-    label: str,
-    content: str = "",
-    *,
-    duration_s: float | None = None,
-    label_codes: tuple[str, ...] = (),
-    content_key_codes: tuple[str, ...] = (),
-    separator_codes: tuple[str, ...] = (),
-    exit_codes: tuple[str, ...] = (),
-) -> None:
-    """Append a structured diagnostic section to live agent output.
-
-    Runtime subprocess output already streams through this module, but
-    orchestrator-owned milestones (for example "subtask X started") do not
-    come from a child process. This helper writes those milestones to the same
-    tail-able log and optional stdout echo without pretending they are model
-    output.
-    """
-    echo_payload = _render_agent_log_section(
-        label,
-        content,
-        duration_s=duration_s,
-        label_codes=label_codes,
-        content_key_codes=content_key_codes,
-        separator_codes=separator_codes,
-        exit_codes=exit_codes,
-        color=None,
-    )
-    file_payload = _render_agent_log_section(
-        label,
-        content,
-        duration_s=duration_s,
-        label_codes=(),
-        content_key_codes=(),
-        separator_codes=(),
-        exit_codes=(),
-        color=False,
-    )
-    _echo_stdout(echo_payload)
-    if _agent_log is None:
-        return
-    try:
-        _agent_log.parent.mkdir(parents=True, exist_ok=True)
-        with _agent_log.open("a", encoding="utf-8", buffering=1) as fh:
-            fh.write(file_payload)
-            fh.flush()
-    except Exception:
-        pass
-
-
-def append_agent_log_section(label: str, content: str = "") -> None:
-    """Append a plain structured section to ``output.log`` without stdout echo.
-
-    Some orchestrator-owned milestones already render directly to the terminal
-    via local presentation helpers. They still need durable parity in the
-    tail-able operator log, but routing them through ``write_agent_log_section``
-    would double-print when stdout echo is enabled. This helper writes the same
-    section shape to the configured agent log only.
-    """
-    if _agent_log is None:
-        return
-    payload = _render_agent_log_section(
-        label,
-        content,
-        duration_s=None,
-        label_codes=(),
-        content_key_codes=(),
-        separator_codes=(),
-        exit_codes=(),
-        color=False,
-    )
-    try:
-        _agent_log.parent.mkdir(parents=True, exist_ok=True)
-        with _agent_log.open("a", encoding="utf-8", buffering=1) as fh:
-            fh.write(payload)
-            fh.flush()
-    except Exception:
-        pass
-
-
-def _render_agent_log_section(
-    label: str,
-    content: str,
-    *,
-    duration_s: float | None,
-    label_codes: tuple[str, ...],
-    content_key_codes: tuple[str, ...],
-    separator_codes: tuple[str, ...],
-    exit_codes: tuple[str, ...],
-    color: bool | None,
-) -> str:
-    from core.io.ansi import paint
-
-    sep = paint("-" * 60, *separator_codes, color=color, stream=sys.stdout)
-    label_text = paint(label, *label_codes, color=color, stream=sys.stdout)
-    header = f"\n{sep}\n{label_text}\n{sep}\n"
-    body = ""
-    if content:
-        body = _paint_section_content_keys(
-            content if content.endswith("\n") else f"{content}\n",
-            codes=content_key_codes,
-            color=color,
-        )
-    exit_line = ""
-    if duration_s is not None:
-        exit_text = f"[EXIT code=0 duration={duration_s:.2f}s]"
-        exit_line = f"{paint(exit_text, *exit_codes, color=color, stream=sys.stdout)}\n"
-    return f"{header}{body}{exit_line}"
-
-
-def _paint_section_content_keys(
-    content: str,
-    *,
-    codes: tuple[str, ...],
-    color: bool | None,
-) -> str:
-    if not codes:
-        return content
-    from core.io.ansi import paint
-
-    rendered: list[str] = []
-    for line in content.splitlines(keepends=True):
-        body = line[:-1] if line.endswith("\n") else line
-        newline = "\n" if line.endswith("\n") else ""
-        key, sep, rest = body.partition(":")
-        if sep and key and all(ch.isalnum() or ch == "_" for ch in key):
-            rendered.append(
-                f"{paint(key, *codes, color=color, stream=sys.stdout)}:"
-                f"{rest}{newline}"
-            )
-        else:
-            rendered.append(line)
-    return "".join(rendered)
 
 
 def _echo_stdout(text: str) -> None:
@@ -218,10 +96,14 @@ def _echo_stdout(text: str) -> None:
 def _spawn_with_sandbox(
     cmd: list[str],
     cwd: str | None,
-    slave_fd: int,
+    stdio: dict[str, object],
     sandbox_policy: "SandboxPolicy | None",
 ) -> tuple[subprocess.Popen, "TokenMasker | None", int, object | None]:
     """Construct the agent Popen, applying sandbox policy when provided.
+
+    ``stdio`` carries the transport's stdin/stdout wiring (a PTY slave on POSIX,
+    ``DEVNULL`` + ``PIPE`` on native Windows). ``stderr`` is always a pipe read
+    after the child exits, independent of the transport.
 
     Returns ``(proc, masker, env_stripped_count, launcher)``. The
     launcher reference is returned so the caller can hold it alive
@@ -235,10 +117,9 @@ def _spawn_with_sandbox(
         proc = subprocess.Popen(
             cmd,
             cwd=cwd,
-            stdin=slave_fd,
-            stdout=slave_fd,
             stderr=subprocess.PIPE,
             close_fds=True,
+            **stdio,
         )
         return proc, None, 0, None
 
@@ -255,11 +136,10 @@ def _spawn_with_sandbox(
 
     popen_kwargs = dict(
         cwd=cwd,
-        stdin=slave_fd,
-        stdout=slave_fd,
         stderr=subprocess.PIPE,
         close_fds=True,
         env=prepared.env,
+        **stdio,
     )
     # preexec_fn is Unix-only; on Windows the launcher returns None.
     if prepared.preexec_fn is not None:
@@ -566,14 +446,16 @@ def _stream_run(
         return "", returncode, stderr_text, duration
 
     try:
-        master_fd, slave_fd = pty.openpty()
+        transport = select_transport()
     except OSError as exc:
+        # PTY-pool exhaustion (POSIX only): report the recovery diagnostic
+        # instead of a traceback. The pipe transport never raises here.
         if is_pty_exhaustion(exc):
             return _return_startup_failure(render_pty_exhaustion_diagnostic(exc))
         raise
     try:
         proc, masker, env_stripped, sandbox_launcher = _spawn_with_sandbox(
-            cmd, cwd, slave_fd, sandbox_policy,
+            cmd, cwd, transport.popen_stdio(), sandbox_policy,
         )
         # Hold the launcher in this local for the duration of the
         # streamed process. On Windows the launcher owns the Job
@@ -608,7 +490,7 @@ def _stream_run(
                 phase=stall_phase, sink=stall_sink,
                 command_preview=" ".join(cmd),
             )
-        os.close(slave_fd)  # parent doesn't need slave end
+        transport.after_spawn(proc)  # POSIX closes slave fd; Windows starts reader
 
         def _handle_line_callback(line: str) -> bool:
             """Run ``on_line``; return False when it requested abort."""
@@ -628,6 +510,37 @@ def _stream_run(
             return True
 
         buf = b""
+
+        def _consume(chunk: bytes) -> bool:
+            """Feed raw output bytes into the line buffer, dispatching whole
+            lines to the return buffer, log, stdout echo, and callback.
+
+            Returns False when a stream guard requested abort. Shared by the
+            main read loop and the post-exit drain so both surfaces apply the
+            identical formatting / masking / callback path.
+            """
+            nonlocal buf
+            buf += chunk
+            text = buf.decode("utf-8", errors="replace")
+            aborted = False
+            while "\n" in text:
+                line, text = text.split("\n", 1)
+                line += "\n"
+                lines.append(_format_return_line(line))
+                _write_log_line(line)
+                _echo_agent_line(line)
+                if stall_monitor is not None:
+                    # Write-through non-terminal diagnostic AT DETECTION — never
+                    # kills, never raises, never writes the session.
+                    stall_monitor.inspect_line(
+                        line, elapsed_s=time.monotonic() - _t0,
+                    )
+                if not _handle_line_callback(line):
+                    aborted = True
+                    break
+            buf = text.encode("utf-8")  # keep incomplete line
+            return not aborted
+
         deadline = (time.monotonic() + timeout) if timeout is not None else None
         last_output_at = time.monotonic()
         abort_requested = False
@@ -645,15 +558,16 @@ def _stream_run(
                     break
                 wait_for = min(remaining, 1.0)
             else:
-                # No deadline: poll the pty for up to 1s, then loop. Liveness
-                # comes from proc.poll() below, not a wall clock.
+                # No deadline: wait on the transport for up to 1s, then loop.
+                # Liveness comes from proc.poll() below, not a wall clock.
                 wait_for = 1.0
-            try:
-                rlist, _, _ = select.select([master_fd], [], [], wait_for)
-            except (ValueError, OSError):
-                break  # master_fd closed (child exited)
-            if not rlist:
+            chunk = transport.read(wait_for)
+            if chunk is None:
+                # No output within the wait window — the child may still be busy.
                 if proc.poll() is not None:
+                    # Child exited; the final drain below collects any bytes the
+                    # transport still holds (notably the Windows reader thread's
+                    # last chunks landing just after exit) before we stop.
                     break
                 if (
                     idle_timeout is not None
@@ -683,41 +597,35 @@ def _stream_run(
                     _echo_stdout(f"\n{termination_reason}\n")
                     break
                 continue
-            try:
-                chunk = os.read(master_fd, 4096)
-            except OSError as e:
-                if e.errno in (errno.EIO, errno.EBADF):
-                    break  # EOF / child closed pty
-                raise
             if not chunk:
-                break
+                break  # EOF — the child closed its output stream
             last_output_at = time.monotonic()
             if stall_monitor is not None:
                 # Output resets the idle window; record the new bytes so an
                 # idle-timeout can classify silent-vs-inactive and carry a tail.
                 stall_monitor.note_output(chunk.decode("utf-8", errors="replace"))
-            buf += chunk
-            text = buf.decode("utf-8", errors="replace")
-            while "\n" in text:
-                line, text = text.split("\n", 1)
-                line += "\n"
-                lines.append(_format_return_line(line))
-                _write_log_line(line)
-                _echo_agent_line(line)
-                if stall_monitor is not None:
-                    # Write-through non-terminal diagnostic AT DETECTION — never
-                    # kills, never raises, never writes the session.
-                    stall_monitor.inspect_line(
-                        line, elapsed_s=time.monotonic() - _t0,
-                    )
-                if not _handle_line_callback(line):
-                    abort_requested = True
-                    break
-            buf = text.encode("utf-8")  # keep incomplete line
-            if abort_requested:
+            if not _consume(chunk):
+                abort_requested = True
                 break
         if abort_requested:
             proc.wait()
+
+        if not abort_requested:
+            # Post-exit drain: we may have broken out on ``proc.poll()`` before
+            # the transport surfaced its final bytes + EOF (a real race on the
+            # Windows reader thread). Pull whatever remains, bounded by a short
+            # grace that resets on every chunk, until EOF or the grace lapses.
+            _drain_deadline = time.monotonic() + _FINAL_DRAIN_SECONDS
+            while time.monotonic() < _drain_deadline:
+                extra = transport.read(_FINAL_DRAIN_POLL_S)
+                if extra is None:
+                    continue  # nothing yet — keep waiting within the grace
+                if not extra:
+                    break  # EOF — fully drained
+                if not _consume(extra):
+                    abort_requested = True
+                    break
+                _drain_deadline = time.monotonic() + _FINAL_DRAIN_SECONDS
 
         if buf and not abort_requested:
             tail = buf.decode("utf-8", errors="replace")
@@ -740,8 +648,7 @@ def _stream_run(
         if termination_reason:
             stderr_text = f"{stderr_text.rstrip()}\n{termination_reason}".strip()
     finally:
-        with contextlib.suppress(OSError):
-            os.close(master_fd)
+        transport.close()
         duration = time.monotonic() - _t0
         # ``output.log`` keeps the legacy ``[EXIT …]`` line for
         # post-mortem grep tooling. The CLI gets the friendlier

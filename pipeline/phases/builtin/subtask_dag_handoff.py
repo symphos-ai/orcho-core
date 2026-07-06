@@ -119,7 +119,7 @@ def _log_subtask_auto_repair_banner(
     if attempts <= 0 or not incomplete_ids:
         return
 
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     lines = [

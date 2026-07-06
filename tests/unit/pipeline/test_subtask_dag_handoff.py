@@ -97,7 +97,7 @@ def test_successful_repair_marks_repaired(
         sections.append((label, content))
 
     monkeypatch.setattr(
-        "agents.stream.write_agent_log_section",
+        "agents.stream_log.write_agent_log_section",
         _record_section,
     )
 

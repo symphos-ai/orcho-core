@@ -10,10 +10,10 @@ import agents.stream as stream_module
 from agents.pty_diagnostics import PTY_EXHAUSTED_SENTINEL
 from agents.stream import (
     _stream_run,
-    append_agent_log_section,
     set_agent_log,
     set_stdout_echo,
 )
+from agents.stream_log import append_agent_log_section
 from agents.stream_parsers.claude_jsonl import format_claude_line_for_stdout
 from core.io.output_elision import (
     elide_tool_result_line_for_model,
@@ -24,10 +24,13 @@ from core.io.output_elision import (
 def test_stream_run_reports_pty_exhaustion_without_traceback(monkeypatch, tmp_path) -> None:
     log_path = tmp_path / "agent.log"
 
-    def raise_pty_exhausted() -> tuple[int, int]:
+    def raise_pty_exhausted() -> object:
+        # PTY-pool exhaustion now surfaces from transport construction
+        # (``PtyTransport.__init__`` → ``pty.openpty``). The streamer classifies
+        # the OSError and renders the recovery diagnostic instead of a traceback.
         raise OSError("out of pty devices")
 
-    monkeypatch.setattr(stream_module.pty, "openpty", raise_pty_exhausted)
+    monkeypatch.setattr(stream_module, "select_transport", raise_pty_exhausted)
     set_agent_log(log_path)
     try:
         stdout, returncode, stderr, duration = _stream_run(

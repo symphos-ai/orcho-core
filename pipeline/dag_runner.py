@@ -717,7 +717,7 @@ def _log_attestation_detail(
     A missing/malformed attestation (``attestation is None``) shows the parse
     error instead of an empty block.
     """
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     ok = attestation_error is None
@@ -782,7 +782,7 @@ def _log_subtask_marker(
     attestation: str | None = None,
 ) -> None:
     """Write human-readable subtask progress to the live agent log."""
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     label = f"ORCHO subtask {index}/{total} {status}: {sub.id}"

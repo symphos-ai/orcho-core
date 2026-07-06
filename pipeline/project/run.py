@@ -112,7 +112,7 @@ def _print_gate_live_block(lines: tuple[str, ...]) -> None:
     """
     if not lines:
         return
-    from agents.stream import append_agent_log_section
+    from agents.stream_log import append_agent_log_section
 
     append_agent_log_section(lines[0], "\n".join(lines[1:]))
     # Summary mode: collapse the framed block to a single presenter line.

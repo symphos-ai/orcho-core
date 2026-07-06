@@ -774,7 +774,7 @@ class _MockCodex:
 def _write_to_agent_log(label: str, content: str, *, duration_s: float = 0.0) -> None:
     """Append *content* to the global agent log file (if set)."""
     try:
-        from agents.stream import write_agent_log_section
+        from agents.stream_log import write_agent_log_section
         write_agent_log_section(label, content, duration_s=duration_s)
     except Exception:
         pass  # logging must never break the pipeline

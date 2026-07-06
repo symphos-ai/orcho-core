@@ -106,7 +106,9 @@ class TestLauncherLifetimePin:
             policy = SandboxPolicy(mode=SandboxMode.ENV)
             proc, masker, stripped, launcher = _spawn_with_sandbox(
                 [sys.executable, "-c", "pass"],
-                cwd=None, slave_fd=slave_fd, sandbox_policy=policy,
+                cwd=None,
+                stdio={"stdin": slave_fd, "stdout": slave_fd},
+                sandbox_policy=policy,
             )
             os.close(slave_fd)
             try:
@@ -130,7 +132,9 @@ class TestLauncherLifetimePin:
             policy = SandboxPolicy(mode=SandboxMode.OFF)
             proc, masker, stripped, launcher = _spawn_with_sandbox(
                 [sys.executable, "-c", "pass"],
-                cwd=None, slave_fd=slave_fd, sandbox_policy=policy,
+                cwd=None,
+                stdio={"stdin": slave_fd, "stdout": slave_fd},
+                sandbox_policy=policy,
             )
             os.close(slave_fd)
             try:
