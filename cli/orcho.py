@@ -1787,6 +1787,13 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Windows consoles default to a legacy code page that cannot encode the
+    # emoji / box-drawing glyphs in Orcho's output; force UTF-8 before any
+    # rendering so the CLI does not crash on the first non-ASCII line.
+    ensure_utf8_stdio()
+
     parser = build_parser()
     args = parser.parse_args()
 

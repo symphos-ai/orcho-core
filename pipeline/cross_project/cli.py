@@ -224,6 +224,12 @@ def _resolve_cross_resume_latest(
 
 
 def main():
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Force UTF-8 stdio before any rendering so non-ASCII output (emoji / box
+    # drawing) does not crash on a legacy Windows console code page.
+    ensure_utf8_stdio()
+
     parser = argparse.ArgumentParser(
         description="Cross-Project Multi-Agent Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,

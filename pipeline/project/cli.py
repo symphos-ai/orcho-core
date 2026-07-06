@@ -346,6 +346,12 @@ def _build_mock_work_kind_detector(task: str):
 
 
 def main():
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Force UTF-8 stdio before any rendering so non-ASCII output (emoji / box
+    # drawing) does not crash on a legacy Windows console code page.
+    ensure_utf8_stdio()
+
     parser = argparse.ArgumentParser(
         description="Multi-Agent Core: Antigravity orchestrates Claude Code + Codex",
         formatter_class=argparse.RawDescriptionHelpFormatter,
