@@ -38,6 +38,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("prompts", "show the prompt resolution chain"),
         ("pricing", "inspect / refresh pricing data used by cost"),
         ("verify", "execute declared verification-contract checks"),
+        ("quality-gates", "show the declared verification gate matrix"),
     ]),
     ("Maintenance", [
         ("repair-state", "inspect and safely apply known run-state repairs"),
