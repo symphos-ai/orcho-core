@@ -1982,17 +1982,17 @@ def _render_published_branch(
             color=color,
         )
     else:
+        # Delivery did not fully complete — the branch is pushed but no PR
+        # exists yet, so the operator must act. That is a needs-attention state:
+        # yellow banner (not the green of a clean PULL REQUEST OPENED).
         _delivery_banner(
             "BRANCH PUSHED  ·  no PR yet",
             (
                 ("Branch", f"{decision.delivery_branch or ''}  (pushed)"),
-                ("Next", paint(
-                    "open a pull request or push it manually",
-                    C.YELLOW, color=color,
-                )),
+                ("Next", "open a pull request or push it manually"),
                 ("Checkout", checkout_note),
             ),
-            tone=C.GREEN,
+            tone=C.YELLOW,
             output_fn=output_fn,
             color=color,
         )
