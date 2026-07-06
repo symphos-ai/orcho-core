@@ -1,7 +1,7 @@
 # Orcho commands
 
-Orcho is a local-first control plane for AI software delivery: one task
-becomes an observable workflow with typed plans, gates, evidence, run
+Orcho is a production harness and control plane for agentic software delivery:
+one task becomes an observable workflow with typed plans, gates, evidence, run
 state, and cross-project coordination when you need it.
 
 ## Quick start
