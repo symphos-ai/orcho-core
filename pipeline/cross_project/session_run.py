@@ -644,9 +644,43 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
     return False
 
 
+def _cross_delivery_plan(ctx: _CrossRunContext) -> tuple[bool, bool]:
+    """Classify whether cross-level delivery runs now, and under what override.
+
+    Mirrors the intent of mono ``_session_allows_commit_delivery``
+    (:mod:`pipeline.project.run`, ADR 0128): mono gates delivery on the run
+    having *finished* (``status == "done"``, or a REJECTED verdict the operator
+    is overriding), NOT on whether a release gate was configured. Cross reaches
+    :func:`_run_delivery_and_finalize` only after the release gate neither
+    halted (``_run_release_gate`` returns early) nor paused
+    (``_finalize_release_verdict`` returns early), so a rejected run is already
+    intercepted upstream. Both the approved path and the policy-disabled path
+    (no ``cross_gates`` in the profile, ``ctx.cfa_outcome is None``) are
+    therefore finished and not rejected — so ``should_deliver`` is ``True`` for
+    both. A disabled release gate BYPASSES gating; it never suppresses delivery.
+
+    ``override`` is null-safe: ``True`` only on a real CFA override-continue
+    outcome. On the policy-skip path ``ctx.cfa_outcome is None`` so ``override``
+    is ``False`` — no ``AttributeError`` on ``ctx.cfa_outcome.outcome``.
+    """
+    override = (
+        ctx.cfa_outcome is not None
+        and ctx.cfa_outcome.outcome == "override_continue"
+    )
+    return True, override
+
+
 def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) -> None:
-    """Run cross-level commit delivery (BEFORE the sole ``run.end`` emitter; skipped on policy-skip where ``cfa_result is None``) then finalize: SILENT via the silent service, TERMINAL via the wrapper — either emits ``run.end`` once."""
-    if not ctx.release_skipped_by_policy:
+    """Run cross-level commit delivery (BEFORE the sole ``run.end`` emitter) then finalize: SILENT via the silent service, TERMINAL via the wrapper — either emits ``run.end`` once.
+
+    Delivery is decoupled from release-gate policy (ADR 0128): a run reaching
+    here is finished and not rejected, so both the approved path and the
+    policy-disabled path (gate-less profile, ``ctx.cfa_outcome is None``)
+    deliver. The 'deliver now?' decision lives in :func:`_cross_delivery_plan`;
+    this stays a thin sequencer.
+    """
+    should_deliver, override = _cross_delivery_plan(ctx)
+    if should_deliver:
         from core.infra import config as _delivery_config
         from pipeline.cross_project.cross_delivery import run_cross_delivery
         ctx.delivery_result = run_cross_delivery(
@@ -655,7 +689,7 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
             app_cfg=_delivery_config.AppConfig.load(),
             cross_run_dir=ctx.run_dir,
             terminal=ctx.terminal,
-            override=(ctx.cfa_outcome.outcome == "override_continue"),
+            override=override,
             cross_ckpt=ctx.cross_ckpt,
         )
     from pipeline.cross_project.finalization import (
