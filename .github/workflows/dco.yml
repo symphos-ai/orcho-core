@@ -42,12 +42,18 @@ jobs:
           range_start="$(git merge-base "$base" HEAD)"
           missing=0
 
+          # --no-merges: skip merge commits. GitHub's "Update branch" button
+          # merges the base into the PR ("Merge branch 'main' into ...") and that
+          # auto-generated commit carries no Signed-off-by, which would fail DCO.
+          # Merge commits contribute no authored change and are dropped by
+          # rebase-merge before they reach the default branch, so they are
+          # exempt; only real, authored commits are checked.
           while IFS= read -r commit; do
             if ! git log -1 --format=%B "$commit" | grep -qiE '^Signed-off-by: .+ <[^>]+>$'; then
               echo "::error title=Missing DCO sign-off::Commit $commit is missing a Signed-off-by line."
               missing=1
             fi
-          done < <(git rev-list "${range_start}..HEAD")
+          done < <(git rev-list --no-merges "${range_start}..HEAD")
 
           if [[ "$missing" -ne 0 ]]; then
             echo "Every commit must include a Signed-off-by line."
