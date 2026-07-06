@@ -99,3 +99,9 @@ than an unverified classifier.
 - Third-party runtime adapters and tests that constructed spawns directly should
   go through `select_transport()` / the transport's `popen_stdio()` rather than
   assuming a PTY.
+- The `windows-latest` job surfaced a second latent blocker: `orcho run` prints
+  emoji/box-drawing glyphs, and a legacy Windows console code page (cp1252)
+  raises `UnicodeEncodeError` on them. `core/io/encoding.py:ensure_utf8_stdio`
+  reconfigures the standard streams to UTF-8 when they are not already, and is
+  called from each CLI entry point (`cli.orcho`, `pipeline.project.cli`,
+  `pipeline.cross_project.cli`). It is a no-op on already-UTF-8 hosts.
