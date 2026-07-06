@@ -75,6 +75,7 @@ def _ctx(*, cfa_outcome, terminal: bool = False) -> SimpleNamespace:
         contract_check_failure_reason=None,
         cross_phase_usage={},
         delivery_result=None,
+        review_agent=None,
     )
 
 
@@ -253,6 +254,7 @@ def test_policy_skip_end_to_end_populates_cross_delivery_evidence(
         contract_check_failure_reason=None,
         cross_phase_usage={},
         delivery_result=None,
+        review_agent=None,
     )
     request = SimpleNamespace(
         projects={"api": repo}, output_dir=None, max_rounds=1,

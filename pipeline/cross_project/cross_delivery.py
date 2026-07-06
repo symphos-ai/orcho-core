@@ -38,11 +38,16 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.observability import events as _events
+from core.observability.logging import warn
 from pipeline.engine.commit_delivery import (
     apply_commit_delivery,
     resolve_commit_delivery,
 )
 from pipeline.run_state.release_verdict import is_approved
+
+# Type of the ``decision -> str | None`` closure handed to
+# ``resolve_commit_delivery`` to author the outward commit message.
+CommitMessageGenerator = Any
 
 # Per-alias delivery status buckets. Mirrors
 # :data:`pipeline.engine.commit_delivery.CommitDeliveryStatus` plus the
@@ -206,6 +211,57 @@ def _override_session(
     return synthetic, marker
 
 
+def _build_commit_message_generator(
+    release_agent: Any,
+    content_language: str | None,
+) -> CommitMessageGenerator | None:
+    """Mirror mono's ``commit_message_generator`` (:mod:`pipeline.project.run`)
+    for cross delivery so the outward commit message is authored in
+    ``content_language`` (English default), not the operator's
+    ``task_language``.
+
+    Without this, cross ``resolve_commit_delivery`` receives no generator and
+    falls back to ``_message_from_release_summary`` — the CFA release summary
+    the release agent wrote in the operator's conversation language, which then
+    leaks into the pushed commit / PR title (the cross counterpart of the mono
+    #48 language split).
+
+    Null-safe: no release agent → ``None`` generator → ``resolve_commit_delivery``
+    keeps its existing release-summary fallback unchanged. Any generation
+    failure also degrades to that fallback, exactly like mono.
+    """
+    if release_agent is None:
+        return None
+
+    from pipeline.commit_message_parser import (
+        CommitMessageParseError,
+        CommitMessageSchemaError,
+        parse_commit_message,
+    )
+    from pipeline.engine.commit_delivery import render_commit_message_prompt
+
+    def commit_message_generator(decision: Any) -> str | None:
+        prompt = render_commit_message_prompt(
+            decision,
+            body_language=content_language,
+        )
+        try:
+            raw = release_agent.invoke(
+                prompt,
+                str(decision.source_path),
+                mutates_artifacts=False,
+                continue_session=False,
+            )
+            return parse_commit_message(raw).render()
+        except (CommitMessageParseError, CommitMessageSchemaError):
+            return None
+        except Exception as exc:  # noqa: BLE001
+            warn(f"cross commit message generation failed; using summary: {exc}")
+            return None
+
+    return commit_message_generator
+
+
 def run_cross_delivery(
     *,
     session: dict[str, Any],
@@ -215,6 +271,7 @@ def run_cross_delivery(
     terminal: bool,
     override: bool = False,
     cross_ckpt: dict[str, Any] | None = None,
+    release_agent: Any = None,
 ) -> CrossDeliveryResult:
     """Deliver each alias's worktree diff into its project checkout.
 
@@ -243,6 +300,10 @@ def run_cross_delivery(
         cross_ckpt: cross checkpoint dict. When present, a
             ``delivery_status`` map enables idempotent resume: aliases
             already delivered on a prior attempt are skipped.
+        release_agent: the cross release (CFA) agent, used to author the
+            outward commit message in ``app_cfg.content_language`` — parity
+            with the mono ``commit_message_generator``. ``None`` → the
+            existing release-summary fallback (operator-language) is used.
 
     Returns:
         :class:`CrossDeliveryResult` — the aggregate the finalizer
@@ -264,6 +325,10 @@ def run_cross_delivery(
         return result
 
     no_interactive = not terminal
+    commit_message_generator = _build_commit_message_generator(
+        release_agent,
+        getattr(app_cfg, "content_language", None),
+    )
     delivery_status: dict[str, Any] = {}
     if isinstance(cross_ckpt, dict):
         existing = cross_ckpt.get("delivery_status")
@@ -298,6 +363,7 @@ def run_cross_delivery(
             cross_run_dir=cross_run_dir,
             no_interactive=no_interactive,
             override=override,
+            commit_message_generator=commit_message_generator,
         )
         records.append(record)
 
@@ -356,6 +422,7 @@ def _deliver_one_alias(
     cross_run_dir: Path,
     no_interactive: bool,
     override: bool,
+    commit_message_generator: CommitMessageGenerator | None = None,
 ) -> AliasDeliveryRecord:
     child = _child_session(session, alias)
     worktree = _worktree_path(child) if child is not None else None
@@ -395,6 +462,7 @@ def _deliver_one_alias(
         commit_config=commit_cfg,
         no_interactive=no_interactive,
         baseline_ref=_baseline_ref(child),
+        commit_message_generator=commit_message_generator,
     )
     if decision.status == "pending":
         decision = apply_commit_delivery(

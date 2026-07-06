@@ -691,6 +691,7 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
             terminal=ctx.terminal,
             override=override,
             cross_ckpt=ctx.cross_ckpt,
+            release_agent=ctx.review_agent,
         )
     from pipeline.cross_project.finalization import (
         CrossFinalizationContext,
