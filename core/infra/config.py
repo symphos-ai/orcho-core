@@ -647,6 +647,8 @@ class AppConfig:
             lang["plan_language"] = v
         if v := os.environ.get("TASK_LANGUAGE"):
             lang["task_language"] = v
+        if v := os.environ.get("CONTENT_LANGUAGE"):
+            lang["content_language"] = v
 
         # Artifacts: defaults + JSON overlay + env override.
         artifacts = dict(_ARTIFACTS_DEFAULTS)
@@ -838,6 +840,21 @@ class AppConfig:
         rendering is reproducible.
         """
         return self.language.get("task_language", "English")
+
+    @property
+    def content_language(self) -> str:
+        """Language for outward delivery artifacts. Default: English.
+
+        Governs the natural language of the artifacts a run publishes
+        outward — commit messages and PR title/body — independent of
+        the operator-facing task language. Workspace / project
+        configurations may override via the JSON
+        ``language.content_language`` field or the ``CONTENT_LANGUAGE``
+        env var. The engine default stays English as a fail-safe so
+        public repositories receive English delivery artifacts
+        regardless of the operator's working language.
+        """
+        return self.language.get("content_language", "English")
 
     @property
     def accounting_enabled(self) -> bool:

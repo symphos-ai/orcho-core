@@ -65,6 +65,7 @@ Hard timeout (`*_TIMEOUT`) is off by default (`0` / unset): long agent runs are 
 |-----------|-------------|
 | `PLAN_LANGUAGE` | `Russian` |
 | `TASK_LANGUAGE` | `Russian` |
+| `CONTENT_LANGUAGE` | `English` (language of outward delivery artifacts — commit message, PR title/body) |
 
 ---
 
@@ -116,7 +117,8 @@ Example:
   },
   "language": {
     "plan_language": "English",
-    "task_language": "English"
+    "task_language": "English",
+    "content_language": "English"
   }
 }
 ```
