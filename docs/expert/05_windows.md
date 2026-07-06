@@ -60,6 +60,12 @@ Or add them to `$PROFILE` permanently.
 - Paths use `\` — Orcho accepts both formats (`/` and `\`)
 - `ORCHO_CORE` default: `%LOCALAPPDATA%\orcho-core`
 - `ORCHO_RUNSPACE` default: `%ORCHO_WORKSPACE%\runspace`
+- **Agent output streaming:** Windows has no pseudo-terminal, so Orcho streams
+  each agent process over a pipe (drained by a background reader thread) instead
+  of a PTY. Agents therefore run without a controlling terminal — their stdout
+  is a plain pipe, so a CLI that changes its output when `stdout` is not a TTY
+  behaves as it would under any non-interactive pipe. Live output still streams
+  line-by-line to `output.log` exactly as on macOS and Linux.
 
 ---
 

@@ -440,7 +440,7 @@ def _log_implement_retry_banner(
     ``ORCHO subtask 1/N START`` with a narrowed count, which looks like an
     unexplained new DAG rather than a deliberate retry of blocked subtasks.
     """
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     lines = [
