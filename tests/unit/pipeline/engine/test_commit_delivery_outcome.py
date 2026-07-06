@@ -22,9 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from core.io.ansi import strip_ansi
+from core.io.ansi import C, strip_ansi
 from pipeline.engine.commit_delivery import (
     CommitDeliveryDecision,
+    _render_published_branch,
     render_delivery_outcome,
 )
 
@@ -176,6 +177,49 @@ def test_committed_published_branch_no_pr_names_branch_pushed() -> None:
     assert "open a pull request or push it manually" in joined
     # the degrade reason from delivery_warnings is surfaced, not swallowed.
     assert "git provider offline" in joined
+
+
+# ── banner tone (asserted on RAW, un-stripped colour codes) ──────────────
+#
+# The ANSI-stripped assertions above cannot see colour, so tone regressions
+# slip through. These check the raw code on the headline line directly.
+
+
+def test_no_pr_banner_uses_yellow_needs_attention_tone() -> None:
+    """BRANCH PUSHED · no PR yet is a needs-attention state (the operator must
+    open a PR), so the banner is YELLOW — not the GREEN of a completed PULL
+    REQUEST OPENED."""
+    lines: list[str] = []
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha=None,
+        delivery_branch="orcho/deliver/r1-abc",
+        pr_url=None,
+    )
+
+    _render_published_branch(decision, output_fn=lines.append, color=True)
+
+    headline = next(line for line in lines if "BRANCH PUSHED" in line)
+    assert C.YELLOW in headline
+    assert C.GREEN not in headline
+
+
+def test_pr_opened_banner_uses_green_tone() -> None:
+    lines: list[str] = []
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha=None,
+        delivery_branch="orcho/deliver/r1-abc",
+        pr_url="https://example.test/pr/45",
+    )
+
+    _render_published_branch(decision, output_fn=lines.append, color=True)
+
+    headline = next(line for line in lines if "PULL REQUEST OPENED" in line)
+    assert C.GREEN in headline
+    assert C.YELLOW not in headline
 
 
 # ── other terminal statuses ──────────────────────────────────────────────
