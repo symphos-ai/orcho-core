@@ -19,10 +19,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Fetch base commit
+      - name: Fetch base branch history
         run: |
           git remote add base "https://github.com/${{ github.repository }}.git"
-          git fetch --no-tags --depth=1 base "${{ github.event.pull_request.base.sha }}"
+          # Full history (NOT --depth=1): git needs the base branch's ancestry to
+          # tell which commits the PR actually adds. With a shallow base, the
+          # range below cannot recognise shared older ancestors as reachable from
+          # the base, so it over-reports them — any PR that is behind the base
+          # branch then fails spuriously on commits it never introduced.
+          git fetch --no-tags base "${{ github.event.pull_request.base.ref }}"
 
       - name: Check commit sign-offs
         shell: bash
@@ -30,6 +35,11 @@ jobs:
           set -euo pipefail
 
           base="${{ github.event.pull_request.base.sha }}"
+          # Check only the commits this PR introduces since it diverged from the
+          # base — merge-base(base, HEAD)..HEAD — so a branch that is behind the
+          # base branch is never blamed for older, shared, already-merged
+          # ancestors. Signoff enforcement on the PR's own commits is unchanged.
+          range_start="$(git merge-base "$base" HEAD)"
           missing=0
 
           while IFS= read -r commit; do
@@ -37,7 +47,7 @@ jobs:
               echo "::error title=Missing DCO sign-off::Commit $commit is missing a Signed-off-by line."
               missing=1
             fi
-          done < <(git rev-list "${base}..HEAD")
+          done < <(git rev-list "${range_start}..HEAD")
 
           if [[ "$missing" -ne 0 ]]; then
             echo "Every commit must include a Signed-off-by line."
