@@ -39,7 +39,7 @@ from pipeline.runtime.run_shape import OperatingMode, SemanticProfile
 # default value (it is an explicit opt-in posture).
 _DEFAULT_OPERATING_MODE: dict[SemanticProfile, OperatingMode] = {
     SemanticProfile.SMALL_TASK: OperatingMode.FAST,
-    SemanticProfile.FEATURE: OperatingMode.FAST,
+    SemanticProfile.FEATURE: OperatingMode.PRO,
     SemanticProfile.COMPLEX_FEATURE: OperatingMode.PRO,
     SemanticProfile.PLANNING: OperatingMode.PRO,
     SemanticProfile.CODE_REVIEW: OperatingMode.PRO,
