@@ -31,7 +31,15 @@ if [[ -z "$token" ]]; then
   cat >&2 <<'MSG'
 claude-glm: missing GLM Coding Plan key.
 
-Set ANTHROPIC_AUTH_TOKEN for this process, or on macOS store the key with:
+Auth source precedence:
+  1. ANTHROPIC_AUTH_TOKEN in the process environment (works on macOS, Linux, and Windows).
+  2. On macOS, the Keychain service 'zai-coding-plan-key'.
+
+Set the token for the current process:
+
+  export ANTHROPIC_AUTH_TOKEN=<GLM Coding Plan key>
+
+Or, on macOS, store it once in the Keychain:
 
   printf "Z.AI Coding Plan key: "
   stty -echo
@@ -40,6 +48,12 @@ Set ANTHROPIC_AUTH_TOKEN for this process, or on macOS store the key with:
   printf "\n"
   security add-generic-password -U -a "$USER" -s zai-coding-plan-key -w "$ZAI_CODING_PLAN_KEY"
   unset ZAI_CODING_PLAN_KEY
+
+Smoke test after setup:
+
+  ANTHROPIC_AUTH_TOKEN=<GLM Coding Plan key> claude-glm --print --model 'glm-5.2[1m]' 'Reply OK only.'
+
+Note: Claude Code may warn that "claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set...". This is expected for claude-glm, which intentionally routes through GLM-compatible auth.
 MSG
   exit 2
 fi

@@ -137,6 +137,7 @@ core = [
     "_prompts/**/*.md",
     "_config/*.json",
     "_runtime_wrappers/*.sh",
+    "_runtime_wrappers/*.cmd",
     "_demo_assets/golden-api/.gitignore",
     "_demo_assets/golden-api/.orcho/**/*.md",
     "_demo_assets/golden-api/**/*.md",
