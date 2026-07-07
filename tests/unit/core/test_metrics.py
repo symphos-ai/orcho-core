@@ -537,11 +537,11 @@ class TestMetricsCollector:
             d = m.as_dict()
             assert "total_cost_usd_equivalent" not in d
             assert "cost_usd_equivalent" not in d["phases"]["plan"]
-            assert "API-equiv" not in m.summary_line()
+            assert "Cost ref" not in m.summary_line()
         finally:
             config._reset_config()
 
-    def test_exact_tokens_without_reported_cost_get_estimated_api_equiv(
+    def test_exact_tokens_without_reported_cost_get_estimated_cost_ref(
         self,
         accounting_on,
         monkeypatch: pytest.MonkeyPatch,
@@ -571,7 +571,7 @@ class TestMetricsCollector:
         assert d["cost_estimated"] is True
         assert d["phases"]["review_changes"]["cost_estimated"] is True
         assert d["phase_attempts"][0]["cost_estimated"] is True
-        assert "API-equiv: ~$0.15" in m.summary_line()
+        assert "Cost ref: estimated-api ~$0.15" in m.summary_line()
 
     def test_total_only_tokens_without_reported_cost_use_total_estimate(
         self,
@@ -858,12 +858,12 @@ class TestCrossRollup:
         assert "800" in out            # 500 + 300
         assert "2,000" in out          # 1500 + 500
         assert "45.5s" in out          # 30.0 + 15.5
-        assert "$0.15" in out          # 0.10 + 0.05
+        assert "runtime-reported $0.15" in out          # 0.10 + 0.05
 
     def test_table_omits_cost_column_when_no_phase_reported(self) -> None:
         per = {"api": self._metrics(tin=100, tout=200, dur=5.0)}
         out = cross_summary_table(per)
-        assert "API-equiv" not in out
+        assert "Cost ref" not in out
         assert "TOTAL" in out
 
     def test_line_aggregates_totals_and_cost(self) -> None:
@@ -876,7 +876,7 @@ class TestCrossRollup:
         assert "in=40"  in line
         assert "out=60" in line
         assert "Time: 3.0s" in line
-        assert "API-equiv: $0.03" in line
+        assert "Cost ref: runtime-reported $0.03" in line
 
     def test_tolerates_missing_or_empty_per_project_dicts(self) -> None:
         per = {"api": {}, "web": self._metrics(tin=1, tout=2, dur=0.5)}

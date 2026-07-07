@@ -64,7 +64,7 @@
     "output_mode": "live"
   },
   "accounting": {
-    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render API-equivalent cost fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
+    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render cost-reference fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
     "enabled": false
   },
   "commit": {

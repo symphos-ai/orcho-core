@@ -14,6 +14,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from core.io.ansi import C, paint
+from core.observability.accounting_display import (
+    ACCOUNTING_REFERENCE_NOTE,
+    format_cost_reference,
+)
 from sdk import (
     CostReport,
     DetectedRuntime,
@@ -300,12 +304,16 @@ def format_cost_report(report: CostReport) -> str:
     )
     out.append(f"  {'─' * 70}")
 
-    # Top-N expensive runs.
+    # Top-N runs by cost reference.
     if report.top_runs:
         out.append("")
-        out.append(f"  Top {len(report.top_runs)} expensive runs (API-equivalent):")
+        out.append(f"  Top {len(report.top_runs)} runs by cost reference:")
         for r in report.top_runs:
-            cost_str = f"${r.cost:>6.2f}" if r.cost > 0 else "    -- "
+            cost_str = (
+                format_cost_reference(r.cost, estimated=r.cost_estimated)
+                if r.cost > 0
+                else "    -- "
+            )
             tags: list[str] = []
             if r.rounds > 1:
                 tags.append(f"rounds×{r.rounds}")
@@ -322,7 +330,11 @@ def format_cost_report(report: CostReport) -> str:
         out.append("  By phase (sum across runs):")
         for ph in report.phase_breakdown:
             tok_marker = " " if ph.tokens_exact else "~"
-            cost_str = f"${ph.cost:>7.2f}" if ph.cost > 0 else "  (no $)"
+            cost_str = (
+                format_cost_reference(ph.cost, estimated=ph.cost_estimated)
+                if ph.cost > 0
+                else "  (no $)"
+            )
             if report.total_cost and ph.cost > 0:
                 pct_str = f"({(ph.cost / report.total_cost * 100.0):>4.1f}%)"
             else:
@@ -340,7 +352,11 @@ def format_cost_report(report: CostReport) -> str:
         for ag in report.agent_breakdown:
             pct = (ag.cost / report.total_cost * 100.0) if report.total_cost else 0.0
             tok_marker = " " if ag.tokens_exact else "~"
-            cost_str = f"${ag.cost:>7.2f}" if ag.cost > 0 else "  (no $)"
+            cost_str = (
+                format_cost_reference(ag.cost, estimated=ag.cost_estimated)
+                if ag.cost > 0
+                else "  (no $)"
+            )
             pct_str = f"({pct:>4.1f}%)" if ag.cost > 0 else "        "
             out.append(
                 f"    {ag.provider:<10} {cost_str}  {pct_str}   "
@@ -358,7 +374,7 @@ def format_cost_report(report: CostReport) -> str:
         top_pct = (top.cost / report.total_cost * 100.0) if report.total_cost else 0.0
         out.append("")
         out.append(
-            f"  ↳ Top phase: ``{top.name}`` at {top_pct:.0f}% of measured spend "
+            f"  ↳ Top phase: ``{top.name}`` at {top_pct:.0f}% of cost reference "
             f"this window. Lower ``phases.{top.name}.effort`` to shrink it."
         )
 
@@ -366,10 +382,13 @@ def format_cost_report(report: CostReport) -> str:
     out.append("")
     out.append("  Totals:")
     if has_cost:
-        out.append(f"    API-equivalent  ${report.total_cost:.2f}")
+        out.append(
+            "    Cost reference  "
+            f"{format_cost_reference(report.total_cost, estimated=report.any_estimated)}"
+        )
     else:
         out.append(
-            "    API-equivalent  — (no run reported cost; codex-only? mock? old runs?)"
+            "    Cost reference  — (no run reported cost; token-only, mock, or old runs?)"
         )
     out.append(
         f"    Tokens          {report.total_tokens:,} "
@@ -387,10 +406,7 @@ def format_cost_report(report: CostReport) -> str:
 
     if has_cost:
         out.append("")
-        out.append(
-            "  ↳ API-equivalent: what pay-as-you-go API would have "
-            "charged for these calls."
-        )
+        out.append(f"  ↳ {ACCOUNTING_REFERENCE_NOTE}")
 
     if report.priced_entries_count:
         n = report.priced_entries_count

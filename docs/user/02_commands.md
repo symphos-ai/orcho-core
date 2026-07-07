@@ -28,7 +28,7 @@ the full argparse dump for every subcommand.
 | `orcho evidence` | Compose plan, phases, artifacts, gates, metrics (+ `--diff`) |
 | `orcho diff` | Print a run's `diff.patch` (`--preview` / `--stat` / `--path`) |
 | `orcho metrics` | Tokens and time per run |
-| `orcho cost` | API-equivalent cost report over a window of runs |
+| `orcho cost` | Cost-reference usage report over a window of runs |
 | `orcho profiles list` | List execution profiles with their phase topology |
 | `orcho workflows` | List workflow profiles |
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
@@ -251,7 +251,7 @@ orcho history --last 25   # last 25
 orcho metrics             # latest run
 orcho metrics --last 5    # aggregated over 5 runs
 
-orcho cost                # API-equivalent cost report
+orcho cost                # cost-reference usage report
 orcho pricing             # inspect / refresh the pricing data behind cost
 ```
 

@@ -1,4 +1,4 @@
-"""Cost aggregation across runs in a sliding window.
+"""Cost-reference aggregation across runs in a sliding window.
 
 Pure aggregation — no print, no `sys.exit`. The CLI's
 `format_cost_report` formatter consumes a `CostReport`; embedders
@@ -62,7 +62,7 @@ def aggregate_cost(
     window: str = "30d",
     top_n: int = 5,
 ) -> CostReport:
-    """Aggregate API-equivalent cost across runs whose timestamps fall
+    """Aggregate cost-reference values across runs whose timestamps fall
     within `window`.
 
     Window strings: ``"30d"`` / ``"7d"`` / ``"all"``. Returns a fully-
@@ -102,6 +102,7 @@ def aggregate_cost(
                 duration_s=float(m.get("total_duration_s", 0.0) or 0.0),
                 rounds=int(m.get("total_rounds", 0) or 0),
                 retries=int(m.get("total_retries", 0) or 0),
+                cost_estimated=bool(m.get("cost_estimated")),
             )
         )
         raw_phases.append((d.name, m.get("phases", {}) or {}))
@@ -139,11 +140,13 @@ def aggregate_cost(
     phase_tokens: dict[str, int] = {}
     phase_runs: dict[str, int] = {}
     phase_exact: dict[str, bool] = {}
+    phase_cost_estimated: dict[str, bool] = {}
 
     agent_costs: dict[str, float] = {}
     agent_tokens: dict[str, int] = {}
     agent_runs: dict[str, int] = {}
     agent_exact: dict[str, bool] = {}
+    agent_cost_estimated: dict[str, bool] = {}
 
     priced_entries_count = 0
 
@@ -157,21 +160,29 @@ def aggregate_cost(
             if use_accounting and raw_cost is None and exact and tokens > 0 and model:
                 priced = _pricing.estimate_cost_from_total(model, tokens)
                 cost = float(priced) if priced is not None else 0.0
+                cost_estimated = priced is not None
                 if priced is not None:
                     priced_entries_count += 1
             else:
                 cost = float(raw_cost or 0.0)
+                cost_estimated = bool(ph.get("cost_estimated"))
 
             phase_costs[ph_name] = phase_costs.get(ph_name, 0.0) + cost
             phase_runs[ph_name] = phase_runs.get(ph_name, 0) + 1
             phase_tokens[ph_name] = phase_tokens.get(ph_name, 0) + tokens
             phase_exact[ph_name] = phase_exact.get(ph_name, True) and exact
+            phase_cost_estimated[ph_name] = (
+                phase_cost_estimated.get(ph_name, False) or cost_estimated
+            )
 
             provider = _provider_for_model(model)
             agent_costs[provider] = agent_costs.get(provider, 0.0) + cost
             agent_tokens[provider] = agent_tokens.get(provider, 0) + tokens
             agent_runs[provider] = agent_runs.get(provider, 0) + 1
             agent_exact[provider] = agent_exact.get(provider, True) and exact
+            agent_cost_estimated[provider] = (
+                agent_cost_estimated.get(provider, False) or cost_estimated
+            )
 
     phase_breakdown = tuple(
         PhaseBreakdown(
@@ -180,6 +191,7 @@ def aggregate_cost(
             tokens=phase_tokens.get(name, 0),
             runs=phase_runs.get(name, 0),
             tokens_exact=phase_exact.get(name, False),
+            cost_estimated=phase_cost_estimated.get(name, False),
         )
         for name in sorted(phase_costs, key=lambda k: phase_costs[k], reverse=True)
     )
@@ -190,6 +202,7 @@ def aggregate_cost(
             tokens=agent_tokens.get(provider, 0),
             runs=agent_runs.get(provider, 0),
             tokens_exact=agent_exact.get(provider, False),
+            cost_estimated=agent_cost_estimated.get(provider, False),
         )
         for provider in sorted(agent_costs, key=lambda k: agent_costs[k], reverse=True)
     )
@@ -209,8 +222,10 @@ def aggregate_cost(
         pricing_source = None
         pricing_snapshot_date = None
 
-    any_estimated = any(not pb.tokens_exact for pb in phase_breakdown) or any(
-        not ab.tokens_exact for ab in agent_breakdown
+    any_estimated = any(r.cost_estimated for r in rows) or any(
+        pb.cost_estimated for pb in phase_breakdown
+    ) or any(
+        ab.cost_estimated for ab in agent_breakdown
     )
 
     return CostReport(
