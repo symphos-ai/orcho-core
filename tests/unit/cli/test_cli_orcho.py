@@ -177,6 +177,44 @@ class TestParser:
         assert destination.read_text() == "custom\n"
         assert "pass --force" in capsys.readouterr().err
 
+    def test_demos_bootstrap_subcommand(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "bootstrap",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "bootstrap"
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "DEMO golden-api workspace ready." in out
+        assert "orcho run" in out
+        assert "--profile feature" in out
+        assert (tmp_path / "demo" / "project").is_dir()
+
+    def test_demos_install_alias(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "install",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "install"
+        assert args.func(args) == 0
+        assert "DEMO golden-api workspace ready." in capsys.readouterr().out
+
     def test_run_all_flags(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([

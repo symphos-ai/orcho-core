@@ -1,0 +1,9 @@
+[project]
+name = "golden-api"
+version = "0.0.1"
+description = "Tiny fixture project used by the orcho REA-0 golden scenario."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

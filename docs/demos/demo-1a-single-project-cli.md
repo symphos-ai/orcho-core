@@ -24,22 +24,23 @@ reachable from the bare `orcho` CLI as well.
 
 ## Setup
 
-For an installed CLI, use the `orcho` command from your environment and clone
-this repository only for the demo fixture and bootstrap script:
+This walkthrough can be started from an installed CLI or from a source
+checkout. Prefer the installed CLI path when you want to test the package you
+installed with `pipx`.
+
+For an installed CLI:
 
 ```bash
 pipx install orcho  # skip if already installed
-git clone https://github.com/symphos-ai/orcho-core.git
-cd orcho-core
+orcho demos bootstrap golden-api
 ```
 
-If you have multiple `orcho` executables, pin the one the demo should use:
+`orcho demos install golden-api` is accepted as the same operation. It copies
+the packaged `golden-api` fixture into a disposable demo directory, initializes
+the workspace, and prints the same `orcho run ... --mock` command shown below.
 
-```bash
-ORCHO_DEMO_ORCHO_BIN="$(command -v orcho)" examples/scripts/bootstrap_demo_1a.sh
-```
-
-For source development, install the checkout editably instead:
+Use the source-checkout script only when you are evaluating from source or
+contributing:
 
 ```bash
 git clone <orcho-core repo> orcho-core
@@ -48,13 +49,22 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+If you have more than one `orcho` executable and intentionally want the
+source-checkout script to use a specific installed CLI, pin it explicitly:
+
+```bash
+ORCHO_DEMO_ORCHO_BIN="$(command -v orcho)" examples/scripts/bootstrap_demo_1a.sh
+```
+
+Do not clone `orcho-core` next to a `pipx install orcho` only to obtain the
+demo fixture. That creates two Orcho copies and makes it too easy to run source
+code when you meant to test the installed CLI, or the reverse.
+
 `ORCHO_DEMO_CORE_PYTHON=/path/to/python` forces the source-checkout Python
 path when tests or local scripts need it.
 
-The fixture used below ships with the repo at
-[examples/golden-api/](../../examples/golden-api/) — an intentionally
-buggy mini-API plus its tests, sized so a `--mock` run completes in
-under two seconds.
+The fixture is an intentionally buggy mini-API plus its tests, sized so a
+`--mock` run completes in under two seconds.
 
 ## Bootstrap a disposable demo dir
 
@@ -82,7 +92,7 @@ Run the pipeline:
     --task "Fix validation bug in sample API" \
     --project /tmp/orcho_demo_1a/project \
     --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
-    --profile advanced \
+    --profile feature \
     --mock \
     --mock-validate-plan-reject 1 \
     --max-rounds 2 \
@@ -113,14 +123,14 @@ orcho run \
   --task "Fix validation bug in sample API" \
   --project /tmp/orcho_demo_1a/project \
   --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
-  --profile advanced \
+  --profile feature \
   --mock \
   --mock-validate-plan-reject 1 \
   --max-rounds 2 \
   --stream-output
 ```
 
-(The plan-loop budget is declared in the active profile — ``advanced``'s
+(The plan-loop budget is declared in the active profile — ``feature``'s
 ``LoopStep.max_rounds=2`` — so there is no CLI ``--max-plan-rounds``
 flag to pass. With ``mock-validate-plan-reject=1`` the mock reviewer
 rejects once, the architect revises, and round 2 approves cleanly

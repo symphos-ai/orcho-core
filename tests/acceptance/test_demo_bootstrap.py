@@ -99,6 +99,7 @@ class TestBootstrapDemo1A:
         assert local_data["phases"]["implement"]["model"]
         # Stdout includes the copy-pastable run + inspect commands.
         assert "orcho run" in result.stdout
+        assert "--profile feature" in result.stdout
         assert "orcho evidence" in result.stdout
         assert "orcho diff <run-id> --stat" in result.stdout
         assert str(demo_root / "project") in result.stdout

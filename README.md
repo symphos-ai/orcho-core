@@ -135,24 +135,27 @@ For source-checkout setup, tests, and contribution workflow, see
 
 ## Try the golden mock demo
 
-Once `orcho` is installed (see [Install](#install) above), the fastest zero-API
-proof is the single-project CLI demo. It creates a disposable git-backed
-fixture, runs the full mock pipeline, reviews the diff, and writes evidence.
-The fixture and bootstrap script live in this repository, so a `pipx` install
-uses the installed `orcho` CLI plus a lightweight checkout of the examples:
+The fastest zero-API proof is the single-project CLI demo. It creates a
+disposable git-backed fixture, runs the full mock pipeline, reviews the diff,
+and writes evidence.
+
+For an installed CLI, use the packaged demo bootstrap:
 
 ```bash
-git clone https://github.com/symphos-ai/orcho-core.git
-cd orcho-core
+orcho demos bootstrap golden-api
+```
+
+`orcho demos install golden-api` is accepted as the same operation.
+
+From an existing source checkout, run the shell bootstrap script directly:
+
+```bash
 examples/scripts/bootstrap_demo_1a.sh
 ```
 
-From an existing source checkout, run the same script directly. The bootstrap
-script is `bash` (macOS, Linux, or WSL2 / Git Bash on Windows):
-
-```bash
-examples/scripts/bootstrap_demo_1a.sh
-```
+Do not clone this repository next to a `pipx install orcho` only to obtain the
+demo assets; that creates two Orcho copies on the machine and makes it too easy
+to confuse the installed CLI with source-checkout code.
 
 Then paste the printed `orcho run ... --mock` command and inspect:
 
