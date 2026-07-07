@@ -33,8 +33,8 @@ agent session:
 
 Which model runs which phase is **fully configurable**.
 Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
-Assign Claude, Codex, or Gemini to any phase via env vars, profiles,
-or `config.local.json`.
+Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
+Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
 Zero project-specific code — all project context comes through `plugin.py`.
 
@@ -49,7 +49,8 @@ OS-agnostic [Docker](#docker) / [direct engine](#direct-engine-dependency)
 paths.
 
 Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
-least one code-agent CLI (`claude`, `codex`, or `gemini`) on `PATH`.
+least one code-agent CLI or compatible wrapper (`claude`, `claude-glm`,
+`codex`, or `gemini`) available to Orcho.
 
 > `pipx ensurepath` updates `PATH` for **future** shells, not the one you run it
 > in. So after `ensurepath` you must **open a new terminal** before `pipx` (and
@@ -137,7 +138,17 @@ For source-checkout setup, tests, and contribution workflow, see
 Once `orcho` is installed (see [Install](#install) above), the fastest zero-API
 proof is the single-project CLI demo. It creates a disposable git-backed
 fixture, runs the full mock pipeline, reviews the diff, and writes evidence.
-The bootstrap script is `bash` (macOS, Linux, or WSL2 / Git Bash on Windows):
+The fixture and bootstrap script live in this repository, so a `pipx` install
+uses the installed `orcho` CLI plus a lightweight checkout of the examples:
+
+```bash
+git clone https://github.com/symphos-ai/orcho-core.git
+cd orcho-core
+examples/scripts/bootstrap_demo_1a.sh
+```
+
+From an existing source checkout, run the same script directly. The bootstrap
+script is `bash` (macOS, Linux, or WSL2 / Git Bash on Windows):
 
 ```bash
 examples/scripts/bootstrap_demo_1a.sh

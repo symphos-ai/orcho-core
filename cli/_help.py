@@ -39,6 +39,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("pricing", "inspect / refresh pricing data used by cost"),
         ("verify", "execute declared verification-contract checks"),
         ("quality-gates", "show the declared verification gate matrix"),
+        ("runtimes", "install helper wrappers for agent runtimes"),
     ]),
     ("Maintenance", [
         ("repair-state", "inspect and safely apply known run-state repairs"),

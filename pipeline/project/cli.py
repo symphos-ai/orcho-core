@@ -491,21 +491,16 @@ Examples:
                         help="Override model for repair_changes (rounds 1+ and escalation)")
     parser.add_argument("--model-review-changes",  type=str, default=None,
                         help="Override model for validate_plan / review_changes / final_acceptance")
-    # Provider overrides — orthogonal to --model-*. If omitted the per-phase
-    # default provider from AppConfig is used. Use these to swap CLIs per
-    # phase (e.g. claude reviewer instead of codex reviewer).
+    # Runtime overrides — orthogonal to --model-*. If omitted the per-phase
+    # default runtime from AppConfig is used. Use these to swap CLIs per phase.
     parser.add_argument("--runtime-plan",            type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for plan phase")
+                        help="Override runtime for plan phase")
     parser.add_argument("--runtime-implement",       type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for implement phase")
+                        help="Override runtime for implement phase")
     parser.add_argument("--runtime-repair-changes",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for repair_changes (rounds 1+ and escalation)")
+                        help="Override runtime for repair_changes (rounds 1+ and escalation)")
     parser.add_argument("--runtime-review-changes",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for validate_plan / review_changes / final_acceptance")
+                        help="Override runtime for validate_plan / review_changes / final_acceptance")
     # Wave 3 + Phase 6: session selector + profile selector. Defaults
     # preserve the canonical feature pipeline while AUTO picks STATELESS
     # or CHAIN based on the model match.

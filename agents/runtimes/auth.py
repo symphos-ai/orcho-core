@@ -26,6 +26,12 @@ _AUTH_HINTS = {
         "smoke": "claude --print --model <model> 'Reply OK only'",
         "automation": "export ANTHROPIC_API_KEY=...",
     },
+    "claude-glm": {
+        "login": "refresh the credentials used by your claude-glm wrapper",
+        "status": "claude-glm auth status",
+        "smoke": "claude-glm --print --model <model> 'Reply OK only'",
+        "automation": "set the API key consumed by your claude-glm wrapper",
+    },
     "codex": {
         "login": "codex login",
         "status": "codex login status",

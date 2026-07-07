@@ -34,6 +34,7 @@ from agents.runtimes.claude import (
     _extract_last_result,
     _extract_session_id,
 )
+from agents.runtimes.claude_glm import ClaudeGlmAgent
 from core.io.retry import AgentAuthenticationError
 
 # ── helpers / fixtures ─────────────────────────────────────────────────────
@@ -114,6 +115,19 @@ def test_missing_claude_binary_error_names_runtime(monkeypatch) -> None:
     agent = ClaudeAgent(model="claude-sonnet-test")
 
     with pytest.raises(RuntimeError, match="claude runtime cannot start"):
+        _ = agent.bin
+
+
+def test_missing_claude_glm_binary_error_names_runtime(monkeypatch) -> None:
+    from core.infra import config
+
+    def missing() -> str:
+        raise RuntimeError("Cannot find 'claude-glm' binary")
+
+    monkeypatch.setattr(config, "get_claude_glm_bin", missing)
+    agent = ClaudeGlmAgent(model="glm-5.2[1m]")
+
+    with pytest.raises(RuntimeError, match="CLAUDE_GLM_BIN"):
         _ = agent.bin
 
 
@@ -406,6 +420,39 @@ class TestInvokeOutput:
         assert '"type":"assistant"' not in msg
         assert "request_id" not in msg
         assert '"tools"' not in msg
+
+
+def test_claude_glm_uses_distinct_runtime_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_stream_run: MagicMock,
+) -> None:
+    from core.infra import config
+    from core.observability import events
+
+    monkeypatch.setattr(config, "get_claude_glm_bin", lambda: "/fake/claude-glm")
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        events,
+        "emit",
+        lambda event, **payload: emitted.append((event, payload)),
+    )
+    mock_stream_run.return_value = _stream_result(_assistant_event("ok"))
+
+    agent = ClaudeGlmAgent(model="glm-5.2[1m]")
+    assert agent.invoke("hi", "/project") == "ok"
+
+    cmd = mock_stream_run.call_args.args[0]
+    assert cmd[0] == "/fake/claude-glm"
+    assert "--model" in cmd
+    assert "glm-5.2[1m]" in cmd
+    assert mock_stream_run.call_args.kwargs["label"].startswith(
+        "claude-glm --print --model glm-5.2[1m]"
+    )
+
+    starts = [payload for event, payload in emitted if event == "agent.start"]
+    ends = [payload for event, payload in emitted if event == "agent.end"]
+    assert starts and starts[-1]["agent"] == "claude-glm"
+    assert ends and ends[-1]["agent"] == "claude-glm"
 
 
 # ── invoke(): session bridge ────────────────────────────────────────────────
