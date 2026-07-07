@@ -60,6 +60,7 @@ CATEGORY_FIXTURE = "fixture_snapshot"
 CATEGORY_SCHEMA = "generated_schema"
 CATEGORY_IMPORT_WIRING = "import_wiring"
 CATEGORY_PROJECT_CONFIG = "project_config"
+CATEGORY_TEST = "test"
 CATEGORY_PUBLIC_WIRE = "public_wire"
 CATEGORY_PERSISTENCE = "persistence"
 CATEGORY_SECURITY = "security"
@@ -74,6 +75,7 @@ _BENIGN_CATEGORIES = frozenset(
         CATEGORY_SCHEMA,
         CATEGORY_IMPORT_WIRING,
         CATEGORY_PROJECT_CONFIG,
+        CATEGORY_TEST,
     }
 )
 _SDK_RECONCILABLE_CATEGORIES = frozenset({CATEGORY_SCHEMA, CATEGORY_PUBLIC_WIRE})
@@ -337,6 +339,16 @@ def categorize_file(path: str) -> str:
     p = path.lower()
     name = _basename(p)
 
+    # test source module — a unit/integration test edit never changes the
+    # product surface, so it is never a genuine-safety (persistence / security /
+    # public-wire) expansion, even when its name carries a sensitive token
+    # (e.g. ``test_no_direct_run_state.py`` → not persistence,
+    # ``test_auth_flow.py`` → not security). Checked before the sensitive
+    # families so the content heuristics below cannot mis-escalate a test.
+    # Fixtures, goldens, and test *data* keep their content categories (they are
+    # not ``.py`` test modules and fall through to the branches below).
+    if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
+        return CATEGORY_TEST
     # security — secret / auth / credential material (highest priority).
     if any(tok in p for tok in ("secret", "auth", "credential")):
         return CATEGORY_SECURITY
