@@ -132,6 +132,51 @@ class TestParser:
         assert args.profile is None
         assert args.session_mode == "auto"
 
+    def test_run_runtime_flags_accept_extension_runtime(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "run",
+            "--task", "x",
+            "--project", "/p",
+            "--runtime-implement", "claude-glm",
+        ])
+        assert args.runtime_implement == "claude-glm"
+
+    def test_runtimes_install_subcommand(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "bin" / "claude-glm"
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.command == "runtimes"
+        assert args.runtimes_cmd == "install"
+        assert args.func(args) == 0
+        assert destination.exists()
+        assert "Installed claude-glm wrapper" in capsys.readouterr().out
+
+    def test_runtimes_install_refuses_existing_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "claude-glm"
+        destination.write_text("custom\n")
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.func(args) == 2
+        assert destination.read_text() == "custom\n"
+        assert "pass --force" in capsys.readouterr().err
+
     def test_run_all_flags(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([

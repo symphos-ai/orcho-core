@@ -24,7 +24,22 @@ reachable from the bare `orcho` CLI as well.
 
 ## Setup
 
-From a clean checkout:
+For an installed CLI, use the `orcho` command from your environment and clone
+this repository only for the demo fixture and bootstrap script:
+
+```bash
+pipx install orcho  # skip if already installed
+git clone https://github.com/symphos-ai/orcho-core.git
+cd orcho-core
+```
+
+If you have multiple `orcho` executables, pin the one the demo should use:
+
+```bash
+ORCHO_DEMO_ORCHO_BIN="$(command -v orcho)" examples/scripts/bootstrap_demo_1a.sh
+```
+
+For source development, install the checkout editably instead:
 
 ```bash
 git clone <orcho-core repo> orcho-core
@@ -32,6 +47,9 @@ cd orcho-core
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
+
+`ORCHO_DEMO_CORE_PYTHON=/path/to/python` forces the source-checkout Python
+path when tests or local scripts need it.
 
 The fixture used below ships with the repo at
 [examples/golden-api/](../../examples/golden-api/) — an intentionally

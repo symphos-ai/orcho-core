@@ -335,19 +335,15 @@ Examples:
                         help="Override model for repair_changes phase")
     parser.add_argument("--model-review",  type=str, default=None,
                         help="Override model for validate_plan / review_changes / final_acceptance / contract check")
-    # Provider overrides — orthogonal to --model-* (see project_orchestrator.py).
+    # Runtime overrides — orthogonal to --model-*.
     parser.add_argument("--runtime-plan",   type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for PLAN phase")
+                        help="Override runtime for PLAN phase")
     parser.add_argument("--runtime-build",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for implement phase")
+                        help="Override runtime for implement phase")
     parser.add_argument("--runtime-fix",    type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for repair_changes phase")
+                        help="Override runtime for repair_changes phase")
     parser.add_argument("--runtime-review", type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for validate_plan / review_changes / final_acceptance / contract check")
+                        help="Override runtime for validate_plan / review_changes / final_acceptance / contract check")
     # Cross-mode: "full" runs plan → implement → review_changes for all
     # projects; "plan" generates cross_plan.json (canonical) + cross_plan.md
     # (audit render) and stops for human review. Per-project ``--profile``

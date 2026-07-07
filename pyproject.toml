@@ -90,6 +90,7 @@ orcho-cross = "pipeline.cross_project.cli:main"
 # break — no aliasing of legacy groups.
 [project.entry-points."orcho.agent_runtimes"]
 claude = "agents.runtimes.claude:ClaudeAgent"
+claude-glm = "agents.runtimes.claude_glm:ClaudeGlmAgent"
 codex  = "agents.runtimes.codex:CodexAgent"
 gemini = "agents.runtimes.gemini:GeminiAgent"
 
@@ -135,6 +136,7 @@ core = [
     "_prompts/*.md",
     "_prompts/**/*.md",
     "_config/*.json",
+    "_runtime_wrappers/*.sh",
 ]
 
 # ``config.local.json`` is gitignored, user-local override content

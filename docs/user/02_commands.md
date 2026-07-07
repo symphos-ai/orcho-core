@@ -34,6 +34,7 @@ the full argparse dump for every subcommand.
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
 | `orcho pricing` | Inspect / refresh the pricing data used by `cost` |
 | `orcho verify` | Execute declared verification-contract checks for a run |
+| `orcho runtimes` | Install helper wrappers for agent runtimes |
 | `orcho workspace` | Initialise and manage Orcho workspaces |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
 
@@ -106,7 +107,7 @@ interactively. For non-interactive transports there are explicit flags:
 ```bash
 --model MODEL                        # default implementation model
 --model-plan / --model-implement / --model-review-changes / --model-repair-changes
---runtime-plan {claude,codex,gemini} # which agent CLI owns the phase
+--runtime-plan RUNTIME               # which registered agent runtime owns the phase
 --runtime-implement / --runtime-review-changes / --runtime-repair-changes
 ```
 
@@ -118,6 +119,24 @@ export MODEL_PLAN='claude-opus-4-8[1m]'
 export MODEL_IMPLEMENT='claude-opus-4-8[1m]'
 export MODEL_REVIEW_CHANGES=gpt-5.5
 export RUNTIME_REVIEW_CHANGES=codex
+```
+
+Runtime ids include the built-ins `claude`, `claude-glm`, `codex`, and
+`gemini`, plus any plugin-provided runtime registered in the environment. See
+[../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md) for the GLM
+wrapper setup.
+
+Example: keep planning on Claude, then route implementation through the
+Claude-compatible GLM wrapper under Codex review:
+
+```bash
+orcho run \
+  --task "Implement the approved plan" \
+  --project ./api \
+  --runtime-plan claude \
+  --runtime-implement claude-glm \
+  --model-implement 'glm-5.2[1m]' \
+  --runtime-review-changes codex
 ```
 
 ### Attachments and session control

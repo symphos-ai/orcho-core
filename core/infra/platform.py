@@ -195,6 +195,21 @@ def claude_candidates() -> list[str]:
     ]
 
 
+def claude_glm_candidates() -> list[str]:
+    """Ordered list of candidate paths for a Claude-compatible GLM wrapper."""
+    if _IS_WINDOWS:
+        appdata = os.environ.get("APPDATA", "")
+        return [
+            rf"{appdata}\npm\claude-glm.cmd",
+        ]
+    return [
+        "~/bin/claude-glm",
+        "~/.local/bin/claude-glm",
+        "/usr/local/bin/claude-glm",
+        "/opt/homebrew/bin/claude-glm",
+    ]
+
+
 def codex_candidates() -> list[str]:
     """Ordered list of candidate paths for the Codex CLI binary."""
     if _IS_WINDOWS:
