@@ -85,6 +85,54 @@ LARGE_DIFF_LINES = 200
 
 _GREEN = "green"
 
+# ── test-module detection (language-agnostic) ────────────────────────────────
+# A test edit never changes the product surface, so it is never a genuine-safety
+# (persistence / security / public-wire) scope expansion — even when the name
+# carries a sensitive token (``test_run_state.py``, ``auth.service.test.ts``,
+# ``secret_store_test.go``). Detected two ways, both on the ORIGINAL-case path so
+# CamelCase conventions (``FooTest.java``) survive lowercasing.
+#
+# 1. Naming conventions across ecosystems (basename-only, so test *data* keeps
+#    its content category):
+_TEST_NAME_RE = re.compile(
+    r"""^(?:
+        test_.+\.py                                          # pytest / unittest
+      | .+_test\.(?:py|go|rb|exs?|cc|cpp|cxx|cs|c)           # go / ruby / elixir / c(++) / python-alt
+      | test_.+\.(?:cc|cpp|cxx|c)                            # c(++) prefix style
+      | .+[._](?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs)       # jest / vitest / mocha / jasmine
+      | .+_spec\.rb                                          # rspec
+      | .+(?:Test|Tests|Spec|IT)\.(?:java|kt|kts|scala|cs|swift|php)  # jvm / .net / swift / php
+    )$""",
+    re.VERBOSE,
+)
+# 2. Location: a source file under a test directory (catches ecosystems with no
+#    name convention, e.g. Rust ``tests/foo.rs``). Excludes data/fixture/golden
+#    dirs so goldens and test data keep their content category.
+_TEST_DIR_RE = re.compile(r"(?:^|/)(?:tests?|__tests__|spec)/")
+_TEST_DATA_DIR_RE = re.compile(r"(?:^|/)(?:fixtures?|golden|goldens|snapshots?|testdata|data)/")
+_TEST_SOURCE_EXTS = (
+    ".py", ".go", ".rs", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".rb", ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
+    ".ex", ".exs", ".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".m", ".mm",
+)
+
+
+def _is_test_module(path: str, lowered: str) -> bool:
+    """True when ``path`` is a test source file in any common ecosystem (pure).
+
+    Uses the original-case basename for naming conventions (CamelCase
+    ``FooTest.java``) and the lowered path for the directory heuristic. Never
+    matches test *data* / fixtures / goldens — those keep their content
+    category.
+    """
+    if _TEST_NAME_RE.match(_basename(path)):
+        return True
+    return (
+        _TEST_DIR_RE.search(lowered) is not None
+        and _TEST_DATA_DIR_RE.search(lowered) is None
+        and lowered.endswith(_TEST_SOURCE_EXTS)
+    )
+
 
 # ── (A) typed results ────────────────────────────────────────────────────────
 
@@ -339,15 +387,11 @@ def categorize_file(path: str) -> str:
     p = path.lower()
     name = _basename(p)
 
-    # test source module — a unit/integration test edit never changes the
-    # product surface, so it is never a genuine-safety (persistence / security /
-    # public-wire) expansion, even when its name carries a sensitive token
-    # (e.g. ``test_no_direct_run_state.py`` → not persistence,
-    # ``test_auth_flow.py`` → not security). Checked before the sensitive
-    # families so the content heuristics below cannot mis-escalate a test.
-    # Fixtures, goldens, and test *data* keep their content categories (they are
-    # not ``.py`` test modules and fall through to the branches below).
-    if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
+    # test source module (any language) — checked before the sensitive families
+    # so a sensitive token in a test's name/path cannot mis-escalate it. See
+    # ``_is_test_module``. Fixtures, goldens, and test *data* are excluded there
+    # and keep their content categories via the branches below.
+    if _is_test_module(path, p):
         return CATEGORY_TEST
     # security — secret / auth / credential material (highest priority).
     if any(tok in p for tok in ("secret", "auth", "credential")):
