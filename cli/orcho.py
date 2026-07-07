@@ -17,7 +17,7 @@ Subcommands:
   orcho history — List recent runs
   orcho evidence— Compose run evidence bundle
   orcho repair-state — Inspect / safely apply known run-state repairs
-  orcho cost    — API-equivalent cost report
+  orcho cost    — cost-reference usage report
   orcho pricing — Show / refresh pricing table
   orcho prompts — Show prompt resolution chain
 """
@@ -1293,7 +1293,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── cost ──────────────────────────────────────────────────────────────────
     p_cost = sub.add_parser(
         "cost",
-        help="API-equivalent cost report (sliding window over runs/)",
+        help="Cost-reference usage report (sliding window over runs/)",
     )
     p_cost.add_argument(
         "--window", "-w", default="30d",
@@ -1301,7 +1301,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost.add_argument(
         "--top", "-n", type=int, default=5,
-        help="Show top-N most expensive runs (default: 5)",
+        help="Show top-N runs by cost reference (default: 5)",
     )
     p_cost.add_argument(
         "--workspace", default=None,

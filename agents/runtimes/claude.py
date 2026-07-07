@@ -489,10 +489,9 @@ class ClaudeAgent:
         self._last_resumed_session_id: str | None = None
         self._last_followup_parent_session_id: str | None = None
         # Populated by every call from the final ``{"type":"result",…}`` line
-        # of Claude's stream-json. ``last_cost_usd`` is the API-equivalent
-        # what-if price (Claude Pro/Max subscriptions pay $0 actual; this
-        # value is what pay-as-you-go API would have charged for the same
-        # call). ``last_tokens_in/out`` are the exact API-side counts —
+        # of Claude's stream-json. ``last_cost_usd`` is a cost reference
+        # reported by the active runtime/endpoint, not a billing receipt.
+        # ``last_tokens_in/out`` are the exact API-side counts —
         # estimate_tokens() is only used as a fallback when these are None.
         self.last_cost_usd: float | None = None
         # ``last_tokens_in`` is the **total** input scope this call —

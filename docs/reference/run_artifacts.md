@@ -260,7 +260,7 @@ fall back to `events.jsonl` + `meta.json` for diagnostic detail.
 | `gates` | `list[dict]` | quality gates fired, soft-validated |
 | `commands` | `list[dict]` | recorded commands, soft-validated |
 | `artifacts` | `list[dict]` | written artifacts |
-| `metrics` | `dict` | rollup; see [`metrics.json`](#metricsjson) below for shape. Carries the additive `subtasks` per-subtask usage breakdown through verbatim when `metrics.json` has it, so the durable bundle alone answers "which implement subtask was most expensive?" |
+| `metrics` | `dict` | rollup; see [`metrics.json`](#metricsjson) below for shape. Carries the additive `subtasks` per-subtask usage breakdown through verbatim when `metrics.json` has it, so the durable bundle alone answers "which implement subtask used the most tokens / cost reference?" |
 | `errors` | `list[dict]` | errors from events |
 | `prompt_render` | `list[dict]` | **closed-schema** — see [observability_surfaces.md](../architecture/observability_surfaces.md#writer-stamped-attribution-on-prompt_render-adr-0035) for the field table |
 | `raw_events_path` | `str` | absolute path to `events.jsonl` |
@@ -350,8 +350,11 @@ Three rollup fields are **omitted when zero** (`as_dict` at
 
 * `total_rounds: int` — only when at least one `add_round()` call fired.
 * `total_retries: int` — only when at least one phase recorded a retry.
-* `total_cost_usd_equivalent: float` — only when at least one phase
-  reported `cost_usd_equivalent`.
+* `total_cost_usd_equivalent: float` — cost reference, present only
+  when at least one phase reported `cost_usd_equivalent`.
+* `cost_estimated: bool` — `false` when the cost reference came from
+  the active runtime/endpoint; `true` when Orcho estimated it from a
+  local pricing table.
 
 Consumers must use `metrics.get("total_rounds", 0)` rather than
 `metrics["total_rounds"]`.
@@ -372,7 +375,8 @@ Consumers must use `metrics.get("total_rounds", 0)` rather than
 ```
 
 Optional per-entry keys (omitted when zero / unset):
-`tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`.
+`tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`,
+`cost_estimated`.
 
 `tokens_exact` semantics: `true` when the count came from the
 provider's API headers / CLI usage trailer; `false` when we
@@ -392,7 +396,7 @@ collapsed via summation, plus:
 
 Additive top-level key, present **only** for `subtask_dag` implement
 runs (and only from the version that introduced it — older runs and
-`whole_plan` runs do not carry it). It makes an expensive implement
+`whole_plan` runs do not carry it). It makes a high-usage implement
 phase diagnosable by attributing usage to individual subtasks:
 
 ```json
@@ -413,6 +417,7 @@ phase diagnosable by attributing usage to individual subtasks:
         "tokens_in_cache_read": 900000,
         "tokens_in_cache_create": 100000,
         "cost_usd_equivalent": 4.21,
+        "cost_estimated": false,
         "state": "done",
         "declared_files": ["pipeline/register.py"]
       }
@@ -425,8 +430,8 @@ Always-present per-record fields: `subtask_id`, `runtime`, `model`,
 `invocations`, `duration_s`, `tokens_in`, `tokens_out`,
 `total_tokens`, `tool_calls`, `tokens_exact`. The remaining fields —
 `tokens_in_cache_read`, `tokens_in_cache_create`,
-`cost_usd_equivalent`, `state`, `declared_files` — appear **only when
-known**; an unknown value is omitted, never estimated.
+`cost_usd_equivalent`, `cost_estimated`, `state`, `declared_files` —
+appear **only when known**; an unknown value is omitted.
 
 Three authority/semantics rules a consumer must honor:
 
@@ -444,9 +449,12 @@ Three authority/semantics rules a consumer must honor:
   contributes multiple invocations to one record; `state` reflects the
   latest receipt across all passes.
 
-`cost_usd_equivalent` follows the same accounting gate as
-`total_cost_usd_equivalent`: when dollar accounting is disabled it is
-scrubbed from every record.
+`cost_usd_equivalent` is a dollar-denominated cost reference, not a
+billing receipt. Runtime-reported values come from the active
+runtime/endpoint; estimated values use Orcho pricing tables.
+Subscription plans may bill differently. The field follows the same
+accounting gate as `total_cost_usd_equivalent`: when dollar accounting
+is disabled it is scrubbed from every record.
 
 ### Cross-subprocess merge (ADR 0035)
 

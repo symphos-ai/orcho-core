@@ -72,7 +72,7 @@ _CACHE_LOW_RATIO = 0.50
 # ratio is low, so it must NOT be flagged as a prefix break.
 _CACHE_COVERAGE_LOW_RATIO = 0.90
 
-# Approximate API-equivalent rate the cache-read side bills at,
+# Approximate cost-reference rate used for cache-read estimates,
 # expressed as a fraction of the fresh-prompt rate. Claude charges
 # cache_read at ~10% of input rate, so the savings fraction is
 # ~90% of what the cached portion would have cost at the fresh
@@ -248,8 +248,9 @@ def _prompt_line(d: LiveCardData) -> str | None:
     ``cache_read_tokens`` are known — otherwise we cannot compute the
     percentage honestly.
 
-    Provider input splits into three parts: ``cache_read`` (hit, billed
-    cheap), ``cache_creation`` (written into cache THIS turn — a cold/
+    Provider input splits into three parts: ``cache_read`` (cache hit,
+    discounted in cost estimates), ``cache_creation`` (written into cache THIS
+    turn — a cold/
     priming call, not a miss; the next turn reads it back), and ``fresh``
     (genuinely uncacheable). A low ``cache_read`` % alone does NOT mean the
     prefix broke — a first/cold call writes most of the prompt into the
@@ -272,7 +273,7 @@ def _prompt_line(d: LiveCardData) -> str | None:
         return label
     read_pct = d.cache_read_tokens / d.tokens_in
     pct_int = int(round(read_pct * 100))
-    # Savings estimate when we know the call cost — approximate by
+    # Savings estimate when we know the call cost reference — approximate by
     # design; the card never claims exact billing.
     saved_str = ""
     if d.cost_usd is not None and d.cost_usd > 0:

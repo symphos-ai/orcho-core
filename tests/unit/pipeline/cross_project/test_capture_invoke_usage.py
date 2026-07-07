@@ -495,7 +495,7 @@ class TestSnapshotFormatter:
         assert "total=330,401" in line
         assert "in=326,846" in line
         assert "out=3,555" in line
-        assert "api-equiv=$0.35" in line
+        assert "cost_ref=runtime-reported:$0.35" in line
         assert "~" not in line
         assert "\n" not in line
 
@@ -512,7 +512,7 @@ class TestSnapshotFormatter:
         })
         assert "in~18,900" in line
         assert "out~2,773" in line
-        assert "api-equiv~$0.02" in line
+        assert "cost_ref=estimated-api:~$0.02" in line
 
     def test_independent_markers_exact_split_estimated_cost(self):
         line = _format_usage_snapshot("phase", {
@@ -527,7 +527,7 @@ class TestSnapshotFormatter:
         })
         assert "in=60" in line
         assert "out=40" in line
-        assert "api-equiv~$0.00" in line  # rounds to 2dp
+        assert "cost_ref=estimated-api:~$0.00" in line  # rounds to 2dp
 
     def test_no_cost_renders_dash(self):
         line = _format_usage_snapshot("phase", {
@@ -538,7 +538,7 @@ class TestSnapshotFormatter:
             "calls": 1,
             "token_split_estimated": True,
         })
-        assert "api-equiv=-" in line
+        assert "cost_ref=-" in line
         assert "in~50" in line
         assert "out~50" in line
 

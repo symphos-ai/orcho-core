@@ -75,6 +75,43 @@ def test_basic_aggregation(populated_runs: Path, accounting_on):
     assert "claude" in providers
 
 
+def test_cost_estimated_source_survives_aggregation(
+    runs_root: Path,
+    accounting_on,
+) -> None:
+    rid = runs_root / "20260508_120000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "estimated"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_tokens_in": 70,
+                "total_tokens_out": 30,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 0.12,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "gpt-5.5",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 0.12,
+                        "cost_estimated": True,
+                    },
+                },
+            }
+        )
+    )
+
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+
+    assert report.any_estimated is True
+    assert report.top_runs[0].cost_estimated is True
+    assert report.phase_breakdown[0].cost_estimated is True
+    assert report.agent_breakdown[0].cost_estimated is True
+
+
 def test_workspace_accounting_applies_to_explicit_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

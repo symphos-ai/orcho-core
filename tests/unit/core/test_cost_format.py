@@ -78,7 +78,7 @@ def _make_report(**overrides) -> CostReport:
         pricing_source=None,
         pricing_snapshot_date=None,
         pricing_snapshot_age_days=None,
-        any_estimated=True,
+        any_estimated=False,
     )
     base.update(overrides)
     return CostReport(**base)
@@ -108,7 +108,7 @@ def test_full_report_sections_present():
     # Header row
     assert "Cost report · window=7d · 2 runs · workspace=/tmp/runs" in out
     # Top-N section
-    assert "Top 2 expensive runs" in out
+    assert "Top 2 runs by cost reference" in out
     assert "20260507_120000" in out
     assert "rounds×2, retries×1" in out
     # By-phase section
@@ -119,7 +119,8 @@ def test_full_report_sections_present():
     assert "claude" in out
     assert "~" in out  # token-estimate marker for non-exact agent
     # Totals
-    assert "API-equivalent  $1.23" in out
+    assert "Cost reference  runtime-reported $1.23" in out
+    assert "not a billing receipt" in out
     assert "20,000" in out
     # Time formatting under 1h
     assert "Time            2.0m" in out
@@ -131,7 +132,7 @@ def test_accounting_disabled_report_has_no_dollar_output():
     assert "Accounting is disabled" in out
     assert "Dollar estimates were not calculated." in out
     assert "$" not in out
-    assert "API-equivalent" not in out
+    assert "Cost reference" not in out
 
 
 def test_pricing_footer_when_priced_entries_present():
@@ -200,4 +201,26 @@ def test_no_top_phase_note_when_total_cost_zero():
     )
     out = format_cost_report(r)
     assert "Top phase" not in out
-    assert "API-equivalent  —" in out
+    assert "Cost reference  —" in out
+
+
+def test_estimated_cost_report_marks_estimated_api_source():
+    r = _make_report(
+        any_estimated=True,
+        top_runs=(
+            CostRunRow(
+                run_id="20260507_120000",
+                task="Estimated run",
+                cost=1.23,
+                tokens=20_000,
+                tokens_in=12_000,
+                tokens_out=8_000,
+                duration_s=120.0,
+                rounds=1,
+                retries=0,
+                cost_estimated=True,
+            ),
+        ),
+    )
+    out = format_cost_report(r)
+    assert "estimated-api ~$1.23" in out

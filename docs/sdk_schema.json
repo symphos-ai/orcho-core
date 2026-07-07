@@ -31,6 +31,12 @@
           "default_factory": null,
           "name": "tokens_exact",
           "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
+          "type": "bool"
         }
       ],
       "frozen": true,
@@ -1413,6 +1419,12 @@
           "default": null,
           "default_factory": null,
           "name": "tokens_exact",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
           "type": "bool"
         }
       ],

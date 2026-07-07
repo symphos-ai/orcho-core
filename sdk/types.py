@@ -196,6 +196,7 @@ class PhaseBreakdown:
     tokens: int
     runs: int
     tokens_exact: bool
+    cost_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +208,7 @@ class AgentBreakdown:
     tokens: int
     runs: int
     tokens_exact: bool
+    cost_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,7 @@ class CostRunRow:
     duration_s: float
     rounds: int
     retries: int
+    cost_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)

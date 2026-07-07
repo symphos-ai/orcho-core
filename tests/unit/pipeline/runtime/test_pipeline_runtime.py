@@ -177,7 +177,7 @@ class TestClaudeUsageCapture:
     """``ClaudeAgent.last_cost_usd`` / ``last_tokens_in`` / ``last_tokens_out``
  must hold the values from the final ``{"type":"result",…}`` line of
  Claude Code's stream-json. This is the foundation that powers the
- API-equivalent cost banner ("$0.42 saved by your Pro subscription")
+ cost-reference banner ("runtime-reported $0.42")
  without faithful per-call capture every aggregate downstream is
  estimated, not measured.
  """
@@ -262,7 +262,7 @@ class TestMetricsCostAggregation:
                        tokens_in=50,  tokens_out=20)  # no cost available
         assert abs(m.total_cost_usd_equivalent - 0.52) < 1e-9
         line = m.summary_line()
-        assert "API-equiv: $0.52" in line, line
+        assert "Cost ref: runtime-reported $0.52" in line, line
 
     def test_summary_omits_cost_when_none_reported(self):
         from core.observability.metrics import MetricsCollector
@@ -271,9 +271,9 @@ class TestMetricsCostAggregation:
                        duration_s=1.0, tokens_in=10, tokens_out=5)
         line = m.summary_line()
         # No phase has native cost or known pricing → must NOT show
-        # ``API-equiv: $0.00`` which would mislead users into thinking the
-        # call was free.
-        assert "API-equiv" not in line, line
+        # ``Cost ref: runtime-reported $0.00`` which would mislead users into
+        # thinking the call carried a known dollar reference.
+        assert "Cost ref" not in line, line
 
     def test_metrics_dict_exposes_cost_when_reported(self):
         from core.observability.metrics import MetricsCollector
@@ -1051,7 +1051,7 @@ class TestFsmMetricsOutcomeBridge:
                 "tokens_out": 620,
                 "cached_tokens_in": 9_000,
             }
-            assert "API-equiv: ~$0.12" in metrics.summary_line()
+            assert "Cost ref: estimated-api ~$0.12" in metrics.summary_line()
         finally:
             config._reset_config()
 
@@ -1324,7 +1324,7 @@ class TestPricingLoader:
 
     def test_estimate_cost_uses_cached_input_rate(self, tmp_path, monkeypatch):
         """Codex/OpenAI usage reports cached_input_tokens as an input subset;
-        API-equivalent estimates must not bill that subset at full price."""
+        Cost-reference estimates must not price that subset at full rate."""
         from core.observability import pricing as p
 
         user_file = tmp_path / "pricing.local.toml"

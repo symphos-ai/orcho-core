@@ -307,8 +307,9 @@ aggregate_cost(*, workspace=None, runs_dir=None, cwd=None,
 ```
 
 Pure aggregation across runs whose timestamps fall within `window`
-(`"30d"` / `"7d"` / `"all"`). Codex-shaped phases (tokens reported but
-no `cost_usd_equivalent`) trigger pricing fallback through
+(`"30d"` / `"7d"` / `"all"`). The dollar fields are cost references,
+not billing receipts. Runtime-reported values come from the active
+runtime/endpoint; token-only phases can trigger pricing fallback through
 `core.observability.pricing.estimate_cost_from_total`;
 `CostReport.priced_entries_count` records how many entries got priced.
 

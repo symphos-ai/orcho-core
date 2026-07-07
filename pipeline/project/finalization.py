@@ -58,6 +58,10 @@ from core.io.ansi import C, paint
 from core.observability import (
     logging as _logging,
 )
+from core.observability.accounting_display import (
+    ACCOUNTING_REFERENCE_NOTE,
+    format_cost_reference_key_value,
+)
 from core.observability.logging import log_phase
 from pipeline.checkpoint import PipelineStatus
 from pipeline.engine import save_session
@@ -1091,8 +1095,8 @@ def _render_roi_summary(
 ) -> str:
     """Return the end-of-run ROI line.
 
-    Token ROI is always meaningful; dollar ROI is appended only when
-    accounting/API-equivalent cost is explicitly available.
+    Token ROI is always meaningful; dollar-denominated cost reference is
+    appended only when accounting data is explicitly available.
     """
     phases = session.get("phases")
     if not isinstance(phases, Mapping):
@@ -1132,8 +1136,12 @@ def _render_roi_summary(
         and not isinstance(cost, bool)
         and isinstance(cost, (int, float))
     ):
-        prefix = "API-equiv~$" if metrics.get("cost_estimated") is True else "API-equiv=$"
-        parts.append(f"{prefix}{float(cost):.2f}")
+        parts.append(
+            format_cost_reference_key_value(
+                float(cost),
+                estimated=metrics.get("cost_estimated") is True,
+            )
+        )
     outcome_bits = [task_part]
     if release_part:
         outcome_bits.append(release_part)
@@ -1185,11 +1193,13 @@ def _phase_usage_rows(
         if any_cost:
             cost = raw.get("cost_usd_equivalent")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                marker = "~$" if raw.get("cost_estimated") is True else "$"
-                cost_part = f"{marker}{float(cost):.2f}"
+                cost_part = format_cost_reference_key_value(
+                    float(cost),
+                    estimated=raw.get("cost_estimated") is True,
+                )
             else:
-                cost_part = "—"
-            line += f" api-equiv={cost_part}"
+                cost_part = "cost_ref=—"
+            line += f" {cost_part}"
         rows.append(line)
     return tuple(rows) if len(rows) > 1 else ()
 
@@ -1203,8 +1213,8 @@ def _subtask_usage_rows(
 
     Mirrors :func:`_phase_usage_rows`, but reads the additive
     ``metrics["subtasks"]["implement"]`` breakdown so an operator can see —
-    at a glance, from the summary alone — which subtask consumed the budget
-    on an expensive ``subtask_dag`` run. Returns an empty tuple when no
+    at a glance, from the summary alone — which subtask produced the usage
+    on a high-usage ``subtask_dag`` run. Returns an empty tuple when no
     records exist (whole_plan / non-subtask runs), so no hollow header or
     misleading empty warning is ever rendered. Order follows the record list,
     which is DAG execution order. This is analytical evidence, not a verdict:
@@ -1229,9 +1239,8 @@ def _subtask_usage_rows(
             continue
         # State-only markers (skipped subtasks, or run subtasks whose runtime
         # surfaced no metered usage) ride in the slice so the rollup can count
-        # their final state, but they carry no usage fields and consumed no
-        # budget the operator can attribute — they never belong in the "who
-        # spent what" usage block.
+        # their final state, but they carry no usage fields the operator can
+        # attribute — they never belong in the usage-attribution block.
         if not any(
             key in rec for key in ("tokens_in", "tokens_out", "total_tokens")
         ):
@@ -1254,7 +1263,10 @@ def _subtask_usage_rows(
         if any_cost:
             cost = rec.get("cost_usd_equivalent")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                line += f" api-equiv=${float(cost):.2f}"
+                line += " " + format_cost_reference_key_value(
+                    float(cost),
+                    estimated=rec.get("cost_estimated") is True,
+                )
         line += f" time={duration_s} tools={tool_calls}"
         declared = rec.get("declared_files")
         if isinstance(declared, list) and declared:
@@ -1318,7 +1330,7 @@ def _format_agent_advice_block(
     Counts come straight from the normalizer's ``summary`` so they match the
     evidence section. A per-source breakdown line is added when any call records
     a ``feedback_source``. The usage line is observe-only: tokens always, the
-    ``api-equiv`` cost ONLY when accounting is available AND the digest carried a
+    cost reference ONLY when accounting is available AND the digest carried a
     cost — never invented, and never folded into the run ROI / totals.
     """
     def _count(key: str) -> int:
@@ -1364,7 +1376,12 @@ def _format_agent_advice_block(
             and isinstance(cost, (int, float))
             and not isinstance(cost, bool)
         ):
-            usage_bits.append(f"api-equiv=${float(cost):.2f}")
+            usage_bits.append(
+                format_cost_reference_key_value(
+                    float(cost),
+                    estimated=usage.get("cost_estimated") is True,
+                )
+            )
         lines.append("  usage: " + " ".join(usage_bits))
 
     return "\n".join(lines)
@@ -2322,7 +2339,7 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         # Advice cost is gated on accounting availability ALONE — not phase
         # cost presence. The advice digest can carry a real
         # ``usage.cost_usd_equivalent`` even when no phase reported an
-        # api-equivalent cost (e.g. an operator/CI stop with no following
+        # cost reference (e.g. an operator/CI stop with no following
         # phase), so reusing ``has_api_equivalent_cost`` (phase-cost driven)
         # would wrongly suppress it. The digest-cost-presence check inside
         # ``_format_agent_advice_block`` still ensures cost renders iff the
@@ -2509,7 +2526,7 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
             _done_line(f"Usage:   {run._metrics.summary_line()}", color=C.CYAN, icon="•", icon_color=C.CYAN)
             if result.has_api_equivalent_cost:
                 print(
-                    f"           {paint('↳ API-equivalent: what pay-as-you-go API would have charged for these calls.', C.GREY)}"
+                    f"           {paint('↳ ' + ACCOUNTING_REFERENCE_NOTE, C.GREY)}"
                 )
             if result.roi_summary_line:
                 _done_line(result.roi_summary_line, color=C.YELLOW, icon="•", icon_color=C.YELLOW)

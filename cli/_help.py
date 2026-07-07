@@ -27,7 +27,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("status", "show status of the latest run or a specific run id"),
         ("history", "list recent runs"),
         ("metrics", "show token/time metrics for recent runs"),
-        ("cost", "API-equivalent cost report over a window of runs"),
+        ("cost", "Cost-reference usage report over a window of runs"),
         ("evidence", "compose a run evidence bundle"),
         ("diff", "print the run's captured diff.patch artifact"),
     ]),
