@@ -1630,6 +1630,60 @@
       "slots": true
     },
     {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "ProfileCustomizeError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "profile",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "scope",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "config_path",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "dry_run",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "changes",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "overlay",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.profile_customize",
+      "name": "ProfileCustomizeResult",
+      "slots": true
+    },
+    {
       "fields": [
         {
           "default": null,
@@ -3264,6 +3318,92 @@
         }
       ],
       "return": "EvidenceBundle"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.profile_customize",
+      "name": "customize_profile",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "profile"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "assignments"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "default_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "change_handoff"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "implementation_execution"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "worktree_isolation"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "phase_effort"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_split"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_continuity"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "handoff"
+        },
+        {
+          "annotation": "str",
+          "default": "'workspace'",
+          "kind": "KEYWORD_ONLY",
+          "name": "scope"
+        },
+        {
+          "annotation": "str | Path | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        }
+      ],
+      "return": "ProfileCustomizeResult"
     },
     {
       "kind": "callable",

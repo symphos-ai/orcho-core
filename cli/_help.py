@@ -34,6 +34,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Workspace & config", [
         ("workspace", "initialise and manage Orcho workspaces"),
         ("profiles", "list execution profiles"),
+        ("profile", "customize one execution profile"),
         ("workflows", "list workflow profiles"),
         ("prompts", "show the prompt resolution chain"),
         ("pricing", "inspect / refresh pricing data used by cost"),

@@ -269,6 +269,37 @@ class TestParser:
         assert "Profiles" in out
         assert "feature" in out
 
+    def test_profile_customize_writes_workspace_overlay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        workspace = tmp_path / "workspace"
+        monkeypatch.setenv("ORCHO_WORKSPACE", str(workspace))
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "profile",
+            "customize",
+            "feature",
+            "--mode",
+            "pro",
+            "--phase-effort",
+            "implement=high",
+        ])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Updated profile customization for feature" in out
+        data = json.loads(
+            (workspace / ".orcho" / "config.local.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert data["profiles_v2"]["feature"]["_profile"]["default_mode"] == "pro"
+        assert data["profiles_v2"]["feature"]["implement"]["effort"] == "high"
+
     def test_workflows_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:

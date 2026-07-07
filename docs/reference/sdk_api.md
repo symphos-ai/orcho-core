@@ -37,6 +37,7 @@ call time.
 | `NoWorkspace`       | 1           | no runs directory could be resolved                           |
 | `RunNotFound`       | 1           | requested run id has no directory                             |
 | `PricingFetchError` | 2           | `refresh_pricing` scrape or network fetch failed              |
+| `ProfileCustomizeError` | 2       | `customize_profile` request or overlay validation failed      |
 | `PromptNotFound`    | 1           | requested prompt name has no resolution                       |
 | `EvidenceInvalid`   | 1           | evidence bundle composition failed (file missing/unreadable)  |
 
@@ -283,6 +284,21 @@ developer's real `~/.orcho/`.
 Raises `PricingFetchError` (with `exit_code=2`) on any scrape or
 network failure.
 
+### `sdk.profile_customize`
+
+```python
+customize_profile(profile: str, *, ..., dry_run: bool = False) -> ProfileCustomizeResult
+```
+
+Writes a validated `profiles_v2` overlay for a built-in profile into a local
+`config.local.json`. The default scope is workspace-local
+(`$ORCHO_WORKSPACE/.orcho/config.local.json`); `scope="user"` writes
+`~/.orcho/config.local.json`. `dry_run=True` validates and returns the target
+path without writing.
+
+Raises `ProfileCustomizeError` (with `exit_code=2`) when the request cannot be
+resolved or the resulting overlay does not pass the v2 profile schema.
+
 ### `sdk.cost`
 
 ```python
@@ -422,12 +438,13 @@ json_payload = json.dumps(to_jsonable(rows))
 
 ## Side-effecting calls
 
-Only two public SDK calls write to disk:
+Only these public SDK calls write to disk:
 
 | Call                                | Writes                                        |
 | ----------------------------------- | --------------------------------------------- |
 | `refresh_pricing(provider, ...)`    | `~/.orcho/pricing.local.toml` (configurable)  |
 | `write_evidence_bundle(b, out_dir)` | `<out_dir>/<run_id>/evidence.{json,md}`       |
+| `customize_profile(profile, ...)`   | local `config.local.json` `profiles_v2` block |
 
 Every other public function is read-only (no filesystem writes, no
 network, no env mutation). The CLI's `_run_cli(call, formatter)`
