@@ -2051,7 +2051,7 @@ def _render_delivery_diagnostics(
     the manual-publish fallback) are dropped to avoid double-printing.
     """
     for warning in decision.delivery_warnings:
-        output_fn(f"  {bold(f'⚠ {warning}', color=color)}")
+        output_fn(f"  {paint(f'⚠ {warning}', C.YELLOW, C.BOLD, color=color)}")
     for notice in decision.delivery_notices:
         if notice.startswith("PR opened:"):
             continue
