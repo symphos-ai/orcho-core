@@ -83,10 +83,22 @@ def test_wheel_install_round_trip(tmp_path: Path) -> None:
     assert wheels, f"no wheel produced in {dist_dir}"
     wheel_path = wheels[0]
     with zipfile.ZipFile(wheel_path) as wheel:
+        names = wheel.namelist()
         mock_artifacts = [
-            name for name in wheel.namelist()
-            if name.endswith("/Implementation.py")
+            name for name in names if name.endswith("/Implementation.py")
         ]
+        cmd_wrapper = next(
+            (
+                name
+                for name in names
+                if name.endswith("_runtime_wrappers/claude-glm.cmd")
+            ),
+            None,
+        )
+        assert cmd_wrapper is not None, (
+            "claude-glm.cmd missing from wheel; the "
+            "_runtime_wrappers/*.cmd package-data glob was not applied"
+        )
     assert not mock_artifacts, (
         "mock implementation artifacts leaked into wheel:\n"
         + "\n".join(mock_artifacts)

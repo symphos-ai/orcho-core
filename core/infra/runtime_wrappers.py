@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
+from core.infra.platform import _IS_WINDOWS
+
 
 class RuntimeWrapperError(ValueError):
     """Raised when a runtime-wrapper command cannot be completed."""
@@ -20,13 +22,35 @@ class RuntimeWrapperInstallResult:
     env_var: str
 
 
+# Per-platform wrapper file for each runtime. The runtime-name set (the keys
+# here) stays a single ``claude-glm``; the ``.cmd`` is a Windows platform
+# variant of that one runtime, NOT a separate runtime name.
 _WRAPPER_FILES = {
-    "claude-glm": "claude-glm.sh",
+    "claude-glm": {"posix": "claude-glm.sh", "windows": "claude-glm.cmd"},
 }
 
 _RUNTIME_BIN_ENV = {
     "claude-glm": "CLAUDE_GLM_BIN",
 }
+
+
+def _resolve_platform(platform: str | None) -> str:
+    """Return the effective platform token: ``'win32'`` or ``'posix'``.
+
+    An explicit ``platform`` override wins; otherwise the host platform is
+    used (via ``core.infra.platform._IS_WINDOWS``) so the default install is
+    driven by where the wrapper actually runs. Tests inject a platform
+    explicitly instead of mutating the host flag.
+    """
+    if platform is not None:
+        return platform
+    return "win32" if _IS_WINDOWS else "posix"
+
+
+def _wrapper_filename(runtime: str, platform: str) -> str:
+    """Pick the wrapper file for ``runtime`` on the given platform token."""
+    variants = _WRAPPER_FILES[_validate_runtime(runtime)]
+    return variants["windows"] if platform == "win32" else variants["posix"]
 
 
 def runtime_wrapper_names() -> tuple[str, ...]:
@@ -38,13 +62,22 @@ def runtime_wrapper_env_var(runtime: str) -> str:
     return _RUNTIME_BIN_ENV[runtime]
 
 
-def runtime_wrapper_default_path(runtime: str) -> Path:
-    _validate_runtime(runtime)
+def runtime_wrapper_default_path(
+    runtime: str, *, platform: str | None = None,
+) -> Path:
+    runtime = _validate_runtime(runtime)
+    if _resolve_platform(platform) == "win32":
+        # %APPDATA%\npm\<runtime>.cmd mirrors claude_glm_candidates() so the
+        # default Windows install lands where discovery already looks.
+        appdata = os.environ.get("APPDATA", "")
+        return Path(appdata) / "npm" / f"{runtime}.cmd"
     return Path.home() / ".local" / "bin" / runtime
 
 
-def runtime_wrapper_script(runtime: str) -> str:
-    filename = _WRAPPER_FILES[_validate_runtime(runtime)]
+def runtime_wrapper_script(
+    runtime: str, *, platform: str | None = None,
+) -> str:
+    filename = _wrapper_filename(runtime, _resolve_platform(platform))
     return (
         resources.files("core._runtime_wrappers")
         .joinpath(filename)
@@ -57,13 +90,21 @@ def install_runtime_wrapper(
     *,
     destination: Path | None = None,
     force: bool = False,
+    platform: str | None = None,
 ) -> RuntimeWrapperInstallResult:
     runtime = _validate_runtime(runtime)
-    path = (destination or runtime_wrapper_default_path(runtime)).expanduser()
+    selected = _resolve_platform(platform)
+    is_windows = selected == "win32"
+    # An explicit destination is honored verbatim — no extension auto-append —
+    # so callers passing a literal path get exactly that path written. Only the
+    # DEFAULT destination becomes platform-aware.
+    path = (
+        destination or runtime_wrapper_default_path(runtime, platform=selected)
+    ).expanduser()
     if path.exists() and path.is_dir():
         raise RuntimeWrapperError(f"{path} is a directory")
 
-    script = runtime_wrapper_script(runtime)
+    script = runtime_wrapper_script(runtime, platform=selected)
     already_current = False
     if path.exists():
         try:
@@ -80,15 +121,18 @@ def install_runtime_wrapper(
     if not already_current:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(script, encoding="utf-8")
-    path.chmod(
-        stat.S_IRUSR
-        | stat.S_IWUSR
-        | stat.S_IXUSR
-        | stat.S_IRGRP
-        | stat.S_IXGRP
-        | stat.S_IROTH
-        | stat.S_IXOTH
-    )
+    # The POSIX execute bit is meaningless on Windows; skip chmod cleanly on
+    # the Windows variant rather than leaving a no-op call.
+    if not is_windows:
+        path.chmod(
+            stat.S_IRUSR
+            | stat.S_IWUSR
+            | stat.S_IXUSR
+            | stat.S_IRGRP
+            | stat.S_IXGRP
+            | stat.S_IROTH
+            | stat.S_IXOTH
+        )
     return RuntimeWrapperInstallResult(
         runtime=runtime,
         path=path,

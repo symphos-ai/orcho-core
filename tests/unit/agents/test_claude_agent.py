@@ -455,6 +455,22 @@ def test_claude_glm_uses_distinct_runtime_identity(
     assert ends and ends[-1]["agent"] == "claude-glm"
 
 
+def test_claude_glm_identity_contract_is_locked() -> None:
+    """Acceptance #5: ClaudeGlmAgent resolves runtime id ``claude-glm`` and
+    provider ``z.ai`` on the class and on every instance. This is a
+    pure-attribute guard (no subprocess, no binary) so a silent regression —
+    the runtime id collapsing back to ``claude`` or the provider drifting —
+    fails here before any ``agent.start``/``agent.end`` event is emitted."""
+    # Class attributes: the contract is declared on the type itself.
+    assert ClaudeGlmAgent.runtime == "claude-glm"
+    assert ClaudeGlmAgent.identity_provider == "z.ai"
+
+    # Instance attributes: the same contract holds on each constructed agent.
+    agent = ClaudeGlmAgent(model="glm-5.2[1m]")
+    assert agent.runtime == "claude-glm"
+    assert agent.identity_provider == "z.ai"
+
+
 # ── invoke(): session bridge ────────────────────────────────────────────────
 
 

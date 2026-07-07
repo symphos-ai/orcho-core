@@ -64,6 +64,41 @@ security add-generic-password -U -a "$USER" -s zai-coding-plan-key -w "$ZAI_CODI
 unset ZAI_CODING_PLAN_KEY
 ```
 
+### Windows
+
+On Windows the same command writes a `.cmd` wrapper instead of the `.sh`:
+
+```powershell
+orcho runtimes install claude-glm
+```
+
+That writes `%APPDATA%\npm\claude-glm.cmd` by default — the same path Orcho's
+`claude_glm_candidates()` discovery already looks for, so no extra setup is
+needed when `%APPDATA%\npm` is on PATH (the usual npm global location).
+
+To choose a different location:
+
+```powershell
+orcho runtimes install claude-glm --path C:\path\to\claude-glm.cmd
+```
+
+The `CLAUDE_GLM_BIN` override works the same way as on POSIX. Set it to the
+absolute path of the wrapper if you place it outside the discovery locations:
+
+```powershell
+$env:CLAUDE_GLM_BIN = "C:\path\to\claude-glm.cmd"
+```
+
+From a source checkout, the manual equivalent is to copy the packaged wrapper:
+
+```powershell
+Copy-Item core\_runtime_wrappers\claude-glm.cmd "$env:APPDATA\npm\claude-glm.cmd"
+```
+
+The Windows wrapper reads `ANTHROPIC_AUTH_TOKEN` from the process environment
+only (there is no batch-native Credential Manager read). See *Verify the
+wrapper* below for the current-process and persistent PowerShell setup.
+
 ## Verify the wrapper
 
 First verify that the wrapper itself is executable:
@@ -84,6 +119,36 @@ When credentials are ready, run a tiny model smoke test:
 ```bash
 "$HOME/.local/bin/claude-glm" --print --model 'glm-5.2[1m]' 'Reply OK only.'
 ```
+
+### Windows
+
+Provide the key for the current PowerShell process, then run the same checks:
+
+```powershell
+$env:ANTHROPIC_AUTH_TOKEN = '<GLM Coding Plan key>'
+claude-glm --version
+claude-glm --print --model 'glm-5.2[1m]' 'Reply OK only.'
+```
+
+To persist the key for future shells, set it at the User scope and then
+restart your shell for it to take effect:
+
+```powershell
+[Environment]::SetEnvironmentVariable('ANTHROPIC_AUTH_TOKEN', '<GLM Coding Plan key>', 'User')
+```
+
+### Expected Claude Code warning
+
+When `claude-glm` runs, Claude Code may print a line like:
+
+> claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth
+> source is set...
+
+This is expected, not an error. `claude-glm` intentionally overrides auth
+(`ANTHROPIC_AUTH_TOKEN` plus the GLM endpoint) so it routes through the
+GLM-compatible endpoint instead of claude.ai. The connectors check correctly
+reports that the default claude.ai connectors are not in use; the warning does
+not stop the run.
 
 ## Route phases to GLM
 
