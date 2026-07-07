@@ -84,6 +84,12 @@ from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
 from core.infra import config
+from core.infra.demo_assets import (
+    DemoBootstrapError,
+    bootstrap_demo,
+    demo_names,
+    render_demo_bootstrap,
+)
 from core.infra.runtime_wrappers import (
     RuntimeWrapperError,
     install_runtime_wrapper,
@@ -406,6 +412,17 @@ def cmd_runtimes_install(args: argparse.Namespace) -> int:
             f"Note: {result.path.parent} is not on PATH; set "
             f"{result.env_var}={result.path} or add that directory to PATH."
         )
+    return 0
+
+
+def cmd_demos_bootstrap(args: argparse.Namespace) -> int:
+    try:
+        result = bootstrap_demo(args.demo, root=getattr(args, "root", None))
+    except DemoBootstrapError as exc:
+        print(f"demos {args.demos_cmd}: {exc}", file=sys.stderr)
+        return 2
+
+    print(render_demo_bootstrap(result), end="")
     return 0
 
 
@@ -1348,6 +1365,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace an existing destination file",
     )
     p_runtimes_install.set_defaults(func=cmd_runtimes_install)
+
+    # ── demos ────────────────────────────────────────────────────────────────
+    p_demos = sub.add_parser(
+        "demos",
+        help="Bootstrap packaged demo fixtures",
+    )
+    p_demos_sub = p_demos.add_subparsers(dest="demos_cmd", required=True)
+    for demos_cmd in ("bootstrap", "install"):
+        p_demos_bootstrap = p_demos_sub.add_parser(
+            demos_cmd,
+            help="Create a disposable packaged demo workspace",
+        )
+        p_demos_bootstrap.add_argument(
+            "demo",
+            choices=demo_names(),
+            help="Demo fixture to bootstrap",
+        )
+        p_demos_bootstrap.add_argument(
+            "--root",
+            type=Path,
+            default=None,
+            help="Demo root directory (default: /tmp/orcho_demo_1a)",
+        )
+        p_demos_bootstrap.set_defaults(func=cmd_demos_bootstrap)
 
     # ── quality-gates ─────────────────────────────────────────────────────────
     p_qg = sub.add_parser(

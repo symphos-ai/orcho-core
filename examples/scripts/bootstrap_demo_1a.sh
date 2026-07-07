@@ -129,7 +129,7 @@ Run the pipeline:
     --task "Fix validation bug in sample API" \\
     --project $project_arg \\
     --workspace $workspace_arg \\
-    --profile advanced \\
+    --profile feature \\
     --mock \\
     --mock-validate-plan-reject 1 \\
     --max-rounds 2 \\

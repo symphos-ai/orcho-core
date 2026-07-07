@@ -137,6 +137,12 @@ core = [
     "_prompts/**/*.md",
     "_config/*.json",
     "_runtime_wrappers/*.sh",
+    "_demo_assets/golden-api/.gitignore",
+    "_demo_assets/golden-api/.orcho/**/*.md",
+    "_demo_assets/golden-api/**/*.md",
+    "_demo_assets/golden-api/**/*.py",
+    "_demo_assets/golden-api/**/*.toml",
+    "_demo_assets/golden-api/**/*.txt",
 ]
 
 # ``config.local.json`` is gitignored, user-local override content
