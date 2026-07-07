@@ -135,6 +135,36 @@ just one field, for example `{"phases":{"implement":{"effort":"medium"}}}`,
 and `runtime/model` stay as defined by the lower layer. `repair_escalation`
 is optional — add it if the profile uses second-round repair.
 
+### profiles_v2 overlays
+
+Built-in execution profiles can be tuned locally through the `profiles_v2`
+block. Prefer the CLI writer so the result is validated before it is saved:
+
+```bash
+orcho profile customize feature --mode pro --phase-effort implement=high
+```
+
+The stored shape is a per-profile overlay keyed by `_profile` for top-level
+profile fields and by phase name for phase-step fields:
+
+```json
+{
+  "profiles_v2": {
+    "feature": {
+      "_profile": {"default_mode": "pro"},
+      "implement": {"effort": "high"},
+      "validate_plan": {
+        "handoff": {"type": "human_feedback_always"}
+      }
+    }
+  }
+}
+```
+
+The loader deep-merges each phase patch into the built-in profile before normal
+profile validation, so the same schema errors surface for local overlays as for
+the shipped JSON.
+
 Disable all local layers entirely for a deterministic run:
 
 ```bash

@@ -21,6 +21,7 @@ from sdk import (
     FineTuneResult,
     OrchoError,
     PricingTable,
+    ProfileCustomizeResult,
     PromptResolution,
     RefreshResult,
     RunDiffRecord,
@@ -513,6 +514,19 @@ def format_pricing_refresh_written(result: RefreshResult) -> str:
         "    cross-check the scraped rates against your actual API\n"
         "    contract — that's on you."
     )
+
+
+def format_profile_customize(result: ProfileCustomizeResult) -> str:
+    """Render ``orcho profile customize`` result."""
+    action = "Would update" if result.dry_run else "Updated"
+    out = [
+        f"{action} profile customization for {result.profile}",
+        f"  scope: {result.scope}",
+        f"  file:  {result.config_path}",
+        "  changes:",
+    ]
+    out.extend(f"    - {change}" for change in result.changes)
+    return "\n".join(out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -58,6 +58,7 @@ from cli._formatters import (
     format_pricing,
     format_pricing_refresh_models,
     format_pricing_refresh_written,
+    format_profile_customize,
     format_prompts_list,
     format_prompts_resolution,
     format_run_diff,
@@ -101,8 +102,10 @@ from pipeline.run_state import repair_run_state
 from sdk import (
     EvidenceInvalid,
     PricingFetchError,
+    ProfileCustomizeError,
     aggregate_cost,
     collect_evidence,
+    customize_profile,
     find_run,
     fine_tune_project,
     get_run_diff,
@@ -388,6 +391,30 @@ def _load_profile_catalog() -> dict:
 
 def cmd_profiles_list(args: argparse.Namespace) -> int:
     return _run_cli(_load_profile_catalog, _format_profile_catalog)
+
+
+def cmd_profile_customize(args: argparse.Namespace) -> int:
+    try:
+        result = customize_profile(
+            args.profile,
+            assignments=tuple(getattr(args, "set", ()) or ()),
+            default_mode=getattr(args, "mode", None),
+            change_handoff=getattr(args, "change_handoff", None),
+            implementation_execution=getattr(args, "implementation_execution", None),
+            worktree_isolation=getattr(args, "worktree_isolation", None),
+            phase_effort=tuple(getattr(args, "phase_effort", ()) or ()),
+            session_split=tuple(getattr(args, "session_split", ()) or ()),
+            session_continuity=tuple(getattr(args, "session_continuity", ()) or ()),
+            handoff=tuple(getattr(args, "handoff", ()) or ()),
+            scope=getattr(args, "scope", "workspace"),
+            workspace=getattr(args, "workspace", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    except ProfileCustomizeError as exc:
+        print(format_error(exc), file=sys.stderr)
+        return exc.exit_code
+    print(format_profile_customize(result))
+    return 0
 
 
 def cmd_workflows_list(args: argparse.Namespace) -> int:
@@ -1325,6 +1352,86 @@ def build_parser() -> argparse.ArgumentParser:
         help="List available execution profiles",
     )
     p_profiles_list.set_defaults(func=cmd_profiles_list)
+
+    p_profile = sub.add_parser(
+        "profile",
+        help="Customize one execution profile",
+    )
+    p_profile_sub = p_profile.add_subparsers(dest="profile_cmd", required=True)
+    p_profile_customize = p_profile_sub.add_parser(
+        "customize",
+        help="Write local overrides for a built-in execution profile",
+        description=(
+            "Write a profiles_v2 overlay to config.local.json and validate it "
+            "against the built-in profile schema."
+        ),
+    )
+    p_profile_customize.add_argument(
+        "profile",
+        help="Built-in profile name to customize, e.g. feature or small_task",
+    )
+    p_profile_customize.add_argument(
+        "--scope", choices=["workspace", "user"], default="workspace",
+        help="Where to write the local config overlay",
+    )
+    p_profile_customize.add_argument(
+        "--workspace", default=None,
+        help="Workspace directory for --scope workspace",
+    )
+    p_profile_customize.add_argument(
+        "--mode", choices=["fast", "pro", "governed"], default=None,
+        help="Set the profile default verification mode",
+    )
+    p_profile_customize.add_argument(
+        "--change-handoff",
+        choices=["uncommitted", "commit", "commit_set"],
+        default=None,
+        help="Set the profile change handoff mode",
+    )
+    p_profile_customize.add_argument(
+        "--implementation-execution",
+        choices=["whole_plan", "subtask_dag"],
+        default=None,
+        help="Set how the implement phase consumes the plan",
+    )
+    p_profile_customize.add_argument(
+        "--worktree-isolation",
+        choices=["off", "per_run", "per_phase"],
+        default=None,
+        help="Set the profile worktree isolation policy",
+    )
+    p_profile_customize.add_argument(
+        "--phase-effort", action="append", default=[],
+        metavar="PHASE=EFFORT",
+        help="Set a phase effort, e.g. implement=high",
+    )
+    p_profile_customize.add_argument(
+        "--session-split", action="append", default=[],
+        metavar="PHASE=SPLIT",
+        help="Set a phase session_split value",
+    )
+    p_profile_customize.add_argument(
+        "--session-continuity", action="append", default=[],
+        metavar="PHASE=POLICY",
+        help="Set a phase session_continuity value",
+    )
+    p_profile_customize.add_argument(
+        "--handoff", action="append", default=[],
+        metavar="PHASE=TYPE",
+        help="Set a phase handoff type",
+    )
+    p_profile_customize.add_argument(
+        "--set", action="append", default=[], metavar="PATH=VALUE",
+        help=(
+            "Set an arbitrary overlay value, e.g. "
+            "validate_plan.handoff.type=human_feedback_always"
+        ),
+    )
+    p_profile_customize.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate and show the target file without writing",
+    )
+    p_profile_customize.set_defaults(func=cmd_profile_customize)
 
     p_workflows = sub.add_parser(
         "workflows",
