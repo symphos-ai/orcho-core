@@ -25,6 +25,7 @@ import pytest
 from core.io.ansi import C, strip_ansi
 from pipeline.engine.commit_delivery import (
     CommitDeliveryDecision,
+    _render_delivery_diagnostics,
     _render_published_branch,
     render_delivery_outcome,
 )
@@ -220,6 +221,30 @@ def test_pr_opened_banner_uses_green_tone() -> None:
     headline = next(line for line in lines if "PULL REQUEST OPENED" in line)
     assert C.GREEN in headline
     assert C.YELLOW not in headline
+
+
+def test_delivery_warning_uses_yellow_needs_attention_tone() -> None:
+    """A non-fatal delivery warning (degrade reason / rebase conflict) is a
+    needs-attention signal, so its ``⚠`` line is YELLOW — not the default
+    terminal color a plain ``bold`` would leave it, where it reads as neutral
+    text instead of a warning."""
+    lines: list[str] = []
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha=None,
+        delivery_branch="orcho/deliver/r1-abc",
+        pr_url="https://example.test/pr/45",
+        delivery_warnings=(
+            "rebase of orcho/deliver/r1-abc onto origin/main conflicted "
+            "(src/x.py); published un-rebased",
+        ),
+    )
+
+    _render_delivery_diagnostics(decision, output_fn=lines.append, color=True)
+
+    warning = next(line for line in lines if "conflicted" in line)
+    assert C.YELLOW in warning
 
 
 # ── other terminal statuses ──────────────────────────────────────────────
