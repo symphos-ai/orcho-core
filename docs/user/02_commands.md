@@ -23,12 +23,12 @@ the full argparse dump for every subcommand.
 |---------|-----------|
 | `orcho run` | One project: plan → implement → review/repair → final QA |
 | `orcho cross` | One task across several projects |
-| `orcho status` | Status of the latest run or a specific run id |
+| `orcho status` | What is happening / what should I do next? |
 | `orcho history` | List recent runs |
-| `orcho evidence` | Compose plan, phases, artifacts, gates, metrics (+ `--diff`) |
-| `orcho diff` | Print a run's `diff.patch` (`--preview` / `--stat` / `--path`) |
-| `orcho metrics` | Tokens and time per run |
-| `orcho cost` | Cost-reference usage report over a window of runs |
+| `orcho evidence` | What happened / what proves it? |
+| `orcho diff` | What changed? |
+| `orcho metrics` | How much did it consume? Tokens and time |
+| `orcho cost` | How much did it consume? Cost reference |
 | `orcho profiles list` | List execution profiles with their phase topology |
 | `orcho workflows` | List workflow profiles |
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
@@ -37,6 +37,23 @@ the full argparse dump for every subcommand.
 | `orcho runtimes` | Install helper wrappers for agent runtimes |
 | `orcho workspace` | Initialise and manage Orcho workspaces |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
+
+---
+
+## Inspection surfaces
+
+Use the inspection commands by question, not by file shape:
+
+| Question | Command | Leads with |
+|----------|---------|------------|
+| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths |
+| What happened / what proves it? | `orcho evidence` | plan contract, phase timeline, gate receipts, commands, findings, artifacts |
+| How much did it consume? | `orcho metrics`, `orcho cost` | tokens, time, retries, cost-reference usage |
+| What changed? | `orcho diff` | captured patch, preview, stats, path filtering |
+
+`status` may summarize gates or delivery because they affect the next operator
+move. `evidence` owns the proof record. `metrics` and `cost` own consumption.
+`diff` owns the changed files.
 
 ---
 
@@ -219,7 +236,7 @@ orcho cross \
 
 ---
 
-## `orcho status` — what happened
+## `orcho status` — what is happening / what should I do next?
 
 ```bash
 orcho status              # latest run
@@ -246,7 +263,7 @@ orcho history --last 25   # last 25
 
 ---
 
-## `orcho metrics` and `orcho cost` — tokens, time, money
+## `orcho metrics` and `orcho cost` — how much did it consume?
 
 ```bash
 orcho metrics             # latest run
@@ -280,7 +297,7 @@ snapshot is stale it prints an age warning suggesting `orcho pricing refresh`.
 
 ---
 
-## `orcho diff` — print the captured diff
+## `orcho diff` — what changed?
 
 Every run writes `<run-dir>/diff.patch`. `orcho diff` renders that
 artifact — it never recomputes a git diff.
@@ -315,7 +332,7 @@ deletions are found under any of their names.
 `run-id` is required: showing the diff of the wrong run is a common
 mistake.
 
-## `orcho evidence --diff[=mode]`
+## `orcho evidence` — what happened / what proves it?
 
 Plain `orcho evidence <run-id>` renders the normal evidence view as a compact
 terminal summary. Use `--format=md` for the markdown report, or
@@ -323,7 +340,7 @@ terminal summary. Use `--format=md` for the markdown report, or
 actionable sections readable: long text fields are previewed, verbose
 receipt/prompt details are summarized, and low-level live diagnostics are
 counted instead of expanded. Add `--debug` to print the raw schema bundle.
-The `--diff` flag changes what goes to stdout:
+The `--diff[=mode]` flag changes what goes to stdout:
 
 ```bash
 orcho evidence <run-id>

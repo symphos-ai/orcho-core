@@ -1131,7 +1131,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_cross.set_defaults(func=cmd_cross)
 
     # ── status ────────────────────────────────────────────────────────────────
-    p_status = sub.add_parser("status", help="Show status of a run")
+    p_status = sub.add_parser(
+        "status",
+        help="What is happening / what should I do next?",
+        description=(
+            "Show current run state, phase progress, attention signals, "
+            "delivery state, and paths. Use evidence for the proof record."
+        ),
+    )
     p_status.add_argument("run_id", nargs="?", default=None,
                           help="Run ID (default: last run)")
     p_status.add_argument("--verbose", "-v", action="store_true",
@@ -1143,7 +1150,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_status)
 
     # ── metrics ───────────────────────────────────────────────────────────────
-    p_metrics = sub.add_parser("metrics", help="Show token/time metrics")
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="How much did it consume? Tokens and time",
+    )
     p_metrics.add_argument("run_id", nargs="?", default=None,
                            help="Run ID for single-run detail")
     p_metrics.add_argument("--last", "-n", type=int, default=10,
@@ -1167,13 +1177,14 @@ def build_parser() -> argparse.ArgumentParser:
     # ── evidence ──────────────────────────────────────────────────────────────
     p_evid = sub.add_parser(
         "evidence",
-        help="Compose a run evidence bundle",
+        help="What happened / what proves it?",
         description=(
             "Read the run dir and emit a v1 evidence bundle "
             "(plan + phases + gates + commands + artifacts + "
             "metrics + errors). The default --format cli prints an "
-            "operator-friendly terminal summary; --out PATH writes both "
-            "evidence files to a directory."
+            "operator-friendly proof summary; --out PATH writes both "
+            "evidence files to a directory. Use status for current state "
+            "and next action."
         ),
     )
     p_evid.add_argument(
@@ -1248,7 +1259,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── diff ──────────────────────────────────────────────────────────────────
     p_diff = sub.add_parser(
         "diff",
-        help="Print the run's captured diff.patch artifact",
+        help="What changed? Print the captured diff.patch artifact",
         description=(
             "Render the run's captured ``diff.patch`` artifact (written by "
             "the pipeline at run lifecycle time). The default is the raw "
@@ -1300,7 +1311,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── cost ──────────────────────────────────────────────────────────────────
     p_cost = sub.add_parser(
         "cost",
-        help="Cost-reference usage report (sliding window over runs/)",
+        help="How much did it consume? Cost-reference report",
     )
     p_cost.add_argument(
         "--window", "-w", default="30d",
