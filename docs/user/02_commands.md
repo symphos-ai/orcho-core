@@ -47,7 +47,7 @@ Use the inspection commands by question, not by file shape:
 | Question | Command | Leads with |
 |----------|---------|------------|
 | What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths |
-| What happened / what proves it? | `orcho evidence` | plan contract, phase timeline, gate receipts, commands, findings, artifacts |
+| What happened / what proves it? | `orcho evidence` | proof summary; use `--view full` for the plan, task/DAG shape, phase timeline, receipts, findings, and acceptance |
 | How much did it consume? | `orcho metrics`, `orcho cost` | tokens, time, retries, cost-reference usage |
 | What changed? | `orcho diff` | captured patch, preview, stats, path filtering |
 
@@ -345,7 +345,10 @@ mistake.
 ## `orcho evidence` — what happened / what proves it?
 
 Plain `orcho evidence <run-id>` renders the normal evidence view as a compact
-terminal summary. Use `--format=md` for the markdown report, or
+terminal summary. Use `--view full` when you want the run dossier on stdout:
+the full plan contract, task/DAG shape when captured, phase timeline,
+implementation receipts, findings, artifacts, and final acceptance. Use
+`--format=md` for the markdown report, or
 `--format=json` for machine consumers. The normal JSON keeps run state and
 actionable sections readable: long text fields are previewed, verbose
 receipt/prompt details are summarized, and low-level live diagnostics are
@@ -354,6 +357,7 @@ The `--diff[=mode]` flag changes what goes to stdout:
 
 ```bash
 orcho evidence <run-id>
+orcho evidence <run-id> --view full
 orcho evidence <run-id> --diff            # = --diff=preview
 orcho evidence <run-id> --diff=stat
 orcho evidence <run-id> --diff=full
@@ -361,7 +365,8 @@ orcho evidence <run-id> --format=md --diff
 orcho evidence <run-id> --format=json --debug
 ```
 
-- `--format cli` (default): an operator-friendly terminal summary. With
+- `--format cli` (default): an operator-friendly terminal summary. Add
+  `--view full` for a full terminal dossier. With
   `--diff`, a `## Diff` section (stat table + preview/full) is appended after
   the summary. When the artifact is missing: `_No diff artifact recorded._`.
 - `--format md`: the markdown evidence report. With `--diff`, the same

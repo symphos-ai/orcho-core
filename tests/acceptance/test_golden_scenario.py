@@ -246,6 +246,9 @@ def test_golden_scenario_event_spine_carries_rea2_kinds(
     assert payload["subtask_count"] >= 1
     assert payload["has_contract"] is True
     assert payload["acceptance_criteria_count"] >= 1
+    assert isinstance(payload.get("subtasks"), list)
+    assert len(payload["subtasks"]) == payload["subtask_count"]
+    assert {"id", "goal"} <= set(payload["subtasks"][0])
 
     # Mock plan_*.md write fires artifact.created (per attempt).
     plan_artifacts = [

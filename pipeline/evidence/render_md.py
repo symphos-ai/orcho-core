@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.observability.accounting_display import format_cost_reference_key_value
+from pipeline.evidence.finding_lifecycle import FINDING_STATUS_ORDER
 
 
 def render_evidence_md(bundle: dict[str, Any], *, debug: bool = False) -> str:
@@ -314,10 +315,13 @@ def _render_findings(findings: list[dict[str, Any]]) -> list[str]:
     if not findings:
         lines.extend(["_No review findings recorded._", ""])
         return lines
+    lines.append(f"**Lifecycle:** {_finding_lifecycle_summary(findings)}")
+    lines.append("")
     for f in findings:
         title = (f.get("title") or "").replace("|", "\\|")
+        status = str(f.get("status") or "open")
         header = (
-            f"### `{f.get('severity', 'P3')}` "
+            f"### `{_finding_status_label(status)}` `{f.get('severity', 'P3')}` "
             f"{title or '_(no title)_'}"
         )
         lines.append(header)
@@ -326,6 +330,11 @@ def _render_findings(findings: list[dict[str, Any]]) -> list[str]:
         meta_bits: list[str] = []
         if finding_id:
             meta_bits.append(f"**ID:** `{finding_id}`")
+        status_reason = str(f.get("status_reason") or "").strip()
+        status_bit = f"**Status:** `{status}`"
+        if status_reason:
+            status_bit = f"{status_bit} ({status_reason})"
+        meta_bits.append(status_bit)
         meta_bits.append(f"**Phase:** `{f.get('phase', '')}`")
         meta_bits.append(f"**Attempt:** {f.get('attempt', '?')}")
         if f.get("file"):
@@ -344,6 +353,41 @@ def _render_findings(findings: list[dict[str, Any]]) -> list[str]:
             lines.append(f"**Required fix:** {required_fix}")
             lines.append("")
     return lines
+
+
+def _finding_lifecycle_summary(findings: list[dict[str, Any]]) -> str:
+    buckets: dict[str, list[dict[str, Any]]] = {
+        status: [] for status in FINDING_STATUS_ORDER
+    }
+    for finding in findings:
+        status = str(finding.get("status") or "open")
+        buckets.setdefault(status, []).append(finding)
+    bits = []
+    for status, entries in buckets.items():
+        if not entries:
+            continue
+        severity = _finding_severity_summary(entries)
+        suffix = f" ({severity})" if severity else ""
+        bits.append(f"`{status}` x{len(entries)}{suffix}")
+    return ", ".join(bits) if bits else "`open` x0"
+
+
+def _finding_severity_summary(findings: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        severity = str(finding.get("severity") or "P?")
+        counts[severity] = counts.get(severity, 0) + 1
+    return ", ".join(f"{severity} x{count}" for severity, count in counts.items())
+
+
+def _finding_status_label(status: str) -> str:
+    return {
+        "accepted": "ACCEPTED",
+        "final_rejected": "REJECTED",
+        "fixed": "FIXED",
+        "open": "OPEN",
+        "waived": "WAIVED",
+    }.get(status, status.upper())
 
 
 def _render_handoff_advice(advice: dict[str, Any] | None) -> list[str]:

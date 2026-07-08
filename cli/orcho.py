@@ -643,7 +643,8 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     fmt = getattr(args, "format", None) or "cli"
     if fmt == "cli":
         debug = bool(getattr(args, "debug", False))
-        sys.stdout.write(format_evidence_cli(bundle, debug=debug))
+        view = getattr(args, "view", "summary") or "summary"
+        sys.stdout.write(format_evidence_cli(bundle, debug=debug, view=view))
         if diff_record is not None:
             sys.stdout.write(_render_evidence_diff_markdown(diff_record))
     elif fmt == "md":
@@ -1335,6 +1336,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_evid.add_argument(
         "--format", "-f", choices=("cli", "json", "md"), default="cli",
         help="Output format on stdout (default: cli)",
+    )
+    p_evid.add_argument(
+        "--view",
+        choices=("summary", "full"),
+        default="summary",
+        help=(
+            "CLI view depth: summary keeps the operator digest; full expands "
+            "the plan contract, task/DAG shape, phase timeline, receipts, "
+            "and acceptance record."
+        ),
     )
     p_evid.add_argument(
         "--out", type=Path, default=None,
