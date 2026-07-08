@@ -353,7 +353,20 @@ def print_pipeline_header(
     # resolution, gate execution, or receipt access inside this SILENT-gated
     # function.
     from core.io.verification_header import build_verification_header_view
-    verification_view = build_verification_header_view(contract)
+    from pipeline.verification_contract import FINAL_PHASES
+    # Whether the active profile has a final delivery phase decides the honest
+    # ``when`` of a warn/off gate (``pre-final`` vs ``not auto-run``). Derive it
+    # from the profile's phases against the single FINAL_PHASES set (never a
+    # duplicated copy); ``None`` when the profile is unresolved so the banner
+    # marks those gates profile-dependent rather than guessing.
+    has_final_phase = (
+        bool(_profile_phase_names(profile_obj) & set(FINAL_PHASES))
+        if profile_obj is not None
+        else None
+    )
+    verification_view = build_verification_header_view(
+        contract, has_final_phase=has_final_phase,
+    )
     output_log = str(output_dir / "output.log") if output_dir is not None else None
     events_log = str(output_dir / "events.jsonl") if output_dir is not None else None
 

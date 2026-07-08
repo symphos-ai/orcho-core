@@ -3,15 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.observability.metrics import (
-    accounting_enabled,
-    scrub_accounting_fields,
-)
+from core.observability.metrics import scrub_accounting_fields
 from pipeline.run_state.setup_failure import merged_status
+from sdk._runspace_context import accounting_enabled_for_context
 from sdk.actions import compute_next_actions
-from sdk.evidence_slices import active_stall_diagnostics
+from sdk.evidence_slices import active_stall_diagnostics, list_sub_runs
 from sdk.runs import _CWD_DEFAULT, find_run, load_json_optional, load_meta
-from sdk.types import ArtefactRef, PhaseStatus, RunMeta, RunStatus
+from sdk.types import ArtefactRef, GateStatus, PhaseStatus, RunMeta, RunStatus
 
 
 def _artefact_ref_if_file(
@@ -81,6 +79,54 @@ def _collect_artefacts(run_id: str, run_dir: Path) -> tuple[ArtefactRef, ...]:
     return tuple(refs)
 
 
+def _collect_quality_gates(run_dir: Path) -> tuple[GateStatus, ...]:
+    """Project finalized evidence gate rows into the lightweight status view.
+
+    Gate events are finalized into ``evidence.json``. ``orcho status`` should
+    not compose a fresh evidence bundle just to print a summary, but reading an
+    existing finalized bundle is cheap and keeps status aligned with evidence.
+    """
+    evidence = load_json_optional(run_dir / "evidence.json")
+    rows = evidence.get("gates") if isinstance(evidence, dict) else None
+    if not isinstance(rows, list):
+        return ()
+
+    gates: list[GateStatus] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "?")
+        duration_raw = row.get("duration_s")
+        try:
+            duration_s = (
+                float(duration_raw)
+                if duration_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            duration_s = None
+        gates.append(GateStatus(
+            name=name,
+            outcome=(
+                str(row["outcome"])
+                if row.get("outcome") is not None
+                else None
+            ),
+            kind=(
+                str(row["kind"])
+                if row.get("kind") is not None
+                else None
+            ),
+            duration_s=duration_s,
+            phase=(
+                str(row["phase"])
+                if row.get("phase") is not None
+                else None
+            ),
+        ))
+    return tuple(gates)
+
+
 def load_status(
     run_id: str | None = None,
     *,
@@ -97,7 +143,10 @@ def load_status(
     ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     raw_meta = load_meta(ref.run_dir)
     raw_metrics = load_json_optional(ref.run_dir / "metrics.json")
-    if not accounting_enabled():
+    if not accounting_enabled_for_context(
+        workspace=workspace,
+        runs_dir=ref.run_dir.parent,
+    ):
         raw_metrics = scrub_accounting_fields(raw_metrics)
 
     # ADR 0104: reconcile meta.status with the optional launcher state via the
@@ -140,23 +189,17 @@ def load_status(
             },
         )
 
-    sub_projects: list[PhaseStatus] = []
-    for sd in sorted(p for p in ref.run_dir.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        # Include every visible sub-run alias even when its meta.json
-        # hasn't been written yet (status=None). Embedders that want
-        # only sub-runs-with-meta filter on `status is not None`; those
-        # that want the full alias list (e.g. MCP wire shape, cross-run
-        # navigation) get it without re-scanning the directory.
-        sub_meta = load_meta(sd)
-        sub_projects.append(
-            PhaseStatus(name=sd.name, status=sub_meta.get("status") if sub_meta else None)
-        )
+    sub_projects = [
+        PhaseStatus(name=link.name, status=link.status)
+        for link in list_sub_runs(ref.run_id, runs_dir=ref.run_dir.parent, cwd=None)
+    ]
 
     # ADR 0045: enumerate readable artefacts so agents discover what
     # they can fetch without scanning run_dir themselves. Enrichment
     # is best-effort — IO errors leave the entry out, never fail
     # the call.
     artefacts = _collect_artefacts(ref.run_id, ref.run_dir)
+    quality_gates = _collect_quality_gates(ref.run_dir)
 
     # MCP UX A1 / Principle 1: derive suggested follow-ups from the
     # raw meta so the LLM consuming this status payload sees workflow
@@ -187,6 +230,7 @@ def load_status(
         total_rounds=int(raw_metrics.get("total_rounds", 0) or 0),
         total_retries=int(raw_metrics.get("total_retries", 0) or 0),
         sub_projects=tuple(sub_projects),
+        quality_gates=quality_gates,
         worktree=raw_meta.get("worktree") if raw_meta else None,
         raw_meta=raw_meta,
         raw_metrics=raw_metrics,

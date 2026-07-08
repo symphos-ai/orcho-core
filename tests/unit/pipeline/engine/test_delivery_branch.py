@@ -158,7 +158,7 @@ def test_named_without_target_degrades_to_protect_default(tmp_path: Path) -> Non
     assert outcome.plan == "commit_on_branch"
     assert outcome.commit_branch is not None
     assert outcome.commit_branch.startswith("orcho/deliver/")
-    assert any("requires a target branch" in n for n in outcome.notices)
+    assert any("No target branch was named for this delivery" in n for n in outcome.notices)
 
 
 # --- in-place table (isolation off) --------------------------------------
@@ -178,8 +178,10 @@ def test_in_place_head_on_default_protects_with_fresh_branch(tmp_path: Path) -> 
     assert outcome.plan == "commit_on_branch"
     assert outcome.commit_branch is not None
     assert outcome.commit_branch.startswith("orcho/deliver/")
-    # worktree_branch had no run branch to publish -> it degraded.
-    assert any("degraded to protect_default" in n for n in outcome.notices)
+    # worktree_branch had no run branch to publish -> in-place, no separate branch.
+    assert any(
+        "in-place delivery on the current checkout" in n for n in outcome.notices
+    )
     # The canonical checkout is still on the default branch (nothing committed).
     assert _git_out(canonical, "rev-parse", "--abbrev-ref", "HEAD") == "main"
 

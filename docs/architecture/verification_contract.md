@@ -1622,6 +1622,83 @@ acceptance, so these subcommands are now a **fallback / escape-hatch** — for
 operator-only commands the engine deliberately does not auto-run, and for
 out-of-band debugging — rather than the normal route to a green run.
 
+## CLI: `orcho quality-gates`
+
+`orcho quality-gates` is a **strictly read-only** inspector that prints a
+project's *declared* verification gate matrix — the same matrix the run-header
+banner shows at run start. It never starts a run, executes a gate command, or
+writes a receipt: it only loads the project plugin, validates the declared
+contract, projects it through the shared gate ledger
+(`pipeline.verification_ledger.build_gate_ledger`), and renders it with the
+**same** formatter the banner uses (`render_gate_matrix`). Because both surfaces
+render through that one helper, the printed matrix is identical to the banner —
+there is no second projection to drift.
+
+```bash
+orcho quality-gates [--profile WORK_KIND] [--paths GLOBS...] [--project PROJECT]
+```
+
+- **`--profile <work_kind>`** resolves the named profile from the shipped
+  catalogue and derives whether that profile has a final delivery phase (its
+  phases ∩ the `FINAL_PHASES` set). This decides the `when` axis for
+  non-required gates (see below). An unknown profile name is an error on stderr
+  with the known names listed (exit 2); it is never guessed.
+- **`--paths <globs/files>`** feeds the paths to the ledger as `changed_files`,
+  so a trailing *Resolution for given paths* section reports each gate's
+  identity-resolved disposition — `active` (this gate's `(command, hook, phase)`
+  identity is selected by the given paths), `dormant` (declared but not selected
+  for these paths), or `manual` (an operator/manual gate). The path-matching is
+  delegated wholesale to the selection engine; the command re-implements none of
+  it.
+- **No `--profile`** renders the declared matrix with the profile deliberately
+  unknown, so non-required (`warn` / `off`) gates read `profile-dependent`
+  rather than a guessed stage. Required gates still show their own timing hook.
+
+Exit codes: **0** on success (including the *no verification contract declared*
+case — absent-but-worked), **2** on an unknown `--profile` or an invalid
+declared contract. Nothing is executed and nothing is written in any mode.
+
+### The three axes
+
+Each gate row separates the command's identity from three orthogonal,
+operator-facing axes (rendered as columns alongside `run` = auto/manual and
+`kind` = declared cost):
+
+- **`when`** — the stage the gate *actually runs at*, which the raw schedule
+  hook alone cannot express. It is a pure derivation of the gate's effective
+  policy, its hook/phase, and whether the profile has a final delivery phase:
+  - a **`require`** gate runs inline at its timing hook, e.g.
+    `after_implement` (an `after_phase(implement)` gate) or `delivery` (a
+    `before_delivery` gate) — a required gate is enforced right where it is
+    scheduled;
+  - a **`suggest`** policy, or a `manual_only` / `on_resume` hook → `operator`:
+    a human runs it, it is never part of the automatic flow;
+  - a **`warn`** / **`off`** (or otherwise non-required auto) gate is not
+    enforced inline, so it surfaces only near delivery: **`pre-final`** when the
+    resolved profile has a final delivery phase, **`not auto-run`** when it
+    provably does not (a profile such as `fast` or `small_task` with no final
+    phase — the matrix says so honestly rather than implying the gate fires),
+    and **`profile-dependent`** when no `--profile` was given so the stage
+    genuinely cannot be known.
+- **`policy`** — the effective *declared* receipt-enforcement policy for the
+  gate: `off` / `suggest` / `warn` / `require`, or `unknown` when it would only
+  resolve after the `work_mode` transform. This is the declared strictness tier,
+  read from the schedule entry (else the strictest backing gate-set default) —
+  distinct from `when` and from activation.
+- **`activation`** — *when the gate is selected* at all, read straight from the
+  contract's declared `selection` rules: `always` (an `always` rule includes a
+  backing set), `on-path: <globs>` (a `paths` rule — the gate is selected only
+  when the changed files match), `manual` (a `manual_only` hook or an `operator`
+  rule), or `task_kind`. This keeps a path-gated gate from reading as an
+  unconditional `require`: a gate can be `require` on the `policy` axis yet only
+  `on-path` on the `activation` axis.
+
+The axes are deliberately independent: `policy` says *how strict* the receipt
+requirement is, `activation` says *whether the gate is selected*, and `when`
+says *at which stage a selected gate is exercised*. Reading them together is how
+an operator sees, for example, that a `warn`/`pre-final` lint gate and a
+`require`/`after_implement` unit gate differ in both strictness and timing.
+
 ## First-run UX
 
 The contract is optional and gradual. A new user can start with:
@@ -1679,6 +1756,10 @@ project/profile/operator opt-in.
   shown as `shipping allowed by policy`, `manual_only` excluded from
   missing-required, and the ADR 0090 "never falsely green" invariant — with
   `resolve_delivery_policy` unchanged (render-only)
+- [CLI: `orcho quality-gates`](#cli-orcho-quality-gates) — read-only inspector
+  for the declared gate matrix (`--profile` / `--paths` / no-profile), rendering
+  the same `render_gate_matrix` matrix the banner shows and the three
+  `when` / `policy` / `activation` axes
 - [Run state](run_state.md) — run-scoped state and artifact directory layout
 - [Profile JSON schema](../reference/profile_schema.md) — profile authoring
   surface that a future contract projection would extend

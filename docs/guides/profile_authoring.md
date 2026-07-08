@@ -54,6 +54,33 @@ specific work kind in tooling — declare `semantic_profile` / `default_mode` /
 `recipe_kind`. The legacy `kind` × `variant` typology stays available for
 plugins, but `variant` is no longer the source of semantic identity.
 
+## Tune a built-in profile locally
+
+If you only need to adjust default profile settings, prefer a local
+`profiles_v2` overlay instead of copying the whole profile JSON. The CLI writes
+and validates that overlay:
+
+```bash
+orcho profile customize feature \
+  --mode pro \
+  --phase-effort implement=high \
+  --handoff validate_plan=human_feedback_always
+```
+
+By default this writes `$ORCHO_WORKSPACE/.orcho/config.local.json`; pass
+`--scope user` for `~/.orcho/config.local.json`, or `--dry-run` to validate
+without writing. The same command also accepts targeted patches:
+
+```bash
+orcho profile customize feature \
+  --set validate_plan.execution.session_split=per_role
+```
+
+Use `profile customize` for small changes to existing built-ins: `default_mode`,
+`change_handoff`, `implementation_execution`, `worktree_isolation`, phase
+`effort`, phase `handoff`, and execution session knobs. Write a separate custom
+profile when you need to add/remove/reorder phases or package a reusable recipe.
+
 ## Schema reference
 
 See [docs/reference/profile_schema.md](../reference/profile_schema.md) for the

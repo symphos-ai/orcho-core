@@ -37,14 +37,20 @@ The canonical override is the per-phase variable `MODEL_<PHASE>` (see `_PHASE_EN
 
 `CODEX_MODEL` (env var) is the fallback for `MODEL_REVIEW_CHANGES` when the latter is unset.
 
-The same applies to runtimes: `RUNTIME_<PHASE>` (claude / codex / gemini).
+The same applies to runtimes: `RUNTIME_<PHASE>` accepts any registered runtime
+id, including the built-ins `claude`, `claude-glm`, `codex`, and `gemini`.
 
 ### Binaries (if not found automatically)
 
 | Variable | Example |
 |-----------|--------|
 | `CLAUDE_BIN` | `/custom/path/to/claude` |
+| `CLAUDE_GLM_BIN` | `/custom/path/to/claude-glm` |
 | `CODEX_BIN` | `/custom/path/to/codex` |
+
+`claude-glm` is a Claude-compatible wrapper runtime with separate metrics and
+event labels. See [../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md)
+for the wrapper contract, key setup, and smoke tests.
 
 ### Timeouts
 
@@ -102,9 +108,9 @@ Example:
   "phases": {
     "plan":             {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
     "validate_plan":    {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "implement":        {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
+    "implement":        {"runtime": "claude-glm", "model": "glm-5.2[1m]", "effort": "medium"},
     "review_changes":   {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "repair_changes":   {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
+    "repair_changes":   {"runtime": "claude-glm", "model": "glm-5.2[1m]", "effort": "medium"},
     "final_acceptance": {"runtime": "codex",  "model": "gpt-5.5",         "effort": "low"}
   },
   "timeouts": {
@@ -128,6 +134,36 @@ Keys in `phases` match the canonical phase names from `_PHASE_ENV_MAP`
 just one field, for example `{"phases":{"implement":{"effort":"medium"}}}`,
 and `runtime/model` stay as defined by the lower layer. `repair_escalation`
 is optional — add it if the profile uses second-round repair.
+
+### profiles_v2 overlays
+
+Built-in execution profiles can be tuned locally through the `profiles_v2`
+block. Prefer the CLI writer so the result is validated before it is saved:
+
+```bash
+orcho profile customize feature --mode pro --phase-effort implement=high
+```
+
+The stored shape is a per-profile overlay keyed by `_profile` for top-level
+profile fields and by phase name for phase-step fields:
+
+```json
+{
+  "profiles_v2": {
+    "feature": {
+      "_profile": {"default_mode": "pro"},
+      "implement": {"effort": "high"},
+      "validate_plan": {
+        "handoff": {"type": "human_feedback_always"}
+      }
+    }
+  }
+}
+```
+
+The loader deep-merges each phase patch into the built-in profile before normal
+profile validation, so the same schema errors surface for local overlays as for
+the shipped JSON.
 
 Disable all local layers entirely for a deterministic run:
 

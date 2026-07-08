@@ -240,13 +240,13 @@ def test_usage_line_shows_cost_only_with_accounting(tmp_path: Path) -> None:
         tmp_path, session, {}, include_accounting=False,
     )
     assert "usage: tokens=150" in off
-    assert "api-equiv" not in off
+    assert "cost_ref" not in off
 
-    # Accounting on: api-equiv cost appended from the digest.
+    # Accounting on: cost_ref appended from the digest.
     on = _render_agent_advice_summary(
         tmp_path, session, {}, include_accounting=True,
     )
-    assert "usage: tokens=150 api-equiv=$0.25" in on
+    assert "usage: tokens=150 cost_ref=runtime-reported:$0.25" in on
 
 
 def test_usage_cost_omitted_when_digest_lacks_accounting(tmp_path: Path) -> None:
@@ -260,7 +260,7 @@ def test_usage_cost_omitted_when_digest_lacks_accounting(tmp_path: Path) -> None
         tmp_path, _session_resolved(), {}, include_accounting=True,
     )
     assert "usage: tokens=150" in block
-    assert "api-equiv" not in block
+    assert "cost_ref" not in block
 
 
 # ── no run_dir → fallback to the in-memory CI aggregate ─────────────────────
@@ -295,7 +295,7 @@ def test_no_run_dir_no_aggregate_renders_nothing() -> None:
 # ``has_api_equivalent_cost`` (PHASE-cost presence) at the
 # ``_render_agent_advice_summary`` call in ``finalize_project_run``. An advice
 # digest can carry a real ``usage.cost_usd_equivalent`` while NO phase reported
-# api-equivalent cost (e.g. an operator/CI stop with no following phase), so the
+# cost reference (e.g. an operator/CI stop with no following phase), so the
 # advice cost was wrongly suppressed. These integration cases drive the real
 # call site to prove the fix: cost renders iff accounting is enabled AND the
 # digest carried a cost, independent of phase cost, while
@@ -379,7 +379,7 @@ def _wire_finalize_stubs(monkeypatch, *, accounting_enabled: bool) -> None:
 def test_advice_cost_renders_with_accounting_and_zero_phase_cost(
     tmp_path, monkeypatch,
 ) -> None:
-    """Accounting enabled + advice digest cost + NO phase cost → api-equiv shows.
+    """Accounting enabled + advice digest cost + NO phase cost → cost_ref shows.
 
     ``has_api_equivalent_cost`` stays False (no phase reported cost), proving
     the advice cost line is gated on accounting availability, not phase cost.
@@ -396,7 +396,10 @@ def test_advice_cost_renders_with_accounting_and_zero_phase_cost(
 
     assert result.has_api_equivalent_cost is False
     assert result.ci_agent_advice_summary is not None
-    assert "usage: tokens=150 api-equiv=$0.25" in result.ci_agent_advice_summary
+    assert (
+        "usage: tokens=150 cost_ref=runtime-reported:$0.25"
+        in result.ci_agent_advice_summary
+    )
 
 
 def test_advice_cost_hidden_when_accounting_disabled(
@@ -415,7 +418,7 @@ def test_advice_cost_hidden_when_accounting_disabled(
 
     assert result.ci_agent_advice_summary is not None
     assert "usage: tokens=150" in result.ci_agent_advice_summary
-    assert "api-equiv" not in result.ci_agent_advice_summary
+    assert "cost_ref" not in result.ci_agent_advice_summary
 
 
 def test_advice_cost_hidden_when_digest_has_no_cost(
@@ -434,7 +437,7 @@ def test_advice_cost_hidden_when_digest_has_no_cost(
 
     assert result.ci_agent_advice_summary is not None
     assert "usage: tokens=150" in result.ci_agent_advice_summary
-    assert "api-equiv" not in result.ci_agent_advice_summary
+    assert "cost_ref" not in result.ci_agent_advice_summary
 
 
 def test_no_advice_evidence_renders_no_block_at_call_site(

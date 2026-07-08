@@ -17,5 +17,5 @@ That creates:
 
 ```
 /tmp/orcho_demo_1a/project
-/tmp/orcho_demo_1a/workspace
+/tmp/orcho_demo_1a/workspace-orchestrator
 ```

@@ -37,6 +37,7 @@ call time.
 | `NoWorkspace`       | 1           | no runs directory could be resolved                           |
 | `RunNotFound`       | 1           | requested run id has no directory                             |
 | `PricingFetchError` | 2           | `refresh_pricing` scrape or network fetch failed              |
+| `ProfileCustomizeError` | 2       | `customize_profile` request or overlay validation failed      |
 | `PromptNotFound`    | 1           | requested prompt name has no resolution                       |
 | `EvidenceInvalid`   | 1           | evidence bundle composition failed (file missing/unreadable)  |
 
@@ -66,7 +67,9 @@ load_status(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> RunStatu
 
 `RunStatus` carries the typed projection plus `raw_meta` / `raw_metrics`
 for fields the SDK hasn't promoted. `sub_projects` is the cross-run
-sub-project list (status per alias).
+sub-project list (status per alias). `quality_gates` is a best-effort
+projection of finalized gate events from `evidence.json` when that artifact
+exists.
 
 ### `sdk.history`
 
@@ -283,6 +286,21 @@ developer's real `~/.orcho/`.
 Raises `PricingFetchError` (with `exit_code=2`) on any scrape or
 network failure.
 
+### `sdk.profile_customize`
+
+```python
+customize_profile(profile: str, *, ..., dry_run: bool = False) -> ProfileCustomizeResult
+```
+
+Writes a validated `profiles_v2` overlay for a built-in profile into a local
+`config.local.json`. The default scope is workspace-local
+(`$ORCHO_WORKSPACE/.orcho/config.local.json`); `scope="user"` writes
+`~/.orcho/config.local.json`. `dry_run=True` validates and returns the target
+path without writing.
+
+Raises `ProfileCustomizeError` (with `exit_code=2`) when the request cannot be
+resolved or the resulting overlay does not pass the v2 profile schema.
+
 ### `sdk.cost`
 
 ```python
@@ -291,15 +309,24 @@ aggregate_cost(*, workspace=None, runs_dir=None, cwd=None,
 ```
 
 Pure aggregation across runs whose timestamps fall within `window`
-(`"30d"` / `"7d"` / `"all"`). Codex-shaped phases (tokens reported but
-no `cost_usd_equivalent`) trigger pricing fallback through
+(`"30d"` / `"7d"` / `"all"`). The dollar fields are cost references,
+not billing receipts. Runtime-reported values come from the active
+runtime/endpoint; token-only phases can trigger pricing fallback through
 `core.observability.pricing.estimate_cost_from_total`;
-`CostReport.priced_entries_count` records how many entries got priced.
+`CostReport.priced_entries_count` records how many entries were **estimated**
+(priced from the local snapshot), not the report's overall price.
 
 `CostReport.top_runs` is sorted by `(cost desc, tokens desc)`;
-`phase_breakdown` and `agent_breakdown` by cost descending. `provider`
-in `agent_breakdown` is one of `"claude"` / `"codex"` / `"gemini"` /
-`"other"` (best-effort prefix match on the model string).
+`phase_breakdown`, `agent_breakdown`, and `project_breakdown` are sorted by
+cost descending. `project_breakdown` attributes single-project runs by
+`meta.project` and cross-project slices by `meta.projects[alias]` when the
+resolved project path belongs to the workspace project group; external demo or
+temporary projects are not included in that workspace-project view.
+`provider` in `agent_breakdown` is the resolved **runtime id** when the phase
+metrics carry one (e.g. `"claude"`, `"claude-glm"`); otherwise it falls back to
+a model→provider mapping for older runs (`"claude"` / `"codex"` / `"gemini"` /
+`"other"`). Breakdown percentages are **share of the breakdown** — a row's cost
+over the sum of the rows shown, so they stay within 100%.
 
 ### `sdk.runner`
 
@@ -422,12 +449,13 @@ json_payload = json.dumps(to_jsonable(rows))
 
 ## Side-effecting calls
 
-Only two public SDK calls write to disk:
+Only these public SDK calls write to disk:
 
 | Call                                | Writes                                        |
 | ----------------------------------- | --------------------------------------------- |
 | `refresh_pricing(provider, ...)`    | `~/.orcho/pricing.local.toml` (configurable)  |
 | `write_evidence_bundle(b, out_dir)` | `<out_dir>/<run_id>/evidence.{json,md}`       |
+| `customize_profile(profile, ...)`   | local `config.local.json` `profiles_v2` block |
 
 Every other public function is read-only (no filesystem writes, no
 network, no env mutation). The CLI's `_run_cli(call, formatter)`

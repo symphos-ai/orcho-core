@@ -14,9 +14,10 @@ reachable from the bare `orcho` CLI as well.
    fixture project and writes a self-contained run directory.
 2. The default worktree-isolated run produces a real reviewable diff:
    `review_changes=ok` and `diff.patch` is captured in the run dir.
-3. `orcho evidence --format md` renders that run directory into a
-   single markdown report whose `## Findings` section surfaces
-   reviewer findings the SDK already exposes typed.
+3. `orcho evidence` renders that run directory into a compact terminal
+   summary; `orcho evidence --format md` renders the markdown report whose
+   `## Findings` section surfaces reviewer findings the SDK already exposes
+   typed.
 4. The same evidence shape lands whether reviewers approve cleanly or
    reject — empty findings render an explicit no-findings line, so an
    approved run reads as deliberately clean rather than as a missing
@@ -24,7 +25,23 @@ reachable from the bare `orcho` CLI as well.
 
 ## Setup
 
-From a clean checkout:
+This walkthrough can be started from an installed CLI or from a source
+checkout. Prefer the installed CLI path when you want to test the package you
+installed with `pipx`.
+
+For an installed CLI:
+
+```bash
+pipx install orcho  # skip if already installed
+orcho demos bootstrap golden-api
+```
+
+`orcho demos install golden-api` is accepted as the same operation. It copies
+the packaged `golden-api` fixture into a disposable demo directory, initializes
+the workspace, and prints the same `orcho run ... --mock` command shown below.
+
+Use the source-checkout script only when you are evaluating from source or
+contributing:
 
 ```bash
 git clone <orcho-core repo> orcho-core
@@ -33,10 +50,22 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-The fixture used below ships with the repo at
-[examples/golden-api/](../../examples/golden-api/) — an intentionally
-buggy mini-API plus its tests, sized so a `--mock` run completes in
-under two seconds.
+If you have more than one `orcho` executable and intentionally want the
+source-checkout script to use a specific installed CLI, pin it explicitly:
+
+```bash
+ORCHO_DEMO_ORCHO_BIN="$(command -v orcho)" examples/scripts/bootstrap_demo_1a.sh
+```
+
+Do not clone `orcho-core` next to a `pipx install orcho` only to obtain the
+demo fixture. That creates two Orcho copies and makes it too easy to run source
+code when you meant to test the installed CLI, or the reverse.
+
+`ORCHO_DEMO_CORE_PYTHON=/path/to/python` forces the source-checkout Python
+path when tests or local scripts need it.
+
+The fixture is an intentionally buggy mini-API plus its tests, sized so a
+`--mock` run completes in under two seconds.
 
 ## Bootstrap a disposable demo dir
 
@@ -64,14 +93,14 @@ Run the pipeline:
     --task "Fix validation bug in sample API" \
     --project /tmp/orcho_demo_1a/project \
     --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
-    --profile advanced \
+    --profile feature \
     --mock \
     --mock-validate-plan-reject 1 \
     --max-rounds 2 \
     --stream-output
 
 Inspect the run:
-  orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+  orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho status --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho metrics --workspace /tmp/orcho_demo_1a/workspace-orchestrator
@@ -95,14 +124,14 @@ orcho run \
   --task "Fix validation bug in sample API" \
   --project /tmp/orcho_demo_1a/project \
   --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
-  --profile advanced \
+  --profile feature \
   --mock \
   --mock-validate-plan-reject 1 \
   --max-rounds 2 \
   --stream-output
 ```
 
-(The plan-loop budget is declared in the active profile — ``advanced``'s
+(The plan-loop budget is declared in the active profile — ``feature``'s
 ``LoopStep.max_rounds=2`` — so there is no CLI ``--max-plan-rounds``
 flag to pass. With ``mock-validate-plan-reject=1`` the mock reviewer
 rejects once, the architect revises, and round 2 approves cleanly
@@ -128,10 +157,16 @@ revises.
 latest run in that workspace:
 
 ```bash
+orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+```
+
+For a markdown report, add `--format md`:
+
+```bash
 orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
 
-Curated excerpt — quality gates, then the new findings section, then
+Curated markdown excerpt: quality gates, then the new findings section, then
 commands (the section ordering is stable):
 
 ```markdown

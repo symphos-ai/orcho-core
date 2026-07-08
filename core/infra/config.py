@@ -9,6 +9,7 @@ Layered loading (last wins):
 Discovers CLI tool paths automatically (no hardcoded paths).
 Override via environment variables:
     CLAUDE_BIN   — path to claude binary
+    CLAUDE_GLM_BIN — path to claude-glm binary
     CODEX_BIN    — path to codex binary
 
 Per-phase model + runtime overrides come from environment variables
@@ -396,7 +397,7 @@ def _find_binary(name: str, candidates: list[str]) -> str:
     3. Hardcoded candidate paths (in order)
     Raises RuntimeError if not found.
     """
-    env_key = f"{name.upper()}_BIN"
+    env_key = f"{name.upper().replace('-', '_')}_BIN"
     if env_val := os.environ.get(env_key):
         if Path(env_val).exists():
             return env_val
@@ -437,6 +438,11 @@ def _wrap_windows_cmd(bin_path: str) -> list[str]:
 def get_claude_bin() -> str:
     from core.infra.platform import claude_candidates
     return _find_binary("claude", claude_candidates())
+
+
+def get_claude_glm_bin() -> str:
+    from core.infra.platform import claude_glm_candidates
+    return _find_binary("claude-glm", claude_glm_candidates())
 
 
 def get_codex_bin() -> str:
@@ -553,11 +559,13 @@ GEMINI_IDLE_TIMEOUT = _optional_timeout("GEMINI_IDLE_TIMEOUT", "gemini_idle_seco
 
 _RUNTIME_TIMEOUTS = {
     "claude": CLAUDE_TIMEOUT,
+    "claude-glm": CLAUDE_TIMEOUT,
     "codex":  CODEX_TIMEOUT,
     "gemini": GEMINI_TIMEOUT,
 }
 _RUNTIME_IDLE_TIMEOUTS = {
     "claude": CLAUDE_IDLE_TIMEOUT,
+    "claude-glm": CLAUDE_IDLE_TIMEOUT,
     "codex":  CODEX_IDLE_TIMEOUT,
     "gemini": GEMINI_IDLE_TIMEOUT,
 }

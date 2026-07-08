@@ -50,6 +50,7 @@ Start here, in order:
 | [guides/execution_mode_authoring.md](guides/execution_mode_authoring.md) | Custom execution modes for phases |
 | [guides/session_adapter_authoring.md](guides/session_adapter_authoring.md) | Session adapters for agent runtimes |
 | [guides/multimodal_runtime_support.md](guides/multimodal_runtime_support.md) | Attachments and multimodal runtime support |
+| [guides/claude_glm_runtime.md](guides/claude_glm_runtime.md) | Configure a Claude-compatible GLM wrapper as its own runtime |
 
 ---
 

@@ -72,9 +72,11 @@ class TestTimeouts:
 
     def test_provider_timeout_helpers_include_gemini_stub(self) -> None:
         assert config.agent_timeout("claude") is None
+        assert config.agent_timeout("claude-glm") is None
         assert config.agent_timeout("codex") is None
         assert config.agent_timeout("gemini") is None
         assert config.agent_idle_timeout("claude") == config.CLAUDE_IDLE_TIMEOUT
+        assert config.agent_idle_timeout("claude-glm") == config.CLAUDE_IDLE_TIMEOUT
         assert config.agent_idle_timeout("codex") == config.CODEX_IDLE_TIMEOUT
         assert config.agent_idle_timeout("gemini") == config.GEMINI_IDLE_TIMEOUT
 

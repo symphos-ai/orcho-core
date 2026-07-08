@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.observability.accounting_display import format_cost_reference_key_value
+
 
 def render_evidence_md(bundle: dict[str, Any], *, debug: bool = False) -> str:
     """Render a v1 evidence bundle as a markdown string.
@@ -377,7 +379,13 @@ def _render_handoff_advice(advice: dict[str, Any] | None) -> list[str]:
             f"out={usage['tokens_out']:,}" if "tokens_out" in usage else "",
         ]
         if "cost_usd_equivalent" in usage:
-            bits.append(f"cost=${usage['cost_usd_equivalent']:.4f}")
+            bits.append(
+                format_cost_reference_key_value(
+                    float(usage["cost_usd_equivalent"]),
+                    estimated=usage.get("cost_estimated") is True,
+                    precision=4,
+                )
+            )
         joined = ", ".join(b for b in bits if b)
         if joined:
             lines.append(f"- **Advice usage:** {joined}")

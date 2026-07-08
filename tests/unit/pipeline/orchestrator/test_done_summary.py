@@ -1110,7 +1110,8 @@ def test_roi_summary_with_money_accounting_reports_tokens_and_cost() -> None:
         metrics,
         include_accounting=True,
     ) == (
-        "ROI: tokens=123,456 (in=120,000 out=3,456) API-equiv=$1.23 "
+        "ROI: tokens=123,456 (in=120,000 out=3,456) "
+        "cost_ref=runtime-reported:$1.23 "
         "Outcome: 2/2 tasks, 1/1 run findings resolved, 2 review findings"
     )
 
@@ -1128,7 +1129,8 @@ def test_roi_summary_marks_estimated_cost() -> None:
         include_accounting=True,
     ) == (
         "ROI: tokens=123,456 (in=120,000 out=3,456) "
-        "API-equiv~$1.23 Outcome: 0 tasks, 0 run findings, 0 review findings"
+        "cost_ref=estimated-api:~$1.23 "
+        "Outcome: 0 tasks, 0 run findings, 0 review findings"
     )
 
 
@@ -1190,11 +1192,13 @@ def test_phase_usage_rows_include_cost_only_with_money_accounting() -> None:
     assert _phase_usage_rows(metrics, include_accounting=True) == (
         "Usage by phase:",
         "  plan                   tokens=      1,200 "
-        "(in=1,000 out=200) time=12.3s api-equiv=$0.12",
+        "(in=1,000 out=200) time=12.3s "
+        "cost_ref=runtime-reported:$0.12",
         "  review_changes         tokens=      2,300 "
-        "(in=2,000 out=300) time=23.4s attempts=2 api-equiv=~$0.34",
+        "(in=2,000 out=300) time=23.4s attempts=2 "
+        "cost_ref=estimated-api:~$0.34",
         "  final_acceptance       tokens=      3,400 "
-        "(in=3,000 cached=2,400 out=400) time=34.6s api-equiv=—",
+        "(in=3,000 cached=2,400 out=400) time=34.6s cost_ref=—",
     )
 
 
@@ -1237,21 +1241,22 @@ def test_subtask_usage_rows_render_per_subtask_block() -> None:
         "  T2-modify              "
         "tokens=2,300 (in=2,000 out=300) time=23.4s tools=7",
     )
-    # With accounting: api-equiv injected before time, only when cost present.
+    # With accounting: cost_ref injected before time, only when cost present.
     assert _subtask_usage_rows(metrics, include_accounting=True) == (
         "Subtask usage:",
         "  T1-register            "
-        "tokens=1,200 (in=1,000 out=200) api-equiv=$0.12 "
+        "tokens=1,200 (in=1,000 out=200) cost_ref=runtime-reported:$0.12 "
         "time=12.3s tools=4 files=2",
         "  T2-modify              "
-        "tokens=2,300 (in=2,000 out=300) api-equiv=$0.34 time=23.4s tools=7",
+        "tokens=2,300 (in=2,000 out=300) "
+        "cost_ref=runtime-reported:$0.34 time=23.4s tools=7",
     )
 
 
 def test_subtask_usage_rows_skips_state_only_skipped_records() -> None:
     # Skipped subtasks ride the slice as state-only markers so the rollup can
-    # count them, but they consumed no budget — the "Subtask usage" block is
-    # about who spent what, so a skipped marker must not render a hollow
+    # count them, but they carry no usage — the "Subtask usage" block is
+    # attribution evidence, so a skipped marker must not render a hollow
     # tokens=0 row.
     metrics = {
         "subtasks": {

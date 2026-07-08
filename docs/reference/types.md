@@ -157,7 +157,7 @@ subtask delivery is selected by
 execution mode. Subtask model selection remains `SubTask.model` first, then the
 BUILD phase model.
 
-Built-ins are `claude`, `codex` and `gemini`. New runtimes register
+Built-ins are `claude`, `claude-glm`, `codex` and `gemini`. New runtimes register
 under the same entry-point group and must implement `IAgentRuntime`.
 Runtime constructors are side-effect free; external CLI binaries are
 resolved lazily on first `invoke()`.
