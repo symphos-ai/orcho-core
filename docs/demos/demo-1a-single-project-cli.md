@@ -14,9 +14,10 @@ reachable from the bare `orcho` CLI as well.
    fixture project and writes a self-contained run directory.
 2. The default worktree-isolated run produces a real reviewable diff:
    `review_changes=ok` and `diff.patch` is captured in the run dir.
-3. `orcho evidence --format md` renders that run directory into a
-   single markdown report whose `## Findings` section surfaces
-   reviewer findings the SDK already exposes typed.
+3. `orcho evidence` renders that run directory into a compact terminal
+   summary; `orcho evidence --format md` renders the markdown report whose
+   `## Findings` section surfaces reviewer findings the SDK already exposes
+   typed.
 4. The same evidence shape lands whether reviewers approve cleanly or
    reject — empty findings render an explicit no-findings line, so an
    approved run reads as deliberately clean rather than as a missing
@@ -99,7 +100,7 @@ Run the pipeline:
     --stream-output
 
 Inspect the run:
-  orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+  orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho status --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
   orcho metrics --workspace /tmp/orcho_demo_1a/workspace-orchestrator
@@ -156,10 +157,16 @@ revises.
 latest run in that workspace:
 
 ```bash
+orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+```
+
+For a markdown report, add `--format md`:
+
+```bash
 orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
 
-Curated excerpt — quality gates, then the new findings section, then
+Curated markdown excerpt: quality gates, then the new findings section, then
 commands (the section ordering is stable):
 
 ```markdown

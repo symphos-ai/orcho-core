@@ -153,7 +153,7 @@ Then inspect:
 
 ```bash
 orcho status
-orcho evidence --format md
+orcho evidence
 
 cd ~/www/my-workspace/my-project
 git diff

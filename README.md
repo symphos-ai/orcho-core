@@ -160,7 +160,7 @@ to confuse the installed CLI with source-checkout code.
 Then paste the printed `orcho run ... --mock` command and inspect:
 
 ```bash
-orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho status --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
