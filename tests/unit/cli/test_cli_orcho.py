@@ -335,6 +335,10 @@ class TestParser:
         assert "Start here:" in help_text
         assert "Workflows:" in help_text
         assert "Output modes:" in help_text
+        assert "status        What is happening / what should I do next?" in help_text
+        assert "evidence      What happened / what proves it?" in help_text
+        assert "metrics/cost  How much did it consume?" in help_text
+        assert "diff          What changed?" in help_text
         assert "--output live" in help_text
         assert "--output debug" in help_text
         assert "orcho help --verbose" in help_text
