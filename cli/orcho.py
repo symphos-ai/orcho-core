@@ -457,8 +457,9 @@ def cmd_demos_bootstrap(args: argparse.Namespace) -> int:
 def cmd_diff(args: argparse.Namespace) -> int:
     """Render the run's captured ``diff.patch`` artifact for stdout.
 
-    Mode default is ``full`` (the raw patch — the command name says
-    "diff"). Color is enabled for ``preview`` / ``stat`` when stdout is a
+    Mode default is ``preview`` because the command answers the operator
+    question "what changed?" first. Use ``--full`` for the raw patch. Color is
+    enabled for ``preview`` / ``stat`` when stdout is a
     TTY and ``NO_COLOR`` / ``--no-color`` are unset; ``full`` is always
     colorless so the output stays pipeable to ``git apply``.
 
@@ -466,7 +467,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
     "artifact absent but command worked". Unknown run / unresolved
     workspace exits via the SDK error → exit-code mapping in ``_run_cli``.
     """
-    mode = getattr(args, "diff_mode", "full")
+    mode = getattr(args, "diff_mode", None) or "preview"
     no_color = bool(getattr(args, "no_color", False))
     use_color = mode != "full" and not no_color and is_color_active()
 
@@ -1262,9 +1263,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="What changed? Print the captured diff.patch artifact",
         description=(
             "Render the run's captured ``diff.patch`` artifact (written by "
-            "the pipeline at run lifecycle time). The default is the raw "
-            "unified patch; ``--preview`` shows a grouped Claude-style "
-            "view, ``--stat`` shows a per-file +A -R table."
+            "the pipeline at run lifecycle time). The default is a grouped "
+            "Claude-style preview; ``--stat`` shows a per-file +A -R table, "
+            "and ``--full`` prints the raw unified patch."
         ),
     )
     p_diff.add_argument(
@@ -1274,17 +1275,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff_mode = p_diff.add_mutually_exclusive_group()
     p_diff_mode.add_argument(
         "--full", dest="diff_mode", action="store_const", const="full",
-        help="Raw unified patch (default).",
+        help="Raw unified patch, suitable for piping to git apply.",
     )
     p_diff_mode.add_argument(
         "--preview", dest="diff_mode", action="store_const", const="preview",
-        help="Claude-style grouped view with per-file +A -R headers.",
+        help="Claude-style grouped view with per-file +A -R headers (default).",
     )
     p_diff_mode.add_argument(
         "--stat", dest="diff_mode", action="store_const", const="stat",
         help="Per-file +A -R table only, no hunk content.",
     )
-    p_diff.set_defaults(diff_mode="full")
+    p_diff.set_defaults(diff_mode="preview")
     p_diff.add_argument(
         "--path", type=_nonempty_str, default=None, metavar="PATH",
         help=(
