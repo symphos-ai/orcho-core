@@ -331,6 +331,12 @@
           "default_factory": null,
           "name": "accounting_enabled",
           "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "project_breakdown",
+          "type": "tuple[ProjectBreakdown, ...]"
         }
       ],
       "frozen": true,
@@ -1780,6 +1786,57 @@
       "kind": "dataclass",
       "module": "sdk.profiles",
       "name": "ProfileSummary",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_exact",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "ProjectBreakdown",
       "slots": true
     },
     {

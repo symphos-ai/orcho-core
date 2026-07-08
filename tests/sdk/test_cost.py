@@ -331,6 +331,110 @@ def test_sub_pipeline_kind_survives_aggregation(runs_root: Path, accounting_on):
     assert kinds["cross_plan"] == "cross_level"
 
 
+def test_project_breakdown_aggregates_workspace_projects_not_external_demo(
+    tmp_path: Path,
+    accounting_on,
+) -> None:
+    group_root = tmp_path / "orcho"
+    runs_root = group_root / "workspace-orchestrator" / "runspace" / "runs"
+    runs_root.mkdir(parents=True)
+    core = group_root / "orcho-core"
+    mcp = group_root / "orcho-mcp"
+    demo_api = tmp_path / "orcho-xdemo" / "api"
+    for path in (core, mcp, demo_api):
+        path.mkdir(parents=True)
+
+    single = runs_root / "20260509_160000"
+    single.mkdir()
+    (single / "meta.json").write_text(
+        json.dumps({"task": "single core", "project": str(core)}),
+        encoding="utf-8",
+    )
+    (single / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 200,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 2.0,
+                "phases": {
+                    "plan": {
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 200,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 2.0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cross = runs_root / "20260509_170000"
+    cross.mkdir()
+    (cross / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "cross workspace plus demo",
+                "projects": {
+                    "core": str(core),
+                    "mcp": str(mcp),
+                    "api": str(demo_api),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cross / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 1_800,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 18.0,
+                "phases": {
+                    "core": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 300,
+                        "tokens_exact": False,
+                        "cost_usd_equivalent": 3.0,
+                        "cost_estimated": True,
+                    },
+                    "mcp": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 400,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 4.0,
+                    },
+                    "api": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 500,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 5.0,
+                    },
+                    "cross_plan": {
+                        "kind": "cross_level",
+                        "total_tokens": 600,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 6.0,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+
+    by_name = {row.name: row for row in report.project_breakdown}
+    assert set(by_name) == {"orcho-core", "orcho-mcp"}
+    assert by_name["orcho-core"].cost == pytest.approx(5.0)
+    assert by_name["orcho-core"].tokens == 500
+    assert by_name["orcho-core"].runs == 2
+    assert by_name["orcho-core"].tokens_exact is False
+    assert by_name["orcho-core"].cost_estimated is True
+    assert by_name["orcho-mcp"].cost == pytest.approx(4.0)
+    assert by_name["orcho-mcp"].runs == 1
+
+
 def test_window_excludes_old_runs(populated_runs: Path):
     # All synthetic runs are dated 2026-05-{05..07}; today is 2026-05-09 per
     # the harness. A 1d window includes nothing.

@@ -229,6 +229,25 @@ class AgentBreakdown:
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectBreakdown:
+    """One row in the by-workspace-project aggregation of a `CostReport`.
+
+    ``name`` is the workspace project directory name. ``path`` is the resolved
+    project path used for attribution. Rows include single-project runs and
+    cross-project slices whose project path belongs to the same workspace
+    project group; cross-level orchestration phases remain separate phase rows.
+    """
+
+    name: str
+    path: str
+    cost: float
+    tokens: int
+    runs: int
+    tokens_exact: bool
+    cost_estimated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class CostRunRow:
     """One per-run line inside a `CostReport`."""
 
@@ -271,6 +290,7 @@ class CostReport:
     pricing_snapshot_age_days: int | None
     any_estimated: bool
     accounting_enabled: bool = True
+    project_breakdown: tuple[ProjectBreakdown, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
