@@ -38,6 +38,7 @@ def _parsed_plan_to_render_dict(parsed_plan) -> dict:
             "model":         st.model,
             "depends_on":    list(st.depends_on),
             "done_criteria": list(st.done_criteria),
+            "owned_files":   list(getattr(st, "owned_files", ()) or ()),
         })
     return {
         "short_summary":       parsed_plan.short_summary,
@@ -107,6 +108,7 @@ def _emit_plan_parsed_event(parsed_plan) -> None:
         risks=list(parsed_plan.risks),
         review_focus=list(parsed_plan.review_focus),
         mcp_context=list(parsed_plan.mcp_context),
+        subtasks=_parsed_plan_to_render_dict(parsed_plan)["tasks"],
     )
 
 

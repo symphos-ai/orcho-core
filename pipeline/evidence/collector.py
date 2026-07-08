@@ -295,6 +295,7 @@ def _build_plan_record(
             "risks": [],
             "review_focus": [],
             "mcp_context": [],
+            "subtasks": [],
         }
     payload = parsed.payload
     return {
@@ -317,6 +318,10 @@ def _build_plan_record(
         "review_focus": _string_list_from_payload(payload, "review_focus"),
         "mcp_context": [
             dict(x) for x in payload.get("mcp_context", [])
+            if isinstance(x, dict)
+        ],
+        "subtasks": [
+            dict(x) for x in payload.get("subtasks", [])
             if isinstance(x, dict)
         ],
     }

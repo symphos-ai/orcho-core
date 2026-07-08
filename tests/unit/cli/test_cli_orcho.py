@@ -272,6 +272,14 @@ class TestParser:
         args = parser.parse_args(["evidence"])
         assert args.command == "evidence"
         assert args.format == "cli"
+        assert args.view == "summary"
+
+    def test_evidence_full_view_flag(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["evidence", "--view", "full"])
+        assert args.command == "evidence"
+        assert args.format == "cli"
+        assert args.view == "full"
 
     def test_profiles_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -1144,6 +1152,112 @@ class TestCmdEvidence:
 
         assert long_path in rendered
         assert "plan_20260708_135646_06db6e_round_20..." not in rendered
+
+    def test_cli_full_view_renders_plan_timeline_and_acceptance(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "Ship the complete evidence picture",
+                "profile": "feature",
+                "plan": {
+                    "source": "json",
+                    "short_summary": "Build a richer evidence view.",
+                    "planning_context": "Full planning context survives here.",
+                    "subtask_count": 2,
+                    "has_contract": True,
+                    "goal": "Make evidence explain the run",
+                    "acceptance_criteria": ["full plan visible", "review path visible"],
+                    "owned_files": ["cli/_evidence_cli.py"],
+                    "commands_to_run": ["pytest tests/unit/cli/test_cli_orcho.py -q"],
+                    "risks": ["large output"],
+                    "review_focus": ["operator UX"],
+                    "subtasks": [
+                        {
+                            "id": "t1",
+                            "goal": "Render the plan",
+                            "owned_files": ["cli/_evidence_cli.py"],
+                            "done_criteria": ["Plan section lists tasks"],
+                        },
+                        {
+                            "id": "t2",
+                            "goal": "Render the review path",
+                            "depends_on": ["t1"],
+                            "files": ["tests/unit/cli/test_cli_orcho.py"],
+                            "done_criteria": ["Timeline lists acceptance"],
+                        },
+                    ],
+                },
+                "phases": [
+                    {
+                        "name": "plan",
+                        "title": "PLAN",
+                        "outcome": "ok",
+                        "attempt": 1,
+                        "started_at": "2026-07-08T10:00:00Z",
+                        "ended_at": "2026-07-08T10:01:00Z",
+                    },
+                    {
+                        "name": "review_changes",
+                        "title": "Review",
+                        "outcome": "ok",
+                        "attempt": 2,
+                        "started_at": "2026-07-08T10:02:00Z",
+                        "ended_at": "2026-07-08T10:03:00Z",
+                    },
+                ],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "implementation_receipts": [
+                    {
+                        "subtask_id": "t1",
+                        "state": "done",
+                        "runtime": "claude",
+                        "model": "opus",
+                        "criteria_report": [{"met": True}],
+                    }
+                ],
+                "release_summary": [
+                    {
+                        "phase": "final_acceptance",
+                        "attempt": 1,
+                        "verdict": "APPROVED",
+                        "summary": "Ready.",
+                    }
+                ],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle, view="full"))
+
+        assert "Plan contract:" in rendered
+        assert "Full planning context survives here." in rendered
+        assert "subtasks=2 · dag=yes · contract=yes" in rendered
+        assert "Acceptance criteria:" in rendered
+        assert "full plan visible" in rendered
+        assert "Planned tasks:" in rendered
+        assert "1. t1 Render the plan" in rendered
+        assert "depends_on: t1" in rendered
+        assert "Phase timeline:" in rendered
+        assert "review_changes#2" in rendered
+        assert "Implementation receipts:" in rendered
+        assert "done        t1 claude / opus" in rendered
+        assert "Acceptance:" in rendered
+        assert "APPROVED   final_acceptance#1" in rendered
 
     def test_cli_findings_show_lifecycle_statuses(self) -> None:
         from cli._evidence_cli import format_evidence_cli

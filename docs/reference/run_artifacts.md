@@ -265,6 +265,12 @@ fall back to `events.jsonl` + `meta.json` for diagnostic detail.
 | `prompt_render` | `list[dict]` | **closed-schema** — see [observability_surfaces.md](../architecture/observability_surfaces.md#writer-stamped-attribution-on-prompt_render-adr-0035) for the field table |
 | `raw_events_path` | `str` | absolute path to `events.jsonl` |
 
+The required `plan` object may also carry additive `subtasks: list[dict]`,
+an embedded task/DAG projection from the `plan.parsed` event when the run was
+created by a version that emitted it. Older written bundles may have
+`plan.subtask_count` without `plan.subtasks`; readers should then fall back to
+the `parsed_plan` artifact path.
+
 **Additional keys the collector always emits** (NOT in the required
 set — `validate_bundle` accepts bundles without them; consumers may
 rely on them being present in practice):

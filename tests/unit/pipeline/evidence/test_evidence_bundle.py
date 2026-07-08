@@ -105,7 +105,22 @@ def _golden_run(target: Path) -> Path:
             acceptance_criteria_count=2, owned_files_count=1,
             owned_files=["calc.py"],
             commands_to_run=["pytest -q"],
-            commands_to_run_count=1),
+            commands_to_run_count=1,
+            subtasks=[
+                {
+                    "id": "t1",
+                    "goal": "Add payload validation",
+                    "owned_files": ["calc.py"],
+                    "done_criteria": ["invalid payload is rejected"],
+                },
+                {
+                    "id": "t2",
+                    "goal": "Add regression coverage",
+                    "depends_on": ["t1"],
+                    "files": ["tests/test_calc.py"],
+                    "done_criteria": ["tests pass"],
+                },
+            ]),
         _ev(4, "phase.end", phase="PLAN", title="PLAN",
             outcome="ok", attempt=1),
         _ev(5, "phase.start", phase="IMPLEMENT", title="BUILD",
@@ -241,6 +256,21 @@ class TestCollector:
         assert len(plan["owned_files"]) == 1
         assert len(plan["commands_to_run"]) == 1
         assert "Implementation Plan body" in plan["planning_context"]
+        assert plan["subtasks"] == [
+            {
+                "id": "t1",
+                "goal": "Add payload validation",
+                "owned_files": ["calc.py"],
+                "done_criteria": ["invalid payload is rejected"],
+            },
+            {
+                "id": "t2",
+                "goal": "Add regression coverage",
+                "depends_on": ["t1"],
+                "files": ["tests/test_calc.py"],
+                "done_criteria": ["tests pass"],
+            },
+        ]
 
     def test_phases_paired_by_attempt(self, tmp_path: Path) -> None:
         bundle = collect_evidence(_golden_run(tmp_path))

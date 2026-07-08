@@ -6,6 +6,12 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from typing import Any
 
+from cli._evidence_cli_full import (
+    full_phase_lines,
+    full_plan_lines,
+    implementation_receipt_lines,
+    release_detail_lines,
+)
 from core.io.ansi import C, paint
 from pipeline.evidence.finding_lifecycle import (
     ACTIVE_FINDING_STATUSES,
@@ -14,11 +20,14 @@ from pipeline.evidence.finding_lifecycle import (
 )
 
 
-def format_evidence_cli(bundle: Any, *, debug: bool = False) -> str:
+def format_evidence_cli(
+    bundle: Any, *, debug: bool = False, view: str = "summary",
+) -> str:
     """Render an evidence bundle as compact CLI output."""
     body = _bundle_body(bundle)
     if body.get("schema_version") == "0-placeholder":
         return _render_placeholder(body)
+    full = view == "full"
 
     lines: list[str] = []
     sep = "─" * 72
@@ -32,9 +41,16 @@ def format_evidence_cli(bundle: Any, *, debug: bool = False) -> str:
         f"{_label('status=')}{_state(status)}"
     )
     lines.append(_muted(sep))
-    lines.extend(_summary_lines(body))
-    lines.extend(_plan_lines(body.get("plan") if isinstance(body.get("plan"), dict) else {}))
-    lines.extend(_phase_lines(body.get("phases") or [], debug=debug))
+    lines.extend(_summary_lines(body, full=full))
+    plan = body.get("plan") if isinstance(body.get("plan"), dict) else {}
+    if full:
+        lines.extend(full_plan_lines(plan, artifacts=body.get("artifacts") or []))
+        lines.extend(full_phase_lines(body.get("phases") or []))
+        lines.extend(implementation_receipt_lines(body.get("implementation_receipts") or []))
+        lines.extend(release_detail_lines(body.get("release_summary") or []))
+    else:
+        lines.extend(_plan_lines(plan))
+        lines.extend(_phase_lines(body.get("phases") or [], debug=debug))
     lines.extend(_gate_lines(body.get("gates") or [], body=body, debug=debug))
     lines.extend(_command_lines(body.get("commands") or [], body=body, debug=debug))
     lines.extend(_finding_lines(body.get("findings") or [], body=body, debug=debug))
@@ -64,8 +80,9 @@ def _render_placeholder(body: dict[str, Any]) -> str:
     )
 
 
-def _summary_lines(body: dict[str, Any]) -> list[str]:
-    task = _clip(body.get("task") or "(not recorded)", 112)
+def _summary_lines(body: dict[str, Any], *, full: bool = False) -> list[str]:
+    raw_task = body.get("task") or "(not recorded)"
+    task = str(raw_task) if full else _clip(raw_task, 112)
     profile = body.get("profile") or "?"
     run_dir = body.get("run_dir") or "?"
     reasons = _attention_reasons(body)
