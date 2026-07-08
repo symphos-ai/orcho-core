@@ -9,7 +9,7 @@ from sdk._runspace_context import accounting_enabled_for_context
 from sdk.actions import compute_next_actions
 from sdk.evidence_slices import active_stall_diagnostics, list_sub_runs
 from sdk.runs import _CWD_DEFAULT, find_run, load_json_optional, load_meta
-from sdk.types import ArtefactRef, PhaseStatus, RunMeta, RunStatus
+from sdk.types import ArtefactRef, GateStatus, PhaseStatus, RunMeta, RunStatus
 
 
 def _artefact_ref_if_file(
@@ -77,6 +77,54 @@ def _collect_artefacts(run_id: str, run_dir: Path) -> tuple[ArtefactRef, ...]:
         size_bytes=None,
     ))
     return tuple(refs)
+
+
+def _collect_quality_gates(run_dir: Path) -> tuple[GateStatus, ...]:
+    """Project finalized evidence gate rows into the lightweight status view.
+
+    Gate events are finalized into ``evidence.json``. ``orcho status`` should
+    not compose a fresh evidence bundle just to print a summary, but reading an
+    existing finalized bundle is cheap and keeps status aligned with evidence.
+    """
+    evidence = load_json_optional(run_dir / "evidence.json")
+    rows = evidence.get("gates") if isinstance(evidence, dict) else None
+    if not isinstance(rows, list):
+        return ()
+
+    gates: list[GateStatus] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "?")
+        duration_raw = row.get("duration_s")
+        try:
+            duration_s = (
+                float(duration_raw)
+                if duration_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            duration_s = None
+        gates.append(GateStatus(
+            name=name,
+            outcome=(
+                str(row["outcome"])
+                if row.get("outcome") is not None
+                else None
+            ),
+            kind=(
+                str(row["kind"])
+                if row.get("kind") is not None
+                else None
+            ),
+            duration_s=duration_s,
+            phase=(
+                str(row["phase"])
+                if row.get("phase") is not None
+                else None
+            ),
+        ))
+    return tuple(gates)
 
 
 def load_status(
@@ -151,6 +199,7 @@ def load_status(
     # is best-effort — IO errors leave the entry out, never fail
     # the call.
     artefacts = _collect_artefacts(ref.run_id, ref.run_dir)
+    quality_gates = _collect_quality_gates(ref.run_dir)
 
     # MCP UX A1 / Principle 1: derive suggested follow-ups from the
     # raw meta so the LLM consuming this status payload sees workflow
@@ -181,6 +230,7 @@ def load_status(
         total_rounds=int(raw_metrics.get("total_rounds", 0) or 0),
         total_retries=int(raw_metrics.get("total_retries", 0) or 0),
         sub_projects=tuple(sub_projects),
+        quality_gates=quality_gates,
         worktree=raw_meta.get("worktree") if raw_meta else None,
         raw_meta=raw_meta,
         raw_metrics=raw_metrics,

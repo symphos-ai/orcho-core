@@ -29,7 +29,7 @@ from core.io.ansi import set_color_enabled, strip_ansi
 from sdk.errors import InvalidPhaseHandoffState
 from sdk.phase_handoff import phase_handoff_decide, safe_handoff_id
 from sdk.status import load_status
-from sdk.types import PhaseStatus, RunMeta, RunRef, RunStatus
+from sdk.types import GateStatus, PhaseStatus, RunMeta, RunRef, RunStatus
 
 _PHASE = "review_changes"
 
@@ -196,6 +196,30 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
         ),
         encoding="utf-8",
     )
+    (run_dir / "evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "run_id": "20260612_done",
+                "status": "done",
+                "gates": [
+                    {
+                        "name": "lint",
+                        "kind": "computational",
+                        "outcome": "passed",
+                        "duration_s": 1.25,
+                    },
+                    {
+                        "name": "tests",
+                        "kind": "computational",
+                        "outcome": "skipped",
+                        "duration_s": 0.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     for name in ("commit_decisions", "phase_handoff_advice", "phases"):
         (run_dir / name).mkdir()
 
@@ -210,6 +234,12 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
     assert "review_changes" in rendered
     assert "runtime-reported $1.00" in rendered
     assert "estimated-api ~$2.00" in rendered
+    assert [gate.name for gate in status.quality_gates] == ["lint", "tests"]
+    assert "Gates:" in rendered
+    assert "passed x1" in rendered
+    assert "skipped x1" in rendered
+    assert "tests                  skipped             0.00s computational" in rendered
+    assert "lint                   passed" not in rendered
     assert "Delivery:" in rendered
     assert "Status: committed (approve)" in rendered
     assert "Verification missing: lint" in rendered
@@ -466,6 +496,44 @@ def test_cli_status_renders_cross_projects_subprojects_verbose_and_clips_text(
     )
     rendered_no_phase_map = format_status(no_phase_map)
     assert "Cost ref: runtime-reported $2.00" in rendered_no_phase_map
+
+
+def test_cli_status_verbose_renders_all_quality_gates(tmp_path: Path) -> None:
+    status = RunStatus(
+        run_ref=RunRef(
+            run_id="20260612_gates",
+            run_dir=tmp_path / "runs" / "20260612_gates",
+        ),
+        meta=RunMeta(
+            project="/repo/demo",
+            task="gate visibility",
+            status="done",
+            profile="feature",
+            timestamp="2026-06-12T10:00:00",
+        ),
+        quality_gates=(
+            GateStatus(
+                name="lint",
+                kind="computational",
+                outcome="passed",
+                duration_s=1.25,
+            ),
+            GateStatus(
+                name="tests",
+                kind="computational",
+                outcome="skipped",
+                duration_s=0.0,
+            ),
+        ),
+    )
+
+    rendered = format_status(status, verbose=True)
+
+    assert "Gates:" in rendered
+    assert "passed x1" in rendered
+    assert "skipped x1" in rendered
+    assert "lint                   passed              1.25s computational" in rendered
+    assert "tests                  skipped             0.00s computational" in rendered
 
 
 # ── id progression + per-id idempotency ────────────────────────────────────

@@ -61,6 +61,17 @@ class PhaseStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class GateStatus:
+    """One quality-gate event projected onto the run status surface."""
+
+    name: str
+    outcome: str | None
+    kind: str | None = None
+    duration_s: float | None = None
+    phase: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunStatus:
     """Full status snapshot of a single run.
 
@@ -85,6 +96,7 @@ class RunStatus:
     total_rounds: int = 0
     total_retries: int = 0
     sub_projects: tuple[PhaseStatus, ...] = ()
+    quality_gates: tuple[GateStatus, ...] = ()
     worktree: dict[str, Any] | None = None
     raw_meta: dict[str, Any] = field(default_factory=dict)
     raw_metrics: dict[str, Any] = field(default_factory=dict)
