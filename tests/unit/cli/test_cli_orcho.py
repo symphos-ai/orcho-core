@@ -267,6 +267,12 @@ class TestParser:
         assert args.format == "md"
         assert args.debug is True
 
+    def test_evidence_default_format_is_cli(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["evidence"])
+        assert args.command == "evidence"
+        assert args.format == "cli"
+
     def test_profiles_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -934,6 +940,108 @@ class TestCmdPrompts:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCmdEvidence:
+    def test_cli_format_is_default_operator_summary(self, monkeypatch) -> None:
+        import cli.orcho as orcho
+
+        body = {
+            "run_id": "R",
+            "run_dir": "/tmp/runs/R",
+            "schema_version": "1",
+            "status": "done",
+            "task": "Ship the thing",
+            "profile": "feature",
+            "plan": {
+                "source": "json",
+                "short_summary": "Small useful summary.",
+                "planning_context": "P" * 1000,
+                "subtask_count": 2,
+                "has_contract": True,
+                "acceptance_criteria": ["a"],
+                "owned_files": ["cli.py"],
+                "commands_to_run": ["pytest -q"],
+            },
+            "phases": [
+                {"name": "PLAN", "title": "PLAN", "outcome": "ok", "attempt": 1},
+                {
+                    "name": "VALIDATE_PLAN",
+                    "title": "validate",
+                    "outcome": "skipped",
+                    "attempt": 1,
+                },
+            ],
+            "gates": [
+                {
+                    "name": "tests",
+                    "kind": "computational",
+                    "outcome": "skipped",
+                    "duration_s": 0.0,
+                }
+            ],
+            "commands": [],
+            "artifacts": [],
+            "metrics": {
+                "total_tokens": 100,
+                "total_tokens_in": 70,
+                "total_tokens_out": 30,
+                "total_duration_s": 1.5,
+                "total_rounds": 1,
+            },
+            "errors": [],
+            "findings": [],
+        }
+        fake_stdout = _FakeStdout(is_tty=False)
+        monkeypatch.setattr(orcho.sys, "stdout", fake_stdout)
+        monkeypatch.setattr(orcho, "collect_evidence", lambda *a, **k: _make_args(body=body))
+
+        rc = orcho.cmd_evidence(_make_args(run_id=None, workspace=None, out=None))
+
+        out = fake_stdout.getvalue()
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "Attention: yes" in out
+        assert "1 gate skipped" in out
+        assert "Recorded: none; 1 planned" in out
+        assert "Planning context" not in out
+        assert not out.lstrip().startswith("{")
+
+    def test_cli_format_color_can_be_forced(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import get_color_enabled, set_color_enabled, strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        before = get_color_enabled()
+        set_color_enabled(True)
+        try:
+            rendered = format_evidence_cli(bundle)
+        finally:
+            set_color_enabled(before)
+
+        assert "\x1b[" in rendered
+        assert "Evidence:" in strip_ansi(rendered)
+
     def test_json_projection_compacts_verbose_fields(self) -> None:
         from cli._formatters import project_evidence_json
 
@@ -1385,7 +1493,7 @@ class TestCmdDiff:
 
 
 class TestCmdEvidenceDiff:
-    """Test ``orcho evidence --diff[=mode]`` markdown + JSON wrappers."""
+    """Test ``orcho evidence --diff[=mode]`` CLI/markdown + JSON wrappers."""
 
     @pytest.fixture
     def runs_dir(self, tmp_path: Path, monkeypatch):
@@ -1555,6 +1663,22 @@ class TestCmdEvidenceDiff:
         assert "## Diff" in out
         assert "api/payload.py" in out
 
+    def test_cli_diff_is_default_and_appends_section(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_evidence
+        self._write_evidence_run(runs_dir, "20260519_200012")
+        args = _make_args(
+            run_id="20260519_200012", format=None, diff="stat",
+        )
+        rc = cmd_evidence(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "## Diff" in out
+        assert "+1 -1" in out
+        assert not out.lstrip().startswith("{")
+
     def test_md_diff_stat_only_renders_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1606,6 +1730,7 @@ class TestCmdEvidenceDiff:
         assert bare.diff == "preview"
         default = parser.parse_args(["evidence", "any_run"])
         assert default.diff is None
+        assert default.format == "cli"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

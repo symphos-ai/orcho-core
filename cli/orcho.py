@@ -46,6 +46,7 @@ guard_against_retained_worktree_install(_CORE_DIR)
 
 # ruff: noqa: E402
 
+from cli._evidence_cli import format_evidence_cli
 from cli._formatters import (
     colorize_evidence_markdown,
     format_cost_report,
@@ -501,7 +502,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
 
     With ``--diff[=preview|stat|full]`` the stdout output is augmented:
 
-    - ``--format md``: append a ``## Diff`` section after the bundle.
+    - ``--format cli`` / ``--format md``: append a diff section after the bundle.
     - ``--format json``: wrap the output as
       ``{"evidence": <bundle>, "diff": <record>}``. The schema-validated
       bundle inside ``"evidence"`` is byte-identical to today's output;
@@ -539,8 +540,13 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             print(format_error(exc), file=sys.stderr)
             return exc.exit_code
 
-    fmt = getattr(args, "format", "json")
-    if fmt == "md":
+    fmt = getattr(args, "format", None) or "cli"
+    if fmt == "cli":
+        debug = bool(getattr(args, "debug", False))
+        sys.stdout.write(format_evidence_cli(bundle, debug=debug))
+        if diff_record is not None:
+            sys.stdout.write(_render_evidence_diff_markdown(diff_record))
+    elif fmt == "md":
         debug = bool(getattr(args, "debug", False))
         md = render_evidence_md(bundle, debug=debug) if debug else render_evidence_md(bundle)
         # The colorizer routes every ANSI insertion through paint(), so
@@ -1165,8 +1171,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Read the run dir and emit a v1 evidence bundle "
             "(plan + phases + gates + commands + artifacts + "
-            "metrics + errors). Use --format md for the human "
-            "summary, --out PATH to write both files to a directory."
+            "metrics + errors). The default --format cli prints an "
+            "operator-friendly terminal summary; --out PATH writes both "
+            "evidence files to a directory."
         ),
     )
     p_evid.add_argument(
@@ -1174,8 +1181,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run id (default: most recent run under runs/)",
     )
     p_evid.add_argument(
-        "--format", "-f", choices=("json", "md"), default="json",
-        help="Output format on stdout (default: json)",
+        "--format", "-f", choices=("cli", "json", "md"), default="cli",
+        help="Output format on stdout (default: cli)",
     )
     p_evid.add_argument(
         "--out", type=Path, default=None,

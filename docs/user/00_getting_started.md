@@ -244,7 +244,7 @@ orcho status
 Evidence in readable form:
 
 ```bash
-orcho evidence --format md
+orcho evidence
 ```
 
 What changed in the project:

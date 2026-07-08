@@ -316,14 +316,16 @@ mistake.
 
 ## `orcho evidence --diff[=mode]`
 
-Plain `orcho evidence <run-id>` renders the normal evidence view (JSON or
-markdown via `--format`). The normal JSON keeps run state and actionable
-sections readable: long text fields are previewed, verbose receipt/prompt
-details are summarized, and low-level live diagnostics are counted instead
-of expanded. Add `--debug` to print the raw schema bundle. The `--diff` flag
-changes what goes to stdout:
+Plain `orcho evidence <run-id>` renders the normal evidence view as a compact
+terminal summary. Use `--format=md` for the markdown report, or
+`--format=json` for machine consumers. The normal JSON keeps run state and
+actionable sections readable: long text fields are previewed, verbose
+receipt/prompt details are summarized, and low-level live diagnostics are
+counted instead of expanded. Add `--debug` to print the raw schema bundle.
+The `--diff` flag changes what goes to stdout:
 
 ```bash
+orcho evidence <run-id>
 orcho evidence <run-id> --diff            # = --diff=preview
 orcho evidence <run-id> --diff=stat
 orcho evidence <run-id> --diff=full
@@ -331,9 +333,11 @@ orcho evidence <run-id> --format=md --diff
 orcho evidence <run-id> --format=json --debug
 ```
 
-- `--format md` (default for humans): a `## Diff` section (stat table +
-  preview/full) is appended after the bundle markdown. When the
-  artifact is missing: `_No diff artifact recorded._`.
+- `--format cli` (default): an operator-friendly terminal summary. With
+  `--diff`, a `## Diff` section (stat table + preview/full) is appended after
+  the summary. When the artifact is missing: `_No diff artifact recorded._`.
+- `--format md`: the markdown evidence report. With `--diff`, the same
+  `## Diff` section is appended after the bundle markdown.
 - `--format json`: the output is wrapped as
   `{"evidence": <normal evidence view>, "diff": <record>}`. Use
   `--debug` for the raw schema bundle with full text, verbose receipts,

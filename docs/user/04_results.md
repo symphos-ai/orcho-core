@@ -79,7 +79,7 @@ orcho run --resume
 ```bash
 orcho status           # status of the latest run
 orcho metrics          # tokens and time
-orcho evidence --format md   # the full evidence bundle, readable
+orcho evidence         # readable evidence summary for the latest run
 ```
 
 ---
