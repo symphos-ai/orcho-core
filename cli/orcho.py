@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import sys
+import textwrap
 from importlib import metadata
 from pathlib import Path
 
@@ -66,6 +68,7 @@ from cli._formatters import (
     format_status,
     format_verify_env,
     format_verify_list,
+    format_verify_overview,
     format_verify_run,
     format_workspace_init,
     format_written_paths,
@@ -307,6 +310,21 @@ def cmd_history(args: argparse.Namespace) -> int:
     )
 
 
+def _recent_count(value: str) -> int:
+    text = str(value).strip()
+    try:
+        count = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected a number, e.g. `-n 10`; `COUNT` is a placeholder",
+        ) from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError(
+            "expected a positive number, e.g. `-n 10`",
+        )
+    return count
+
+
 def cmd_metrics(args: argparse.Namespace) -> int:
     run_id = getattr(args, "run_id", None)
     if run_id:
@@ -365,21 +383,88 @@ def _profile_steps(profile) -> str:
     return " -> ".join(phases)
 
 
-def _format_profile_catalog(profiles: dict) -> str:
-    lines = ["Profiles"]
-    for name in sorted(profiles):
+def _profile_scalar(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def _profile_recipe_label(profile) -> str:  # noqa: ANN001
+    recipe = getattr(profile, "recipe_kind", None)
+    if recipe:
+        return str(recipe)
+    kind = (
+        _profile_scalar(getattr(profile, "kind", None))
+        or "custom"
+    )
+    variant = getattr(profile, "variant", None)
+    return f"{kind}/{variant}" if variant else kind
+
+
+def _profile_worktree_label(profile) -> str:  # noqa: ANN001
+    isolation = getattr(profile, "worktree_isolation", None)
+    return "direct" if isolation == "off" else "isolated"
+
+
+def _wrap_profile_description(description: str) -> list[str]:
+    return textwrap.wrap(
+        description,
+        width=96,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [description]
+
+
+def _format_profile_catalog(
+    profiles: dict,
+    *,
+    verbose: bool = False,
+    title: str = "Profiles",
+    item_label: str = "Profile",
+    verbose_command: str = "orcho profiles list --verbose",
+) -> str:
+    lines = [title]
+    names = sorted(profiles)
+    name_width = max([len(item_label), *(len(name) for name in names)], default=12)
+    recipe_width = max(
+        [len("Recipe"), *(
+            len(_profile_recipe_label(profiles[name]))
+            for name in names
+        )],
+        default=10,
+    )
+    lines.append(
+        f"  {item_label:<{name_width}}  Mode  "
+        f"{'Recipe':<{recipe_width}}  Worktree  Phases"
+    )
+    lines.append(
+        f"  {'-' * name_width}  ----  "
+        f"{'-' * recipe_width}  --------  ------"
+    )
+    for name in names:
         profile = profiles[name]
-        kind = getattr(getattr(profile, "kind", None), "value", None) or "custom"
-        variant = getattr(profile, "variant", None) or "-"
+        mode = _profile_scalar(getattr(profile, "default_mode", None)) or "-"
+        recipe = _profile_recipe_label(profile)
+        worktree = _profile_worktree_label(profile)
         description = getattr(profile, "description", "")
         steps = _profile_steps(profile)
         # ADR 0085: internal/system profiles stay visible in the catalog
         # (the registry must show them) but carry an ``[internal]`` chip so
         # operators know they are not first-run choices.
         chip = " [internal]" if getattr(profile, "internal", False) else ""
-        lines.append(f"  {name:<12} {kind:<10} {variant:<10} {steps}{chip}")
-        if description:
-            lines.append(f"    {description}")
+        lines.append(
+            f"  {name:<{name_width}}  {mode:<4}  "
+            f"{recipe:<{recipe_width}}  {worktree:<8}  {steps}{chip}"
+        )
+        if verbose and description:
+            for wrapped in _wrap_profile_description(str(description)):
+                lines.append(f"    {wrapped}")
+    if not verbose:
+        lines.extend([
+            "",
+            f"Use `{verbose_command}` for descriptions.",
+            "Internal profiles are shown for transparency; fresh-run picker hides them.",
+        ])
     return "\n".join(lines)
 
 
@@ -391,7 +476,11 @@ def _load_profile_catalog() -> dict:
 
 
 def cmd_profiles_list(args: argparse.Namespace) -> int:
-    return _run_cli(_load_profile_catalog, _format_profile_catalog)
+    verbose = bool(getattr(args, "verbose", False))
+    return _run_cli(
+        _load_profile_catalog,
+        lambda profiles: _format_profile_catalog(profiles, verbose=verbose),
+    )
 
 
 def cmd_profile_customize(args: argparse.Namespace) -> int:
@@ -419,7 +508,17 @@ def cmd_profile_customize(args: argparse.Namespace) -> int:
 
 
 def cmd_workflows_list(args: argparse.Namespace) -> int:
-    return cmd_profiles_list(args)
+    verbose = bool(getattr(args, "verbose", False))
+    return _run_cli(
+        _load_profile_catalog,
+        lambda profiles: _format_profile_catalog(
+            profiles,
+            verbose=verbose,
+            title="Workflows",
+            item_label="Workflow",
+            verbose_command="orcho workflows list --verbose",
+        ),
+    )
 
 
 def cmd_runtimes_install(args: argparse.Namespace) -> int:
@@ -798,6 +897,24 @@ def cmd_workspace_fine_tune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_overview(args: argparse.Namespace) -> int:
+    print(format_verify_overview())
+    return 0
+
+
+def _run_verify_silencing_skill_shadow_warnings(call):
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        result = call()
+    kept_lines = [
+        line for line in captured.getvalue().splitlines()
+        if not line.startswith("  ! skills:")
+    ]
+    if kept_lines:
+        print("\n".join(kept_lines))
+    return result
+
+
 def cmd_verify_env(args: argparse.Namespace) -> int:
     """Execute declared env-assertions for a verification_env.
 
@@ -808,11 +925,13 @@ def cmd_verify_env(args: argparse.Namespace) -> int:
     written; a passing run exits 0, a failing assertion set exits 1.
     """
     try:
-        result = verify_env(
-            project=getattr(args, "project", None),
-            env=getattr(args, "env", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_env(
+                project=getattr(args, "project", None),
+                env=getattr(args, "env", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -830,10 +949,12 @@ def cmd_verify_list(args: argparse.Namespace) -> int:
     ``exit_code``; success exits 0.
     """
     try:
-        result = verify_list(
-            project=getattr(args, "project", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_list(
+                project=getattr(args, "project", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -883,13 +1004,15 @@ def cmd_verify_run(args: argparse.Namespace) -> int:
         return 2
     commands = [name] if name is not None else (positional or None)
     try:
-        result = verify_run(
-            project=getattr(args, "project", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
-            commands=commands,
-            required_only=required,
-            include_manual=bool(getattr(args, "include_manual", False)),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_run(
+                project=getattr(args, "project", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+                commands=commands,
+                required_only=required,
+                include_manual=bool(getattr(args, "include_manual", False)),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -963,7 +1086,14 @@ def cmd_prompts(args: argparse.Namespace) -> int:
             winner = next((lvl for lvl, _, ex in chain if ex), "unknown")
             winners[n] = winner
 
-        print(format_prompts_list(names, project_dir=project, winners=winners))
+        print(
+            format_prompts_list(
+                names,
+                project_dir=project,
+                winners=winners,
+                compact=not list_all and not name,
+            )
+        )
         return 0
 
     try:
@@ -1157,8 +1287,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_metrics.add_argument("run_id", nargs="?", default=None,
                            help="Run ID for single-run detail")
-    p_metrics.add_argument("--last", "-n", type=int, default=10,
-                           help="Show last N runs (default: 10)")
+    p_metrics.add_argument(
+        "--last", "-n",
+        type=_recent_count,
+        default=10,
+        metavar="COUNT",
+        help="Show the most recent COUNT runs (default: 10)",
+    )
     p_metrics.add_argument(
         "--workspace", default=None,
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
@@ -1167,8 +1302,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── history ───────────────────────────────────────────────────────────────
     p_hist = sub.add_parser("history", help="List recent runs")
-    p_hist.add_argument("--last", "-n", type=int, default=10,
-                        help="Show last N runs (default: 10)")
+    p_hist.add_argument(
+        "--last", "-n",
+        type=_recent_count,
+        default=10,
+        metavar="COUNT",
+        help="Show the most recent COUNT runs (default: 10)",
+    )
     p_hist.add_argument(
         "--workspace", default=None,
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
@@ -1370,6 +1510,10 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List available execution profiles",
     )
+    p_profiles_list.add_argument(
+        "--verbose", action="store_true",
+        help="Show full profile descriptions under each row.",
+    )
     p_profiles_list.set_defaults(func=cmd_profiles_list)
 
     p_profile = sub.add_parser(
@@ -1461,6 +1605,10 @@ def build_parser() -> argparse.ArgumentParser:
         "list",
         help="List available workflow profiles",
     )
+    p_workflows_list.add_argument(
+        "--verbose", action="store_true",
+        help="Show full profile descriptions under each row.",
+    )
     p_workflows_list.set_defaults(func=cmd_workflows_list)
 
     # ── runtimes ─────────────────────────────────────────────────────────────
@@ -1538,13 +1686,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_qg.set_defaults(func=cmd_quality_gates)
 
     # ── prompts ───────────────────────────────────────────────────────────────
-    p_prompts = sub.add_parser("prompts", help="Show prompt resolution chain")
+    p_prompts = sub.add_parser(
+        "prompts",
+        help="Inspect prompt catalog and resolution chain",
+    )
     p_prompts.add_argument("name", nargs="?", default=None,
-                           help="Prompt name (e.g. tasks/build)")
+                           help="Prompt name (e.g. tasks/plan)")
     p_prompts.add_argument("--project", default=None,
                            help="Project dir for override resolution")
     p_prompts.add_argument("--list", "-l", action="store_true",
-                           help="List all available core prompts")
+                           help="Show the full prompt catalog")
     p_prompts.add_argument("--verbose", "-v", action="store_true",
                            help="Print the contents of the resolved prompt template")
     p_prompts.set_defaults(func=cmd_prompts)
@@ -1671,7 +1822,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_web = sub.add_parser("web", help=argparse.SUPPRESS)
     p_web.add_argument(
         "--port", "-p", type=int, default=8501,
-        help="Порт для Streamlit (по умолчанию 8501)",
+        help="Port for Streamlit (default: 8501)",
     )
     p_web.add_argument(
         "--headless", action="store_true",
@@ -1704,11 +1855,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute declared verification-contract checks",
         description=(
             "Run the project's declared verification contract against a run. "
-            "Subcommand `env` executes one verification_env's assertions and "
-            "writes an env-receipt under the run directory."
+            "Use `env` for environment receipts, `list` to inspect declared "
+            "commands, and `run` to execute command receipts."
         ),
     )
-    p_verify_sub = p_verify.add_subparsers(dest="verify_cmd", required=True)
+    p_verify.set_defaults(func=cmd_verify_overview)
+    p_verify_sub = p_verify.add_subparsers(dest="verify_cmd")
     p_verify_env = p_verify_sub.add_parser(
         "env",
         help="Execute a verification_env's declared assertions",

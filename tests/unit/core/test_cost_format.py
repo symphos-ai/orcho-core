@@ -383,10 +383,13 @@ def test_pricing_show_explains_provider_cost_sources():
 
     out = format_pricing(table)
 
-    assert "Provider cost notes" in out
-    assert "Claude reports native cost" in out
-    assert "OpenAI/Codex token-only runs" in out
-    assert "Gemini provider-cost behavior is not assumed" in out
+    assert "Pricing reference" in out
+    assert "Reference only" in out
+    assert "OpenAI/Codex token-only phases" in out
+    assert "Runtimes that report native cost" in out
+    assert "matching rate card" in out
+    assert "Verify current rates before relying on estimates" in out
+    assert "YOUR responsibility" not in out
 
 
 def test_top_phase_note_present_when_has_cost():
