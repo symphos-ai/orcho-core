@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from cli._formatters import format_status
+from core.io.ansi import set_color_enabled, strip_ansi
 from sdk.errors import InvalidPhaseHandoffState
 from sdk.phase_handoff import phase_handoff_decide, safe_handoff_id
 from sdk.status import load_status
@@ -214,6 +215,127 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
     assert "Verification missing: lint" in rendered
     assert "PR: https://example.test/pr/1" in rendered
     assert "Run dir:" in rendered
+
+
+def test_status_uses_workspace_accounting_config_without_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+    config._reset_config()
+
+    workspace = tmp_path / "workspace-orchestrator"
+    runs = workspace / "runspace" / "runs"
+    run_dir = runs / "20260612_accounting"
+    run_dir.mkdir(parents=True)
+    (workspace / ".orcho").mkdir()
+    (workspace / ".orcho" / "config.local.json").write_text(
+        json.dumps({"accounting": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "workspace accounting status",
+                "project": "/repo/orcho-core",
+                "status": "done",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+                "phases": {
+                    "plan": {
+                        "model": "claude-opus-4-8",
+                        "total_tokens": 10,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        status = load_status("20260612_accounting", workspace=workspace)
+        rendered = format_status(status)
+    finally:
+        config._reset_config()
+
+    assert "Cost ref: runtime-reported $1.23" in rendered
+    assert "runtime-reported $1.23" in rendered
+
+
+def test_cli_status_color_can_be_forced_without_changing_plain_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+    config._reset_config()
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260612_color"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "color status",
+                "project": "/repo/orcho-core",
+                "status": "done",
+                "commit_delivery": {
+                    "status": "committed",
+                    "release_verdict": "APPROVED",
+                    "verification_missing": ["lint"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "gpt-5.5",
+                        "total_tokens": 10,
+                        "duration_s": 1.0,
+                        "cost_usd_equivalent": 1.23,
+                        "cost_estimated": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        status = load_status("20260612_color", runs_dir=runs, cwd=None)
+        set_color_enabled(True)
+        rendered = format_status(status)
+    finally:
+        set_color_enabled(None)
+        config._reset_config()
+
+    assert "\x1b[" in rendered
+    plain = strip_ansi(rendered)
+    assert "Status:  done" in plain
+    assert "Cost ref: estimated-api ~$1.23" in plain
+    assert "Verification missing: lint" in plain
 
 
 def test_cli_status_handles_invalid_metrics_empty_delivery_and_path_context(

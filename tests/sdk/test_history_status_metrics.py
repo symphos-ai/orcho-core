@@ -285,6 +285,50 @@ def test_get_run_metrics(populated_runs: Path, monkeypatch: pytest.MonkeyPatch):
     assert "plan" in m.phases
 
 
+def test_get_run_metrics_uses_workspace_accounting_config_without_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from core.infra import config
+
+    monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+    config._reset_config()
+
+    workspace = tmp_path / "workspace-orchestrator"
+    runs = workspace / "runspace" / "runs"
+    run_dir = runs / "20260612_metrics"
+    run_dir.mkdir(parents=True)
+    (workspace / ".orcho").mkdir()
+    (workspace / ".orcho" / "config.local.json").write_text(
+        json.dumps({"accounting": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps({"project": "/repo/orcho-core", "task": "t", "status": "done"}),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        metrics = get_run_metrics("20260612_metrics", workspace=workspace)
+    finally:
+        config._reset_config()
+
+    assert metrics.total_cost_usd_equivalent == pytest.approx(1.23)
+
+
 def test_list_metrics(populated_runs: Path):
     rows = list_metrics(last=10, runs_dir=populated_runs)
     # Cross run has no meta.json/metrics.json shape that load_historical_runs

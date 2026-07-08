@@ -49,6 +49,59 @@ from sdk import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _stdout_paint(text: str, *codes: str) -> str:
+    """Paint stdout-bound CLI text through the shared color policy."""
+    return paint(text, *codes, color=None, stream=sys.stdout)
+
+
+def _status_label(text: str) -> str:
+    return _stdout_paint(text, C.CYAN)
+
+
+def _status_section(text: str) -> str:
+    return _stdout_paint(text, C.CYAN, C.BOLD)
+
+
+def _status_muted(text: str) -> str:
+    return _stdout_paint(text, C.GREY)
+
+
+def _status_warning(text: str) -> str:
+    return _stdout_paint(text, C.YELLOW)
+
+
+def _status_state(text: str) -> str:
+    normalized = text.strip().lower()
+    if normalized in {
+        "approved",
+        "committed",
+        "done",
+        "pass",
+        "passed",
+        "ship_ready",
+        "success",
+        "succeeded",
+    }:
+        return _stdout_paint(text, C.GREEN)
+    if normalized in {
+        "blocked",
+        "failed",
+        "halted",
+        "incomplete",
+        "patch_invalid",
+        "patch_missing",
+        "rejected",
+    }:
+        return _stdout_paint(text, C.RED)
+    if normalized.startswith("awaiting") or normalized in {
+        "paused",
+        "pending",
+        "running",
+    }:
+        return _stdout_paint(text, C.YELLOW)
+    return _stdout_paint(text, C.WHITE)
+
+
 def _pending_handoff_id(status: RunStatus) -> str | None:
     """Current pending phase-handoff id for an awaiting run, else ``None``.
 
@@ -109,21 +162,35 @@ def _append_status_usage(out: list[str], status: RunStatus) -> None:
     if not status.raw_metrics:
         return
     out.append("")
-    out.append(
-        f"  Tokens:  {status.total_tokens:,} "
+    tokens_text = (
+        f"{status.total_tokens:,} "
         f"(in={status.total_tokens_in:,} out={status.total_tokens_out:,})"
+    )
+    out.append(
+        f"{_status_label('  Tokens:')}  "
+        f"{_stdout_paint(tokens_text, C.WHITE)}"
     )
     cost = _float_metric(status.raw_metrics.get("total_cost_usd_equivalent"))
     if cost > 0.0:
+        estimated = _metrics_cost_estimated(status.raw_metrics)
         out.append(
-            "  Cost ref: "
-            f"{format_cost_reference(cost, estimated=_metrics_cost_estimated(status.raw_metrics))}"
+            f"{_status_label('  Cost ref:')} "
+            f"{_cost_reference_text(cost, estimated=estimated)}"
         )
-    out.append(f"  Time:    {status.total_duration_s:.1f}s")
+    out.append(
+        f"{_status_label('  Time:')}    "
+        f"{_stdout_paint(f'{status.total_duration_s:.1f}s', C.WHITE)}"
+    )
     if status.total_rounds:
-        out.append(f"  Rounds:  {status.total_rounds}")
+        out.append(
+            f"{_status_label('  Rounds:')}  "
+            f"{_stdout_paint(str(status.total_rounds), C.WHITE)}"
+        )
     if status.total_retries:
-        out.append(f"  Retries: {status.total_retries}")
+        out.append(
+            f"{_status_label('  Retries:')} "
+            f"{_status_warning(str(status.total_retries))}"
+        )
 
 
 def _append_status_phases(
@@ -145,21 +212,26 @@ def _append_status_phases(
                 for _, data in phase_items
             )
             out.append("")
-            out.append("  Phases:")
+            out.append(_status_section("  Phases:"))
             for name, data in phase_items:
                 attempts = _int_metric(data.get("attempts"))
                 attempts_text = f"attempts={attempts}" if attempts else "attempts=?"
                 tokens = _int_metric(data.get("total_tokens"))
                 duration = _float_metric(data.get("duration_s"))
                 model = _clip_status_text(data.get("model"), 26)
+                phase_cell = _stdout_paint(f"{name:<18}", C.CYAN)
+                attempts_cell = _status_muted(f"{attempts_text:<11}")
+                tokens_cell = _stdout_paint(f"{tokens:>11,} tok", C.WHITE)
+                duration_cell = _stdout_paint(f"{duration:>8.1f}s", C.BLUE)
+                model_cell = _status_muted(f"{model:<26}")
                 line = (
-                    f"    {name:<18} {attempts_text:<11} "
-                    f"{tokens:>11,} tok {duration:>8.1f}s  {model:<26}"
+                    f"    {phase_cell} {attempts_cell} "
+                    f"{tokens_cell} {duration_cell}  {model_cell}"
                 )
                 if show_cost:
                     cost = _float_metric(data.get("cost_usd_equivalent"))
                     cost_text = (
-                        format_cost_reference(
+                        _cost_reference_text(
                             cost,
                             estimated=bool(data.get("cost_estimated")),
                         )
@@ -173,7 +245,10 @@ def _append_status_phases(
     meta_phases = getattr(meta, "phases", ())
     if meta_phases:
         out.append("")
-        out.append(f"  Phases completed: {', '.join(meta_phases)}")
+        out.append(
+            f"{_status_section('  Phases completed:')} "
+            f"{_stdout_paint(', '.join(meta_phases), C.WHITE)}"
+        )
 
 
 def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
@@ -192,19 +267,32 @@ def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
         return
 
     out.append("")
-    out.append("  Delivery:")
+    out.append(_status_section("  Delivery:"))
     if status_text or action_text:
         suffix = f" ({action_text})" if action_text and action_text != status_text else ""
-        out.append(f"    Status: {status_text or '?'}{suffix}")
+        out.append(
+            f"{_status_label('    Status:')} "
+            f"{_status_state(status_text or '?')}"
+            f"{_status_muted(suffix) if suffix else ''}"
+        )
     if verdict:
-        out.append(f"    Release: {verdict}")
+        out.append(
+            f"{_status_label('    Release:')} "
+            f"{_status_state(verdict)}"
+        )
     if summary:
-        out.append(f"    Summary: {_clip_status_text(summary, 140)}")
+        out.append(
+            f"{_status_label('    Summary:')} "
+            f"{_stdout_paint(_clip_status_text(summary, 140), C.WHITE)}"
+        )
     if isinstance(verification_missing, list) and verification_missing:
         missing = ", ".join(str(item) for item in verification_missing)
-        out.append(f"    Verification missing: {missing}")
+        out.append(
+            f"{_status_label('    Verification missing:')} "
+            f"{_status_warning(missing)}"
+        )
     if pr_url:
-        out.append(f"    PR: {pr_url}")
+        out.append(f"{_status_label('    PR:')} {_stdout_paint(pr_url, C.GREEN)}")
 
 
 def _append_status_paths(
@@ -213,17 +301,25 @@ def _append_status_paths(
     raw_meta: dict[str, Any],
 ) -> None:
     out.append("")
-    out.append("  Paths:")
+    out.append(_status_section("  Paths:"))
     project = raw_meta.get("project")
     if project:
-        out.append(f"    Source:   {project}")
+        out.append(
+            f"{_status_label('    Source:')}   {_status_muted(str(project))}"
+        )
     worktree = raw_meta.get("worktree")
     if isinstance(worktree, dict) and worktree.get("path"):
-        out.append(f"    Worktree: {worktree['path']}")
+        out.append(
+            f"{_status_label('    Worktree:')} {_status_muted(str(worktree['path']))}"
+        )
     parent_run_id = raw_meta.get("parent_run_id")
     if parent_run_id:
-        out.append(f"    Parent:   {parent_run_id}")
-    out.append(f"    Run dir:  {status.run_ref.run_dir}")
+        out.append(
+            f"{_status_label('    Parent:')}   {_stdout_paint(str(parent_run_id), C.WHITE)}"
+        )
+    out.append(
+        f"{_status_label('    Run dir:')}  {_status_muted(str(status.run_ref.run_dir))}"
+    )
 
 
 def format_status(status: RunStatus, *, verbose: bool = False) -> str:
@@ -231,36 +327,64 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
     out: list[str] = []
     sep = "─" * 60
     out.append("")
-    out.append(sep)
-    out.append(f"  Run:     {status.run_ref.run_id}")
-    out.append(sep)
+    out.append(_status_muted(sep))
+    out.append(
+        f"{_status_label('  Run:')}     "
+        f"{_stdout_paint(status.run_ref.run_id, C.GREEN, C.BOLD)}"
+    )
+    out.append(_status_muted(sep))
 
     meta = status.meta
     if meta is not None:
         if meta.projects:
-            out.append(f"  Project: [cross] {', '.join(meta.projects)}")
+            out.append(
+                f"{_status_label('  Project:')} "
+                f"{_stdout_paint('[cross]', C.MAGENTA)} "
+                f"{_stdout_paint(', '.join(meta.projects), C.WHITE)}"
+            )
         else:
-            out.append(f"  Project: {Path(meta.project or '?').name}")
-        out.append(f"  Task:    {(meta.task or '?')[:80]}")
-        out.append(f"  Status:  {meta.status or '?'}")
+            out.append(
+                f"{_status_label('  Project:')} "
+                f"{_stdout_paint(Path(meta.project or '?').name, C.WHITE)}"
+            )
+        out.append(
+            f"{_status_label('  Task:')}    "
+            f"{_stdout_paint((meta.task or '?')[:80], C.WHITE)}"
+        )
+        out.append(
+            f"{_status_label('  Status:')}  "
+            f"{_status_state(meta.status or '?')}"
+        )
         # Pending phase-handoff id: only present while the run awaits an
         # operator decision. Names the exact id the operator must pass to
         # ``phase_handoff_decide`` / ``orcho run --resume`` so the current
         # round (e.g. ``review_changes:repair_round:2``) is unambiguous.
         pending_handoff = _pending_handoff_id(status)
         if pending_handoff is not None:
-            out.append(f"  Pending handoff: {pending_handoff}")
-        out.append(f"  Profile: {meta.profile or '?'}")
-        out.append(f"  Time:    {meta.timestamp or '?'}")
+            out.append(
+                f"{_status_label('  Pending handoff:')} "
+                f"{_status_warning(pending_handoff)}"
+            )
+        out.append(
+            f"{_status_label('  Profile:')} "
+            f"{_stdout_paint(meta.profile or '?', C.WHITE)}"
+        )
+        out.append(
+            f"{_status_label('  Time:')}    "
+            f"{_status_muted(meta.timestamp or '?')}"
+        )
 
     _append_status_usage(out, status)
     _append_status_phases(out, status=status, meta=meta)
 
     if status.sub_projects:
         out.append("")
-        out.append("  Projects:")
+        out.append(_status_section("  Projects:"))
         for sp in status.sub_projects:
-            out.append(f"    [{sp.name}]  status={sp.status or '?'}")
+            out.append(
+                f"    {_stdout_paint(f'[{sp.name}]', C.CYAN)}  "
+                f"{_status_label('status=')}{_status_state(sp.status or '?')}"
+            )
 
     _append_status_delivery(out, status.raw_meta)
     _append_status_paths(out, status, status.raw_meta)
@@ -273,7 +397,7 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
         for line in meta_text.split("\n"):
             out.append(f"    {line}")
 
-    out.append(sep)
+    out.append(_status_muted(sep))
     out.append("")
     return "\n".join(out)
 
@@ -415,11 +539,6 @@ def format_metrics_history(rows: list[RunMetrics], *, runs_dir: Path | None = No
 # ─────────────────────────────────────────────────────────────────────────────
 # cost
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _stdout_paint(text: str, *codes: str) -> str:
-    """Paint stdout-bound CLI text through the shared color policy."""
-    return paint(text, *codes, color=None, stream=sys.stdout)
 
 
 def _cost_title(text: str) -> str:

@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.infra import config
 from core.observability import pricing as _pricing
+from sdk._runspace_context import (
+    accounting_enabled_for_context,
+    workspace_from_runs_dir,
+)
 from sdk._time import parse_window, run_ts_to_datetime
 from sdk.runs import _CWD_DEFAULT, find_runs_dir, load_json_optional, load_meta
 from sdk.types import (
@@ -38,14 +41,8 @@ def _provider_for_model(model: str) -> str:
     return "other"
 
 
-def _workspace_from_runs_dir(runs_dir: Path) -> Path | None:
-    if runs_dir.name == "runs" and runs_dir.parent.name == "runspace":
-        return runs_dir.parent.parent
-    return None
-
-
 def _project_group_root_from_runs_dir(runs_dir: Path) -> Path | None:
-    workspace = _workspace_from_runs_dir(runs_dir)
+    workspace = workspace_from_runs_dir(runs_dir)
     if workspace is None:
         return None
     if workspace.name == "workspace-orchestrator":
@@ -91,19 +88,6 @@ def _metrics_cost_estimated(phases: dict) -> bool:
     )
 
 
-def _accounting_enabled_for_context(
-    *,
-    workspace: Path | str | None,
-    runs_dir: Path,
-) -> bool:
-    resolved_workspace = Path(workspace).expanduser() if workspace else None
-    if resolved_workspace is None:
-        resolved_workspace = _workspace_from_runs_dir(runs_dir)
-    if resolved_workspace is not None:
-        return config.accounting_enabled_for_workspace(resolved_workspace)
-    return config.accounting_enabled()
-
-
 def aggregate_cost(
     *,
     workspace: Path | str | None = None,
@@ -122,7 +106,7 @@ def aggregate_cost(
     """
     rd = find_runs_dir(workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     cutoff = parse_window(window)
-    use_accounting = _accounting_enabled_for_context(
+    use_accounting = accounting_enabled_for_context(
         workspace=workspace,
         runs_dir=rd,
     )
