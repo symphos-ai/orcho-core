@@ -34,35 +34,33 @@ from core.observability import events as evstore  # noqa: E402  # after sys.path
 # ── Find run directory ────────────────────────────────────────────────────────
 
 def _resolve_runspace() -> Path | None:
-    """Резолвер runspace для read-only мониторинга.
+    """Resolve the runspace for read-only monitoring.
 
-    Источники по приоритету:
-      1. ``$ORCHO_RUNSPACE`` env (явный override — выигрывает всегда).
-      2. **Walk-up от cwd** — первый parent с ``runspace/runs/``. Имеет
-         приоритет над глобальным ``$ORCHO_WORKSPACE``, потому что
-         физическое присутствие пользователя в директории — более сильный
-         контекстный сигнал чем глобально выставленный env (юзер мог сидеть
-         в одном workspace, а $ORCHO_WORKSPACE указывать на другой).
-      3. ``$ORCHO_WORKSPACE`` / engine-resolver — fallback когда walk-up
-         не нашёл (запуск из произвольной директории).
+    Source priority:
+      1. ``$ORCHO_RUNSPACE`` env (explicit override; always wins).
+      2. Cwd walk-up: the first parent with ``runspace/runs/``. This beats the
+         global ``$ORCHO_WORKSPACE`` because the user's physical cwd is a
+         stronger context signal than a shell env var that may point elsewhere.
+      3. ``$ORCHO_WORKSPACE`` / engine resolver as a fallback when walk-up does
+         not find a runspace.
 
-    Тул только читает run-артефакты, поэтому walk-up безопасен (в отличие
-    от pipeline runtime, где walk-up удалён намеренно).
+    This tool only reads run artifacts, so cwd walk-up is safe here, unlike in
+    the pipeline runtime where it is intentionally disabled.
     """
-    # 1. Явный $ORCHO_RUNSPACE override.
+    # 1. Explicit $ORCHO_RUNSPACE override.
     if env_runspace := os.environ.get("ORCHO_RUNSPACE"):
         p = Path(env_runspace)
         if (p / "runs").is_dir():
             return p
 
-    # 2. Walk-up от cwd — контекстно сильнее env.
+    # 2. Cwd walk-up is contextually stronger than env.
     cwd = Path.cwd().resolve()
     for candidate in (cwd, *cwd.parents):
         runspace = candidate / "runspace"
         if (runspace / "runs").is_dir():
             return runspace
 
-    # 3. Engine-резолвер ($ORCHO_WORKSPACE → workspace_dir().runspace).
+    # 3. Engine resolver ($ORCHO_WORKSPACE -> workspace_dir().runspace).
     try:
         from core.infra.platform import runspace_dir
         return runspace_dir()
@@ -74,14 +72,14 @@ def find_latest_run() -> Path:
     runspace = _resolve_runspace()
     if runspace is None:
         print(
-            "Runspace не определён. Запустите тул из любой папки внутри "
-            "workspace-orchestrator/, либо задайте $ORCHO_WORKSPACE, либо "
-            "передайте run-директорию аргументом."
+            "Runspace is not resolved. Run this tool from any folder inside "
+            "workspace-orchestrator/, set $ORCHO_WORKSPACE, or pass a run "
+            "directory argument."
         )
         sys.exit(1)
 
     if not (runspace / "runs").is_dir():
-        print(f"В {runspace} нет подкаталога runs/. Запустите pipeline сначала.")
+        print(f"{runspace} has no runs/ subdirectory. Run the pipeline first.")
         sys.exit(1)
 
     # Prefer runs that have events.jsonl; fall back to the newest run dir.
@@ -97,7 +95,7 @@ def find_latest_run() -> Path:
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     if not runs:
-        print(f"В {runspace}/runs нет ни одного запуска")
+        print(f"{runspace}/runs has no runs.")
         sys.exit(1)
     return runs[0]
 
@@ -111,7 +109,7 @@ def resolve_run_dir() -> Path:
         return p
     if p.is_file():
         return p.parent
-    print(f"Run dir не существует: {p}")
+    print(f"Run dir does not exist: {p}")
     sys.exit(1)
 
 
@@ -261,9 +259,12 @@ def main() -> int:
     events_path = run_dir / "events.jsonl"
 
     if not events_path.exists():
-        print(f"Нет {events_path} — этот run сделан до миграции на event-store.\n"
-              f"Старые логи (output.log/progress.log) больше не парсятся "
-              f"в orcho-watch.")
+        print(
+            f"{events_path} does not exist; this run predates the event-store "
+            "migration.\n"
+            "Legacy logs (output.log/progress.log) are no longer parsed by "
+            "orcho-watch."
+        )
         return 1
 
     print(f"\n{'═'*70}")

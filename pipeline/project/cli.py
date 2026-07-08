@@ -455,10 +455,10 @@ Examples:
         "--resume", type=str, nargs="?", const="latest", default=None,
         metavar="RUN_ID",
         help="Resume from existing run_dir (skip phases that have a checkpoint). "
-             "RUN_ID должен быть basename папки в <workspace>/runspace/runs/, "
-             "например 20260504_154134. Передайте bare --resume или "
-             "--resume latest чтобы автоматически выбрать самый свежий ран "
-             "в активном workspace.",
+             "RUN_ID must be the basename of a folder under "
+             "<workspace>/runspace/runs/, for example 20260504_154134. "
+             "Pass bare --resume or --resume latest to auto-select the newest "
+             "run in the active workspace.",
     )
     parser.add_argument(
         "--from-run-plan", type=str, default=None, metavar="RUN_ID_OR_DIR",
@@ -681,10 +681,10 @@ Examples:
     if not args.workspace and not args.project:
         _autoderive_workspace_from_cwd()
 
-    # Workspace propagation: --workspace CLI flag wins, fallback на $ORCHO_WORKSPACE.
-    # Выставляем env переменную ДО первого config.RUNS_DIR access, чтобы единый
-    # резолвер в platform.py видел свежее значение, а не фиксированный snapshot
-    # из момента import. См. _LazyPath в config.py.
+    # Workspace propagation: --workspace CLI flag wins, then $ORCHO_WORKSPACE.
+    # Set the env variable before the first config.RUNS_DIR access so the shared
+    # resolver in platform.py sees the fresh value instead of the import-time
+    # snapshot. See _LazyPath in config.py.
     #
     # ``config.get_runs_dir()`` (used below for resume meta + output dir
     # lookup) reads ``ORCHO_RUNSPACE`` before ``ORCHO_WORKSPACE``, so an
@@ -1110,8 +1110,8 @@ Examples:
             sys.exit(2)
         if not output_dir.is_dir():
             print_error(
-                f"--resume {args.resume!r}: run_dir не существует: {output_dir}.\n"
-                f"Доступные runs: ls {output_dir.parent}"
+                f"--resume {args.resume!r}: run_dir does not exist: {output_dir}.\n"
+                f"Available runs: ls {output_dir.parent}"
             )
             sys.exit(2)
     elif _resume_mode == _ResumeMode.FOLLOWUP:
@@ -1130,9 +1130,9 @@ Examples:
             print_error(str(exc))
             sys.exit(2)
     else:
-        # Default: <workspace>/runspace/runs/{ts}/ — атомарный folder на run.
-        # Если workspace не резолвится — get_runs_dir() raise WorkspaceNotResolvedError
-        # с подсказкой как починить.
+        # Default: <workspace>/runspace/runs/{ts}/ — one atomic folder per run.
+        # If the workspace cannot be resolved, get_runs_dir() raises
+        # WorkspaceNotResolvedError with a fix-it hint.
         # ``--run-id`` (or $ORCHO_RUN_ID) overrides the timestamp so external
         # supervisors that pre-create the run folder can ensure folder name
         # equals the run_id used in checkpoint/meta downstream (P2.5 contract).
