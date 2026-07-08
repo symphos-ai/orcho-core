@@ -41,6 +41,8 @@ def _write_run(
     tokens_out: int = 2000,
     duration_s: float = 10.0,
     rounds: int = 0,
+    cost: float | None = None,
+    cost_estimated: bool = False,
 ) -> Path:
     """Create a fake run directory with meta.json and metrics.json."""
     d = runs_dir / run_id
@@ -71,6 +73,14 @@ def _write_run(
     }
     if rounds:
         metrics["total_rounds"] = rounds
+    if cost is not None:
+        metrics["total_cost_usd_equivalent"] = cost
+        if cost_estimated:
+            metrics["cost_estimated"] = True
+        for phase in metrics["phases"].values():
+            phase["cost_usd_equivalent"] = cost / 2.0
+            if cost_estimated:
+                phase["cost_estimated"] = True
 
     (d / "metrics.json").write_text(json.dumps(metrics))
     return d
@@ -628,9 +638,89 @@ class TestCmdMetrics:
         assert "20260501_000000" in out
         assert "20260502_000000" in out
 
+    def test_metrics_history_aligns_long_ids_and_cost(
+        self,
+        runs_dir: Path,
+        capsys,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from cli.orcho import cmd_metrics
+        from core.infra import config
+
+        monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+        config._reset_config()
+        try:
+            _write_run(
+                runs_dir,
+                "20260707_162649_347471",
+                project="/repo/demo_project",
+                task="tool-handler smoke with enough text to clip",
+                tokens_in=10_000,
+                tokens_out=972,
+                duration_s=0.8,
+                rounds=1,
+                cost=1.23,
+                cost_estimated=True,
+            )
+            args = _make_args(last=10)
+            rc = cmd_metrics(args)
+        finally:
+            config._reset_config()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Metrics history · last 1 runs" in out
+        assert "Cost ref" in out
+        assert "estimated-api ~$1.23" in out
+        assert "20260707_162649_347471   demo_project" in out
+
+    def test_metrics_history_color_can_be_forced(self, tmp_path: Path) -> None:
+        from cli._formatters import format_metrics_history
+        from core.io.ansi import set_color_enabled, strip_ansi
+        from sdk.types import RunMetrics
+
+        run_dir = tmp_path / "runs" / "20260707_162649_347471"
+        run_dir.mkdir(parents=True)
+        (run_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "project": "/repo/orcho-core",
+                    "task": "color metrics",
+                }
+            ),
+            encoding="utf-8",
+        )
+        row = RunMetrics(
+            run_id="20260707_162649_347471",
+            run_dir=run_dir,
+            total_tokens=10,
+            total_duration_s=1.0,
+            total_rounds=1,
+            total_cost_usd_equivalent=1.23,
+            raw={"total_cost_usd_equivalent": 1.23, "cost_estimated": True},
+        )
+
+        try:
+            set_color_enabled(True)
+            rendered = format_metrics_history([row])
+        finally:
+            set_color_enabled(None)
+
+        assert "\x1b[" in rendered
+        plain = strip_ansi(rendered)
+        assert "Metrics history · last 1 runs" in plain
+        assert "Cost ref" in plain
+        assert "estimated-api ~$1.23" in plain
+
     def test_metrics_single_run_detail(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_metrics
-        _write_run(runs_dir, "20260502_100000", tokens_in=5000, tokens_out=10000)
+        _write_run(
+            runs_dir,
+            "20260502_100000",
+            tokens_in=5000,
+            tokens_out=10000,
+            cost=2.0,
+        )
         args = _make_args(run_id="20260502_100000")
         rc = cmd_metrics(args)
         out = capsys.readouterr().out
