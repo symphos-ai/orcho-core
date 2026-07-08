@@ -303,16 +303,18 @@ Every run writes `<run-dir>/diff.patch`. `orcho diff` renders that
 artifact — it never recomputes a git diff.
 
 ```bash
-orcho diff <run-id>                       # raw patch (default)
-orcho diff <run-id> --preview             # grouped per-file overview
+orcho diff <run-id>                       # grouped per-file overview (default)
+orcho diff <run-id> --preview             # same grouped overview, explicit
 orcho diff <run-id> --stat                # +A -R table per file
+orcho diff <run-id> --full                # raw patch for git apply
 orcho diff <run-id> --path api/payload.py # filter by file
 orcho diff <run-id> --path api/           # prefix filter (api/*)
 orcho diff <run-id> --max-bytes 200000    # truncate output
 orcho diff <run-id> --no-color            # no ANSI colors
 ```
 
-`--full` (default) is the byte-for-byte raw patch (pipable into
+`--preview` (default) is the operator-readable grouped view. `--full`
+is the byte-for-byte raw patch (pipable into
 `git apply`). With a `--path` filter the raw patch is reassembled from
 the matching sections, keeping `diff --git` / `index` / `---`/`+++` /
 hunks intact — it stays valid.

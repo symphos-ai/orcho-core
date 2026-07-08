@@ -1357,6 +1357,18 @@ class TestCmdDiff:
         assert "Update(api/payload.py)" in out
         assert "Update(api/util.py)" in out
 
+    def test_diff_missing_mode_defaults_to_preview(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_diff
+        self._write_diff_run(runs_dir, "20260519_100009")
+        args = _make_args(run_id="20260519_100009", no_color=True)
+        rc = cmd_diff(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Update(api/payload.py)" in out
+        assert "diff --git" not in out
+
     def test_diff_stat_mode_shows_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1490,10 +1502,10 @@ class TestCmdDiff:
         with pytest.raises(SystemExit):
             parser.parse_args(["diff", "any_run", "--preview", "--stat"])
 
-    def test_diff_parser_default_mode_is_full(self) -> None:
+    def test_diff_parser_default_mode_is_preview(self) -> None:
         from cli.orcho import build_parser
         args = build_parser().parse_args(["diff", "any_run"])
-        assert args.diff_mode == "full"
+        assert args.diff_mode == "preview"
 
 
 class TestCmdEvidenceDiff:
