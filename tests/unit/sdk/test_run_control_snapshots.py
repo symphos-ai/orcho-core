@@ -94,6 +94,28 @@ class TestNoPending:
         rows = {r.name: r.status for r in snap.sub_runs}
         assert rows == {"alpha": "done", "beta": "running"}
 
+    def test_artifact_dirs_are_not_sub_runs(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        run_dir = _make_run(
+            runs,
+            "run-with-artifacts",
+            {"status": "done", "task": "t"},
+        )
+        for name in (
+            "commit_decisions",
+            "phase_handoff_advice",
+            "phase_handoff_decisions",
+            "phases",
+            "verification_command_receipts",
+            "verification_receipts",
+        ):
+            (run_dir / name).mkdir()
+
+        snap = _load(runs, "run-with-artifacts")
+
+        assert snap.sub_runs == ()
+
 
 # ── project handoff ──────────────────────────────────────────────────────────
 

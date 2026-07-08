@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.cross_project.checkpoint import read_cross_checkpoint
+from sdk.evidence_slices import list_sub_runs
 from sdk.phase_handoff import load_active_phase_handoff
 from sdk.run_control.types import PendingOperatorAction, RunSnapshot
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
@@ -75,30 +76,24 @@ def load_run_snapshot(
         project=raw_meta.get("project"),
         profile=raw_meta.get("profile"),
         phases=phases,
-        sub_runs=_collect_sub_runs(ref.run_dir),
+        sub_runs=_collect_sub_runs(ref.run_id, ref.run_dir),
         worktree=raw_meta.get("worktree") if isinstance(raw_meta, dict) else None,
         pending_action=pending,
         raw_meta=raw_meta,
     )
 
 
-def _collect_sub_runs(run_dir: Path) -> tuple[PhaseStatus, ...]:
-    """Enumerate visible sub-run directories as ``PhaseStatus`` rows.
+def _collect_sub_runs(run_id: str, run_dir: Path) -> tuple[PhaseStatus, ...]:
+    """Enumerate real cross-run children as ``PhaseStatus`` rows.
 
-    Mirrors :func:`sdk.status.load_status`'s sub-project enumeration:
-    every non-hidden sub-directory becomes one row, ``status`` taken from
-    its own ``meta.json`` (``None`` when not yet written). No terminal
-    layer is touched.
+    Mirrors :func:`sdk.status.load_status` by routing through
+    :func:`sdk.evidence_slices.list_sub_runs`, whose positive detection keeps
+    run-owned artifact directories out of the child-run list.
     """
-    rows: list[PhaseStatus] = []
-    for sd in sorted(
-        p for p in run_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
-    ):
-        sub_meta = load_meta(sd)
-        rows.append(
-            PhaseStatus(name=sd.name, status=sub_meta.get("status") if sub_meta else None)
-        )
-    return tuple(rows)
+    return tuple(
+        PhaseStatus(name=link.name, status=link.status)
+        for link in list_sub_runs(run_id, runs_dir=run_dir.parent, cwd=None)
+    )
 
 
 def _resolve_pending_action(

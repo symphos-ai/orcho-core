@@ -131,6 +131,90 @@ def test_cli_status_omits_pending_line_for_running_run(tmp_path: Path) -> None:
     assert "Pending handoff" not in rendered
 
 
+def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+    config._reset_config()
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260612_done"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "ship cost status",
+                "project": "/repo/orcho-core",
+                "profile": "feature",
+                "timestamp": "2026-06-12T10:00:00",
+                "status": "done",
+                "phases": {"plan": {}, "implement": {}},
+                "commit_delivery": {
+                    "action": "approve",
+                    "status": "committed",
+                    "release_verdict": "APPROVED",
+                    "release_summary": "Ready after verification receipt review.",
+                    "verification_missing": ["lint"],
+                    "pr_url": "https://example.test/pr/1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 300,
+                "total_tokens_in": 250,
+                "total_tokens_out": 50,
+                "total_duration_s": 12.5,
+                "total_rounds": 2,
+                "total_cost_usd_equivalent": 12.34,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "claude-opus-4-8",
+                        "attempts": 1,
+                        "total_tokens": 100,
+                        "duration_s": 3.0,
+                        "cost_usd_equivalent": 1.0,
+                    },
+                    "review_changes": {
+                        "model": "gpt-5.5",
+                        "attempts": 2,
+                        "total_tokens": 200,
+                        "duration_s": 9.5,
+                        "cost_usd_equivalent": 2.0,
+                        "cost_estimated": True,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in ("commit_decisions", "phase_handoff_advice", "phases"):
+        (run_dir / name).mkdir()
+
+    try:
+        status = load_status("20260612_done", runs_dir=runs, cwd=None)
+        rendered = format_status(status)
+    finally:
+        config._reset_config()
+
+    assert "Projects:" not in rendered
+    assert "Cost ref: estimated-api ~$12.34" in rendered
+    assert "review_changes" in rendered
+    assert "runtime-reported $1.00" in rendered
+    assert "estimated-api ~$2.00" in rendered
+    assert "Delivery:" in rendered
+    assert "Status: committed (approve)" in rendered
+    assert "Verification missing: lint" in rendered
+    assert "PR: https://example.test/pr/1" in rendered
+    assert "Run dir:" in rendered
+
+
 # ── id progression + per-id idempotency ────────────────────────────────────
 
 

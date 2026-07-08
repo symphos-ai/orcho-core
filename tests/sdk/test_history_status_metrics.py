@@ -254,6 +254,26 @@ def test_load_status_setup_child_no_from_run_plan_with_launcher_state(
     assert not any(a.tool == "orcho_run_start" for a in status.next_actions)
 
 
+def test_load_status_excludes_run_artifact_dirs_from_sub_projects(
+    runs_root: Path,
+) -> None:
+    """Run-owned artifact directories must not surface as child projects."""
+    run_dir = _write_minimal_run(runs_root, "20260601_artifact_dirs")
+    for name in (
+        "commit_decisions",
+        "phase_handoff_advice",
+        "phase_handoff_decisions",
+        "phases",
+        "verification_command_receipts",
+        "verification_receipts",
+    ):
+        (run_dir / name).mkdir()
+
+    status = load_status("20260601_artifact_dirs", runs_dir=runs_root)
+
+    assert status.sub_projects == ()
+
+
 def test_get_run_metrics(populated_runs: Path, monkeypatch: pytest.MonkeyPatch):
     from core.infra import config
     monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
