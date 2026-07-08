@@ -9,7 +9,7 @@ from core.observability.metrics import (
 )
 from pipeline.run_state.setup_failure import merged_status
 from sdk.actions import compute_next_actions
-from sdk.evidence_slices import active_stall_diagnostics
+from sdk.evidence_slices import active_stall_diagnostics, list_sub_runs
 from sdk.runs import _CWD_DEFAULT, find_run, load_json_optional, load_meta
 from sdk.types import ArtefactRef, PhaseStatus, RunMeta, RunStatus
 
@@ -140,17 +140,10 @@ def load_status(
             },
         )
 
-    sub_projects: list[PhaseStatus] = []
-    for sd in sorted(p for p in ref.run_dir.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        # Include every visible sub-run alias even when its meta.json
-        # hasn't been written yet (status=None). Embedders that want
-        # only sub-runs-with-meta filter on `status is not None`; those
-        # that want the full alias list (e.g. MCP wire shape, cross-run
-        # navigation) get it without re-scanning the directory.
-        sub_meta = load_meta(sd)
-        sub_projects.append(
-            PhaseStatus(name=sd.name, status=sub_meta.get("status") if sub_meta else None)
-        )
+    sub_projects = [
+        PhaseStatus(name=link.name, status=link.status)
+        for link in list_sub_runs(ref.run_id, runs_dir=ref.run_dir.parent, cwd=None)
+    ]
 
     # ADR 0045: enumerate readable artefacts so agents discover what
     # they can fetch without scanning run_dir themselves. Enrichment

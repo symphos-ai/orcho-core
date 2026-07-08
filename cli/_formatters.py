@@ -13,6 +13,7 @@ import shlex
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from core.io.ansi import C, paint
 from core.observability.accounting_display import (
@@ -67,8 +68,165 @@ def _pending_handoff_id(status: RunStatus) -> str | None:
     return None
 
 
+def _clip_status_text(value: object, max_len: int) -> str:
+    text = str(value or "?").replace("\n", " ").strip() or "?"
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3].rstrip() + "..."
+
+
+def _float_metric(value: object) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _int_metric(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _metrics_cost_estimated(raw_metrics: dict[str, Any]) -> bool:
+    top_level = raw_metrics.get("cost_estimated")
+    if isinstance(top_level, bool):
+        return top_level
+    phases = raw_metrics.get("phases")
+    if not isinstance(phases, dict):
+        return False
+    return any(
+        bool(phase.get("cost_estimated"))
+        for phase in phases.values()
+        if isinstance(phase, dict)
+        and _float_metric(phase.get("cost_usd_equivalent")) > 0.0
+    )
+
+
+def _append_status_usage(out: list[str], status: RunStatus) -> None:
+    if not status.raw_metrics:
+        return
+    out.append("")
+    out.append(
+        f"  Tokens:  {status.total_tokens:,} "
+        f"(in={status.total_tokens_in:,} out={status.total_tokens_out:,})"
+    )
+    cost = _float_metric(status.raw_metrics.get("total_cost_usd_equivalent"))
+    if cost > 0.0:
+        out.append(
+            "  Cost ref: "
+            f"{format_cost_reference(cost, estimated=_metrics_cost_estimated(status.raw_metrics))}"
+        )
+    out.append(f"  Time:    {status.total_duration_s:.1f}s")
+    if status.total_rounds:
+        out.append(f"  Rounds:  {status.total_rounds}")
+    if status.total_retries:
+        out.append(f"  Retries: {status.total_retries}")
+
+
+def _append_status_phases(
+    out: list[str],
+    *,
+    status: RunStatus,
+    meta: object,
+) -> None:
+    raw_phases = status.raw_metrics.get("phases") if status.raw_metrics else None
+    if isinstance(raw_phases, dict) and raw_phases:
+        phase_items = [
+            (name, data)
+            for name, data in raw_phases.items()
+            if isinstance(data, dict)
+        ]
+        if phase_items:
+            show_cost = any(
+                _float_metric(data.get("cost_usd_equivalent")) > 0.0
+                for _, data in phase_items
+            )
+            out.append("")
+            out.append("  Phases:")
+            for name, data in phase_items:
+                attempts = _int_metric(data.get("attempts"))
+                attempts_text = f"attempts={attempts}" if attempts else "attempts=?"
+                tokens = _int_metric(data.get("total_tokens"))
+                duration = _float_metric(data.get("duration_s"))
+                model = _clip_status_text(data.get("model"), 26)
+                line = (
+                    f"    {name:<18} {attempts_text:<11} "
+                    f"{tokens:>11,} tok {duration:>8.1f}s  {model:<26}"
+                )
+                if show_cost:
+                    cost = _float_metric(data.get("cost_usd_equivalent"))
+                    cost_text = (
+                        format_cost_reference(
+                            cost,
+                            estimated=bool(data.get("cost_estimated")),
+                        )
+                        if cost > 0.0
+                        else ""
+                    )
+                    line = f"{line}  {cost_text}"
+                out.append(line.rstrip())
+            return
+
+    meta_phases = getattr(meta, "phases", ())
+    if meta_phases:
+        out.append("")
+        out.append(f"  Phases completed: {', '.join(meta_phases)}")
+
+
+def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
+    delivery = raw_meta.get("commit_delivery")
+    if not isinstance(delivery, dict):
+        return
+    status_text = str(delivery.get("status") or "").strip()
+    action_text = str(delivery.get("action") or "").strip()
+    verdict = str(delivery.get("release_verdict") or "").strip()
+    pr_url = str(delivery.get("pr_url") or "").strip()
+    verification_missing = delivery.get("verification_missing")
+    summary = str(delivery.get("release_summary") or "").strip()
+    if not any(
+        (status_text, action_text, verdict, pr_url, verification_missing, summary)
+    ):
+        return
+
+    out.append("")
+    out.append("  Delivery:")
+    if status_text or action_text:
+        suffix = f" ({action_text})" if action_text and action_text != status_text else ""
+        out.append(f"    Status: {status_text or '?'}{suffix}")
+    if verdict:
+        out.append(f"    Release: {verdict}")
+    if summary:
+        out.append(f"    Summary: {_clip_status_text(summary, 140)}")
+    if isinstance(verification_missing, list) and verification_missing:
+        missing = ", ".join(str(item) for item in verification_missing)
+        out.append(f"    Verification missing: {missing}")
+    if pr_url:
+        out.append(f"    PR: {pr_url}")
+
+
+def _append_status_paths(
+    out: list[str],
+    status: RunStatus,
+    raw_meta: dict[str, Any],
+) -> None:
+    out.append("")
+    out.append("  Paths:")
+    project = raw_meta.get("project")
+    if project:
+        out.append(f"    Source:   {project}")
+    worktree = raw_meta.get("worktree")
+    if isinstance(worktree, dict) and worktree.get("path"):
+        out.append(f"    Worktree: {worktree['path']}")
+    parent_run_id = raw_meta.get("parent_run_id")
+    if parent_run_id:
+        out.append(f"    Parent:   {parent_run_id}")
+    out.append(f"    Run dir:  {status.run_ref.run_dir}")
+
+
 def format_status(status: RunStatus, *, verbose: bool = False) -> str:
-    """Reproduce the previous `cmd_status` printer (cli/orcho.py:296-345)."""
+    """Render a human-readable status snapshot for one run."""
     out: list[str] = []
     sep = "─" * 60
     out.append("")
@@ -93,21 +251,9 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
             out.append(f"  Pending handoff: {pending_handoff}")
         out.append(f"  Profile: {meta.profile or '?'}")
         out.append(f"  Time:    {meta.timestamp or '?'}")
-        if meta.phases:
-            out.append("")
-            out.append(f"  Phases completed: {', '.join(meta.phases)}")
 
-    if status.raw_metrics:
-        out.append("")
-        out.append(
-            f"  Tokens:  {status.total_tokens:,} "
-            f"(in={status.total_tokens_in:,} out={status.total_tokens_out:,})"
-        )
-        out.append(f"  Time:    {status.total_duration_s:.1f}s")
-        if status.total_rounds:
-            out.append(f"  Rounds:  {status.total_rounds}")
-        if status.total_retries:
-            out.append(f"  Retries: {status.total_retries}")
+    _append_status_usage(out, status)
+    _append_status_phases(out, status=status, meta=meta)
 
     if status.sub_projects:
         out.append("")
@@ -115,8 +261,8 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
         for sp in status.sub_projects:
             out.append(f"    [{sp.name}]  status={sp.status or '?'}")
 
-    out.append("")
-    out.append(f"  Dir: {status.run_ref.run_dir}")
+    _append_status_delivery(out, status.raw_meta)
+    _append_status_paths(out, status, status.raw_meta)
 
     if verbose and status.raw_meta:
         out.append("")
@@ -297,6 +443,72 @@ def _cost_warning(text: str) -> str:
     return _stdout_paint(text, C.YELLOW)
 
 
+_PHASE_ROLE_MAP = {
+    "plan": "systems_architect",
+    "cross_plan": "systems_architect",
+    "validate_plan": "plan_reviewer",
+    "cross_validate_plan": "plan_reviewer",
+    "implement": "implementation_engineer",
+    "repair_changes": "implementation_engineer",
+    "review_changes": "code_reviewer",
+    "contract_check": "code_reviewer",
+    "final_acceptance": "release_manager",
+    "cross_final_acceptance": "release_manager",
+    "correction_triage": "release_manager",
+    "handoff_advice": "release_manager",
+}
+
+_PHASE_TASK_MAP = {
+    "review_changes": "code_review",
+}
+
+
+def _phase_role_name(phase_name: str) -> str:
+    return _PHASE_ROLE_MAP.get(phase_name, "other")
+
+
+def _phase_task_name(phase_name: str) -> str:
+    return _PHASE_TASK_MAP.get(phase_name, phase_name)
+
+
+def _derived_cost_breakdown(
+    rows: tuple[PhaseBreakdown, ...],
+    *,
+    kind: str,
+    name_for_phase,
+) -> tuple[PhaseBreakdown, ...]:
+    costs: dict[str, float] = {}
+    tokens: dict[str, int] = {}
+    runs: dict[str, int] = {}
+    tokens_exact: dict[str, bool] = {}
+    cost_estimated: dict[str, bool] = {}
+
+    for row in rows:
+        name = str(name_for_phase(row.name) or "other")
+        costs[name] = costs.get(name, 0.0) + row.cost
+        tokens[name] = tokens.get(name, 0) + row.tokens
+        runs[name] = runs.get(name, 0) + row.runs
+        tokens_exact[name] = tokens_exact.get(name, True) and row.tokens_exact
+        cost_estimated[name] = cost_estimated.get(name, False) or row.cost_estimated
+
+    return tuple(
+        PhaseBreakdown(
+            name=name,
+            cost=costs[name],
+            tokens=tokens[name],
+            runs=runs[name],
+            tokens_exact=tokens_exact[name],
+            cost_estimated=cost_estimated[name],
+            kind=kind,
+        )
+        for name in sorted(
+            costs,
+            key=lambda key: (costs[key], tokens[key]),
+            reverse=True,
+        )
+    )
+
+
 def _append_cost_breakdown_section(
     out: list[str],
     *,
@@ -310,6 +522,7 @@ def _append_cost_breakdown_section(
         return
     out.append("")
     out.append(_cost_title(title))
+    name_width = max(14, *(len(ph.name) for ph in rows))
     for ph in rows:
         tok_marker = " " if ph.tokens_exact else "~"
         cost_str = (
@@ -323,7 +536,7 @@ def _append_cost_breakdown_section(
             else "        "
         )
         out.append(
-            f"    {ph.name:<14} {cost_str}  {pct_str}   "
+            f"    {ph.name:<{name_width}} {cost_str}  {pct_str}   "
             f"×{ph.runs}   {tok_marker}{ph.tokens:>9,} tok"
         )
     if total:
@@ -375,6 +588,18 @@ def format_cost_report(report: CostReport) -> str:
     phase_total = sum(ph.cost for ph in phase_rows)
     sub_pipeline_total = sum(ph.cost for ph in sub_pipeline_rows)
     agent_total = sum(ag.cost for ag in report.agent_breakdown)
+    role_rows = _derived_cost_breakdown(
+        phase_rows,
+        kind="derived_role",
+        name_for_phase=_phase_role_name,
+    )
+    task_rows = _derived_cost_breakdown(
+        phase_rows,
+        kind="derived_task",
+        name_for_phase=_phase_task_name,
+    )
+    role_total = sum(ph.cost for ph in role_rows)
+    task_total = sum(ph.cost for ph in task_rows)
 
     out.append("")
     out.append(
@@ -427,6 +652,28 @@ def format_cost_report(report: CostReport) -> str:
         note=(
             "    ↳ % = share of the child-pipeline breakdown, not of "
             "the window total."
+        ),
+    )
+
+    _append_cost_breakdown_section(
+        out,
+        title="  By role (derived from phase map):",
+        rows=role_rows,
+        total=role_total,
+        note=(
+            "    ↳ Roles are derived from phase names; child pipelines are "
+            "reported separately."
+        ),
+    )
+
+    _append_cost_breakdown_section(
+        out,
+        title="  By task (derived from phase map):",
+        rows=task_rows,
+        total=task_total,
+        note=(
+            "    ↳ Tasks are derived from phase names; child pipelines are "
+            "reported separately."
         ),
     )
 

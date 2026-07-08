@@ -213,6 +213,69 @@ def test_sub_pipeline_rows_do_not_render_as_phases():
     assert "web" in out
 
 
+def test_role_and_task_slices_are_derived_from_phase_rows_only():
+    r = _make_report(
+        total_cost=16.0,
+        phase_breakdown=(
+            PhaseBreakdown(
+                name="plan",
+                cost=1.0,
+                tokens=100,
+                runs=1,
+                tokens_exact=True,
+            ),
+            PhaseBreakdown(
+                name="implement",
+                cost=2.0,
+                tokens=200,
+                runs=1,
+                tokens_exact=True,
+            ),
+            PhaseBreakdown(
+                name="repair_changes",
+                cost=3.0,
+                tokens=300,
+                runs=1,
+                tokens_exact=False,
+                cost_estimated=True,
+            ),
+            PhaseBreakdown(
+                name="api",
+                cost=10.0,
+                tokens=10_000,
+                runs=1,
+                tokens_exact=True,
+                kind="sub_pipeline",
+            ),
+        ),
+        agent_breakdown=(),
+    )
+
+    out = format_cost_report(r)
+    role_section = out.split("By role (derived from phase map):", 1)[1].split(
+        "By task",
+        1,
+    )[0]
+    task_section = out.split("By task (derived from phase map):", 1)[1].split(
+        "Totals:",
+        1,
+    )[0]
+
+    assert "implementation_engineer" in role_section
+    assert "systems_architect" in role_section
+    assert re.search(
+        r"implementation_engineer\s+estimated-api ~\$5\.00\s+\(83\.3%\)\s+"
+        r"×2\s+~\s*500 tok",
+        role_section,
+    )
+    assert not re.search(r"^\s+api\s", role_section, flags=re.MULTILINE)
+
+    assert "implement" in task_section
+    assert "repair_changes" in task_section
+    assert "plan" in task_section
+    assert not re.search(r"^\s+api\s", task_section, flags=re.MULTILINE)
+
+
 def test_accounting_disabled_report_has_no_dollar_output():
     r = _make_report(accounting_enabled=False, total_cost=0.0)
     out = format_cost_report(r)
@@ -385,7 +448,11 @@ def test_breakdown_pct_share_never_exceeds_100():
         agent_breakdown=(),
     )
     out = format_cost_report(r)
-    pcts = [float(m) for m in re.findall(r"\(([\d.]+)%\)", out)]
+    phase_section = out.split("By phase (sum across runs):", 1)[1].split(
+        "By role",
+        1,
+    )[0]
+    pcts = [float(m) for m in re.findall(r"\(([\d.]+)%\)", phase_section)]
     assert pcts, "expected at least one phase percentage"
     assert all(p <= 100.0 for p in pcts)
     assert abs(sum(pcts) - 100.0) < 0.5
