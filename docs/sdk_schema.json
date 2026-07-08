@@ -1426,6 +1426,12 @@
           "default_factory": null,
           "name": "cost_estimated",
           "type": "bool"
+        },
+        {
+          "default": "'phase'",
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
         }
       ],
       "frozen": true,

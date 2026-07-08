@@ -189,7 +189,13 @@ class ArtefactRef:
 
 @dataclass(frozen=True, slots=True)
 class PhaseBreakdown:
-    """One row in the by-phase aggregation of a `CostReport`."""
+    """One row in the phase-shaped aggregation of a `CostReport`.
+
+    ``kind`` mirrors the metrics entry kind when available. Normal
+    single-project phases use ``phase``; cross-project child pipeline aliases
+    use ``sub_pipeline`` and are rendered separately by the CLI so project
+    aliases do not masquerade as phase names.
+    """
 
     name: str
     cost: float
@@ -197,6 +203,7 @@ class PhaseBreakdown:
     runs: int
     tokens_exact: bool
     cost_estimated: bool = False
+    kind: str = "phase"
 
 
 @dataclass(frozen=True, slots=True)
