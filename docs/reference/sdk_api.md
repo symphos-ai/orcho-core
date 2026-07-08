@@ -67,7 +67,9 @@ load_status(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> RunStatu
 
 `RunStatus` carries the typed projection plus `raw_meta` / `raw_metrics`
 for fields the SDK hasn't promoted. `sub_projects` is the cross-run
-sub-project list (status per alias).
+sub-project list (status per alias). `quality_gates` is a best-effort
+projection of finalized gate events from `evidence.json` when that artifact
+exists.
 
 ### `sdk.history`
 

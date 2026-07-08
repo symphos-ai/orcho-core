@@ -94,9 +94,11 @@ def _status_state(text: str) -> str:
     }:
         return _stdout_paint(text, C.RED)
     if normalized.startswith("awaiting") or normalized in {
+        "in_progress",
         "paused",
         "pending",
         "running",
+        "skipped",
     }:
         return _stdout_paint(text, C.YELLOW)
     return _stdout_paint(text, C.WHITE)
@@ -251,6 +253,49 @@ def _append_status_phases(
         )
 
 
+def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) -> None:
+    gates = status.quality_gates
+    if not gates:
+        return
+
+    counts: dict[str, int] = {}
+    for gate in gates:
+        outcome = str(gate.outcome or "unknown")
+        counts[outcome] = counts.get(outcome, 0) + 1
+
+    out.append("")
+    out.append(_status_section("  Gates:"))
+    out.append(
+        "    "
+        + " · ".join(
+            f"{_status_state(outcome)} {_status_muted(f'x{count}')}"
+            for outcome, count in counts.items()
+        )
+    )
+
+    attention = [
+        gate for gate in gates
+        if str(gate.outcome or "") in {"failed", "skipped", "in_progress"}
+    ]
+    rows = gates if verbose else attention[:6]
+    for gate in rows:
+        name = _clip_status_text(gate.name, 22)
+        outcome = _clip_status_text(gate.outcome, 16)
+        duration = gate.duration_s
+        duration_text = "-" if duration is None else f"{duration:.2f}s"
+        kind = f" {_status_muted(str(gate.kind))}" if gate.kind else ""
+        out.append(
+            f"    {_stdout_paint(f'{name:<22}', C.CYAN)} "
+            f"{_status_state(f'{outcome:<16}')} "
+            f"{_status_muted(f'{duration_text:>8}')}{kind}"
+        )
+    remaining = len(attention) - len(rows)
+    if remaining > 0:
+        out.append(
+            f"    {_status_muted(f'... {remaining} more attention gates; use --verbose')}"
+        )
+
+
 def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
     delivery = raw_meta.get("commit_delivery")
     if not isinstance(delivery, dict):
@@ -376,6 +421,7 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
 
     _append_status_usage(out, status)
     _append_status_phases(out, status=status, meta=meta)
+    _append_status_gates(out, status, verbose=verbose)
 
     if status.sub_projects:
         out.append("")

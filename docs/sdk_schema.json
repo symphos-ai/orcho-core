@@ -1001,6 +1001,45 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "kind",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "phase",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "GateStatus",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "handoff_id",
           "type": "str"
         },
@@ -2536,6 +2575,12 @@
           "default_factory": null,
           "name": "sub_projects",
           "type": "tuple[PhaseStatus, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "quality_gates",
+          "type": "tuple[GateStatus, ...]"
         },
         {
           "default": "None",

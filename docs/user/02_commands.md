@@ -231,6 +231,7 @@ Output:
 Run: 20260503_104135
 Status: DONE ✓
 Phases: plan ✓  implement ✓  review_changes ✓  final_acceptance ✓
+Gates: passed x2  skipped x1
 Duration: 4m 32s
 ```
 
