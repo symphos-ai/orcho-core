@@ -1108,6 +1108,43 @@ class TestCmdEvidence:
         assert "\x1b[" in rendered
         assert "Evidence:" in strip_ansi(rendered)
 
+    def test_cli_artifact_paths_are_copyable_not_clipped(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        long_path = (
+            "/Users/example/workspace-orchestrator/runspace/runs/"
+            "20260708_135646_06db6e/plan_20260708_135646_06db6e_round_20.json"
+        )
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [{"kind": "parsed_plan", "path": long_path}],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle))
+
+        assert long_path in rendered
+        assert "plan_20260708_135646_06db6e_round_20..." not in rendered
+
     def test_cli_findings_show_lifecycle_statuses(self) -> None:
         from cli._evidence_cli import format_evidence_cli
         from core.io.ansi import strip_ansi

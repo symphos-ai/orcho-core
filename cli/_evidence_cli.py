@@ -323,7 +323,7 @@ def _artifact_lines(artifacts: list[Any], *, debug: bool) -> list[str]:
     ][:6]
     for artifact in rows:
         kind = str(artifact.get("kind") or "?")
-        path = _clip(artifact.get("path") or "?", 98)
+        path = str(artifact.get("path") or "?")
         apply_check = artifact.get("apply_check")
         suffix = ""
         if isinstance(apply_check, dict):
