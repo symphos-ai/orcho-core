@@ -135,6 +135,9 @@ def test_handler_records_session_observability_for_metrics(tmp_path: Path) -> No
     fake_run = SimpleNamespace(
         _agent_for_phase=lambda name: agent,
         _model_for_phase=lambda name: "gpt-test",
+        # ``_PipelineRun`` now resolves a per-phase runtime id; the stub agent
+        # exposes none, so "" keeps the recorded metric in legacy shape.
+        _runtime_for_phase=lambda name: "",
         _metrics=metrics,
     )
     _PipelineRun._fsm_metrics(fake_run, "correction_triage", state)

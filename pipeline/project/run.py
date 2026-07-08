@@ -783,6 +783,30 @@ class _PipelineRun:
             return self.implement_model
         return self.review_model
 
+    def _runtime_for_phase(self, name: str) -> str:
+        """Resolve the registered agent-runtime id a phase executed under.
+
+        The authoritative source is the *actual* phase agent from
+        ``state.phase_config`` — its ``runtime`` attribute reflects the runtime
+        that really executed, including a resume ``runtime_override`` or an
+        explicitly supplied ``phase_config`` that diverges from the global
+        config. The global ``AppConfig.phase_runtime_map`` is only a per-phase
+        default and can be stale relative to the resolved slot, so it is used
+        strictly as a fallback when no agent slot is available. Returns ``""``
+        when neither yields a known id, so old/unknown runtimes keep bucketing
+        by model downstream and the legacy ``metrics.json`` shape is preserved.
+        """
+        agent = self._agent_for_phase(name)
+        rt = str(getattr(agent, "runtime", "") or "").strip()
+        if rt and rt != "unknown":
+            return rt
+        try:
+            rt_map = config.AppConfig.load().phase_runtime_map
+        except Exception:  # noqa: BLE001 — a config read must never break metrics
+            rt_map = {}
+        rt = str(rt_map.get(name, "") or "").strip()
+        return "" if rt in {"", "unknown"} else rt
+
     def _agent_for_phase(self, name: str):
         """Resolve which phase_config slot drove the just-finished phase.
         Used by metrics to pull ``last_cost_usd`` / ``last_tokens_in/out``.
@@ -1181,6 +1205,7 @@ class _PipelineRun:
             tool_calls=tool_calls,
             cost_usd=cost_usd,
             tokens_exact=tokens_exact_override,
+            runtime=self._runtime_for_phase(name),
             # Outcome carries a normalized provider total that may exceed the
             # in/out split (e.g. Codex reasoning tokens). Honor it so the
             # recorded total matches the outcome; the last_* fallback path

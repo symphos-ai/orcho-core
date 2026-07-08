@@ -311,12 +311,16 @@ Pure aggregation across runs whose timestamps fall within `window`
 not billing receipts. Runtime-reported values come from the active
 runtime/endpoint; token-only phases can trigger pricing fallback through
 `core.observability.pricing.estimate_cost_from_total`;
-`CostReport.priced_entries_count` records how many entries got priced.
+`CostReport.priced_entries_count` records how many entries were **estimated**
+(priced from the local snapshot), not the report's overall price.
 
 `CostReport.top_runs` is sorted by `(cost desc, tokens desc)`;
 `phase_breakdown` and `agent_breakdown` by cost descending. `provider`
-in `agent_breakdown` is one of `"claude"` / `"codex"` / `"gemini"` /
-`"other"` (best-effort prefix match on the model string).
+in `agent_breakdown` is the resolved **runtime id** when the phase metrics
+carry one (e.g. `"claude"`, `"claude-glm"`); otherwise it falls back to a
+model→provider mapping for older runs (`"claude"` / `"codex"` / `"gemini"` /
+`"other"`). Breakdown percentages are **share of the breakdown** — a row's cost
+over the sum of the rows shown, so they stay within 100%.
 
 ### `sdk.runner`
 

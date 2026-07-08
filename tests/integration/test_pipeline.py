@@ -509,7 +509,8 @@ class TestCostCommand:
         assert "$0.62" in normalised, out  # 0.42 + 0.20
         assert "230" in out                # 150 + 80 tokens
         assert "2 runs" in out
-        # Per-phase: plan dominates (0.30 + 0.20 = 0.50 of 0.62 ≈ 80.6%).
+        # Per-phase: plan dominates (0.30 + 0.20 = 0.50). % is share of the
+        # phase-breakdown sum (0.50 + 0.12 = 0.62), so plan ≈ 80.6%.
         assert "plan" in out and "$0.50" in normalised, out
         # Top cost-reference run: run A ($0.42) ranks above run B ($0.20).
         idx_a = out.find("20260506_120000")
@@ -527,8 +528,8 @@ class TestCostCommand:
         assert "monthly token budget" not in out, (
             "must not project window % onto unknown subscription cap"
         )
-        # Per-agent split must show claude (synthesised data uses
+        # Per-runtime/provider split must show claude (synthesised data uses
         # claude-* models everywhere). Cross-phase token sum.
-        assert "By agent" in out, out
+        assert "By runtime/provider" in out, out
         assert "claude" in out, out
         assert "230 tok" in out or "230" in out, out

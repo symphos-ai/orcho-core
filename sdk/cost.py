@@ -175,13 +175,17 @@ def aggregate_cost(
                 phase_cost_estimated.get(ph_name, False) or cost_estimated
             )
 
-            provider = _provider_for_model(model)
-            agent_costs[provider] = agent_costs.get(provider, 0.0) + cost
-            agent_tokens[provider] = agent_tokens.get(provider, 0) + tokens
-            agent_runs[provider] = agent_runs.get(provider, 0) + 1
-            agent_exact[provider] = agent_exact.get(provider, True) and exact
-            agent_cost_estimated[provider] = (
-                agent_cost_estimated.get(provider, False) or cost_estimated
+            # Agent-breakdown identity: prefer the recorded runtime id when the
+            # phase carries one (so a wrapper runtime such as ``claude-glm`` is
+            # its own row, not collapsed into ``claude``). Fall back to
+            # model→provider only for legacy phases written without ``runtime``.
+            runtime_id = str(ph.get("runtime") or "").strip() or _provider_for_model(model)
+            agent_costs[runtime_id] = agent_costs.get(runtime_id, 0.0) + cost
+            agent_tokens[runtime_id] = agent_tokens.get(runtime_id, 0) + tokens
+            agent_runs[runtime_id] = agent_runs.get(runtime_id, 0) + 1
+            agent_exact[runtime_id] = agent_exact.get(runtime_id, True) and exact
+            agent_cost_estimated[runtime_id] = (
+                agent_cost_estimated.get(runtime_id, False) or cost_estimated
             )
 
     phase_breakdown = tuple(
@@ -197,14 +201,14 @@ def aggregate_cost(
     )
     agent_breakdown = tuple(
         AgentBreakdown(
-            provider=provider,
-            cost=agent_costs[provider],
-            tokens=agent_tokens.get(provider, 0),
-            runs=agent_runs.get(provider, 0),
-            tokens_exact=agent_exact.get(provider, False),
-            cost_estimated=agent_cost_estimated.get(provider, False),
+            provider=runtime_id,
+            cost=agent_costs[runtime_id],
+            tokens=agent_tokens.get(runtime_id, 0),
+            runs=agent_runs.get(runtime_id, 0),
+            tokens_exact=agent_exact.get(runtime_id, False),
+            cost_estimated=agent_cost_estimated.get(runtime_id, False),
         )
-        for provider in sorted(agent_costs, key=lambda k: agent_costs[k], reverse=True)
+        for runtime_id in sorted(agent_costs, key=lambda k: agent_costs[k], reverse=True)
     )
 
     sorted_rows = sorted(rows, key=lambda r: (r.cost, r.tokens), reverse=True)

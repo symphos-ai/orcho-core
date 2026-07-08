@@ -62,6 +62,21 @@ def format_cost_reference_summary(
     return f"Cost ref: {format_cost_reference(cost, estimated=estimated, precision=precision)}"
 
 
+def format_estimated_entries_footer(
+    count: int,
+    source: str,
+    age_warning: str = "",
+) -> str:
+    """Format the estimated-entries footnote of a cost report.
+
+    The count identifies only the estimated entries (priced from a local
+    table); runtime-reported entries are excluded. The wording never names a
+    runtime or model and never reads like a billing line.
+    """
+    unit = "entry" if count == 1 else "entries"
+    return f"  ↳ {count} phase {unit} estimated from {source}{age_warning}"
+
+
 ACCOUNTING_REFERENCE_NOTE = (
     "Cost reference is usage accounting, not a billing receipt. Runtime-reported "
     "values come from the active runtime/endpoint; estimated-api values use "
@@ -76,4 +91,5 @@ __all__ = [
     "format_cost_reference",
     "format_cost_reference_key_value",
     "format_cost_reference_summary",
+    "format_estimated_entries_footer",
 ]

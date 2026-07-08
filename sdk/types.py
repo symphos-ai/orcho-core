@@ -201,9 +201,19 @@ class PhaseBreakdown:
 
 @dataclass(frozen=True, slots=True)
 class AgentBreakdown:
-    """One row in the by-agent (provider) aggregation of a `CostReport`."""
+    """One row in the by-runtime aggregation of a `CostReport`.
 
-    provider: str  # "claude" / "codex" / "gemini" / "other"
+    The ``provider`` field is the resolved agent-runtime id when the phase
+    metrics carry one (e.g. ``claude``, ``claude-glm``); otherwise it falls
+    back to a model→provider bucket (``claude`` / ``codex`` / ``gemini`` /
+    ``other``) for legacy runs written without a runtime id. The field name
+    stays ``provider`` for wire compatibility.
+    """
+
+    # Resolved runtime id (e.g. ``claude`` / ``claude-glm``) when the phase
+    # carries one, else a model→provider fallback bucket
+    # (``claude`` / ``codex`` / ``gemini`` / ``other``).
+    provider: str
     cost: float
     tokens: int
     runs: int
