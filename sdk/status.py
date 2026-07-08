@@ -3,11 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.observability.metrics import (
-    accounting_enabled,
-    scrub_accounting_fields,
-)
+from core.observability.metrics import scrub_accounting_fields
 from pipeline.run_state.setup_failure import merged_status
+from sdk._runspace_context import accounting_enabled_for_context
 from sdk.actions import compute_next_actions
 from sdk.evidence_slices import active_stall_diagnostics, list_sub_runs
 from sdk.runs import _CWD_DEFAULT, find_run, load_json_optional, load_meta
@@ -97,7 +95,10 @@ def load_status(
     ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     raw_meta = load_meta(ref.run_dir)
     raw_metrics = load_json_optional(ref.run_dir / "metrics.json")
-    if not accounting_enabled():
+    if not accounting_enabled_for_context(
+        workspace=workspace,
+        runs_dir=ref.run_dir.parent,
+    ):
         raw_metrics = scrub_accounting_fields(raw_metrics)
 
     # ADR 0104: reconcile meta.status with the optional launcher state via the
