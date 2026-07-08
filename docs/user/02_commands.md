@@ -255,6 +255,28 @@ orcho cost                # cost-reference usage report
 orcho pricing             # inspect / refresh the pricing data behind cost
 ```
 
+`orcho cost` is a **cost reference / usage accounting** view over a window of
+runs — not a billing receipt. Runtime-reported dollar values come from the
+active runtime/endpoint; token-only phases are priced locally and marked as
+estimated.
+
+The report groups spend two ways:
+
+- **By phase** — cost per pipeline phase (`plan`, `implement`, …).
+- **By runtime/provider** — cost summed across phases per agent. The label is
+  the resolved runtime id when a run recorded one (e.g. `claude`, `claude-glm`),
+  and otherwise falls back to a model→provider mapping for older runs
+  (`claude` / `codex` / `gemini` / `other`).
+
+Percentages in each breakdown are **share of that breakdown** — a row's cost
+over the sum of the rows shown, so they never exceed 100%. They are not a share
+of the report total (phase and runtime views sum the same money along different
+axes, so a total-based percentage would look like a broken pie).
+
+The footer names only the **estimated** entries and where their prices came
+from (`~/.orcho/pricing.local.toml`, or the bundled snapshot). When that
+snapshot is stale it prints an age warning suggesting `orcho pricing refresh`.
+
 ---
 
 ## `orcho diff` — print the captured diff

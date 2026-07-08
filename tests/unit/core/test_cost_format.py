@@ -7,6 +7,7 @@ estimated entries.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -114,8 +115,8 @@ def test_full_report_sections_present():
     # By-phase section
     assert "By phase (sum across runs)" in out
     assert "plan" in out and "implement" in out
-    # By-agent section + estimate marker
-    assert "By agent (sum across phases)" in out
+    # By runtime/provider section + estimate marker
+    assert "By runtime/provider (sum across phases)" in out
     assert "claude" in out
     assert "~" in out  # token-estimate marker for non-exact agent
     # Totals
@@ -143,7 +144,7 @@ def test_pricing_footer_when_priced_entries_present():
         pricing_snapshot_age_days=10,
     )
     out = format_cost_report(r)
-    assert "3 entries priced from" in out
+    assert "3 phase entries estimated from" in out
     assert "~/.orcho/pricing.local.toml" in out
     assert "2026-04-30" in out
 
@@ -224,3 +225,114 @@ def test_estimated_cost_report_marks_estimated_api_source():
     )
     out = format_cost_report(r)
     assert "estimated-api ~$1.23" in out
+
+
+def test_no_invoice_wording():
+    """No billing-receipt phrasing anywhere; top-runs header stays 'cost reference'."""
+    r = _make_report()
+    out = format_cost_report(r)
+    assert "expensive runs" not in out
+    assert "API-equivalent" not in out
+    assert "runs by cost reference" in out
+
+
+def test_accounting_note_renders_exactly_once():
+    r = _make_report()
+    out = format_cost_report(r)
+    assert out.count("not a billing receipt") == 1
+
+
+def test_source_labels_on_breakdown_and_totals():
+    """Mixed runtime-reported / estimated-api rows surface both source
+    prefixes next to dollar values across top runs, phases, runtime/provider
+    and the totals line."""
+    r = _make_report(
+        total_cost=2.0,
+        any_estimated=True,
+        top_runs=(
+            CostRunRow(
+                run_id="20260507_120000", task="Reported run", cost=1.0,
+                tokens=100, tokens_in=50, tokens_out=50, duration_s=10.0,
+                rounds=1, retries=0, cost_estimated=False,
+            ),
+            CostRunRow(
+                run_id="20260506_090000", task="Estimated run", cost=1.0,
+                tokens=100, tokens_in=50, tokens_out=50, duration_s=10.0,
+                rounds=1, retries=0, cost_estimated=True,
+            ),
+        ),
+        phase_breakdown=(
+            PhaseBreakdown(name="plan", cost=1.0, tokens=100, runs=1,
+                           tokens_exact=True, cost_estimated=False),
+            PhaseBreakdown(name="implement", cost=1.0, tokens=100, runs=1,
+                           tokens_exact=False, cost_estimated=True),
+        ),
+        agent_breakdown=(
+            AgentBreakdown(provider="claude", cost=1.0, tokens=100, runs=1,
+                           tokens_exact=True, cost_estimated=False),
+            AgentBreakdown(provider="codex", cost=1.0, tokens=100, runs=1,
+                           tokens_exact=False, cost_estimated=True),
+        ),
+    )
+    out = format_cost_report(r)
+    # Both source prefixes appear next to dollar values (top runs + phases +
+    # runtime/provider carry one row each).
+    assert "runtime-reported $" in out
+    assert "estimated-api ~$" in out
+    # Totals line carries a source label too.
+    assert "Cost reference  estimated-api ~$2.00" in out
+
+
+def test_breakdown_pct_share_never_exceeds_100():
+    """Phase percentages are share-of-breakdown: each <=100 and they sum to
+    ~100 even when the breakdown cost sum exceeds total_cost (which under the
+    old total_cost denominator rendered as a broken pie)."""
+    r = _make_report(
+        total_cost=1.0,
+        any_estimated=False,
+        phase_breakdown=(
+            PhaseBreakdown(name="plan", cost=0.80, tokens=100, runs=1,
+                           tokens_exact=True),
+            PhaseBreakdown(name="implement", cost=0.80, tokens=100, runs=1,
+                           tokens_exact=True),
+        ),
+        agent_breakdown=(),
+    )
+    out = format_cost_report(r)
+    pcts = [float(m) for m in re.findall(r"\(([\d.]+)%\)", out)]
+    assert pcts, "expected at least one phase percentage"
+    assert all(p <= 100.0 for p in pcts)
+    assert abs(sum(pcts) - 100.0) < 0.5
+
+
+def test_breakdown_pct_suppressed_when_phase_sum_is_zero():
+    """A zero phase-breakdown sum suppresses the % column entirely."""
+    r = _make_report(
+        total_cost=1.0,
+        phase_breakdown=(
+            PhaseBreakdown(name="plan", cost=0.0, tokens=100, runs=1,
+                           tokens_exact=True),
+        ),
+        agent_breakdown=(),
+    )
+    out = format_cost_report(r)
+    assert re.findall(r"\(([\d.]+)%\)", out) == []
+
+
+def test_estimated_footer_does_not_name_runtime():
+    """Estimated-entries footer identifies only estimated entries, names no
+    runtime/model, yet keeps the pricing source and the stale warning."""
+    r = _make_report(
+        priced_entries_count=3,
+        pricing_source="bundled",
+        pricing_snapshot_date="2026-01-01",
+        pricing_snapshot_age_days=120,
+    )
+    out = format_cost_report(r)
+    assert "3 phase entries estimated from" in out
+    assert "(codex)" not in out
+    assert "Estimated cost (codex)" not in out
+    assert "codex" not in out.split("phase entries estimated from")[1].splitlines()[0]
+    # Stale warning + refresh hint are preserved.
+    assert "120 days old" in out
+    assert "orcho pricing refresh" in out

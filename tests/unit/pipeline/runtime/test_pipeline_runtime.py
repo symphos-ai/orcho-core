@@ -952,9 +952,14 @@ def _call_fsm_metrics(agent, *, phase="plan", log_entry=None, model="claude-opus
     from pipeline.project.run import _PipelineRun
 
     metrics = MetricsCollector(default_model=model)
+    # ``_runtime_for_phase`` mirrors the now-real ``_PipelineRun`` hook. These
+    # fakes stand in for an agent with no resolvable runtime id, so returning
+    # "" leaves the recorded metric in its legacy (runtime-less) shape — the
+    # outcome bridge under test is independent of runtime attribution.
     fake = SimpleNamespace(
         _agent_for_phase=lambda name: agent,
         _model_for_phase=lambda name: model,
+        _runtime_for_phase=lambda name: "",
         _metrics=metrics,
     )
     st = SimpleNamespace(
@@ -1252,6 +1257,75 @@ class TestFsmMetricsOutcomeBridge:
         plan = d["phases"]["plan"]
         assert set(["tokens_in", "tokens_out", "total_tokens",
                     "tokens_exact", "tool_calls"]).issubset(plan.keys())
+
+
+class TestRuntimeForPhase:
+    """``_runtime_for_phase`` must attribute metrics to the runtime that
+    *actually* executed the phase — the resolved phase agent — not to a global
+    ``phase_runtime_map`` default that a resume ``runtime_override`` or an
+    explicit ``phase_config`` can render stale."""
+
+    def _run_with(self, *, agent, phase_runtime_map):
+        """Build a stand-in ``_PipelineRun`` wired with a phase_config exposing
+        ``agent`` in the implement slot, then invoke the real
+        ``_runtime_for_phase`` (and the real ``_agent_for_phase`` slot
+        resolution). ``AppConfig.load`` is patched to return the supplied
+        ``phase_runtime_map`` so the fallback path is observable."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from core.infra import config
+        from pipeline.project.run import _PipelineRun
+
+        fake = SimpleNamespace(
+            state=SimpleNamespace(phase_config=SimpleNamespace(implement_agent=agent)),
+        )
+        # Bind the real slot resolver to this fake so state.phase_config drives
+        # which agent is picked, exactly as in a live run.
+        fake._agent_for_phase = _PipelineRun._agent_for_phase.__get__(fake)
+        loaded = SimpleNamespace(phase_runtime_map=phase_runtime_map)
+        with patch.object(config.AppConfig, "load", return_value=loaded):
+            return _PipelineRun._runtime_for_phase(fake, "implement")
+
+    def test_actual_agent_runtime_wins_over_stale_global_map(self):
+        """A resume override / custom phase_config picks ``codex`` for the
+        implement slot while the global map still says ``claude``. The recorded
+        runtime must follow the agent that ran, not the stale map."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(runtime="codex")
+        rt = self._run_with(agent=agent, phase_runtime_map={"implement": "claude"})
+        assert rt == "codex"
+
+    def test_wrapper_runtime_from_agent_is_preserved(self):
+        """A wrapper runtime id on the actual agent is kept verbatim (not
+        collapsed to the upstream provider)."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(runtime="claude-glm")
+        rt = self._run_with(agent=agent, phase_runtime_map={})
+        assert rt == "claude-glm"
+
+    def test_falls_back_to_global_map_when_no_agent_slot(self):
+        """No phase_config / no agent → the global per-phase default is used."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from core.infra import config
+        from pipeline.project.run import _PipelineRun
+
+        fake = SimpleNamespace(state=SimpleNamespace(phase_config=None))
+        fake._agent_for_phase = _PipelineRun._agent_for_phase.__get__(fake)
+        loaded = SimpleNamespace(phase_runtime_map={"implement": "claude"})
+        with patch.object(config.AppConfig, "load", return_value=loaded):
+            rt = _PipelineRun._runtime_for_phase(fake, "implement")
+        assert rt == "claude"
+
+    def test_unknown_runtime_yields_empty_for_legacy_shape(self):
+        """An agent with no usable runtime id and an empty map yields ``""`` so
+        the phase metric keeps its legacy (runtime-less) shape."""
+        from types import SimpleNamespace
+        agent = SimpleNamespace(runtime="unknown")
+        rt = self._run_with(agent=agent, phase_runtime_map={})
+        assert rt == ""
 
 
 # ════════════════════════════════════════════════════════════════════════════

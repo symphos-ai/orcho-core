@@ -289,6 +289,59 @@ class TestMetricsCollector:
         assert "phase_attempts"   in d
         assert "total_rounds"     in d  # present because rounds > 0
 
+    def test_record_phase_runtime_id_written_to_phase_rollup(self) -> None:
+        # A phase that ran under a wrapper runtime (e.g. claude-glm) carries
+        # that resolved runtime id into the phase rollup, so cost aggregation
+        # can attribute it to the runtime rather than the base model.
+        m = MetricsCollector()
+        m.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            runtime="claude-glm",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        rollup = m.as_dict()["phases"]["implement"]
+        assert rollup["runtime"] == "claude-glm"
+
+    def test_record_phase_without_runtime_omits_runtime_key(self) -> None:
+        # Legacy shape: no explicit runtime and no default_runtime → the phase
+        # rollup must not carry a 'runtime' key at all (older metrics.json).
+        m = MetricsCollector()
+        m.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        rollup = m.as_dict()["phases"]["implement"]
+        assert "runtime" not in rollup
+
+    def test_runtime_id_survives_load_from_disk_roundtrip(self, tmp_path) -> None:
+        # Resume path: a phase that ran under 'claude-glm' saves metrics.json,
+        # a fresh collector rehydrates it, and re-serialising must keep the
+        # runtime id in both phase_attempts and the phase rollup. Without the
+        # rehydrate carry-through, sdk/cost would fall back to model→provider
+        # bucketing and collapse claude-glm into claude for resumed runs.
+        pre = MetricsCollector()
+        pre.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            runtime="claude-glm",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        pre.save(tmp_path)
+
+        resumed = MetricsCollector()
+        resumed.load_from_disk(tmp_path / "metrics.json")
+        out = resumed.as_dict()
+        assert out["phases"]["implement"]["runtime"] == "claude-glm"
+        assert out["phase_attempts"][0]["runtime"] == "claude-glm"
+
     def test_repeated_phase_attempts_are_preserved_and_rolled_up(
         self, accounting_on,
     ) -> None:

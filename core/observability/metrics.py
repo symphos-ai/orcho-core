@@ -264,6 +264,12 @@ class PhaseMetrics:
     # numbers from estimates without having to know which CLIs report
     # what.
     tokens_exact: bool = False
+    # Registered agent-runtime id this phase executed under (e.g. ``claude``,
+    # ``claude-glm``, ``codex``, ``gemini``). Empty when unknown — legacy
+    # ``metrics.json`` carries no such key, and ``sdk/cost`` then buckets by
+    # model→provider. Stable within a phase across retries, so the rollup
+    # keeps the first non-empty value.
+    runtime: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -295,6 +301,11 @@ class PhaseMetrics:
         # the rule. False is the conservative default for legacy entries
         # written before this field existed.
         d["tokens_exact"] = self.tokens_exact
+        # ``runtime`` (registered agent-runtime id) is emitted only when known
+        # so legacy ``metrics.json`` written without it keeps its old shape and
+        # buckets by model downstream.
+        if self.runtime:
+            d["runtime"] = self.runtime
         return d
 
     def as_attempt_dict(self) -> dict[str, Any]:
@@ -363,6 +374,11 @@ class MetricsCollector:
     Args:
         default_model: Fallback model name when record_phase() is called
                        without an explicit model argument.
+        default_runtime: Fallback registered agent-runtime id (e.g.
+                       ``claude`` / ``claude-glm``) when record_phase() is
+                       called without an explicit runtime. The primary source
+                       is the per-phase resolver in the pipeline; this only
+                       fills in when that yields nothing.
     """
 
     def __init__(
@@ -372,11 +388,13 @@ class MetricsCollector:
         plan_model: str = "",
         implement_model: str = "",
         review_model: str = "",
+        default_runtime: str = "",
     ) -> None:
         # default_model is used as fallback when record_phase() has no model arg.
         # Per-phase models are stored for use in summary/export.
         self._phases: list[PhaseMetrics] = []
         self._default_model = default_model or implement_model or plan_model or review_model
+        self._default_runtime = default_runtime
         self._plan_model = plan_model
         self._implement_model = implement_model
         self._review_model = review_model
@@ -420,6 +438,7 @@ class MetricsCollector:
         reconcile_total: bool = False,
         tokens_in_cache_read: int | None = None,
         tokens_in_cache_create: int | None = None,
+        runtime: str = "",
     ) -> PhaseMetrics:
         """Record metrics for a completed pipeline phase.
 
@@ -463,6 +482,11 @@ class MetricsCollector:
                           but wants the record explicitly marked NOT exact —
                           pass ``False`` to override the otherwise-True
                           total-only branch.
+            runtime:      Registered agent-runtime id this phase ran under
+                          (e.g. ``claude`` / ``claude-glm`` / ``codex`` /
+                          ``gemini``). Empty falls back to ``default_runtime``;
+                          both empty leaves the field unset so legacy
+                          ``metrics.json`` shape is preserved.
             reconcile_total: When ``True`` and ``tokens_total`` is given
                           alongside at least one split side, treat the provider
                           total as authoritative: known provider split sides
@@ -547,6 +571,7 @@ class MetricsCollector:
             cost_usd_equivalent=resolved_cost_usd,
             cost_estimated=cost_estimated,
             tokens_exact=exact,
+            runtime=(runtime or self._default_runtime),
         )
         self._phases.append(pm)
         self._total_retries += retries
@@ -787,6 +812,10 @@ class MetricsCollector:
             current["tokens_exact"] = (
                 bool(current.get("tokens_exact")) and p.tokens_exact
             )
+            # Runtime id is stable within a phase; keep the first non-empty
+            # value seen so a later attempt that lost the id never blanks it.
+            if p.runtime and not current.get("runtime"):
+                current["runtime"] = p.runtime
             if current.get("model") != p.model:
                 current["model"] = "mixed"
         return out
@@ -848,9 +877,19 @@ class MetricsCollector:
                     return default
                 return float(v) if isinstance(v, (int, float)) else default
             cost = entry.get("cost_usd_equivalent") if accounting_enabled() else None
+            # ``runtime`` (registered agent-runtime id) is only present in
+            # metrics.json written after the field existed. Carry a valid
+            # non-empty string through so a resumed run's re-save keeps the
+            # runtime provenance; without this, ``sdk/cost`` would fall back
+            # to model→provider bucketing and collapse e.g. ``claude-glm``
+            # into ``claude`` for any run that paused and resumed. Legacy
+            # entries have no such key and stay empty (old model-fallback).
+            raw_runtime = entry.get("runtime")
+            runtime = raw_runtime if isinstance(raw_runtime, str) else ""
             self._phases.append(PhaseMetrics(
                 phase=phase,
                 model=str(entry.get("model", "")),
+                runtime=runtime,
                 tokens_in=_i(entry.get("tokens_in")),
                 tokens_out=_i(entry.get("tokens_out")),
                 tokens_unknown=_i(entry.get("tokens_unknown")),

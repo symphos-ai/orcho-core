@@ -213,6 +213,66 @@ def test_unknown_model_buckets_to_other(runs_root: Path, accounting_on):
     assert "other" in providers
 
 
+def test_runtime_id_wins_over_model_fallback(runs_root: Path, accounting_on):
+    # A phase that recorded a wrapper runtime id (claude-glm) must be attributed
+    # to that runtime, NOT collapsed into the base-model provider bucket
+    # (claude) via the model→provider fallback.
+    rid = runs_root / "20260509_120000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "glm run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "runtime": "claude-glm",
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude-glm" in providers
+    # The runtime id wins outright: this phase must not also surface a plain
+    # "claude" row from the model→provider fallback.
+    assert "claude" not in providers
+
+
+def test_old_metrics_without_runtime_bucket_by_model(runs_root: Path, accounting_on):
+    # Legacy metrics.json written before the runtime key existed still buckets
+    # by model→provider fallback: a claude-* model lands in the "claude" bucket.
+    rid = runs_root / "20260509_130000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "legacy run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude" in providers
+    assert "claude-glm" not in providers
+
+
 def test_window_excludes_old_runs(populated_runs: Path):
     # All synthetic runs are dated 2026-05-{05..07}; today is 2026-05-09 per
     # the harness. A 1d window includes nothing.

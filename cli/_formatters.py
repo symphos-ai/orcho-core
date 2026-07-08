@@ -17,6 +17,7 @@ from core.io.ansi import C, paint
 from core.observability.accounting_display import (
     ACCOUNTING_REFERENCE_NOTE,
     format_cost_reference,
+    format_estimated_entries_footer,
 )
 from sdk import (
     CostReport,
@@ -297,6 +298,14 @@ def format_cost_report(report: CostReport) -> str:
     has_cost = report.total_cost > 0.0
     window_label = "all time" if report.cutoff is None else report.window
 
+    # Breakdown percentages are share-of-breakdown: each row's cost over the
+    # sum of the rows in its own breakdown, never over report.total_cost. The
+    # phase and agent sums can legitimately exceed total_cost (double counting
+    # across views), so total_cost would make the percentages look like a
+    # broken pie. An empty/zero breakdown suppresses the column entirely.
+    phase_total = sum(ph.cost for ph in report.phase_breakdown)
+    agent_total = sum(ag.cost for ag in report.agent_breakdown)
+
     out.append("")
     out.append(
         f"  Cost report · window={window_label} · {report.total_runs} runs · "
@@ -335,22 +344,27 @@ def format_cost_report(report: CostReport) -> str:
                 if ph.cost > 0
                 else "  (no $)"
             )
-            if report.total_cost and ph.cost > 0:
-                pct_str = f"({(ph.cost / report.total_cost * 100.0):>4.1f}%)"
+            if phase_total and ph.cost > 0:
+                pct_str = f"({(ph.cost / phase_total * 100.0):>4.1f}%)"
             else:
                 pct_str = "        "
             out.append(
                 f"    {ph.name:<14} {cost_str}  {pct_str}   "
                 f"×{ph.runs}   {tok_marker}{ph.tokens:>9,} tok"
             )
+        if phase_total:
+            out.append(
+                "    ↳ % = share of the phase breakdown (sum of the rows), "
+                "not of the window total."
+            )
 
-    # By-agent.
+    # By runtime/provider.
     if report.agent_breakdown:
         any_estimated = any(not a.tokens_exact for a in report.agent_breakdown)
         out.append("")
-        out.append("  By agent (sum across phases):")
+        out.append("  By runtime/provider (sum across phases):")
         for ag in report.agent_breakdown:
-            pct = (ag.cost / report.total_cost * 100.0) if report.total_cost else 0.0
+            pct = (ag.cost / agent_total * 100.0) if agent_total else 0.0
             tok_marker = " " if ag.tokens_exact else "~"
             cost_str = (
                 format_cost_reference(ag.cost, estimated=ag.cost_estimated)
@@ -371,11 +385,11 @@ def format_cost_report(report: CostReport) -> str:
     # Top-phase note.
     if has_cost and report.phase_breakdown:
         top = report.phase_breakdown[0]
-        top_pct = (top.cost / report.total_cost * 100.0) if report.total_cost else 0.0
+        top_pct = (top.cost / phase_total * 100.0) if phase_total else 0.0
         out.append("")
         out.append(
-            f"  ↳ Top phase: ``{top.name}`` at {top_pct:.0f}% of cost reference "
-            f"this window. Lower ``phases.{top.name}.effort`` to shrink it."
+            f"  ↳ Top phase: ``{top.name}`` at {top_pct:.0f}% of the phase-breakdown "
+            f"cost this window. Lower ``phases.{top.name}.effort`` to shrink it."
         )
 
     # Totals.
@@ -426,12 +440,7 @@ def format_cost_report(report: CostReport) -> str:
                 f" — ⚠ {age} days old; "
                 f"``orcho pricing refresh`` to update."
             )
-        out.append(
-            f"  ↳ {n} entr{'y' if n == 1 else 'ies'} "
-            f"priced from {src}{age_warn}\n"
-            f"    Estimated cost (codex): tokens × rate ÷ 1M, "
-            f"split assumed 50/50 (CLI doesn't report in/out)."
-        )
+        out.append(format_estimated_entries_footer(n, src, age_warn))
     out.append("")
     return "\n".join(out)
 
