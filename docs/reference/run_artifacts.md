@@ -270,6 +270,11 @@ set — `validate_bundle` accepts bundles without them; consumers may
 rely on them being present in practice):
 
 * `findings: list[dict]` — review/repair findings extracted from meta.
+  Each entry carries additive lifecycle fields for evidence readers:
+  `status` (`open`, `final_rejected`, `waived`, `fixed`, or `accepted`)
+  and `status_reason`. Active findings are `open` or `final_rejected`;
+  `waived`, `fixed`, and `accepted` remain in the bundle as historical
+  proof rather than current blockers.
 * `release_summary: list[dict]` — final_acceptance gate decisions.
 * `implementation_receipts: list[dict]` — per-subtask delivery receipts for a
   `subtask_dag` run, built from `subtask.receipt` events. Empty for `whole_plan`

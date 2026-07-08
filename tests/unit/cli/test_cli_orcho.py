@@ -1108,6 +1108,84 @@ class TestCmdEvidence:
         assert "\x1b[" in rendered
         assert "Evidence:" in strip_ansi(rendered)
 
+    def test_cli_findings_show_lifecycle_statuses(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [
+                    {
+                        "id": "O1",
+                        "severity": "P1",
+                        "title": "Still broken",
+                        "phase": "review_changes",
+                        "attempt": 2,
+                        "status": "open",
+                    },
+                    {
+                        "id": "F1",
+                        "severity": "P1",
+                        "title": "Fixed earlier issue",
+                        "phase": "review_changes",
+                        "attempt": 1,
+                        "status": "fixed",
+                        "status_reason": "later review_changes attempt approved",
+                    },
+                    {
+                        "id": "W1",
+                        "severity": "P2",
+                        "title": "Accepted risk",
+                        "phase": "validate_plan",
+                        "attempt": 1,
+                        "status": "waived",
+                    },
+                    {
+                        "id": "R1",
+                        "severity": "P1",
+                        "title": "Release blocker",
+                        "phase": "final_acceptance",
+                        "attempt": 1,
+                        "status": "final_rejected",
+                    },
+                ],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle))
+
+        assert "active x2" in rendered
+        assert "final-rejected x1 (P1x1)" in rendered
+        assert "open x1 (P1x1)" in rendered
+        assert "waived x1 (P2x1)" in rendered
+        assert "fixed x1 (P1x1)" in rendered
+        assert "REJECTED P1  final_acceptance#1" in rendered
+        assert "OPEN     P1  review_changes#2" in rendered
+        assert "WAIVED   P2  validate_plan#1" in rendered
+        assert "FIXED    P1  review_changes#1" in rendered
+        assert "later review_changes attempt approved" not in rendered
+
+        debug_rendered = strip_ansi(format_evidence_cli(bundle, debug=True))
+        assert "later review_changes attempt approved" in debug_rendered
+
     def test_json_projection_compacts_verbose_fields(self) -> None:
         from cli._formatters import project_evidence_json
 

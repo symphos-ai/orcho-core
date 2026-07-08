@@ -7,6 +7,11 @@ from collections.abc import Iterable
 from typing import Any
 
 from core.io.ansi import C, paint
+from pipeline.evidence.finding_lifecycle import (
+    ACTIVE_FINDING_STATUSES,
+    FINDING_STATUS_ORDER,
+    finding_status_sort_key,
+)
 
 
 def format_evidence_cli(bundle: Any, *, debug: bool = False) -> str:
@@ -234,23 +239,36 @@ def _command_lines(commands: list[Any], *, body: dict[str, Any], debug: bool) ->
 def _finding_lines(findings: list[Any], *, body: dict[str, Any], debug: bool) -> list[str]:
     dict_findings = [f for f in findings if isinstance(f, dict)]
     waivers = _waivers(body.get("errors") or [])
-    active = _active_findings(dict_findings, waivers)
-    waived_count = len(dict_findings) - len(active)
     lines = ["", _section("Findings")]
     if not dict_findings:
         return lines + [f"  {_good('No review findings recorded.')}"]
-    if not active and waived_count:
-        return lines + [f"  {_warn(f'No active findings; {waived_count} waived')}"]
-    severity_counts = _counts(str(f.get("severity") or "P?") for f in active)
-    bits = [f"{sev} x{count}" for sev, count in severity_counts.items()]
-    if waived_count:
-        bits.append(f"waived x{waived_count}")
-    lines.append(f"  {_warn(' · '.join(bits) if bits else f'waived x{waived_count}')}")
-    rows = active if debug else active[:4]
+
+    active = _active_findings(dict_findings, waivers)
+    summary = _finding_status_summary(dict_findings, waivers)
+    lines.append(f"  {_warn(summary) if active else _good(summary)}")
+    rows = sorted(
+        dict_findings,
+        key=lambda finding: finding_status_sort_key(_finding_with_fallback_status(finding, waivers)),
+    )
+    rows = rows if debug else rows[:8]
     for finding in rows:
+        display = _finding_with_fallback_status(finding, waivers)
+        status = _finding_status_label(str(display.get("status") or "open"))
         severity = str(finding.get("severity") or "P?")
-        title = _clip(finding.get("title") or "(no title)", 86)
-        lines.append(f"  {_state(f'{severity:<6}')} {_plain(title)}")
+        phase = str(finding.get("phase") or "?")
+        attempt = finding.get("attempt") or "?"
+        title = _clip(finding.get("title") or "(no title)", 68)
+        lines.append(
+            f"  {_state(f'{status:<8}')} {_state(f'{severity:<3}')} "
+            f"{_muted(f'{phase}#{attempt:<3}')} {_plain(title)}"
+        )
+        reason = str(display.get("status_reason") or "").strip()
+        if debug and reason:
+            lines.append(f"             {_muted(reason)}")
+    if len(dict_findings) > len(rows):
+        lines.append(
+            f"  {_muted(f'... {len(dict_findings) - len(rows)} more findings; rerun with --debug')}"
+        )
     return lines
 
 
@@ -335,6 +353,59 @@ def _error_lines(errors: list[Any], *, status: str, debug: bool) -> list[str]:
 
 
 def _active_findings(findings: Iterable[dict[str, Any]], waivers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        finding for finding in findings
+        if str(_finding_with_fallback_status(finding, waivers).get("status") or "open")
+        in ACTIVE_FINDING_STATUSES
+    ]
+
+
+def _finding_status_summary(
+    findings: list[dict[str, Any]],
+    waivers: list[dict[str, Any]],
+) -> str:
+    counts: OrderedDict[str, list[dict[str, Any]]] = OrderedDict(
+        (status, []) for status in FINDING_STATUS_ORDER
+    )
+    for finding in findings:
+        display = _finding_with_fallback_status(finding, waivers)
+        status = str(display.get("status") or "open")
+        counts.setdefault(status, []).append(display)
+    bits = []
+    for status, entries in counts.items():
+        if not entries:
+            continue
+        severity = _severity_summary(entries)
+        suffix = f" ({severity})" if severity else ""
+        bits.append(f"{_finding_status_summary_label(status)} x{len(entries)}{suffix}")
+    open_count = sum(
+        len(counts.get(status, []))
+        for status in ACTIVE_FINDING_STATUSES
+    )
+    prefix = f"active x{open_count}"
+    return f"{prefix} · {' · '.join(bits)}" if bits else prefix
+
+
+def _severity_summary(findings: Iterable[dict[str, Any]]) -> str:
+    counts = _counts(str(f.get("severity") or "P?") for f in findings)
+    return " ".join(f"{severity}x{count}" for severity, count in counts.items())
+
+
+def _finding_with_fallback_status(
+    finding: dict[str, Any],
+    waivers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if finding.get("status"):
+        return finding
+    display = dict(finding)
+    display["status"] = "waived" if _is_waived_finding(finding, waivers) else "open"
+    return display
+
+
+def _is_waived_finding(
+    finding: dict[str, Any],
+    waivers: list[dict[str, Any]],
+) -> bool:
     waived_ids: set[str] = set()
     for waiver in waivers:
         waiver_findings = waiver.get("findings")
@@ -343,13 +414,28 @@ def _active_findings(findings: Iterable[dict[str, Any]], waivers: list[dict[str,
         for finding in waiver_findings:
             if isinstance(finding, dict) and finding.get("id"):
                 waived_ids.add(str(finding["id"]))
-    active = []
-    for finding in findings:
-        finding_id = str(finding.get("id") or "")
-        if finding_id and finding_id in waived_ids:
-            continue
-        active.append(finding)
-    return active
+    finding_id = str(finding.get("id") or "")
+    return bool(finding_id and finding_id in waived_ids)
+
+
+def _finding_status_label(status: str) -> str:
+    return {
+        "final_rejected": "REJECTED",
+        "open": "OPEN",
+        "waived": "WAIVED",
+        "fixed": "FIXED",
+        "accepted": "ACCEPTED",
+    }.get(status, status.upper())
+
+
+def _finding_status_summary_label(status: str) -> str:
+    return {
+        "final_rejected": "final-rejected",
+        "open": "open",
+        "waived": "waived",
+        "fixed": "fixed",
+        "accepted": "accepted",
+    }.get(status, status.replace("_", "-"))
 
 
 def _waivers(errors: Any) -> list[dict[str, Any]]:
@@ -427,9 +513,19 @@ def _phase(text: str) -> str:
 
 def _state(text: str) -> str:
     normalized = text.strip().lower()
-    if normalized in {"done", "ok", "pass", "passed", "approved", "resolved", "success"}:
+    if normalized in {
+        "accepted",
+        "done",
+        "fixed",
+        "ok",
+        "pass",
+        "passed",
+        "approved",
+        "resolved",
+        "success",
+    }:
         return _good(text)
-    if normalized in {"failed", "fail", "halted", "rejected", "error"}:
+    if normalized in {"failed", "fail", "final", "halted", "open", "rejected", "error"}:
         return _bad(text)
     if (
         normalized.startswith("p0")

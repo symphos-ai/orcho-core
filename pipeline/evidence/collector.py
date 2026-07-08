@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pipeline.evidence.finding_lifecycle import annotate_finding_lifecycle
 from pipeline.evidence.schema import EVIDENCE_SCHEMA_VERSION
 from pipeline.run_state.setup_failure import detect_setup_preflight_failure
 
@@ -898,8 +899,12 @@ def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
     phases_meta = meta.get("phases") or {}
     if not isinstance(phases_meta, dict):
         return out
+    phase_attempts = {
+        phase_name: _phase_attempts(phases_meta.get(phase_name))
+        for phase_name in _FINDING_BEARING_PHASES
+    }
     for phase_name in _FINDING_BEARING_PHASES:
-        attempts = _phase_attempts(phases_meta.get(phase_name))
+        attempts = phase_attempts[phase_name]
         for idx, attempt in enumerate(attempts, start=1):
             attempt_num = _coerce_int(attempt.get("attempt"), idx)
             findings = attempt.get("findings")
@@ -918,8 +923,24 @@ def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
                     "line": _optional_int(f.get("line")),
                     "phase": phase_name,
                     "attempt": attempt_num,
+                    "source_verdict": str(attempt.get("verdict") or ""),
+                    "source_approved": (
+                        attempt.get("approved")
+                        if isinstance(attempt.get("approved"), bool)
+                        else None
+                    ),
+                    "source_ship_ready": (
+                        attempt.get("ship_ready")
+                        if isinstance(attempt.get("ship_ready"), bool)
+                        else None
+                    ),
                 })
-    return out
+    waiver = meta.get("phase_handoff_waiver")
+    return annotate_finding_lifecycle(
+        out,
+        phase_attempts,
+        waiver=waiver if isinstance(waiver, dict) else None,
+    )
 
 
 def _build_release_summary(meta: dict[str, Any]) -> list[dict[str, Any]]:
