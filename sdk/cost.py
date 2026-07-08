@@ -26,6 +26,8 @@ from sdk.types import (
 
 def _provider_for_model(model: str) -> str:
     m = model.lower()
+    if m.startswith("glm"):
+        return "claude-glm"
     if m.startswith("claude"):
         return "claude"
     if m.startswith(("gpt", "o3", "o4", "codex")):

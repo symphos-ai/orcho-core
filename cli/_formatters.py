@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from core.observability.accounting_display import (
     ACCOUNTING_REFERENCE_NOTE,
     format_cost_reference,
     format_estimated_entries_footer,
+    runtime_accounting_hint,
 )
 from sdk import (
     CostReport,
@@ -267,6 +269,33 @@ def format_metrics_history(rows: list[RunMetrics], *, runs_dir: Path | None = No
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _stdout_paint(text: str, *codes: str) -> str:
+    """Paint stdout-bound CLI text through the shared color policy."""
+    return paint(text, *codes, color=None, stream=sys.stdout)
+
+
+def _cost_title(text: str) -> str:
+    return _stdout_paint(text, C.BOLD, C.CYAN)
+
+
+def _cost_reference_text(
+    cost: float,
+    *,
+    estimated: bool = False,
+) -> str:
+    rendered = format_cost_reference(cost, estimated=estimated)
+    color = C.YELLOW if estimated else C.GREEN
+    return _stdout_paint(rendered, color)
+
+
+def _cost_muted(text: str) -> str:
+    return _stdout_paint(text, C.GREY)
+
+
+def _cost_warning(text: str) -> str:
+    return _stdout_paint(text, C.YELLOW)
+
+
 def format_cost_report(report: CostReport) -> str:
     """Reproduce `cmd_cost` output (cli/orcho.py:715-856).
 
@@ -308,27 +337,29 @@ def format_cost_report(report: CostReport) -> str:
 
     out.append("")
     out.append(
-        f"  Cost report · window={window_label} · {report.total_runs} runs · "
-        f"workspace={report.runs_dir}"
+        _cost_title(
+            f"  Cost report · window={window_label} · {report.total_runs} runs · "
+            f"workspace={report.runs_dir}"
+        )
     )
-    out.append(f"  {'─' * 70}")
+    out.append(_cost_muted(f"  {'─' * 70}"))
 
     # Top-N runs by cost reference.
     if report.top_runs:
         out.append("")
-        out.append(f"  Top {len(report.top_runs)} runs by cost reference:")
+        out.append(_cost_title(f"  Top {len(report.top_runs)} runs by cost reference:"))
         for r in report.top_runs:
             cost_str = (
-                format_cost_reference(r.cost, estimated=r.cost_estimated)
+                _cost_reference_text(r.cost, estimated=r.cost_estimated)
                 if r.cost > 0
-                else "    -- "
+                else _cost_muted("    -- ")
             )
             tags: list[str] = []
             if r.rounds > 1:
                 tags.append(f"rounds×{r.rounds}")
             if r.retries:
                 tags.append(f"retries×{r.retries}")
-            tag_str = f"  ⚠ {', '.join(tags)}" if tags else ""
+            tag_str = _cost_warning(f"  ⚠ {', '.join(tags)}") if tags else ""
             out.append(
                 f"    {r.run_id}  {cost_str}  {r.task:<50}{tag_str}"
             )
@@ -336,13 +367,13 @@ def format_cost_report(report: CostReport) -> str:
     # By-phase.
     if report.phase_breakdown:
         out.append("")
-        out.append("  By phase (sum across runs):")
+        out.append(_cost_title("  By phase (sum across runs):"))
         for ph in report.phase_breakdown:
             tok_marker = " " if ph.tokens_exact else "~"
             cost_str = (
-                format_cost_reference(ph.cost, estimated=ph.cost_estimated)
+                _cost_reference_text(ph.cost, estimated=ph.cost_estimated)
                 if ph.cost > 0
-                else "  (no $)"
+                else _cost_muted("  (no $)")
             )
             if phase_total and ph.cost > 0:
                 pct_str = f"({(ph.cost / phase_total * 100.0):>4.1f}%)"
@@ -354,32 +385,38 @@ def format_cost_report(report: CostReport) -> str:
             )
         if phase_total:
             out.append(
-                "    ↳ % = share of the phase breakdown (sum of the rows), "
-                "not of the window total."
+                _cost_muted(
+                    "    ↳ % = share of the phase breakdown (sum of the rows), "
+                    "not of the window total."
+                )
             )
 
     # By runtime/provider.
     if report.agent_breakdown:
         any_estimated = any(not a.tokens_exact for a in report.agent_breakdown)
         out.append("")
-        out.append("  By runtime/provider (sum across phases):")
+        out.append(_cost_title("  By runtime/provider (sum across phases):"))
         for ag in report.agent_breakdown:
             pct = (ag.cost / agent_total * 100.0) if agent_total else 0.0
             tok_marker = " " if ag.tokens_exact else "~"
             cost_str = (
-                format_cost_reference(ag.cost, estimated=ag.cost_estimated)
+                _cost_reference_text(ag.cost, estimated=ag.cost_estimated)
                 if ag.cost > 0
-                else "  (no $)"
+                else _cost_muted("  (no $)")
             )
             pct_str = f"({pct:>4.1f}%)" if ag.cost > 0 else "        "
+            hint = runtime_accounting_hint(ag.provider)
+            hint_str = f"  {_cost_muted(hint)}" if hint else ""
             out.append(
                 f"    {ag.provider:<10} {cost_str}  {pct_str}   "
-                f"×{ag.runs}   {tok_marker}{ag.tokens:>9,} tok"
+                f"×{ag.runs}   {tok_marker}{ag.tokens:>9,} tok{hint_str}"
             )
         if any_estimated:
             out.append(
-                "    ↳ ``~`` = token count includes at least one estimated "
-                "entry (provider didn't surface usage)."
+                _cost_muted(
+                    "    ↳ ``~`` = token count includes at least one estimated "
+                    "entry (provider didn't surface usage)."
+                )
             )
 
     # Top-phase note.
@@ -398,11 +435,12 @@ def format_cost_report(report: CostReport) -> str:
     if has_cost:
         out.append(
             "    Cost reference  "
-            f"{format_cost_reference(report.total_cost, estimated=report.any_estimated)}"
+            f"{_cost_reference_text(report.total_cost, estimated=report.any_estimated)}"
         )
     else:
         out.append(
-            "    Cost reference  — (no run reported cost; token-only, mock, or old runs?)"
+            "    Cost reference  "
+            f"{_cost_muted('— (no run reported cost; token-only, mock, or old runs?)')}"
         )
     out.append(
         f"    Tokens          {report.total_tokens:,} "
@@ -420,7 +458,7 @@ def format_cost_report(report: CostReport) -> str:
 
     if has_cost:
         out.append("")
-        out.append(f"  ↳ {ACCOUNTING_REFERENCE_NOTE}")
+        out.append(_cost_muted(f"  ↳ {ACCOUNTING_REFERENCE_NOTE}"))
 
     if report.priced_entries_count:
         n = report.priced_entries_count
@@ -437,7 +475,7 @@ def format_cost_report(report: CostReport) -> str:
         age_warn = ""
         if age is not None and age > 30:
             age_warn = (
-                f" — ⚠ {age} days old; "
+                f" — {_cost_warning(f'⚠ {age} days old')}; "
                 f"``orcho pricing refresh`` to update."
             )
         out.append(format_estimated_entries_footer(n, src, age_warn))

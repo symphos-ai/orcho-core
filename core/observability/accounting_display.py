@@ -77,10 +77,19 @@ def format_estimated_entries_footer(
     return f"  ↳ {count} phase {unit} estimated from {source}{age_warning}"
 
 
+def runtime_accounting_hint(runtime_id: str) -> str:
+    """Return a short accounting-mode hint for known wrapper runtimes."""
+    normalized = runtime_id.strip().lower()
+    if normalized == "claude-glm" or normalized.startswith("claude-glm-"):
+        return "subscription/quota runtime; not API billing"
+    return ""
+
+
 ACCOUNTING_REFERENCE_NOTE = (
     "Cost reference is usage accounting, not a billing receipt. Runtime-reported "
     "values come from the active runtime/endpoint; estimated-api values use "
-    "Orcho pricing tables. Subscription plans may bill differently."
+    "Orcho pricing tables. Wrapper runtime rows keep their own runtime identity. "
+    "Subscription plans may bill differently."
 )
 
 
@@ -92,4 +101,5 @@ __all__ = [
     "format_cost_reference_key_value",
     "format_cost_reference_summary",
     "format_estimated_entries_footer",
+    "runtime_accounting_hint",
 ]

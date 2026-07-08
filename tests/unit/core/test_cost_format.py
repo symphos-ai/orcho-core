@@ -127,6 +127,53 @@ def test_full_report_sections_present():
     assert "Time            2.0m" in out
 
 
+def test_cost_report_color_preserves_plain_contract():
+    from core.io.ansi import C, get_color_enabled, set_color_enabled, strip_ansi
+
+    r = _make_report(
+        any_estimated=True,
+        agent_breakdown=(
+            AgentBreakdown(
+                provider="claude-glm",
+                cost=1.23,
+                tokens=20_000,
+                runs=4,
+                tokens_exact=False,
+            ),
+        ),
+    )
+    before = get_color_enabled()
+    try:
+        set_color_enabled(False)
+        plain = format_cost_report(r)
+        set_color_enabled(True)
+        colored = format_cost_report(r)
+    finally:
+        set_color_enabled(before)
+
+    assert strip_ansi(colored) == plain
+    assert C.CYAN in colored
+    assert C.GREEN in colored
+    assert C.GREY in colored
+
+
+def test_glm_runtime_row_declares_quota_mode():
+    r = _make_report(
+        agent_breakdown=(
+            AgentBreakdown(
+                provider="claude-glm",
+                cost=1.23,
+                tokens=20_000,
+                runs=4,
+                tokens_exact=True,
+            ),
+        ),
+    )
+    out = format_cost_report(r)
+    assert "claude-glm" in out
+    assert "subscription/quota runtime; not API billing" in out
+
+
 def test_accounting_disabled_report_has_no_dollar_output():
     r = _make_report(accounting_enabled=False, total_cost=0.0)
     out = format_cost_report(r)
