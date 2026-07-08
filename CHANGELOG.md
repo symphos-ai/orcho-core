@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-07-08
+
+### Added
+
+- `claude-glm` agent runtime, including an installable wrapper with a Windows
+  `.cmd` variant so `orcho runtimes install claude-glm` provisions a working
+  wrapper on Windows.
+- `orcho profile customize` command for tailoring one execution profile,
+  backed by a public SDK customization surface.
+- `orcho demos bootstrap` command that creates a disposable packaged demo
+  workspace for a first guided run.
+- Quality-gates verification matrix inspector: the declared gate matrix is
+  exposed as a read-only CLI command, and the run header uses the same
+  formatter so banner output and operator inspection stay aligned.
+- Default CLI evidence view plus a full evidence dossier view covering the
+  plan contract, phase timeline, implementation receipts, and acceptance
+  verdicts.
+- Evidence findings carry lifecycle statuses.
+- Public SDK surface for reading profile catalogue metadata.
+
+### Changed
+
+- The run diff command defaults to a preview render.
+- Cost reports read as usage accounting: breakdowns are attributed to the
+  recorded runtime (wrapper runtimes and resume overrides preserved), child
+  pipeline usage is separated from phase summaries, workspace project
+  breakdowns are reported, and cost-reference wording is clarified.
+- Run status summaries are clearer: quality gate summary, metrics-based usage
+  with phase attempts, workspace accounting honored, and colored cost output.
+- Metrics CLI output is easier to read.
+- Inspection command UX is polished and command roles are documented.
+
+### Fixed
+
+- Scope expansion never miscategorises a test module as a genuine-safety
+  change, and test modules are recognised across ecosystems (Go, JS/TS,
+  JVM/.NET, Ruby, Rust, and more), not only Python.
+- Non-fatal delivery warnings are coloured yellow so they read as warnings
+  instead of neutral text.
+- Long evidence artifact paths are no longer clipped, so they stay copyable.
+
+### Documentation
+
+- Windows and Linux pipx install steps work as written: pipx is bootstrapped
+  through the interpreter where needed, with an explicit shell-reopen step.
+
 ## 0.3.0 - 2026-07-06
 
 ### Added
