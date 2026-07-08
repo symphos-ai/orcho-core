@@ -21,6 +21,7 @@ from sdk.types import (
     CostReport,
     CostRunRow,
     PhaseBreakdown,
+    ProjectBreakdown,
 )
 
 
@@ -41,6 +42,53 @@ def _workspace_from_runs_dir(runs_dir: Path) -> Path | None:
     if runs_dir.name == "runs" and runs_dir.parent.name == "runspace":
         return runs_dir.parent.parent
     return None
+
+
+def _project_group_root_from_runs_dir(runs_dir: Path) -> Path | None:
+    workspace = _workspace_from_runs_dir(runs_dir)
+    if workspace is None:
+        return None
+    if workspace.name == "workspace-orchestrator":
+        return workspace.parent
+    return workspace
+
+
+def _resolved_project_identity(
+    raw_path: object,
+    *,
+    project_group_root: Path | None,
+) -> tuple[str, str] | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    try:
+        project_path = Path(raw_path).expanduser().resolve(strict=False)
+    except OSError:
+        return None
+    if project_group_root is not None:
+        try:
+            root = project_group_root.expanduser().resolve(strict=False)
+        except OSError:
+            return None
+        if not project_path.is_relative_to(root):
+            return None
+    if not project_path.name:
+        return None
+    return project_path.name, str(project_path)
+
+
+def _metrics_tokens_exact(phases: dict) -> bool:
+    phase_values = [ph for ph in phases.values() if isinstance(ph, dict)]
+    if not phase_values:
+        return False
+    return all(bool(ph.get("tokens_exact", False)) for ph in phase_values)
+
+
+def _metrics_cost_estimated(phases: dict) -> bool:
+    return any(
+        bool(ph.get("cost_estimated"))
+        for ph in phases.values()
+        if isinstance(ph, dict)
+    )
 
 
 def _accounting_enabled_for_context(
@@ -80,7 +128,7 @@ def aggregate_cost(
     )
 
     rows: list[CostRunRow] = []
-    raw_phases: list[tuple[str, dict]] = []  # (run_id, phases dict) for second pass
+    raw_runs: list[tuple[CostRunRow, dict, dict]] = []
 
     for d in sorted((d for d in rd.iterdir() if d.is_dir()), reverse=True):
         ts = run_ts_to_datetime(d.name)
@@ -90,24 +138,25 @@ def aggregate_cost(
         if not m:
             continue
         meta = load_meta(d)
-        rows.append(
-            CostRunRow(
-                run_id=d.name,
-                task=str(meta.get("task", ""))[:60],
-                cost=(
-                    float(m.get("total_cost_usd_equivalent", 0.0) or 0.0)
-                    if use_accounting else 0.0
-                ),
-                tokens=int(m.get("total_tokens", 0) or 0),
-                tokens_in=int(m.get("total_tokens_in", 0) or 0),
-                tokens_out=int(m.get("total_tokens_out", 0) or 0),
-                duration_s=float(m.get("total_duration_s", 0.0) or 0.0),
-                rounds=int(m.get("total_rounds", 0) or 0),
-                retries=int(m.get("total_retries", 0) or 0),
-                cost_estimated=bool(m.get("cost_estimated")),
-            )
+        row = CostRunRow(
+            run_id=d.name,
+            task=str(meta.get("task", ""))[:60],
+            cost=(
+                float(m.get("total_cost_usd_equivalent", 0.0) or 0.0)
+                if use_accounting else 0.0
+            ),
+            tokens=int(m.get("total_tokens", 0) or 0),
+            tokens_in=int(m.get("total_tokens_in", 0) or 0),
+            tokens_out=int(m.get("total_tokens_out", 0) or 0),
+            duration_s=float(m.get("total_duration_s", 0.0) or 0.0),
+            rounds=int(m.get("total_rounds", 0) or 0),
+            retries=int(m.get("total_retries", 0) or 0),
+            cost_estimated=bool(m.get("cost_estimated")),
         )
-        raw_phases.append((d.name, m.get("phases", {}) or {}))
+        rows.append(
+            row
+        )
+        raw_runs.append((row, meta, m))
 
     if not rows:
         return CostReport(
@@ -151,14 +200,64 @@ def aggregate_cost(
     agent_exact: dict[str, bool] = {}
     agent_cost_estimated: dict[str, bool] = {}
 
+    project_group_root = _project_group_root_from_runs_dir(rd)
+    project_names: dict[str, str] = {}
+    project_costs: dict[str, float] = {}
+    project_tokens: dict[str, int] = {}
+    project_runs: dict[str, int] = {}
+    project_exact: dict[str, bool] = {}
+    project_cost_estimated: dict[str, bool] = {}
+
     priced_entries_count = 0
 
-    for _run_id, phases in raw_phases:
+    def add_project_cost(
+        *,
+        identity: tuple[str, str] | None,
+        cost: float,
+        tokens: int,
+        runs_count: int,
+        tokens_exact: bool,
+        cost_estimated: bool,
+    ) -> None:
+        if identity is None:
+            return
+        name, path = identity
+        project_names[path] = name
+        project_costs[path] = project_costs.get(path, 0.0) + cost
+        project_tokens[path] = project_tokens.get(path, 0) + tokens
+        project_runs[path] = project_runs.get(path, 0) + runs_count
+        project_exact[path] = project_exact.get(path, True) and tokens_exact
+        project_cost_estimated[path] = (
+            project_cost_estimated.get(path, False) or cost_estimated
+        )
+
+    for row, meta, metrics in raw_runs:
+        phases = metrics.get("phases", {}) or {}
+        if not isinstance(phases, dict):
+            phases = {}
+        projects_map = meta.get("projects")
+        if not isinstance(projects_map, dict):
+            projects_map = {}
+
+        if not projects_map:
+            add_project_cost(
+                identity=_resolved_project_identity(
+                    meta.get("project"),
+                    project_group_root=project_group_root,
+                ),
+                cost=row.cost,
+                tokens=row.tokens,
+                runs_count=1,
+                tokens_exact=_metrics_tokens_exact(phases),
+                cost_estimated=row.cost_estimated or _metrics_cost_estimated(phases),
+            )
+
         for ph_name, ph in phases.items():
             raw_cost = ph.get("cost_usd_equivalent", None) if use_accounting else None
             tokens = int(ph.get("total_tokens", 0) or 0)
             exact = bool(ph.get("tokens_exact", False))
             model = str(ph.get("model", ""))
+            kind = str(ph.get("kind") or "phase").strip() or "phase"
 
             if use_accounting and raw_cost is None and exact and tokens > 0 and model:
                 priced = _pricing.estimate_cost_from_total(model, tokens)
@@ -177,11 +276,22 @@ def aggregate_cost(
             phase_cost_estimated[ph_name] = (
                 phase_cost_estimated.get(ph_name, False) or cost_estimated
             )
-            kind = str(ph.get("kind") or "phase").strip() or "phase"
             previous_kind = phase_kinds.get(ph_name)
             phase_kinds[ph_name] = (
                 kind if previous_kind in (None, kind) else "mixed"
             )
+            if kind == "sub_pipeline":
+                add_project_cost(
+                    identity=_resolved_project_identity(
+                        projects_map.get(ph_name),
+                        project_group_root=project_group_root,
+                    ),
+                    cost=cost,
+                    tokens=tokens,
+                    runs_count=1,
+                    tokens_exact=exact,
+                    cost_estimated=cost_estimated,
+                )
 
             # Agent-breakdown identity: prefer the recorded runtime id when the
             # phase carries one (so a wrapper runtime such as ``claude-glm`` is
@@ -218,6 +328,22 @@ def aggregate_cost(
             cost_estimated=agent_cost_estimated.get(runtime_id, False),
         )
         for runtime_id in sorted(agent_costs, key=lambda k: agent_costs[k], reverse=True)
+    )
+    project_breakdown = tuple(
+        ProjectBreakdown(
+            name=project_names[path],
+            path=path,
+            cost=project_costs[path],
+            tokens=project_tokens.get(path, 0),
+            runs=project_runs.get(path, 0),
+            tokens_exact=project_exact.get(path, False),
+            cost_estimated=project_cost_estimated.get(path, False),
+        )
+        for path in sorted(
+            project_costs,
+            key=lambda k: (project_costs[k], project_tokens[k]),
+            reverse=True,
+        )
     )
 
     sorted_rows = sorted(rows, key=lambda r: (r.cost, r.tokens), reverse=True)
@@ -261,6 +387,7 @@ def aggregate_cost(
         pricing_snapshot_age_days=_pricing.snapshot_age_days(),
         any_estimated=any_estimated,
         accounting_enabled=use_accounting,
+        project_breakdown=project_breakdown,
     )
 
 

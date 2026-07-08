@@ -31,6 +31,7 @@ from sdk import (
     PhaseBreakdown,
     PricingTable,
     ProfileCustomizeResult,
+    ProjectBreakdown,
     PromptResolution,
     RefreshResult,
     RunDiffRecord,
@@ -513,7 +514,7 @@ def _append_cost_breakdown_section(
     out: list[str],
     *,
     title: str,
-    rows: tuple[PhaseBreakdown, ...],
+    rows: tuple[PhaseBreakdown | ProjectBreakdown, ...],
     total: float,
     note: str,
 ) -> None:
@@ -582,11 +583,8 @@ def format_cost_report(report: CostReport) -> str:
     phase_rows = tuple(
         ph for ph in report.phase_breakdown if ph.kind != "sub_pipeline"
     )
-    sub_pipeline_rows = tuple(
-        ph for ph in report.phase_breakdown if ph.kind == "sub_pipeline"
-    )
     phase_total = sum(ph.cost for ph in phase_rows)
-    sub_pipeline_total = sum(ph.cost for ph in sub_pipeline_rows)
+    project_total = sum(project.cost for project in report.project_breakdown)
     agent_total = sum(ag.cost for ag in report.agent_breakdown)
     role_rows = _derived_cost_breakdown(
         phase_rows,
@@ -630,7 +628,17 @@ def format_cost_report(report: CostReport) -> str:
                 f"    {r.run_id}  {cost_str}  {r.task:<50}{tag_str}"
             )
 
-    # By-phase.
+    _append_cost_breakdown_section(
+        out,
+        title="  By workspace project (project runs + cross-project slices):",
+        rows=report.project_breakdown,
+        total=project_total,
+        note=(
+            "    ↳ Project rows are matched by workspace-local project path; "
+            "cross-level orchestration stays in phase rows."
+        ),
+    )
+
     _append_cost_breakdown_section(
         out,
         title="  By phase (sum across runs):",
@@ -642,27 +650,14 @@ def format_cost_report(report: CostReport) -> str:
         ),
     )
 
-    # Cross-project child pipeline aliases are stored under metrics.phases for
-    # accounting rollup, but they are project aliases, not phase names.
-    _append_cost_breakdown_section(
-        out,
-        title="  By child pipeline (sum across cross-project runs):",
-        rows=sub_pipeline_rows,
-        total=sub_pipeline_total,
-        note=(
-            "    ↳ % = share of the child-pipeline breakdown, not of "
-            "the window total."
-        ),
-    )
-
     _append_cost_breakdown_section(
         out,
         title="  By role (derived from phase map):",
         rows=role_rows,
         total=role_total,
         note=(
-            "    ↳ Roles are derived from phase names; child pipelines are "
-            "reported separately."
+            "    ↳ Roles are derived from phase names; cross-project slices "
+            "are counted in the workspace project section."
         ),
     )
 
@@ -672,8 +667,8 @@ def format_cost_report(report: CostReport) -> str:
         rows=task_rows,
         total=task_total,
         note=(
-            "    ↳ Tasks are derived from phase names; child pipelines are "
-            "reported separately."
+            "    ↳ Tasks are derived from phase names; cross-project slices "
+            "are counted in the workspace project section."
         ),
     )
 

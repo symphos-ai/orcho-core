@@ -315,10 +315,14 @@ runtime/endpoint; token-only phases can trigger pricing fallback through
 (priced from the local snapshot), not the report's overall price.
 
 `CostReport.top_runs` is sorted by `(cost desc, tokens desc)`;
-`phase_breakdown` and `agent_breakdown` by cost descending. `provider`
-in `agent_breakdown` is the resolved **runtime id** when the phase metrics
-carry one (e.g. `"claude"`, `"claude-glm"`); otherwise it falls back to a
-model→provider mapping for older runs (`"claude"` / `"codex"` / `"gemini"` /
+`phase_breakdown`, `agent_breakdown`, and `project_breakdown` are sorted by
+cost descending. `project_breakdown` attributes single-project runs by
+`meta.project` and cross-project slices by `meta.projects[alias]` when the
+resolved project path belongs to the workspace project group; external demo or
+temporary projects are not included in that workspace-project view.
+`provider` in `agent_breakdown` is the resolved **runtime id** when the phase
+metrics carry one (e.g. `"claude"`, `"claude-glm"`); otherwise it falls back to
+a model→provider mapping for older runs (`"claude"` / `"codex"` / `"gemini"` /
 `"other"`). Breakdown percentages are **share of the breakdown** — a row's cost
 over the sum of the rows shown, so they stay within 100%.
 

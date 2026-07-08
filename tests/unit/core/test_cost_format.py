@@ -19,6 +19,7 @@ from sdk.types import (
     PhaseBreakdown,
     PricingEntry,
     PricingTable,
+    ProjectBreakdown,
 )
 
 
@@ -204,13 +205,66 @@ def test_sub_pipeline_rows_do_not_render_as_phases():
     )
     out = format_cost_report(r)
     phase_section = out.split("By phase (sum across runs):", 1)[1].split(
-        "By child pipeline", 1,
+        "By role", 1,
     )[0]
     assert "api" not in phase_section
     assert "web" not in phase_section
-    assert "By child pipeline (sum across cross-project runs)" in out
-    assert "api" in out
-    assert "web" in out
+    assert "By child pipeline" not in out
+    assert not re.search(r"^\s+api\s", out, flags=re.MULTILINE)
+    assert not re.search(r"^\s+web\s", out, flags=re.MULTILINE)
+
+
+def test_workspace_project_breakdown_renders_project_units():
+    r = _make_report(
+        project_breakdown=(
+            ProjectBreakdown(
+                name="orcho-core",
+                path="/workspace/orcho-core",
+                cost=5.0,
+                tokens=500,
+                runs=2,
+                tokens_exact=False,
+                cost_estimated=True,
+            ),
+            ProjectBreakdown(
+                name="orcho-mcp",
+                path="/workspace/orcho-mcp",
+                cost=4.0,
+                tokens=400,
+                runs=1,
+                tokens_exact=True,
+            ),
+        ),
+        phase_breakdown=(
+            PhaseBreakdown(
+                name="api",
+                cost=10.0,
+                tokens=10_000,
+                runs=1,
+                tokens_exact=True,
+                kind="sub_pipeline",
+            ),
+            PhaseBreakdown(
+                name="plan",
+                cost=1.0,
+                tokens=100,
+                runs=1,
+                tokens_exact=True,
+            ),
+        ),
+        agent_breakdown=(),
+    )
+
+    out = format_cost_report(r)
+    project_section = out.split("By workspace project", 1)[1].split(
+        "By phase",
+        1,
+    )[0]
+    assert "project runs + cross-project slices" in out
+    assert "orcho-core" in project_section
+    assert "estimated-api ~$5.00" in project_section
+    assert "orcho-mcp" in project_section
+    assert not re.search(r"^\s+api\s", project_section, flags=re.MULTILINE)
 
 
 def test_role_and_task_slices_are_derived_from_phase_rows_only():
