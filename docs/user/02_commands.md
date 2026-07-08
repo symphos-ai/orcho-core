@@ -1,7 +1,7 @@
 # Orcho commands
 
-Orcho is a local-first control plane for AI software delivery: one task
-becomes an observable workflow with typed plans, gates, evidence, run
+Orcho is a production harness and control plane for agentic software delivery:
+one task becomes an observable workflow with typed plans, gates, evidence, run
 state, and cross-project coordination when you need it.
 
 ## Quick start
@@ -23,19 +23,37 @@ the full argparse dump for every subcommand.
 |---------|-----------|
 | `orcho run` | One project: plan → implement → review/repair → final QA |
 | `orcho cross` | One task across several projects |
-| `orcho status` | Status of the latest run or a specific run id |
+| `orcho status` | What is happening / what should I do next? |
 | `orcho history` | List recent runs |
-| `orcho evidence` | Compose plan, phases, artifacts, gates, metrics (+ `--diff`) |
-| `orcho diff` | Print a run's `diff.patch` (`--preview` / `--stat` / `--path`) |
-| `orcho metrics` | Tokens and time per run |
-| `orcho cost` | API-equivalent cost report over a window of runs |
+| `orcho evidence` | What happened / what proves it? |
+| `orcho diff` | What changed? |
+| `orcho metrics` | How much did it consume? Tokens and time |
+| `orcho cost` | How much did it consume? Cost reference |
 | `orcho profiles list` | List execution profiles with their phase topology |
 | `orcho workflows` | List workflow profiles |
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
 | `orcho pricing` | Inspect / refresh the pricing data used by `cost` |
 | `orcho verify` | Execute declared verification-contract checks for a run |
+| `orcho runtimes` | Install helper wrappers for agent runtimes |
 | `orcho workspace` | Initialise and manage Orcho workspaces |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
+
+---
+
+## Inspection surfaces
+
+Use the inspection commands by question, not by file shape:
+
+| Question | Command | Leads with |
+|----------|---------|------------|
+| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths |
+| What happened / what proves it? | `orcho evidence` | plan contract, phase timeline, gate receipts, commands, findings, artifacts |
+| How much did it consume? | `orcho metrics`, `orcho cost` | tokens, time, retries, cost-reference usage |
+| What changed? | `orcho diff` | captured patch, preview, stats, path filtering |
+
+`status` may summarize gates or delivery because they affect the next operator
+move. `evidence` owns the proof record. `metrics` and `cost` own consumption.
+`diff` owns the changed files.
 
 ---
 
@@ -58,8 +76,12 @@ orcho run --task "Task description" --project /path/to/project
 --verbose / -v        # alias for --output debug
 ```
 
-Profiles decide which phases run. `orcho profiles list` shows each
-profile's exact phase topology and intent; the short version:
+Profiles decide which phases run. `orcho profiles list` shows a compact
+catalogue with each profile's default mode, recipe, worktree posture, and
+phase topology. Use `orcho profiles list --verbose` when you also want the
+full profile descriptions.
+
+The short version:
 
 - `feature` — full delivery cycle with plan validation, implementation,
   review/repair, and final acceptance. The default work kind for shipped work.
@@ -106,7 +128,7 @@ interactively. For non-interactive transports there are explicit flags:
 ```bash
 --model MODEL                        # default implementation model
 --model-plan / --model-implement / --model-review-changes / --model-repair-changes
---runtime-plan {claude,codex,gemini} # which agent CLI owns the phase
+--runtime-plan RUNTIME               # which registered agent runtime owns the phase
 --runtime-implement / --runtime-review-changes / --runtime-repair-changes
 ```
 
@@ -118,6 +140,24 @@ export MODEL_PLAN='claude-opus-4-8[1m]'
 export MODEL_IMPLEMENT='claude-opus-4-8[1m]'
 export MODEL_REVIEW_CHANGES=gpt-5.5
 export RUNTIME_REVIEW_CHANGES=codex
+```
+
+Runtime ids include the built-ins `claude`, `claude-glm`, `codex`, and
+`gemini`, plus any plugin-provided runtime registered in the environment. See
+[../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md) for the GLM
+wrapper setup.
+
+Example: keep planning on Claude, then route implementation through the
+Claude-compatible GLM wrapper under Codex review:
+
+```bash
+orcho run \
+  --task "Implement the approved plan" \
+  --project ./api \
+  --runtime-plan claude \
+  --runtime-implement claude-glm \
+  --model-implement 'glm-5.2[1m]' \
+  --runtime-review-changes codex
 ```
 
 ### Attachments and session control
@@ -200,7 +240,7 @@ orcho cross \
 
 ---
 
-## `orcho status` — what happened
+## `orcho status` — what is happening / what should I do next?
 
 ```bash
 orcho status              # latest run
@@ -212,6 +252,7 @@ Output:
 Run: 20260503_104135
 Status: DONE ✓
 Phases: plan ✓  implement ✓  review_changes ✓  final_acceptance ✓
+Gates: passed x2  skipped x1
 Duration: 4m 32s
 ```
 
@@ -220,40 +261,68 @@ Duration: 4m 32s
 ## `orcho history` — list of runs
 
 ```bash
-orcho history             # last 10 runs
-orcho history --last 25   # last 25
+orcho history                 # last 10 runs
+orcho history --last COUNT    # most recent COUNT runs, for example 25
 ```
+
+Use history to choose a run id, then open the right inspection surface:
+`orcho status <run-id>`, `orcho evidence <run-id>`, or
+`orcho diff <run-id> --preview`.
 
 ---
 
-## `orcho metrics` and `orcho cost` — tokens, time, money
+## `orcho metrics` and `orcho cost` — how much did it consume?
 
 ```bash
-orcho metrics             # latest run
-orcho metrics --last 5    # aggregated over 5 runs
+orcho metrics                 # latest run
+orcho metrics --last COUNT    # aggregated over COUNT runs, for example 5
 
-orcho cost                # API-equivalent cost report
+orcho cost                # cost-reference usage report
 orcho pricing             # inspect / refresh the pricing data behind cost
 ```
 
+`orcho cost` is a **cost reference / usage accounting** view over a window of
+runs — not a billing receipt. Runtime-reported dollar values come from the
+active runtime/endpoint; token-only phases are priced locally and marked as
+estimated.
+
+The report groups spend two ways:
+
+- **By phase** — cost per pipeline phase (`plan`, `implement`, …).
+- **By runtime/provider** — cost summed across phases per agent. The label is
+  the resolved runtime id when a run recorded one (e.g. `claude`, `claude-glm`),
+  and otherwise falls back to a model→provider mapping for older runs
+  (`claude` / `codex` / `gemini` / `other`).
+
+Percentages in each breakdown are **share of that breakdown** — a row's cost
+over the sum of the rows shown, so they never exceed 100%. They are not a share
+of the report total (phase and runtime views sum the same money along different
+axes, so a total-based percentage would look like a broken pie).
+
+The footer names only the **estimated** entries and where their prices came
+from (`~/.orcho/pricing.local.toml`, or the bundled snapshot). When that
+snapshot is stale it prints an age warning suggesting `orcho pricing refresh`.
+
 ---
 
-## `orcho diff` — print the captured diff
+## `orcho diff` — what changed?
 
 Every run writes `<run-dir>/diff.patch`. `orcho diff` renders that
 artifact — it never recomputes a git diff.
 
 ```bash
-orcho diff <run-id>                       # raw patch (default)
-orcho diff <run-id> --preview             # grouped per-file overview
+orcho diff <run-id>                       # grouped per-file overview (default)
+orcho diff <run-id> --preview             # same grouped overview, explicit
 orcho diff <run-id> --stat                # +A -R table per file
+orcho diff <run-id> --full                # raw patch for git apply
 orcho diff <run-id> --path api/payload.py # filter by file
 orcho diff <run-id> --path api/           # prefix filter (api/*)
 orcho diff <run-id> --max-bytes 200000    # truncate output
 orcho diff <run-id> --no-color            # no ANSI colors
 ```
 
-`--full` (default) is the byte-for-byte raw patch (pipable into
+`--preview` (default) is the operator-readable grouped view. `--full`
+is the byte-for-byte raw patch (pipable into
 `git apply`). With a `--path` filter the raw patch is reassembled from
 the matching sections, keeping `diff --git` / `index` / `---`/`+++` /
 hunks intact — it stays valid.
@@ -273,16 +342,18 @@ deletions are found under any of their names.
 `run-id` is required: showing the diff of the wrong run is a common
 mistake.
 
-## `orcho evidence --diff[=mode]`
+## `orcho evidence` — what happened / what proves it?
 
-Plain `orcho evidence <run-id>` renders the normal evidence view (JSON or
-markdown via `--format`). The normal JSON keeps run state and actionable
-sections readable: long text fields are previewed, verbose receipt/prompt
-details are summarized, and low-level live diagnostics are counted instead
-of expanded. Add `--debug` to print the raw schema bundle. The `--diff` flag
-changes what goes to stdout:
+Plain `orcho evidence <run-id>` renders the normal evidence view as a compact
+terminal summary. Use `--format=md` for the markdown report, or
+`--format=json` for machine consumers. The normal JSON keeps run state and
+actionable sections readable: long text fields are previewed, verbose
+receipt/prompt details are summarized, and low-level live diagnostics are
+counted instead of expanded. Add `--debug` to print the raw schema bundle.
+The `--diff[=mode]` flag changes what goes to stdout:
 
 ```bash
+orcho evidence <run-id>
 orcho evidence <run-id> --diff            # = --diff=preview
 orcho evidence <run-id> --diff=stat
 orcho evidence <run-id> --diff=full
@@ -290,9 +361,11 @@ orcho evidence <run-id> --format=md --diff
 orcho evidence <run-id> --format=json --debug
 ```
 
-- `--format md` (default for humans): a `## Diff` section (stat table +
-  preview/full) is appended after the bundle markdown. When the
-  artifact is missing: `_No diff artifact recorded._`.
+- `--format cli` (default): an operator-friendly terminal summary. With
+  `--diff`, a `## Diff` section (stat table + preview/full) is appended after
+  the summary. When the artifact is missing: `_No diff artifact recorded._`.
+- `--format md`: the markdown evidence report. With `--diff`, the same
+  `## Diff` section is appended after the bundle markdown.
 - `--format json`: the output is wrapped as
   `{"evidence": <normal evidence view>, "diff": <record>}`. Use
   `--debug` for the raw schema bundle with full text, verbose receipts,
@@ -311,9 +384,11 @@ To get the diff as its own artifact, use `orcho diff`.
 Run the project's declared verification contract against a run:
 
 ```bash
-orcho verify list   # show declared verification commands (resolved, not executed)
-orcho verify run    # execute the declared commands and persist receipts
-orcho verify env    # execute one verification_env's assertions (writes an env receipt)
+orcho verify                 # show the verification command map
+orcho verify env             # check the declared environment and write an env receipt
+orcho verify list            # preview declared commands; execute nothing
+orcho verify run --required  # run the required commands and write receipts
+orcho verify run lint        # run one declared command by name
 ```
 
 Receipts land in the run directory; see
@@ -324,11 +399,17 @@ Receipts land in the run directory; see
 ## `orcho prompts` — inspect prompts
 
 ```bash
-# Show which prompt template the BUILD step resolves to
-orcho prompts tasks/build --project ~/www/my-project
+# Show the prompt catalog summary
+orcho prompts
 
-# List all available prompts
+# List every prompt part
 orcho prompts --list
+
+# Show which prompt part wins after project/workspace overrides
+orcho prompts tasks/plan --project ~/www/my-project
+
+# Print the resolved prompt body
+orcho prompts tasks/plan --verbose
 ```
 
 ---

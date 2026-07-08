@@ -75,6 +75,43 @@ def test_basic_aggregation(populated_runs: Path, accounting_on):
     assert "claude" in providers
 
 
+def test_cost_estimated_source_survives_aggregation(
+    runs_root: Path,
+    accounting_on,
+) -> None:
+    rid = runs_root / "20260508_120000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "estimated"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_tokens_in": 70,
+                "total_tokens_out": 30,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 0.12,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "gpt-5.5",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 0.12,
+                        "cost_estimated": True,
+                    },
+                },
+            }
+        )
+    )
+
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+
+    assert report.any_estimated is True
+    assert report.top_runs[0].cost_estimated is True
+    assert report.phase_breakdown[0].cost_estimated is True
+    assert report.agent_breakdown[0].cost_estimated is True
+
+
 def test_workspace_accounting_applies_to_explicit_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -174,6 +211,228 @@ def test_unknown_model_buckets_to_other(runs_root: Path, accounting_on):
     report = aggregate_cost(runs_dir=runs_root, window="all")
     providers = {a.provider for a in report.agent_breakdown}
     assert "other" in providers
+
+
+def test_runtime_id_wins_over_model_fallback(runs_root: Path, accounting_on):
+    # A phase that recorded a wrapper runtime id (claude-glm) must be attributed
+    # to that runtime, NOT collapsed into the base-model provider bucket
+    # (claude) via the model→provider fallback.
+    rid = runs_root / "20260509_120000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "glm run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "runtime": "claude-glm",
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude-glm" in providers
+    # The runtime id wins outright: this phase must not also surface a plain
+    # "claude" row from the model→provider fallback.
+    assert "claude" not in providers
+
+
+def test_old_metrics_without_runtime_bucket_by_model(runs_root: Path, accounting_on):
+    # Legacy metrics.json written before the runtime key existed still buckets
+    # by model→provider fallback: a claude-* model lands in the "claude" bucket.
+    rid = runs_root / "20260509_130000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "legacy run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude" in providers
+    assert "claude-glm" not in providers
+
+
+def test_legacy_glm_model_buckets_to_claude_glm(runs_root: Path, accounting_on):
+    # Historical GLM wrapper runs may predate the durable runtime key but still
+    # carry a GLM model id. Keep those rows out of the generic "other" bucket.
+    rid = runs_root / "20260509_140000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "legacy glm run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "model": "glm-5.2[1m]",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude-glm" in providers
+    assert "other" not in providers
+
+
+def test_sub_pipeline_kind_survives_aggregation(runs_root: Path, accounting_on):
+    rid = runs_root / "20260509_150000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "cross run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 200,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "api": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 100,
+                        "tokens_exact": False,
+                    },
+                    "cross_plan": {
+                        "kind": "cross_level",
+                        "total_tokens": 100,
+                        "tokens_exact": False,
+                    },
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    kinds = {p.name: p.kind for p in report.phase_breakdown}
+    assert kinds["api"] == "sub_pipeline"
+    assert kinds["cross_plan"] == "cross_level"
+
+
+def test_project_breakdown_aggregates_workspace_projects_not_external_demo(
+    tmp_path: Path,
+    accounting_on,
+) -> None:
+    group_root = tmp_path / "orcho"
+    runs_root = group_root / "workspace-orchestrator" / "runspace" / "runs"
+    runs_root.mkdir(parents=True)
+    core = group_root / "orcho-core"
+    mcp = group_root / "orcho-mcp"
+    demo_api = tmp_path / "orcho-xdemo" / "api"
+    for path in (core, mcp, demo_api):
+        path.mkdir(parents=True)
+
+    single = runs_root / "20260509_160000"
+    single.mkdir()
+    (single / "meta.json").write_text(
+        json.dumps({"task": "single core", "project": str(core)}),
+        encoding="utf-8",
+    )
+    (single / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 200,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 2.0,
+                "phases": {
+                    "plan": {
+                        "model": "claude-sonnet-4-6",
+                        "total_tokens": 200,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 2.0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cross = runs_root / "20260509_170000"
+    cross.mkdir()
+    (cross / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "cross workspace plus demo",
+                "projects": {
+                    "core": str(core),
+                    "mcp": str(mcp),
+                    "api": str(demo_api),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cross / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 1_800,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 18.0,
+                "phases": {
+                    "core": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 300,
+                        "tokens_exact": False,
+                        "cost_usd_equivalent": 3.0,
+                        "cost_estimated": True,
+                    },
+                    "mcp": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 400,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 4.0,
+                    },
+                    "api": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 500,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 5.0,
+                    },
+                    "cross_plan": {
+                        "kind": "cross_level",
+                        "total_tokens": 600,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 6.0,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+
+    by_name = {row.name: row for row in report.project_breakdown}
+    assert set(by_name) == {"orcho-core", "orcho-mcp"}
+    assert by_name["orcho-core"].cost == pytest.approx(5.0)
+    assert by_name["orcho-core"].tokens == 500
+    assert by_name["orcho-core"].runs == 2
+    assert by_name["orcho-core"].tokens_exact is False
+    assert by_name["orcho-core"].cost_estimated is True
+    assert by_name["orcho-mcp"].cost == pytest.approx(4.0)
+    assert by_name["orcho-mcp"].runs == 1
 
 
 def test_window_excludes_old_runs(populated_runs: Path):

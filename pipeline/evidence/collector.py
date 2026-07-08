@@ -620,8 +620,8 @@ def _build_metrics_rollup(metrics: dict[str, Any]) -> dict[str, Any]:
             if isinstance(metrics.get("phases"), dict) else {}
         ),
         # Additive passthrough of the per-subtask usage breakdown so a
-        # post-mortem can answer "which implement subtask was most expensive?"
-        # from the durable bundle alone. Present only when ``metrics.json``
+        # post-mortem can answer "which implement subtask produced the most
+        # usage?" from the durable bundle alone. Present only when ``metrics.json``
         # carried it (subtask_dag runs); accounting scrub already ran on
         # ``metrics`` in ``collect_evidence`` before this rollup.
         **(

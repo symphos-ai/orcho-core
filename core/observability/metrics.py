@@ -3,7 +3,7 @@ core/metrics.py — Pipeline run metrics (tokens, time, rounds).
 
 Design:
   * Zero required external dependencies (stdlib by default).
-  * No pricing / cost — works with API subscriptions (Claude Max, Codex Pro).
+  * No required pricing — token/time metrics work without dollar accounting.
   * Token estimation: tiktoken when installed for text-only local estimates;
     len(utf-8 bytes) // 4 fallback otherwise. Exactness is only claimed for
     OpenAI/Codex-like model ids.
@@ -50,6 +50,10 @@ from pathlib import Path
 from typing import Any
 
 from core.infra import config
+from core.observability.accounting_display import (
+    format_cost_reference,
+    format_cost_reference_summary,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Token estimation
@@ -130,7 +134,7 @@ def _merge_subtask_usage_record(
 class TokenEstimate:
     """Token-count estimate plus the counter that produced it.
 
-    ``exact`` means exact for the local tokenizer input, not provider billing
+    ``exact`` means exact for the local tokenizer input, not provider usage
     truth for a full structured request. Runtime usage remains authoritative.
     """
 
@@ -233,12 +237,11 @@ def _clear_tokenizer_cache_for_tests() -> None:
 class PhaseMetrics:
     """Metrics for a single pipeline phase.
 
-    ``cost_usd_equivalent`` is the **API-equivalent** what-if price reported
-    by the underlying CLI (e.g. Claude Code's ``total_cost_usd`` in stream-
-    json). On Pro / Max subscriptions the actual user-facing cost is $0;
-    this number is what pay-as-you-go API would have charged for the same
-    call. When the CLI reports tokens but not cost, Orcho may fill this from
-    the local pricing table and mark ``cost_estimated=True``.
+    ``cost_usd_equivalent`` is a dollar-denominated cost reference, not a
+    billing receipt. When ``cost_estimated`` is false, the value came from the
+    underlying runtime/endpoint (for example ``total_cost_usd`` in stream-json).
+    When the runtime reports tokens but not cost, Orcho may fill this from the
+    local pricing table and mark ``cost_estimated=True``.
     """
 
     phase: str
@@ -261,6 +264,12 @@ class PhaseMetrics:
     # numbers from estimates without having to know which CLIs report
     # what.
     tokens_exact: bool = False
+    # Registered agent-runtime id this phase executed under (e.g. ``claude``,
+    # ``claude-glm``, ``codex``, ``gemini``). Empty when unknown — legacy
+    # ``metrics.json`` carries no such key, and ``sdk/cost`` then buckets by
+    # model→provider. Stable within a phase across retries, so the rollup
+    # keeps the first non-empty value.
+    runtime: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -292,6 +301,11 @@ class PhaseMetrics:
         # the rule. False is the conservative default for legacy entries
         # written before this field existed.
         d["tokens_exact"] = self.tokens_exact
+        # ``runtime`` (registered agent-runtime id) is emitted only when known
+        # so legacy ``metrics.json`` written without it keeps its old shape and
+        # buckets by model downstream.
+        if self.runtime:
+            d["runtime"] = self.runtime
         return d
 
     def as_attempt_dict(self) -> dict[str, Any]:
@@ -317,7 +331,7 @@ def _resolve_phase_cost_usd_equivalent(
 
     Provider-reported cost remains authoritative. When accounting is enabled
     and the provider reported exact token usage but no cost, estimate the
-    API-equivalent value from the local pricing table. Heuristic token counts
+    cost reference from the local pricing table. Heuristic token counts
     intentionally stay unpriced so the DONE summary never turns byte estimates
     into dollar-looking facts.
     """
@@ -339,8 +353,8 @@ def _resolve_phase_cost_usd_equivalent(
             model,
             tokens_in=max(0, tokens_in),
             cached_tokens_in=max(0, tokens_in_cache_read),
-            # Unknown provider usage is usually reasoning/cache/other billed
-            # usage. Count it on the output side rather than dropping it.
+            # Unknown provider usage is usually reasoning/cache/other usage.
+            # Count it on the output side rather than dropping it.
             tokens_out=max(0, tokens_out) + max(0, tokens_unknown),
         )
     else:
@@ -360,6 +374,11 @@ class MetricsCollector:
     Args:
         default_model: Fallback model name when record_phase() is called
                        without an explicit model argument.
+        default_runtime: Fallback registered agent-runtime id (e.g.
+                       ``claude`` / ``claude-glm``) when record_phase() is
+                       called without an explicit runtime. The primary source
+                       is the per-phase resolver in the pipeline; this only
+                       fills in when that yields nothing.
     """
 
     def __init__(
@@ -369,11 +388,13 @@ class MetricsCollector:
         plan_model: str = "",
         implement_model: str = "",
         review_model: str = "",
+        default_runtime: str = "",
     ) -> None:
         # default_model is used as fallback when record_phase() has no model arg.
         # Per-phase models are stored for use in summary/export.
         self._phases: list[PhaseMetrics] = []
         self._default_model = default_model or implement_model or plan_model or review_model
+        self._default_runtime = default_runtime
         self._plan_model = plan_model
         self._implement_model = implement_model
         self._review_model = review_model
@@ -417,6 +438,7 @@ class MetricsCollector:
         reconcile_total: bool = False,
         tokens_in_cache_read: int | None = None,
         tokens_in_cache_create: int | None = None,
+        runtime: str = "",
     ) -> PhaseMetrics:
         """Record metrics for a completed pipeline phase.
 
@@ -445,10 +467,10 @@ class MetricsCollector:
             tool_calls:   Built-in/MCP tool calls observed during this
                           phase invocation. Zero when unknown or none.
             retries:      Retry attempts in this phase.
-            cost_usd:     API-equivalent what-if price (Claude's
+            cost_usd:     Runtime-reported cost reference (for example
                           ``total_cost_usd``). ``None`` when not reported.
             tokens_in_cache_read: Provider cache-read input token subset.
-                          Used for cache-aware API-equivalent estimates when
+                          Used for cache-aware cost estimates when
                           the provider does not report native cost.
             tokens_in_cache_create: Provider cache-create input token subset.
                           Stored for reporting; priced as normal input unless
@@ -460,6 +482,11 @@ class MetricsCollector:
                           but wants the record explicitly marked NOT exact —
                           pass ``False`` to override the otherwise-True
                           total-only branch.
+            runtime:      Registered agent-runtime id this phase ran under
+                          (e.g. ``claude`` / ``claude-glm`` / ``codex`` /
+                          ``gemini``). Empty falls back to ``default_runtime``;
+                          both empty leaves the field unset so legacy
+                          ``metrics.json`` shape is preserved.
             reconcile_total: When ``True`` and ``tokens_total`` is given
                           alongside at least one split side, treat the provider
                           total as authoritative: known provider split sides
@@ -544,6 +571,7 @@ class MetricsCollector:
             cost_usd_equivalent=resolved_cost_usd,
             cost_estimated=cost_estimated,
             tokens_exact=exact,
+            runtime=(runtime or self._default_runtime),
         )
         self._phases.append(pm)
         self._total_retries += retries
@@ -644,7 +672,7 @@ class MetricsCollector:
 
     @property
     def total_cost_usd_equivalent(self) -> float:
-        """Sum of per-phase API-equivalent costs.
+        """Sum of per-phase cost-reference values.
 
         Native provider costs and local pricing-table estimates both
         contribute. Phases with no provider cost and no known model price
@@ -654,7 +682,7 @@ class MetricsCollector:
 
     @property
     def total_cost_estimated(self) -> bool:
-        """Return true when any included API-equivalent cost is estimated."""
+        """Return true when any included cost reference is estimated."""
         return any(
             p.cost_usd_equivalent is not None and p.cost_estimated
             for p in self._phases
@@ -694,7 +722,7 @@ class MetricsCollector:
             d["total_rounds"] = self._rounds
         if self._total_retries:
             d["total_retries"] = self._total_retries
-        # API-equivalent cost (native provider cost or local pricing-table
+        # Cost reference (native runtime cost or local pricing-table
         # estimate). Only surfaced when at least one phase has a cost —
         # otherwise users would see ``$0.00`` and assume the call was free,
         # which is the opposite of what the field means.
@@ -784,6 +812,10 @@ class MetricsCollector:
             current["tokens_exact"] = (
                 bool(current.get("tokens_exact")) and p.tokens_exact
             )
+            # Runtime id is stable within a phase; keep the first non-empty
+            # value seen so a later attempt that lost the id never blanks it.
+            if p.runtime and not current.get("runtime"):
+                current["runtime"] = p.runtime
             if current.get("model") != p.model:
                 current["model"] = "mixed"
         return out
@@ -845,9 +877,19 @@ class MetricsCollector:
                     return default
                 return float(v) if isinstance(v, (int, float)) else default
             cost = entry.get("cost_usd_equivalent") if accounting_enabled() else None
+            # ``runtime`` (registered agent-runtime id) is only present in
+            # metrics.json written after the field existed. Carry a valid
+            # non-empty string through so a resumed run's re-save keeps the
+            # runtime provenance; without this, ``sdk/cost`` would fall back
+            # to model→provider bucketing and collapse e.g. ``claude-glm``
+            # into ``claude`` for any run that paused and resumed. Legacy
+            # entries have no such key and stay empty (old model-fallback).
+            raw_runtime = entry.get("runtime")
+            runtime = raw_runtime if isinstance(raw_runtime, str) else ""
             self._phases.append(PhaseMetrics(
                 phase=phase,
                 model=str(entry.get("model", "")),
+                runtime=runtime,
                 tokens_in=_i(entry.get("tokens_in")),
                 tokens_out=_i(entry.get("tokens_out")),
                 tokens_unknown=_i(entry.get("tokens_unknown")),
@@ -915,9 +957,11 @@ class MetricsCollector:
         if accounting_enabled() and any(
             p.cost_usd_equivalent is not None for p in self._phases
         ):
-            marker = "~$" if self.total_cost_estimated else "$"
             parts.append(
-                f"API-equiv: {marker}{self.total_cost_usd_equivalent:.2f}"
+                format_cost_reference_summary(
+                    self.total_cost_usd_equivalent,
+                    estimated=self.total_cost_estimated,
+                )
             )
         if self._rounds:
             parts.append(f"Rounds: {self._rounds}")
@@ -981,7 +1025,7 @@ def cross_summary_table(
       Sub-pipelines       rows from ``per_project`` (one per alias)
       Cross-level phases  rows from ``cross_phases`` (cross_hypothesis,
                           cross_plan, cross_validate_plan, contract_check)
-      TOTAL               sum of both — the full token bill
+      TOTAL               sum of both — the full token usage
 
     ``cross_phases`` is None-safe; either side may be empty. ``Calls``
     column replaces the legacy ``Rounds`` column so cross-level rollups
@@ -992,23 +1036,39 @@ def cross_summary_table(
     if not per_project and not cross_phases:
         return "No metrics recorded."
 
-    def _sub(m: dict) -> tuple[int, int, int, float, int, float | None]:
+    def _sub(m: dict) -> tuple[int, int, int, float, int, float | None, bool]:
         tin   = int(m.get("total_tokens_in")  or 0)
         tout  = int(m.get("total_tokens_out") or 0)
         ttot  = int(m.get("total_tokens")     or (tin + tout))
         tdur  = float(m.get("total_duration_s") or 0.0)
         trnd  = int(m.get("total_rounds")     or 0)
         tcost = m.get("total_cost_usd_equivalent")
-        return tin, tout, ttot, tdur, trnd, (float(tcost) if tcost is not None else None)
+        return (
+            tin,
+            tout,
+            ttot,
+            tdur,
+            trnd,
+            (float(tcost) if tcost is not None else None),
+            bool(m.get("cost_estimated")),
+        )
 
-    def _cross(m: dict) -> tuple[int, int, int, float, int, float | None]:
+    def _cross(m: dict) -> tuple[int, int, int, float, int, float | None, bool]:
         tin  = int(m.get("tokens_in")  or 0)
         tout = int(m.get("tokens_out") or 0)
         ttot = int(m.get("total_tokens") or (tin + tout))
         tdur = float(m.get("duration_s") or 0.0)
         calls = int(m.get("calls") or 0)
         tcost = m.get("cost_usd_equivalent")
-        return tin, tout, ttot, tdur, calls, (float(tcost) if tcost is not None else None)
+        return (
+            tin,
+            tout,
+            ttot,
+            tdur,
+            calls,
+            (float(tcost) if tcost is not None else None),
+            bool(m.get("cost_estimated")),
+        )
 
     sub_rows = [(alias, *_sub(m or {})) for alias, m in per_project.items()]
     cross_rows = [(name, *_cross(m or {})) for name, m in cross_phases.items()]
@@ -1021,7 +1081,7 @@ def cross_summary_table(
 
     header = f"{'Phase':<24} {'In':>10} {'Out':>10} {'Total':>10} {'Time':>9} {'Calls':>7}"
     if any_cost:
-        header += f" {'API-equiv':>11}"
+        header += f" {'Cost ref':>24}"
     width = max(len(header), 70)
     lines = [header, "-" * width]
 
@@ -1030,7 +1090,8 @@ def cross_summary_table(
     sum_cost = 0.0
 
     def _emit(label: str, tin: int, tout: int, ttot: int,
-              tdur: float, count: int, tcost: float | None) -> None:
+              tdur: float, count: int, tcost: float | None,
+              cost_estimated: bool) -> None:
         nonlocal sum_in, sum_out, sum_tot, sum_dur, sum_cost
         count_s = str(count) if count else "-"
         line = (
@@ -1038,8 +1099,12 @@ def cross_summary_table(
             f"{tdur:>8.1f}s {count_s:>7}"
         )
         if any_cost:
-            cost_s = f"${tcost:.2f}" if tcost is not None else "—"
-            line += f" {cost_s:>11}"
+            cost_s = (
+                format_cost_reference(tcost, estimated=cost_estimated)
+                if tcost is not None
+                else "—"
+            )
+            line += f" {cost_s:>24}"
         lines.append(line)
         sum_in  += tin
         sum_out += tout
@@ -1063,7 +1128,8 @@ def cross_summary_table(
         f"{sum_dur:>8.1f}s {'-':>7}"
     )
     if any_cost:
-        total_line += f" {'$' + format(sum_cost, '.2f'):>11}"
+        total_estimated = any(r[7] for r in sub_rows) or any(r[7] for r in cross_rows)
+        total_line += f" {format_cost_reference(sum_cost, estimated=total_estimated):>24}"
     lines.append(total_line)
     return "\n".join(lines)
 
@@ -1086,7 +1152,7 @@ def cross_metrics_dict(
 
     Both sources surface as entries in ``phases`` and contribute to the
     ``total_*`` rollups so readers (``orcho metrics``, ``orcho evidence``,
-    dashboard, MCP) see the full token bill — not just sub-pipelines.
+    dashboard, MCP) see the full token usage — not just sub-pipelines.
 
     Surface still matches :meth:`MetricsCollector.as_dict` (top-level
     ``total_tokens_in`` / ``total_tokens_out`` / ``total_tokens`` /
@@ -1188,6 +1254,7 @@ def cross_summary_line(
     tdur = 0.0
     tcost = 0.0
     any_cost = False
+    any_cost_estimated = False
     use_accounting = accounting_enabled()
     for m in per_project.values():
         m = m or {}
@@ -1199,6 +1266,7 @@ def cross_summary_line(
         if c is not None:
             any_cost = True
             tcost += float(c)
+            any_cost_estimated = any_cost_estimated or bool(m.get("cost_estimated"))
     for m in cross_phases.values():
         m = m or {}
         tin  += int(m.get("tokens_in")  or 0)
@@ -1209,12 +1277,13 @@ def cross_summary_line(
         if c is not None:
             any_cost = True
             tcost += float(c)
+            any_cost_estimated = any_cost_estimated or bool(m.get("cost_estimated"))
     parts = [
         f"Tokens: {ttot:,} (in={tin:,} out={tout:,})",
         f"Time: {tdur:.1f}s",
     ]
     if any_cost:
-        parts.append(f"API-equiv: ${tcost:.2f}")
+        parts.append(format_cost_reference_summary(tcost, estimated=any_cost_estimated))
     return " | ".join(parts)
 
 

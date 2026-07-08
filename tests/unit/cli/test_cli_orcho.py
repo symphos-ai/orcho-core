@@ -41,6 +41,8 @@ def _write_run(
     tokens_out: int = 2000,
     duration_s: float = 10.0,
     rounds: int = 0,
+    cost: float | None = None,
+    cost_estimated: bool = False,
 ) -> Path:
     """Create a fake run directory with meta.json and metrics.json."""
     d = runs_dir / run_id
@@ -71,6 +73,14 @@ def _write_run(
     }
     if rounds:
         metrics["total_rounds"] = rounds
+    if cost is not None:
+        metrics["total_cost_usd_equivalent"] = cost
+        if cost_estimated:
+            metrics["cost_estimated"] = True
+        for phase in metrics["phases"].values():
+            phase["cost_usd_equivalent"] = cost / 2.0
+            if cost_estimated:
+                phase["cost_estimated"] = True
 
     (d / "metrics.json").write_text(json.dumps(metrics))
     return d
@@ -132,6 +142,89 @@ class TestParser:
         assert args.profile is None
         assert args.session_mode == "auto"
 
+    def test_run_runtime_flags_accept_extension_runtime(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "run",
+            "--task", "x",
+            "--project", "/p",
+            "--runtime-implement", "claude-glm",
+        ])
+        assert args.runtime_implement == "claude-glm"
+
+    def test_runtimes_install_subcommand(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "bin" / "claude-glm"
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.command == "runtimes"
+        assert args.runtimes_cmd == "install"
+        assert args.func(args) == 0
+        assert destination.exists()
+        assert "Installed claude-glm wrapper" in capsys.readouterr().out
+
+    def test_runtimes_install_refuses_existing_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "claude-glm"
+        destination.write_text("custom\n")
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.func(args) == 2
+        assert destination.read_text() == "custom\n"
+        assert "pass --force" in capsys.readouterr().err
+
+    def test_demos_bootstrap_subcommand(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "bootstrap",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "bootstrap"
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "DEMO golden-api workspace ready." in out
+        assert "orcho run" in out
+        assert "--profile feature" in out
+        assert (tmp_path / "demo" / "project").is_dir()
+
+    def test_demos_install_alias(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "install",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "install"
+        assert args.func(args) == 0
+        assert "DEMO golden-api workspace ready." in capsys.readouterr().out
+
     def test_run_all_flags(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([
@@ -174,6 +267,12 @@ class TestParser:
         assert args.format == "md"
         assert args.debug is True
 
+    def test_evidence_default_format_is_cli(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["evidence"])
+        assert args.command == "evidence"
+        assert args.format == "cli"
+
     def test_profiles_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -185,6 +284,54 @@ class TestParser:
         out = capsys.readouterr().out
         assert "Profiles" in out
         assert "feature" in out
+        assert "Mode" in out
+        assert "Worktree" in out
+        assert "Production-grade dev cycle" not in out
+        assert "orcho profiles list --verbose" in out
+
+    def test_profiles_list_verbose_shows_descriptions(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        parser = self.build_parser()
+        args = parser.parse_args(["profiles", "list", "--verbose"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "feature" in out
+        assert "Production-grade dev cycle" in out
+        assert "orcho profiles list --verbose" not in out
+
+    def test_profile_customize_writes_workspace_overlay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        workspace = tmp_path / "workspace"
+        monkeypatch.setenv("ORCHO_WORKSPACE", str(workspace))
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "profile",
+            "customize",
+            "feature",
+            "--mode",
+            "pro",
+            "--phase-effort",
+            "implement=high",
+        ])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Updated profile customization for feature" in out
+        data = json.loads(
+            (workspace / ".orcho" / "config.local.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert data["profiles_v2"]["feature"]["_profile"]["default_mode"] == "pro"
+        assert data["profiles_v2"]["feature"]["implement"]["effort"] == "high"
 
     def test_workflows_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -195,8 +342,11 @@ class TestParser:
 
         assert args.func(args) == 0
         out = capsys.readouterr().out
-        assert "Profiles" in out
+        assert "Workflows" in out
+        assert "Workflow" in out
         assert "task" in out
+        assert "orcho workflows list --verbose" in out
+        assert "orcho profiles list --verbose" not in out
 
     def test_top_level_help_documents_output_modes(self) -> None:
         parser = self.build_parser()
@@ -205,6 +355,10 @@ class TestParser:
         assert "Start here:" in help_text
         assert "Workflows:" in help_text
         assert "Output modes:" in help_text
+        assert "status        What is happening / what should I do next?" in help_text
+        assert "evidence      What happened / what proves it?" in help_text
+        assert "metrics/cost  How much did it consume?" in help_text
+        assert "diff          What changed?" in help_text
         assert "--output live" in help_text
         assert "--output debug" in help_text
         assert "orcho help --verbose" in help_text
@@ -311,10 +465,28 @@ class TestParser:
         args = parser.parse_args(["metrics", "--last", "20"])
         assert args.last == 20
 
+    def test_metrics_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["metrics", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
+
     def test_history_defaults(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["history"])
         assert args.last == 10
+
+    def test_history_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["history", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
 
     def test_prompts_name(self) -> None:
         parser = self.build_parser()
@@ -514,9 +686,89 @@ class TestCmdMetrics:
         assert "20260501_000000" in out
         assert "20260502_000000" in out
 
+    def test_metrics_history_aligns_long_ids_and_cost(
+        self,
+        runs_dir: Path,
+        capsys,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from cli.orcho import cmd_metrics
+        from core.infra import config
+
+        monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+        config._reset_config()
+        try:
+            _write_run(
+                runs_dir,
+                "20260707_162649_347471",
+                project="/repo/demo_project",
+                task="tool-handler smoke with enough text to clip",
+                tokens_in=10_000,
+                tokens_out=972,
+                duration_s=0.8,
+                rounds=1,
+                cost=1.23,
+                cost_estimated=True,
+            )
+            args = _make_args(last=10)
+            rc = cmd_metrics(args)
+        finally:
+            config._reset_config()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Metrics history · last 1 runs" in out
+        assert "Cost ref" in out
+        assert "estimated-api ~$1.23" in out
+        assert "20260707_162649_347471   demo_project" in out
+
+    def test_metrics_history_color_can_be_forced(self, tmp_path: Path) -> None:
+        from cli._formatters import format_metrics_history
+        from core.io.ansi import set_color_enabled, strip_ansi
+        from sdk.types import RunMetrics
+
+        run_dir = tmp_path / "runs" / "20260707_162649_347471"
+        run_dir.mkdir(parents=True)
+        (run_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "project": "/repo/orcho-core",
+                    "task": "color metrics",
+                }
+            ),
+            encoding="utf-8",
+        )
+        row = RunMetrics(
+            run_id="20260707_162649_347471",
+            run_dir=run_dir,
+            total_tokens=10,
+            total_duration_s=1.0,
+            total_rounds=1,
+            total_cost_usd_equivalent=1.23,
+            raw={"total_cost_usd_equivalent": 1.23, "cost_estimated": True},
+        )
+
+        try:
+            set_color_enabled(True)
+            rendered = format_metrics_history([row])
+        finally:
+            set_color_enabled(None)
+
+        assert "\x1b[" in rendered
+        plain = strip_ansi(rendered)
+        assert "Metrics history · last 1 runs" in plain
+        assert "Cost ref" in plain
+        assert "estimated-api ~$1.23" in plain
+
     def test_metrics_single_run_detail(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_metrics
-        _write_run(runs_dir, "20260502_100000", tokens_in=5000, tokens_out=10000)
+        _write_run(
+            runs_dir,
+            "20260502_100000",
+            tokens_in=5000,
+            tokens_out=10000,
+            cost=2.0,
+        )
         args = _make_args(run_id="20260502_100000")
         rc = cmd_metrics(args)
         out = capsys.readouterr().out
@@ -563,8 +815,10 @@ class TestCmdHistory:
         rc = cmd_history(args)
         out = capsys.readouterr().out
         assert rc == 0
+        assert "Run history · last 2 shown" in out
         assert "20260501_000000" in out
         assert "20260502_000000" in out
+        assert "orcho status <run-id>" in out
 
     def test_history_sorted_newest_first(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_history
@@ -596,6 +850,22 @@ class TestCmdHistory:
         out = capsys.readouterr().out
         assert "no meta.json" in out
 
+    def test_history_color_can_be_forced(self, runs_dir: Path, capsys) -> None:
+        from cli.orcho import cmd_history
+        from core.io.ansi import C, set_color_enabled
+
+        _write_run(runs_dir, "20260502_000000", status="done")
+        args = _make_args(last=10)
+
+        try:
+            set_color_enabled(True)
+            cmd_history(args)
+            colored = capsys.readouterr().out
+        finally:
+            set_color_enabled(None)
+
+        assert f"{C.GREEN}done" in colored
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_prompts
@@ -610,15 +880,21 @@ class TestCmdPrompts:
         assert rc == 0
         # Listing should surface composable parts (post-ADR-0022 catalog).
         assert "tasks/implement" in out
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Formats" in out
+        assert "Roles" in out
+        assert "Tasks" in out
 
-    def test_no_name_no_list_shows_core(self, capsys) -> None:
+    def test_no_name_no_list_shows_summary(self, capsys) -> None:
         from cli.orcho import cmd_prompts
         args = _make_args(name=None, list=False, project=None)
         rc = cmd_prompts(args)
         out = capsys.readouterr().out
         assert rc == 0
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Groups" in out
+        assert "orcho prompts --list" in out
+        assert "tasks/implement" not in out
 
     def test_resolution_chain_core_only(self, capsys) -> None:
         from cli.orcho import cmd_prompts
@@ -730,6 +1006,108 @@ class TestCmdPrompts:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCmdEvidence:
+    def test_cli_format_is_default_operator_summary(self, monkeypatch) -> None:
+        import cli.orcho as orcho
+
+        body = {
+            "run_id": "R",
+            "run_dir": "/tmp/runs/R",
+            "schema_version": "1",
+            "status": "done",
+            "task": "Ship the thing",
+            "profile": "feature",
+            "plan": {
+                "source": "json",
+                "short_summary": "Small useful summary.",
+                "planning_context": "P" * 1000,
+                "subtask_count": 2,
+                "has_contract": True,
+                "acceptance_criteria": ["a"],
+                "owned_files": ["cli.py"],
+                "commands_to_run": ["pytest -q"],
+            },
+            "phases": [
+                {"name": "PLAN", "title": "PLAN", "outcome": "ok", "attempt": 1},
+                {
+                    "name": "VALIDATE_PLAN",
+                    "title": "validate",
+                    "outcome": "skipped",
+                    "attempt": 1,
+                },
+            ],
+            "gates": [
+                {
+                    "name": "tests",
+                    "kind": "computational",
+                    "outcome": "skipped",
+                    "duration_s": 0.0,
+                }
+            ],
+            "commands": [],
+            "artifacts": [],
+            "metrics": {
+                "total_tokens": 100,
+                "total_tokens_in": 70,
+                "total_tokens_out": 30,
+                "total_duration_s": 1.5,
+                "total_rounds": 1,
+            },
+            "errors": [],
+            "findings": [],
+        }
+        fake_stdout = _FakeStdout(is_tty=False)
+        monkeypatch.setattr(orcho.sys, "stdout", fake_stdout)
+        monkeypatch.setattr(orcho, "collect_evidence", lambda *a, **k: _make_args(body=body))
+
+        rc = orcho.cmd_evidence(_make_args(run_id=None, workspace=None, out=None))
+
+        out = fake_stdout.getvalue()
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "Attention: yes" in out
+        assert "1 gate skipped" in out
+        assert "Recorded: none; 1 planned" in out
+        assert "Planning context" not in out
+        assert not out.lstrip().startswith("{")
+
+    def test_cli_format_color_can_be_forced(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import get_color_enabled, set_color_enabled, strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        before = get_color_enabled()
+        set_color_enabled(True)
+        try:
+            rendered = format_evidence_cli(bundle)
+        finally:
+            set_color_enabled(before)
+
+        assert "\x1b[" in rendered
+        assert "Evidence:" in strip_ansi(rendered)
+
     def test_json_projection_compacts_verbose_fields(self) -> None:
         from cli._formatters import project_evidence_json
 
@@ -1041,6 +1419,18 @@ class TestCmdDiff:
         assert "Update(api/payload.py)" in out
         assert "Update(api/util.py)" in out
 
+    def test_diff_missing_mode_defaults_to_preview(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_diff
+        self._write_diff_run(runs_dir, "20260519_100009")
+        args = _make_args(run_id="20260519_100009", no_color=True)
+        rc = cmd_diff(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Update(api/payload.py)" in out
+        assert "diff --git" not in out
+
     def test_diff_stat_mode_shows_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1174,14 +1564,14 @@ class TestCmdDiff:
         with pytest.raises(SystemExit):
             parser.parse_args(["diff", "any_run", "--preview", "--stat"])
 
-    def test_diff_parser_default_mode_is_full(self) -> None:
+    def test_diff_parser_default_mode_is_preview(self) -> None:
         from cli.orcho import build_parser
         args = build_parser().parse_args(["diff", "any_run"])
-        assert args.diff_mode == "full"
+        assert args.diff_mode == "preview"
 
 
 class TestCmdEvidenceDiff:
-    """Test ``orcho evidence --diff[=mode]`` markdown + JSON wrappers."""
+    """Test ``orcho evidence --diff[=mode]`` CLI/markdown + JSON wrappers."""
 
     @pytest.fixture
     def runs_dir(self, tmp_path: Path, monkeypatch):
@@ -1351,6 +1741,22 @@ class TestCmdEvidenceDiff:
         assert "## Diff" in out
         assert "api/payload.py" in out
 
+    def test_cli_diff_is_default_and_appends_section(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_evidence
+        self._write_evidence_run(runs_dir, "20260519_200012")
+        args = _make_args(
+            run_id="20260519_200012", format=None, diff="stat",
+        )
+        rc = cmd_evidence(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "## Diff" in out
+        assert "+1 -1" in out
+        assert not out.lstrip().startswith("{")
+
     def test_md_diff_stat_only_renders_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1402,6 +1808,7 @@ class TestCmdEvidenceDiff:
         assert bare.diff == "preview"
         default = parser.parse_args(["evidence", "any_run"])
         assert default.diff is None
+        assert default.format == "cli"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3502,10 +3909,17 @@ class TestVerifyEnvParser:
         assert args.run_id is None
         assert args.workspace is None
 
-    def test_verify_requires_subcommand(self) -> None:
+    def test_verify_without_subcommand_shows_overview(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         parser = self.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["verify"])
+        args = parser.parse_args(["verify"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Verify · declared receipts" in out
+        assert "orcho verify env" in out
+        assert "orcho verify run --required" in out
 
     def test_verify_env_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -3514,6 +3928,32 @@ class TestVerifyEnvParser:
         parser = self.build_parser()
         args = parser.parse_args(["verify", "env", "--env", "ci"])
         assert args.func.__name__ == "cmd_verify_env"
+
+    def test_verify_filters_skill_shadow_chatter(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from cli import orcho as cli_orcho
+        from sdk.verify import VerifyListResult
+
+        def fake_verify_list(**kwargs):
+            print(
+                "  ! skills: workspace skill 'x' (workspace) shadowed by "
+                "project skill at /tmp/x"
+            )
+            print("  kept diagnostic")
+            return VerifyListResult(run_id="r1", commands=[])
+
+        monkeypatch.setattr(cli_orcho, "verify_list", fake_verify_list)
+
+        rc = cli_orcho.cmd_verify_list(
+            _make_args(project=None, run_id=None, workspace=None)
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "shadowed by" not in out
+        assert "kept diagnostic" in out
+        assert "verify list" in out
 
 
 class TestCmdVerifyEnv:
@@ -3780,6 +4220,10 @@ class TestCmdVerifyListRun:
         assert rc == 0
         assert "show_cwd" in out
         assert "req" in out
+        assert "$ python -c" in out
+        assert "['python'" not in out
+        assert "Preview only" in out
+        assert "orcho verify run --required" in out
         # Nothing executed.
         assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
 

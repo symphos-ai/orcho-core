@@ -24,20 +24,24 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("cross", "run one delivery workflow across several projects"),
     ]),
     ("Inspect a run", [
-        ("status", "show status of the latest run or a specific run id"),
+        ("status", "what is happening / what should I do next?"),
         ("history", "list recent runs"),
-        ("metrics", "show token/time metrics for recent runs"),
-        ("cost", "API-equivalent cost report over a window of runs"),
-        ("evidence", "compose a run evidence bundle"),
-        ("diff", "print the run's captured diff.patch artifact"),
+        ("metrics", "how much did it consume? tokens and time"),
+        ("cost", "how much did it consume? cost-reference report"),
+        ("evidence", "what happened / what proves it?"),
+        ("diff", "what changed? captured diff.patch artifact"),
     ]),
     ("Workspace & config", [
         ("workspace", "initialise and manage Orcho workspaces"),
         ("profiles", "list execution profiles"),
+        ("profile", "customize one execution profile"),
         ("workflows", "list workflow profiles"),
         ("prompts", "show the prompt resolution chain"),
         ("pricing", "inspect / refresh pricing data used by cost"),
         ("verify", "execute declared verification-contract checks"),
+        ("quality-gates", "show the declared verification gate matrix"),
+        ("runtimes", "install helper wrappers for agent runtimes"),
+        ("demos", "bootstrap packaged demo fixtures"),
     ]),
     ("Maintenance", [
         ("repair-state", "inspect and safely apply known run-state repairs"),
@@ -109,7 +113,10 @@ def _compose_quick_help(header: Callable[[str], str]) -> str:
 
 {header("Run state:")}
   Runs are written under the active Orcho workspace.
-  Use `orcho status`, `orcho history`, or `orcho evidence`.
+  status        What is happening / what should I do next?
+  evidence      What happened / what proves it?
+  metrics/cost  How much did it consume?
+  diff          What changed?
 
 {header("More help:")}
   orcho run --help

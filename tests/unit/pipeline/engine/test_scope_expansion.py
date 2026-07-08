@@ -27,6 +27,7 @@ from pipeline.engine.scope_expansion import (
     CATEGORY_PUBLIC_WIRE,
     CATEGORY_SCHEMA,
     CATEGORY_SECURITY,
+    CATEGORY_TEST,
     FileScopeSignals,
     ScopeExpansionAssessment,
     ScopeExpansionItem,
@@ -103,8 +104,31 @@ def test_categorize_file_each_family():
     assert categorize_file("storage/run_store.py") == CATEGORY_PERSISTENCE
     assert categorize_file("pipeline/engine/run_state.py") == CATEGORY_PERSISTENCE
     assert categorize_file("db/migrations/0007_add.py") == CATEGORY_PERSISTENCE
-    assert categorize_file("docs/sdk_schema.json") == CATEGORY_SCHEMA
+    # Test source modules are benign even when the name/path carries a sensitive
+    # token — a test edit never changes the product surface. Guarded before the
+    # security/persistence/wire families across every common ecosystem so the
+    # content heuristics can't mis-escalate a test to a genuine-safety category.
+    assert categorize_file("tests/unit/architecture/test_no_direct_run_state.py") == CATEGORY_TEST
+    assert categorize_file("pkg/widget_test.py") == CATEGORY_TEST                 # python alt
+    assert categorize_file("internal/auth/secret_store_test.go") == CATEGORY_TEST  # go, auth+secret
+    assert categorize_file("src/auth/AuthService.test.ts") == CATEGORY_TEST       # jest/vitest, auth
+    assert categorize_file("src/user.state.spec.tsx") == CATEGORY_TEST            # jasmine, state
+    assert categorize_file("app/models/credential_spec.rb") == CATEGORY_TEST      # rspec, credential
+    assert categorize_file("src/main/AuthTokenTest.java") == CATEGORY_TEST        # junit, auth
+    assert categorize_file("Sources/StateStoreTests.swift") == CATEGORY_TEST      # xctest, state
+    assert categorize_file("app/AuthControllerTest.php") == CATEGORY_TEST         # phpunit, auth
+    assert categorize_file("core/state/StateSpec.scala") == CATEGORY_TEST         # scalatest, state
+    assert categorize_file("test/auth_state_test.exs") == CATEGORY_TEST           # elixir, auth+state
+    # No name convention (Rust) → caught by the test-directory heuristic.
+    assert categorize_file("crates/engine/tests/run_state_recovery.rs") == CATEGORY_TEST
+    # ...but test *data* / fixtures / goldens keep their content category — the
+    # test-directory heuristic excludes data dirs, so a source-ext file under
+    # fixtures/ is not grabbed as a test module.
     assert categorize_file("tests/data/plan_schema.json") == CATEGORY_SCHEMA
+    assert categorize_file("tests/fixtures/run_state.json") == CATEGORY_FIXTURE
+    assert categorize_file("tests/fixtures/seed.rs") == CATEGORY_FIXTURE          # data dir excluded
+    assert categorize_file("src/latest.java") == CATEGORY_OTHER                   # "Test" is CamelCase-only
+    assert categorize_file("docs/sdk_schema.json") == CATEGORY_SCHEMA
     assert categorize_file("sdk/payloads.py") == CATEGORY_PUBLIC_WIRE
     assert categorize_file("proto/run.proto") == CATEGORY_PUBLIC_WIRE
     assert categorize_file("tests/fixtures/run.json") == CATEGORY_FIXTURE
@@ -118,6 +142,31 @@ def test_categorize_file_each_family():
 
 
 # ── build_scope_expansion_signals ────────────────────────────────────────────
+
+
+def test_out_of_plan_test_guard_is_not_a_genuine_safety_blocker():
+    """Regression: an out-of-plan test module must not force-reject.
+
+    A small edit to an architecture-guard test whose name contains ``state``
+    (e.g. allowlisting a new delegation) used to categorise as ``persistence``
+    → a genuine-safety BLOCKER that force-rejects final acceptance in every
+    mode. As a test module it is benign: no genuine-safety flags, no blocker.
+    """
+    signals = build_scope_expansion_signals(
+        changed_files=["tests/unit/architecture/test_no_direct_run_state.py"],
+        in_plan_patterns=[],
+        diff_stats_by_file={
+            "tests/unit/architecture/test_no_direct_run_state.py": {"added": 9, "removed": 0},
+        },
+    )
+    sig = signals[0]
+    assert sig.category == CATEGORY_TEST
+    assert sig.is_persistence is False
+    assert sig.is_security is False
+    assert sig.is_public_wire is False
+    item = classify_file_signals(sig)
+    # Small, benign test edit: the conservative floor is RISK, never BLOCKER.
+    assert item.status is not ScopeExpansionStatus.BLOCKER
 
 
 def test_build_signals_skips_in_plan_and_is_conservative():

@@ -1,5 +1,5 @@
 {
-  "_comment": "Default per-phase runtime+model+effort configuration. ``runtime`` selects the agent backend (claude / codex / gemini). ``effort`` (low|medium|high|xhigh|max) controls reasoning depth and is mapped to each runtime's CLI: Claude --effort, Codex -c model_reasoning_effort. Omit / null to let the CLI use its own default (e.g. ~/.codex/config.toml). Override locally via _config/config.local.json, ~/.orcho/config.local.json, $ORCHO_WORKSPACE/.orcho/config.local.json, or env vars (RUNTIME_<PHASE> / MODEL_<PHASE>).",
+  "_comment": "Default per-phase runtime+model+effort configuration. ``runtime`` selects a registered agent backend (claude / claude-glm / codex / gemini / plugin runtimes). ``effort`` (low|medium|high|xhigh|max) controls reasoning depth and is mapped to each runtime's CLI: Claude --effort, Codex -c model_reasoning_effort. Omit / null to let the CLI use its own default (e.g. ~/.codex/config.toml). Override locally via _config/config.local.json, ~/.orcho/config.local.json, $ORCHO_WORKSPACE/.orcho/config.local.json, or env vars (RUNTIME_<PHASE> / MODEL_<PHASE>).",
   "phases": {
     "plan":               {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
     "validate_plan":      {"runtime": "codex",  "model": "gpt-5.5",           "effort": "medium"},
@@ -64,7 +64,7 @@
     "output_mode": "live"
   },
   "accounting": {
-    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render API-equivalent cost fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
+    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render cost-reference fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
     "enabled": false
   },
   "commit": {

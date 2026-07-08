@@ -1,4 +1,4 @@
-# Orcho — Multi-Agent Pipeline Engine
+# Orcho — Production Harness for Agentic Software Delivery
 
 [![PyPI](https://img.shields.io/pypi/v/orcho-core.svg)](https://pypi.org/project/orcho-core/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/orcho-core/)
@@ -9,7 +9,8 @@
 [![codecov](https://codecov.io/gh/symphos-ai/orcho-core/branch/main/graph/badge.svg)](https://codecov.io/gh/symphos-ai/orcho-core)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/symphos-ai/orcho-core/badge)](https://scorecard.dev/viewer/?uri=github.com/symphos-ai/orcho-core)
 
-**Orcho** — local-first control plane for agentic software delivery.
+**Orcho** is a production harness and control plane for agentic software
+delivery.
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
@@ -32,8 +33,8 @@ agent session:
 
 Which model runs which phase is **fully configurable**.
 Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
-Assign Claude, Codex, or Gemini to any phase via env vars, profiles,
-or `config.local.json`.
+Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
+Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
 Zero project-specific code — all project context comes through `plugin.py`.
 
@@ -48,13 +49,20 @@ OS-agnostic [Docker](#docker) / [direct engine](#direct-engine-dependency)
 paths.
 
 Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
-least one code-agent CLI (`claude`, `codex`, or `gemini`) on `PATH`.
+least one code-agent CLI or compatible wrapper (`claude`, `claude-glm`,
+`codex`, or `gemini`) available to Orcho.
+
+> `pipx ensurepath` updates `PATH` for **future** shells, not the one you run it
+> in. So after `ensurepath` you must **open a new terminal** before `pipx` (and
+> the installed `orcho`) are on `PATH` — this trips up first-time Windows setups
+> in particular. Each block below marks exactly where to reopen the shell.
 
 ### macOS
 
 ```bash
 brew install pipx        # skip if pipx is already installed
 pipx ensurepath
+# ↻ reopen your terminal so the installed `orcho` is on PATH:
 pipx install orcho
 orcho --help
 ```
@@ -64,6 +72,7 @@ orcho --help
 ```bash
 python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
 python3 -m pipx ensurepath
+# ↻ reopen your terminal so `pipx` (and later `orcho`) are on PATH:
 pipx install orcho
 orcho --help
 ```
@@ -77,6 +86,8 @@ first, then, in **PowerShell**:
 ```powershell
 py -m pip install --user pipx
 py -m pipx ensurepath
+# ↻ IMPORTANT: close this window and open a NEW PowerShell now — `ensurepath`
+#   only updates PATH for new shells, so `pipx` is not found until you reopen.
 pipx install orcho
 orcho --help
 ```
@@ -124,19 +135,32 @@ For source-checkout setup, tests, and contribution workflow, see
 
 ## Try the golden mock demo
 
-Once `orcho` is installed (see [Install](#install) above), the fastest zero-API
-proof is the single-project CLI demo. It creates a disposable git-backed
-fixture, runs the full mock pipeline, reviews the diff, and writes evidence.
-The bootstrap script is `bash` (macOS, Linux, or WSL2 / Git Bash on Windows):
+The fastest zero-API proof is the single-project CLI demo. It creates a
+disposable git-backed fixture, runs the full mock pipeline, reviews the diff,
+and writes evidence.
+
+For an installed CLI, use the packaged demo bootstrap:
+
+```bash
+orcho demos bootstrap golden-api
+```
+
+`orcho demos install golden-api` is accepted as the same operation.
+
+From an existing source checkout, run the shell bootstrap script directly:
 
 ```bash
 examples/scripts/bootstrap_demo_1a.sh
 ```
 
+Do not clone this repository next to a `pipx install orcho` only to obtain the
+demo assets; that creates two Orcho copies on the machine and makes it too easy
+to confuse the installed CLI with source-checkout code.
+
 Then paste the printed `orcho run ... --mock` command and inspect:
 
 ```bash
-orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho status --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```

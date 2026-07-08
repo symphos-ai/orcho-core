@@ -258,7 +258,7 @@ def test_cross_planning_usage_summary_matches_done_style(
     out = capsys.readouterr().out
     assert "✓ Usage:   Tokens: 175 (in=140 out=35)" in out
     assert "Time: 3.5s" in out
-    assert "API-equiv: $0.02" in out
+    assert "Cost ref: runtime-reported $0.02" in out
     config._reset_config()
 
 
@@ -298,7 +298,7 @@ def test_cross_checks_usage_summary_filters_terminal_check_phases(
     out = capsys.readouterr().out
     assert "✓ Cross checks usage: Tokens: 600 (in=500 out=100)" in out
     assert "Time: 6.5s" in out
-    assert "API-equiv: $0.03" in out
+    assert "Cost ref: runtime-reported $0.03" in out
     assert "10,000" not in out
     config._reset_config()
 

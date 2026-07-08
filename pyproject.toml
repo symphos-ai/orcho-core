@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orcho-core"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first control plane for cross-agent AI software delivery"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -90,6 +90,7 @@ orcho-cross = "pipeline.cross_project.cli:main"
 # break — no aliasing of legacy groups.
 [project.entry-points."orcho.agent_runtimes"]
 claude = "agents.runtimes.claude:ClaudeAgent"
+claude-glm = "agents.runtimes.claude_glm:ClaudeGlmAgent"
 codex  = "agents.runtimes.codex:CodexAgent"
 gemini = "agents.runtimes.gemini:GeminiAgent"
 
@@ -135,6 +136,14 @@ core = [
     "_prompts/*.md",
     "_prompts/**/*.md",
     "_config/*.json",
+    "_runtime_wrappers/*.sh",
+    "_runtime_wrappers/*.cmd",
+    "_demo_assets/golden-api/.gitignore",
+    "_demo_assets/golden-api/.orcho/**/*.md",
+    "_demo_assets/golden-api/**/*.md",
+    "_demo_assets/golden-api/**/*.py",
+    "_demo_assets/golden-api/**/*.toml",
+    "_demo_assets/golden-api/**/*.txt",
 ]
 
 # ``config.local.json`` is gitignored, user-local override content

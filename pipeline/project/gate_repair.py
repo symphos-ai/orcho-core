@@ -91,6 +91,11 @@ def run_gate_hook(
     plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
     gates = _gates_for_hook(plan, hook=hook, phase=phase)
 
+    # Surface the gate before its (possibly multi-minute) checks run, so the
+    # terminal never looks hung after a phase. TERMINAL-only; header once.
+    if gates and _gate_progress_on(run):
+        _render_gate_section_header(len(gates), hook=hook, phase=phase)
+
     # ``executed`` accumulates the commands routing actually ran this hook so the
     # reconciliation pass can tell apart "ran" from "planned but not run".
     executed: set[str] = set()
@@ -446,6 +451,86 @@ def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
     return gates
 
 
+# ── gate progress rendering (terminal only) ─────────────────────────────────
+#
+# A gate hook runs the run's declared checks (tests, linters) as blocking
+# subprocesses that can take minutes and print nothing. Without a signal the
+# terminal looks hung right after the implement phase. These renderers surface
+# the gate: a cyan VERIFICATION GATE header once per hook, then a per-command
+# ``▶ running…`` line printed (and flushed) BEFORE the blocking call so the
+# operator sees the run is alive, plus a ``✓/✗`` result line after. All output
+# is gated on TERMINAL presentation — sub-pipelines / SILENT stay silent.
+
+_GATE_BANNER_WIDTH = 68
+
+
+def _gate_progress_on(run: Any) -> bool:
+    """True when gate progress may print — TERMINAL presentation only."""
+    from pipeline.project.types import PresentationPolicy
+
+    return getattr(run, "_presentation", None) is PresentationPolicy.TERMINAL
+
+
+def _fmt_gate_duration(seconds: Any) -> str:
+    """``95.4`` → ``1m35s``; ``8.1`` → ``8s``; unparseable → ``""``."""
+    try:
+        s = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return ""
+    return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def _render_gate_section_header(count: int, *, hook: str, phase: str) -> None:
+    from core.io.ansi import C, is_color_active, paint
+
+    color = is_color_active()
+    where = ""
+    if phase and hook == "after_phase":
+        where = f" · after {phase}"
+    elif phase and hook == "before_phase":
+        where = f" · before {phase}"
+    noun = "check" if count == 1 else "checks"
+    rule = paint(_GATE_BANNER_WIDTH * "═", C.CYAN, color=color)
+    print("")
+    print(rule)
+    print(paint(
+        f"  🔎  VERIFICATION GATE{where} — running {count} {noun}",
+        C.CYAN, C.BOLD, color=color,
+    ))
+    print(paint(
+        "      declared checks run now — tests can take a few minutes…",
+        C.GREY, color=color,
+    ))
+    print(rule)
+
+
+def _render_gate_command_start(command: str) -> None:
+    from core.io.ansi import C, is_color_active, paint
+
+    color = is_color_active()
+    # Flushed so it reaches the terminal BEFORE the blocking subprocess — this
+    # is the line that tells the operator the long gate is running, not hung.
+    print(
+        f"   {paint(f'▶ {command}', C.CYAN, color=color)}"
+        f"   {paint('running…', C.GREY, color=color)}",
+        flush=True,
+    )
+
+
+def _render_gate_command_result(command: str, receipt: dict) -> None:
+    from core.io.ansi import C, is_color_active, paint
+    from pipeline.evidence.verification_receipt import command_receipt_passed
+
+    color = is_color_active()
+    dur = _fmt_gate_duration(receipt.get("duration_s"))
+    dur_s = f"  ({dur})" if dur else ""
+    if command_receipt_passed(receipt):
+        glyph = paint(f"✓ {command}", C.GREEN, color=color)
+        print(f"   {glyph}   {paint(f'passed{dur_s}', C.GREY, color=color)}")
+    else:
+        print(f"   {paint(f'✗ {command}   failed{dur_s}', C.RED, color=color)}")
+
+
 # ── command execution + critique ───────────────────────────────────────────
 
 
@@ -457,8 +542,16 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
     block, the Stage 6 delivery gate, and the evidence bundle see the same
     proof the routing decision was based on. Re-runs (repair rounds) overwrite
     by command name — the latest execution is the authoritative receipt.
+
+    On a TERMINAL run a ``▶ running…`` line is printed (and flushed) before the
+    blocking command and a ``✓/✗`` result line after, so a multi-minute gate is
+    never a silent gap.
     """
     from pipeline.verification_command import run_command
+
+    show_progress = _gate_progress_on(run)
+    if show_progress:
+        _render_gate_command_start(entry.command)
 
     spec = contract.commands.get(entry.command, {})
     receipt = run_command(
@@ -469,6 +562,8 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
         required=True,
     )
     _persist_gate_receipt(run, receipt)
+    if show_progress:
+        _render_gate_command_result(entry.command, receipt)
     return receipt
 
 

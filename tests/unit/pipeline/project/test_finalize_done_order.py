@@ -183,7 +183,7 @@ def test_outcome_line_precedes_done_banner_on_skip(
 
     out = strip_ansi(capsys.readouterr().out)
 
-    assert "Delivery skipped" in out, (
+    assert "DELIVERY — SKIPPED" in out, (
         f"outcome line missing from stdout: {out!r}"
     )
     assert "Pipeline complete" in out, (
@@ -191,7 +191,7 @@ def test_outcome_line_precedes_done_banner_on_skip(
     )
     assert "Run:     20260603_000000" in out
     assert "Task:    Orcho Task: Final summary identity" in out
-    assert out.index("Delivery skipped") < out.index("Pipeline complete"), (
+    assert out.index("DELIVERY — SKIPPED") < out.index("Pipeline complete"), (
         "DONE banner printed before delivery outcome — ordering contract "
         f"violated:\n{out!r}"
     )

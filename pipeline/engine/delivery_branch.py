@@ -229,8 +229,9 @@ def resolve_delivery_branch(
             remote=remote,
             requested_policy="named",
             extra_notices=(
-                "branch_policy=named requires a target branch; "
-                "degraded to protect_default",
+                "No target branch was named for this delivery, so the "
+                "default branch was protected and was not used as the "
+                "commit target.",
             ),
         )
 
@@ -395,8 +396,10 @@ def _resolve_protect_default(
     # protect_default.
     if requested_policy == "worktree_branch":
         notices = notices + (
-            "worktree_branch requires an isolated (per_run) run; "
-            "degraded to protect_default for this in-place delivery",
+            "This is an in-place delivery on the current checkout, so no "
+            "separate run branch was created; because the run was not "
+            "isolated, protecting the default branch on this checkout is "
+            "the expected outcome.",
         )
 
     current = _current_branch(project_path)

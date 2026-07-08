@@ -59,7 +59,7 @@
   "feature": {
     "kind":               "custom",
     "semantic_profile":   "feature",
-    "default_mode":       "fast",
+    "default_mode":       "pro",
     "recipe_kind":        "full_cycle",
     "description": "Production-grade dev cycle for a feature: plan ↔ validate_plan loop, subtask_dag implement, review_changes ↔ repair_changes loop, final_acceptance. The default work kind for shipped work. validate_plan uses the plan_reviewer persona; review_changes uses code_reviewer; implement↔repair_changes share the implementation_engineer role thread. Reviewer and implementation phases use per_role boundaries; plan and final_acceptance stay common. Opts into both terminal cross gates strictly: contract_check (cross-contract review) and cross_final_acceptance (system release gate), both run=always with on_skip=block.",
     "implementation_execution": "subtask_dag",

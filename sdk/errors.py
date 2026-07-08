@@ -77,6 +77,12 @@ class WorkspaceInitError(OrchoError):
     exit_code = 2
 
 
+class ProfileCustomizeError(OrchoError):
+    """``sdk.customize_profile`` rejected a local profile overlay request."""
+
+    exit_code = 2
+
+
 class ProjectNotFound(OrchoError):
     """``--project`` path does not exist on disk."""
 

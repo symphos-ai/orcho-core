@@ -35,6 +35,7 @@ from sdk.errors import (
     NoWorkspace,
     OrchoError,
     PricingFetchError,
+    ProfileCustomizeError,
     PromptNotFound,
     RunNotFound,
     WorkspaceInitError,
@@ -86,6 +87,8 @@ from sdk.phase_handoff import (
     safe_handoff_id,
 )
 from sdk.pricing import refresh_pricing, show_pricing
+from sdk.profile_customize import ProfileCustomizeResult, customize_profile
+from sdk.profiles import ProfileSummary, catalogue_path, list_profiles
 from sdk.prompts import list_prompts, resolve_prompt
 
 # Run-control delivery decisions — the out-of-band post-release gate surface
@@ -131,9 +134,11 @@ from sdk.types import (
     ArtefactRef,
     CostReport,
     EvidenceBundle,
+    GateStatus,
     PhaseBreakdown,
     PhaseStatus,
     PricingTable,
+    ProjectBreakdown,
     PromptResolution,
     RefreshResult,
     RunEvent,
@@ -181,6 +186,7 @@ __all__ = [
     "EvidenceInvalid",
     "InvalidPhaseHandoffState",
     "WorkspaceInitError",
+    "ProfileCustomizeError",
     "VerifyEnvError",
     # Serialisation
     "to_jsonable",
@@ -198,6 +204,10 @@ __all__ = [
     "list_events",
     "list_prompts",
     "resolve_prompt",
+    "list_profiles",
+    "catalogue_path",
+    "customize_profile",
+    "ProfileCustomizeResult",
     "show_pricing",
     "refresh_pricing",
     "aggregate_cost",
@@ -294,8 +304,10 @@ __all__ = [
     "fine_tune_project",
     "FineTuneResult",
     # Types
+    "ProfileSummary",
     "RunRef",
     "RunMeta",
+    "GateStatus",
     "PhaseStatus",
     "RunStatus",
     "RunSummary",
@@ -304,6 +316,7 @@ __all__ = [
     "ArtefactRef",
     "PhaseBreakdown",
     "AgentBreakdown",
+    "ProjectBreakdown",
     "CostReport",
     "EvidenceBundle",
     "PromptResolution",

@@ -31,6 +31,12 @@
           "default_factory": null,
           "name": "tokens_exact",
           "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
+          "type": "bool"
         }
       ],
       "frozen": true,
@@ -325,6 +331,12 @@
           "default_factory": null,
           "name": "accounting_enabled",
           "type": "bool"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "project_breakdown",
+          "type": "tuple[ProjectBreakdown, ...]"
         }
       ],
       "frozen": true,
@@ -989,6 +1001,45 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "kind",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "duration_s",
+          "type": "float | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "phase",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "GateStatus",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "handoff_id",
           "type": "str"
         },
@@ -1414,6 +1465,18 @@
           "default_factory": null,
           "name": "tokens_exact",
           "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
+          "type": "bool"
+        },
+        {
+          "default": "'phase'",
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
         }
       ],
       "frozen": true,
@@ -1627,6 +1690,192 @@
       "kind": "dataclass",
       "module": "sdk.types",
       "name": "PricingTable",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "ProfileCustomizeError"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "profile",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "scope",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "config_path",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "dry_run",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "changes",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "overlay",
+          "type": "dict[str, Any]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.profile_customize",
+      "name": "ProfileCustomizeResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "variant",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "description",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "default_mode",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "isolated",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phases",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cross_gates",
+          "type": "dict[str, dict] | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hypothesis",
+          "type": "dict | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "semantic_profile",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recipe_kind",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "internal",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.profiles",
+      "name": "ProfileSummary",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "name",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "cost",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tokens_exact",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "cost_estimated",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.types",
+      "name": "ProjectBreakdown",
       "slots": true
     },
     {
@@ -2326,6 +2575,12 @@
           "default_factory": null,
           "name": "sub_projects",
           "type": "tuple[PhaseStatus, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "quality_gates",
+          "type": "tuple[GateStatus, ...]"
         },
         {
           "default": "None",
@@ -3147,6 +3402,13 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.profiles",
+      "name": "catalogue_path",
+      "params": [],
+      "return": "Path"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.evidence",
       "name": "collect_evidence",
       "params": [
@@ -3176,6 +3438,92 @@
         }
       ],
       "return": "EvidenceBundle"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.profile_customize",
+      "name": "customize_profile",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "profile"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "assignments"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "default_mode"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "change_handoff"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "implementation_execution"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "worktree_isolation"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "phase_effort"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_split"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "session_continuity"
+        },
+        {
+          "annotation": "list[str] | tuple[str, ...]",
+          "default": "()",
+          "kind": "KEYWORD_ONLY",
+          "name": "handoff"
+        },
+        {
+          "annotation": "str",
+          "default": "'workspace'",
+          "kind": "KEYWORD_ONLY",
+          "name": "scope"
+        },
+        {
+          "annotation": "str | Path | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "dry_run"
+        }
+      ],
+      "return": "ProfileCustomizeResult"
     },
     {
       "kind": "callable",
@@ -3989,6 +4337,13 @@
         }
       ],
       "return": "list[RunMetrics]"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.profiles",
+      "name": "list_profiles",
+      "params": [],
+      "return": "tuple[ProfileSummary, ...]"
     },
     {
       "kind": "callable",

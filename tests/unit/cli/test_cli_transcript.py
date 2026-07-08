@@ -227,8 +227,9 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 gate="lint",
                 timing="after_implement",
                 run_mode="auto",
-                policy="warn",
+                policy="require",
                 kind="cheap",
+                when="after_implement",
             ),
             GateRowView(
                 gate="test",
@@ -236,6 +237,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 run_mode="auto",
                 policy="warn",
                 kind="unknown",
+                when="pre-final",
             ),
         ),
         policy_source="auto-derived from mode/plugin defaults",
