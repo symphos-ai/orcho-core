@@ -273,6 +273,64 @@ def test_old_metrics_without_runtime_bucket_by_model(runs_root: Path, accounting
     assert "claude-glm" not in providers
 
 
+def test_legacy_glm_model_buckets_to_claude_glm(runs_root: Path, accounting_on):
+    # Historical GLM wrapper runs may predate the durable runtime key but still
+    # carry a GLM model id. Keep those rows out of the generic "other" bucket.
+    rid = runs_root / "20260509_140000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "legacy glm run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 100,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "implement": {
+                        "model": "glm-5.2[1m]",
+                        "total_tokens": 100,
+                        "tokens_exact": True,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    providers = {a.provider for a in report.agent_breakdown}
+    assert "claude-glm" in providers
+    assert "other" not in providers
+
+
+def test_sub_pipeline_kind_survives_aggregation(runs_root: Path, accounting_on):
+    rid = runs_root / "20260509_150000"
+    rid.mkdir()
+    (rid / "meta.json").write_text(json.dumps({"task": "cross run"}))
+    (rid / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 200,
+                "total_duration_s": 1.0,
+                "phases": {
+                    "api": {
+                        "kind": "sub_pipeline",
+                        "total_tokens": 100,
+                        "tokens_exact": False,
+                    },
+                    "cross_plan": {
+                        "kind": "cross_level",
+                        "total_tokens": 100,
+                        "tokens_exact": False,
+                    },
+                },
+            }
+        )
+    )
+    report = aggregate_cost(runs_dir=runs_root, window="all")
+    kinds = {p.name: p.kind for p in report.phase_breakdown}
+    assert kinds["api"] == "sub_pipeline"
+    assert kinds["cross_plan"] == "cross_level"
+
+
 def test_window_excludes_old_runs(populated_runs: Path):
     # All synthetic runs are dated 2026-05-{05..07}; today is 2026-05-09 per
     # the harness. A 1d window includes nothing.

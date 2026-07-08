@@ -26,6 +26,8 @@ from sdk.types import (
 
 def _provider_for_model(model: str) -> str:
     m = model.lower()
+    if m.startswith("glm"):
+        return "claude-glm"
     if m.startswith("claude"):
         return "claude"
     if m.startswith(("gpt", "o3", "o4", "codex")):
@@ -141,6 +143,7 @@ def aggregate_cost(
     phase_runs: dict[str, int] = {}
     phase_exact: dict[str, bool] = {}
     phase_cost_estimated: dict[str, bool] = {}
+    phase_kinds: dict[str, str] = {}
 
     agent_costs: dict[str, float] = {}
     agent_tokens: dict[str, int] = {}
@@ -174,6 +177,11 @@ def aggregate_cost(
             phase_cost_estimated[ph_name] = (
                 phase_cost_estimated.get(ph_name, False) or cost_estimated
             )
+            kind = str(ph.get("kind") or "phase").strip() or "phase"
+            previous_kind = phase_kinds.get(ph_name)
+            phase_kinds[ph_name] = (
+                kind if previous_kind in (None, kind) else "mixed"
+            )
 
             # Agent-breakdown identity: prefer the recorded runtime id when the
             # phase carries one (so a wrapper runtime such as ``claude-glm`` is
@@ -196,6 +204,7 @@ def aggregate_cost(
             runs=phase_runs.get(name, 0),
             tokens_exact=phase_exact.get(name, False),
             cost_estimated=phase_cost_estimated.get(name, False),
+            kind=phase_kinds.get(name, "phase"),
         )
         for name in sorted(phase_costs, key=lambda k: phase_costs[k], reverse=True)
     )
