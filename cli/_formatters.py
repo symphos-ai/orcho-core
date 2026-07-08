@@ -27,6 +27,7 @@ from sdk import (
     EvidenceBundle,
     FineTuneResult,
     OrchoError,
+    PhaseBreakdown,
     PricingTable,
     ProfileCustomizeResult,
     PromptResolution,
@@ -296,6 +297,39 @@ def _cost_warning(text: str) -> str:
     return _stdout_paint(text, C.YELLOW)
 
 
+def _append_cost_breakdown_section(
+    out: list[str],
+    *,
+    title: str,
+    rows: tuple[PhaseBreakdown, ...],
+    total: float,
+    note: str,
+) -> None:
+    """Append a phase-shaped cost breakdown section."""
+    if not rows:
+        return
+    out.append("")
+    out.append(_cost_title(title))
+    for ph in rows:
+        tok_marker = " " if ph.tokens_exact else "~"
+        cost_str = (
+            _cost_reference_text(ph.cost, estimated=ph.cost_estimated)
+            if ph.cost > 0
+            else _cost_muted("  (no $)")
+        )
+        pct_str = (
+            f"({ph.cost / total * 100.0:>4.1f}%)"
+            if total and ph.cost > 0
+            else "        "
+        )
+        out.append(
+            f"    {ph.name:<14} {cost_str}  {pct_str}   "
+            f"×{ph.runs}   {tok_marker}{ph.tokens:>9,} tok"
+        )
+    if total:
+        out.append(_cost_muted(note))
+
+
 def format_cost_report(report: CostReport) -> str:
     """Reproduce `cmd_cost` output (cli/orcho.py:715-856).
 
@@ -332,7 +366,14 @@ def format_cost_report(report: CostReport) -> str:
     # phase and agent sums can legitimately exceed total_cost (double counting
     # across views), so total_cost would make the percentages look like a
     # broken pie. An empty/zero breakdown suppresses the column entirely.
-    phase_total = sum(ph.cost for ph in report.phase_breakdown)
+    phase_rows = tuple(
+        ph for ph in report.phase_breakdown if ph.kind != "sub_pipeline"
+    )
+    sub_pipeline_rows = tuple(
+        ph for ph in report.phase_breakdown if ph.kind == "sub_pipeline"
+    )
+    phase_total = sum(ph.cost for ph in phase_rows)
+    sub_pipeline_total = sum(ph.cost for ph in sub_pipeline_rows)
     agent_total = sum(ag.cost for ag in report.agent_breakdown)
 
     out.append("")
@@ -365,31 +406,29 @@ def format_cost_report(report: CostReport) -> str:
             )
 
     # By-phase.
-    if report.phase_breakdown:
-        out.append("")
-        out.append(_cost_title("  By phase (sum across runs):"))
-        for ph in report.phase_breakdown:
-            tok_marker = " " if ph.tokens_exact else "~"
-            cost_str = (
-                _cost_reference_text(ph.cost, estimated=ph.cost_estimated)
-                if ph.cost > 0
-                else _cost_muted("  (no $)")
-            )
-            if phase_total and ph.cost > 0:
-                pct_str = f"({(ph.cost / phase_total * 100.0):>4.1f}%)"
-            else:
-                pct_str = "        "
-            out.append(
-                f"    {ph.name:<14} {cost_str}  {pct_str}   "
-                f"×{ph.runs}   {tok_marker}{ph.tokens:>9,} tok"
-            )
-        if phase_total:
-            out.append(
-                _cost_muted(
-                    "    ↳ % = share of the phase breakdown (sum of the rows), "
-                    "not of the window total."
-                )
-            )
+    _append_cost_breakdown_section(
+        out,
+        title="  By phase (sum across runs):",
+        rows=phase_rows,
+        total=phase_total,
+        note=(
+            "    ↳ % = share of the phase breakdown (sum of the rows), "
+            "not of the window total."
+        ),
+    )
+
+    # Cross-project child pipeline aliases are stored under metrics.phases for
+    # accounting rollup, but they are project aliases, not phase names.
+    _append_cost_breakdown_section(
+        out,
+        title="  By child pipeline (sum across cross-project runs):",
+        rows=sub_pipeline_rows,
+        total=sub_pipeline_total,
+        note=(
+            "    ↳ % = share of the child-pipeline breakdown, not of "
+            "the window total."
+        ),
+    )
 
     # By runtime/provider.
     if report.agent_breakdown:
@@ -420,8 +459,8 @@ def format_cost_report(report: CostReport) -> str:
             )
 
     # Top-phase note.
-    if has_cost and report.phase_breakdown:
-        top = report.phase_breakdown[0]
+    if has_cost and phase_rows:
+        top = phase_rows[0]
         top_pct = (top.cost / phase_total * 100.0) if phase_total else 0.0
         out.append("")
         out.append(

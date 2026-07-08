@@ -174,6 +174,45 @@ def test_glm_runtime_row_declares_quota_mode():
     assert "subscription/quota runtime; not API billing" in out
 
 
+def test_sub_pipeline_rows_do_not_render_as_phases():
+    r = _make_report(
+        phase_breakdown=(
+            PhaseBreakdown(
+                name="plan",
+                cost=1.0,
+                tokens=100,
+                runs=1,
+                tokens_exact=True,
+            ),
+            PhaseBreakdown(
+                name="api",
+                cost=0.0,
+                tokens=4_399,
+                runs=1,
+                tokens_exact=False,
+                kind="sub_pipeline",
+            ),
+            PhaseBreakdown(
+                name="web",
+                cost=0.0,
+                tokens=4_399,
+                runs=1,
+                tokens_exact=False,
+                kind="sub_pipeline",
+            ),
+        ),
+    )
+    out = format_cost_report(r)
+    phase_section = out.split("By phase (sum across runs):", 1)[1].split(
+        "By child pipeline", 1,
+    )[0]
+    assert "api" not in phase_section
+    assert "web" not in phase_section
+    assert "By child pipeline (sum across cross-project runs)" in out
+    assert "api" in out
+    assert "web" in out
+
+
 def test_accounting_disabled_report_has_no_dollar_output():
     r = _make_report(accounting_enabled=False, total_cost=0.0)
     out = format_cost_report(r)
