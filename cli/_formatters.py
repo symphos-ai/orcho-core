@@ -7,6 +7,7 @@ so the golden-output diff in REA-3.8's DoD passes whitespace-only.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shlex
@@ -460,6 +461,8 @@ def format_history(rows: list[RunSummary]) -> str:
 
     out: list[str] = []
     out.append("")
+    out.append(_status_section(f"  Run history · last {len(rows)} shown"))
+    out.append("")
     out.append(f"  {'Run ID':<22} {'Status':<20} {'Project':<22} Task")
     out.append(f"  {'─' * 82}")
     for r in rows:
@@ -483,7 +486,15 @@ def format_history(rows: list[RunSummary]) -> str:
             status = r.status or "?"
             full_task = r.task or "?"
             task = full_task[:36] + ("…" if len(full_task) > 36 else "")
-        out.append(f"  {r.run_id:<22} {status:<20} {project:<22} {task}")
+        out.append(
+            f"  {r.run_id:<22} {_status_state(f'{status:<20}')} "
+            f"{project:<22} {task}"
+        )
+    out.append("")
+    out.append(_status_muted(
+        "  Next: orcho status <run-id> · orcho evidence <run-id> · "
+        "orcho diff <run-id> --preview"
+    ))
     out.append("")
     return "\n".join(out)
 
@@ -1057,38 +1068,29 @@ def format_pricing(table: PricingTable) -> str:
     """Reproduce `cmd_pricing_show` (cli/orcho.py:428-467)."""
     out: list[str] = []
     out.append("")
-    out.append("  OpenAI pricing table (effective)")
-    out.append("  " + "─" * 60)
+    out.append(_cost_title("  Pricing reference · OpenAI/Codex estimates"))
+    out.append(_cost_muted("  " + "─" * 64))
+    out.append(_cost_muted(
+        "  Reference only: used for estimated-api cost, not as a billing receipt."
+    ))
+    out.append("")
+    out.append("  Sources")
     if table.user_snapshot_date:
         out.append(
-            f"  user file:        ~/.orcho/pricing.local.toml "
+            f"    local rates:    ~/.orcho/pricing.local.toml "
             f"({table.user_snapshot_date})"
         )
     else:
-        out.append("  user file:        ~/.orcho/pricing.local.toml (not present)")
+        out.append("    local rates:    ~/.orcho/pricing.local.toml (not present)")
     if table.bundled_snapshot_date:
-        out.append(f"  bundled snapshot: {table.bundled_snapshot_date}")
+        out.append(f"    bundled rates:  {table.bundled_snapshot_date}")
     else:
-        out.append("  bundled snapshot: empty (orcho ships no hardcoded rates)")
+        out.append("    bundled rates:  none (Orcho ships no hardcoded rates)")
     if table.snapshot_age_days is not None:
-        marker = " ⚠ stale" if table.snapshot_age_days > 30 else ""
-        out.append(f"  age:              {table.snapshot_age_days} days{marker}")
-    out.append("")
-    out.append("  Provider cost notes:")
-    out.append(
-        "    Claude reports native cost in stream output; this table is not used"
-    )
-    out.append("    for those rows.")
-    out.append(
-        "    OpenAI/Codex token-only runs can be estimated from this table."
-    )
-    out.append(
-        "    Gemini provider-cost behavior is not assumed here; current Orcho"
-    )
-    out.append(
-        "    treats it as unavailable unless a parser or matching rate card"
-    )
-    out.append("    supplies cost.")
+        age = f"{table.snapshot_age_days} days"
+        if table.snapshot_age_days > 30:
+            age = _cost_warning(f"{age}  ⚠ stale")
+        out.append(f"    age:            {age}")
     out.append("")
 
     if not table.entries:
@@ -1098,19 +1100,46 @@ def format_pricing(table: PricingTable) -> str:
         out.append("")
         return "\n".join(out)
 
+    out.append("  Rates")
     out.append(f"    {'model':<28} {'in $/1M':>10} {'out $/1M':>10}  source")
-    out.append(f"    {'─' * 64}")
+    out.append(_cost_muted(f"    {'─' * 64}"))
     for e in table.entries:
-        in_str = f"{e.input_per_million:>10.2f}" if e.input_per_million is not None else f"{'-':>10}"
-        out_str = f"{e.output_per_million:>10.2f}" if e.output_per_million is not None else f"{'-':>10}"
+        in_str = (
+            f"{e.input_per_million:>10.2f}"
+            if e.input_per_million is not None
+            else f"{'-':>10}"
+        )
+        out_str = (
+            f"{e.output_per_million:>10.2f}"
+            if e.output_per_million is not None
+            else f"{'-':>10}"
+        )
         out.append(
             f"    {e.model:<28} {in_str} {out_str}  {e.source}"
         )
     out.append("")
+    out.append("  How Orcho uses this")
     out.append(
-        "  ↳ YOUR responsibility: verify rates against\n"
-        "    https://developers.openai.com/api/docs/pricing whenever\n"
-        "    cost estimates matter to you."
+        "    OpenAI/Codex token-only phases can be shown as estimated-api cost."
+    )
+    out.append(
+        "    Runtimes that report native cost use their own reported values."
+    )
+    out.append(
+        "    Other runtimes show cost only when Orcho has parsed cost or a "
+        "matching rate card."
+    )
+    out.append("")
+    out.append(
+        _cost_muted(
+            "  Next: orcho pricing refresh · edit ~/.orcho/pricing.local.toml"
+        )
+    )
+    out.append(
+        _cost_muted(
+            "  Verify current rates before relying on estimates:\n"
+            "    https://developers.openai.com/api/docs/pricing"
+        )
     )
     out.append("")
     return "\n".join(out)
@@ -1538,18 +1567,68 @@ def format_prompts_list(
     *,
     project_dir: str | None,
     winners: dict[str, str],
+    compact: bool = False,
 ) -> str:
     """List view: ``orcho prompts`` / ``orcho prompts --list``.
 
     `winners` maps prompt name → resolved level (``"core"`` /
     ``"workspace"`` / ``"project"`` / ``"unknown"``).
     """
+    def grouped_prompt_names() -> dict[str, list[str]]:
+        groups: dict[str, list[str]] = {
+            "formats": [],
+            "roles": [],
+            "tasks": [],
+            "other": [],
+        }
+        for name in sorted(names):
+            prefix = name.split("/", 1)[0] if "/" in name else "other"
+            key = prefix if prefix in groups else "other"
+            groups[key].append(name)
+        return {key: value for key, value in groups.items() if value}
+
+    def group_label(group: str) -> str:
+        return {
+            "formats": "Formats",
+            "roles": "Roles",
+            "tasks": "Tasks",
+            "other": "Other",
+        }.get(group, group.title())
+
+    groups = grouped_prompt_names()
     out: list[str] = []
     out.append("")
-    out.append(f"  Available prompts ({len(names)}):")
-    for name in sorted(names):
-        winner = winners.get(name, "unknown")
-        out.append(f"    {name:<36} [{winner}]")
+    out.append(_status_section(f"  Prompt catalog · {len(names)} available"))
+    if project_dir:
+        out.append(f"  Project: {project_dir}")
+    out.append("")
+
+    if compact:
+        out.append("  Groups")
+        for group, entries in groups.items():
+            short_names = [
+                name.split("/", 1)[1] if "/" in name else name
+                for name in entries
+            ]
+            sample = ", ".join(short_names[:3])
+            if len(short_names) > 3:
+                sample = f"{sample}, +{len(short_names) - 3} more"
+            out.append(f"    {group_label(group):<8} {len(entries):>2}  {sample}")
+        out.append("")
+        out.append(_status_muted(
+            "  Next: orcho prompts --list · orcho prompts tasks/plan · "
+            "orcho prompts tasks/plan --verbose"
+        ))
+    else:
+        for group, entries in groups.items():
+            out.append(f"  {group_label(group)} ({len(entries)})")
+            for name in entries:
+                winner = winners.get(name, "unknown")
+                out.append(f"    {name:<36} [{winner}]")
+            out.append("")
+        out.append(_status_muted(
+            "  Next: orcho prompts <name> · orcho prompts <name> --verbose"
+        ))
     out.append("")
     return "\n".join(out)
 
@@ -1959,6 +2038,29 @@ def format_fine_tune(result: FineTuneResult) -> str:
     return "\n".join(out)
 
 
+def format_verify_overview() -> str:
+    """Render the bare ``orcho verify`` landing view."""
+    out: list[str] = [""]
+    out.append(_status_section("  Verify · declared receipts for a run"))
+    out.append("")
+    out.append("  What do you need?")
+    out.append("    env   Check the declared verification environment and write an env receipt")
+    out.append("    list  Show declared commands without running them")
+    out.append("    run   Execute declared commands and write command receipts")
+    out.append("")
+    out.append("  Common commands")
+    out.append("    orcho verify env")
+    out.append("    orcho verify list")
+    out.append("    orcho verify run --required")
+    out.append("    orcho verify run lint")
+    out.append("")
+    out.append(_status_muted(
+        "  Tip: add --run-id <id> and --project <path> to verify a specific run."
+    ))
+    out.append("")
+    return "\n".join(out)
+
+
 def format_verify_env(result: VerifyEnvResult) -> str:
     """Render the ``orcho verify env`` summary.
 
@@ -1995,18 +2097,39 @@ def format_verify_list(result: VerifyListResult) -> str:
     name, its env, and the placeholder-resolved run text. Nothing is executed,
     so this is a pure projection of the contract against the run's checkout.
     """
-    out: list[str] = ["", f"  verify list — {len(result.commands)} declared command(s)"]
-    out.append("  (* = required;  nothing executed, no receipts written)")
+    def render_run_command(value: object) -> str:
+        if isinstance(value, (list, tuple)):
+            return shlex.join(str(part) for part in value)
+        text = str(value or "")
+        if text[:1] in {"[", "("}:
+            try:
+                parsed = ast.literal_eval(text)
+            except (SyntaxError, ValueError):
+                return text
+            if isinstance(parsed, (list, tuple)):
+                return shlex.join(str(part) for part in parsed)
+        return text
+
+    out: list[str] = [
+        "",
+        _status_section(f"  verify list · {len(result.commands)} declared command(s)"),
+    ]
+    out.append(_status_muted("  Preview only: nothing executed, no receipts written."))
+    out.append(_status_muted("  * = required"))
     out.append("")
     for cmd in result.commands:
         marker = "*" if cmd.get("required") else " "
         name = cmd.get("name", "")
         env_ref = cmd.get("env", "")
-        run = cmd.get("run_resolved", "")
+        run = render_run_command(cmd.get("run_resolved", ""))
         out.append(f"  {marker} {name}  [env={env_ref}]")
-        out.append(f"      {run}")
+        out.append(f"      $ {run}")
     if not result.commands:
         out.append("  (none)")
+    out.append("")
+    out.append(_status_muted(
+        "  Next: orcho verify run --required · orcho verify run <name>"
+    ))
     out.append("")
     return "\n".join(out)
 

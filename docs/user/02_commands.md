@@ -76,8 +76,12 @@ orcho run --task "Task description" --project /path/to/project
 --verbose / -v        # alias for --output debug
 ```
 
-Profiles decide which phases run. `orcho profiles list` shows each
-profile's exact phase topology and intent; the short version:
+Profiles decide which phases run. `orcho profiles list` shows a compact
+catalogue with each profile's default mode, recipe, worktree posture, and
+phase topology. Use `orcho profiles list --verbose` when you also want the
+full profile descriptions.
+
+The short version:
 
 - `feature` — full delivery cycle with plan validation, implementation,
   review/repair, and final acceptance. The default work kind for shipped work.
@@ -257,17 +261,21 @@ Duration: 4m 32s
 ## `orcho history` — list of runs
 
 ```bash
-orcho history             # last 10 runs
-orcho history --last 25   # last 25
+orcho history                 # last 10 runs
+orcho history --last COUNT    # most recent COUNT runs, for example 25
 ```
+
+Use history to choose a run id, then open the right inspection surface:
+`orcho status <run-id>`, `orcho evidence <run-id>`, or
+`orcho diff <run-id> --preview`.
 
 ---
 
 ## `orcho metrics` and `orcho cost` — how much did it consume?
 
 ```bash
-orcho metrics             # latest run
-orcho metrics --last 5    # aggregated over 5 runs
+orcho metrics                 # latest run
+orcho metrics --last COUNT    # aggregated over COUNT runs, for example 5
 
 orcho cost                # cost-reference usage report
 orcho pricing             # inspect / refresh the pricing data behind cost
@@ -376,9 +384,11 @@ To get the diff as its own artifact, use `orcho diff`.
 Run the project's declared verification contract against a run:
 
 ```bash
-orcho verify list   # show declared verification commands (resolved, not executed)
-orcho verify run    # execute the declared commands and persist receipts
-orcho verify env    # execute one verification_env's assertions (writes an env receipt)
+orcho verify                 # show the verification command map
+orcho verify env             # check the declared environment and write an env receipt
+orcho verify list            # preview declared commands; execute nothing
+orcho verify run --required  # run the required commands and write receipts
+orcho verify run lint        # run one declared command by name
 ```
 
 Receipts land in the run directory; see
@@ -389,11 +399,17 @@ Receipts land in the run directory; see
 ## `orcho prompts` — inspect prompts
 
 ```bash
-# Show which prompt template the BUILD step resolves to
-orcho prompts tasks/build --project ~/www/my-project
+# Show the prompt catalog summary
+orcho prompts
 
-# List all available prompts
+# List every prompt part
 orcho prompts --list
+
+# Show which prompt part wins after project/workspace overrides
+orcho prompts tasks/plan --project ~/www/my-project
+
+# Print the resolved prompt body
+orcho prompts tasks/plan --verbose
 ```
 
 ---

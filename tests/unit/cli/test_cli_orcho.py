@@ -284,6 +284,23 @@ class TestParser:
         out = capsys.readouterr().out
         assert "Profiles" in out
         assert "feature" in out
+        assert "Mode" in out
+        assert "Worktree" in out
+        assert "Production-grade dev cycle" not in out
+        assert "orcho profiles list --verbose" in out
+
+    def test_profiles_list_verbose_shows_descriptions(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        parser = self.build_parser()
+        args = parser.parse_args(["profiles", "list", "--verbose"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "feature" in out
+        assert "Production-grade dev cycle" in out
+        assert "orcho profiles list --verbose" not in out
 
     def test_profile_customize_writes_workspace_overlay(
         self,
@@ -325,8 +342,11 @@ class TestParser:
 
         assert args.func(args) == 0
         out = capsys.readouterr().out
-        assert "Profiles" in out
+        assert "Workflows" in out
+        assert "Workflow" in out
         assert "task" in out
+        assert "orcho workflows list --verbose" in out
+        assert "orcho profiles list --verbose" not in out
 
     def test_top_level_help_documents_output_modes(self) -> None:
         parser = self.build_parser()
@@ -445,10 +465,28 @@ class TestParser:
         args = parser.parse_args(["metrics", "--last", "20"])
         assert args.last == 20
 
+    def test_metrics_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["metrics", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
+
     def test_history_defaults(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["history"])
         assert args.last == 10
+
+    def test_history_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["history", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
 
     def test_prompts_name(self) -> None:
         parser = self.build_parser()
@@ -777,8 +815,10 @@ class TestCmdHistory:
         rc = cmd_history(args)
         out = capsys.readouterr().out
         assert rc == 0
+        assert "Run history · last 2 shown" in out
         assert "20260501_000000" in out
         assert "20260502_000000" in out
+        assert "orcho status <run-id>" in out
 
     def test_history_sorted_newest_first(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_history
@@ -810,6 +850,22 @@ class TestCmdHistory:
         out = capsys.readouterr().out
         assert "no meta.json" in out
 
+    def test_history_color_can_be_forced(self, runs_dir: Path, capsys) -> None:
+        from cli.orcho import cmd_history
+        from core.io.ansi import C, set_color_enabled
+
+        _write_run(runs_dir, "20260502_000000", status="done")
+        args = _make_args(last=10)
+
+        try:
+            set_color_enabled(True)
+            cmd_history(args)
+            colored = capsys.readouterr().out
+        finally:
+            set_color_enabled(None)
+
+        assert f"{C.GREEN}done" in colored
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_prompts
@@ -824,15 +880,21 @@ class TestCmdPrompts:
         assert rc == 0
         # Listing should surface composable parts (post-ADR-0022 catalog).
         assert "tasks/implement" in out
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Formats" in out
+        assert "Roles" in out
+        assert "Tasks" in out
 
-    def test_no_name_no_list_shows_core(self, capsys) -> None:
+    def test_no_name_no_list_shows_summary(self, capsys) -> None:
         from cli.orcho import cmd_prompts
         args = _make_args(name=None, list=False, project=None)
         rc = cmd_prompts(args)
         out = capsys.readouterr().out
         assert rc == 0
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Groups" in out
+        assert "orcho prompts --list" in out
+        assert "tasks/implement" not in out
 
     def test_resolution_chain_core_only(self, capsys) -> None:
         from cli.orcho import cmd_prompts
@@ -3847,10 +3909,17 @@ class TestVerifyEnvParser:
         assert args.run_id is None
         assert args.workspace is None
 
-    def test_verify_requires_subcommand(self) -> None:
+    def test_verify_without_subcommand_shows_overview(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         parser = self.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["verify"])
+        args = parser.parse_args(["verify"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Verify · declared receipts" in out
+        assert "orcho verify env" in out
+        assert "orcho verify run --required" in out
 
     def test_verify_env_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -3859,6 +3928,32 @@ class TestVerifyEnvParser:
         parser = self.build_parser()
         args = parser.parse_args(["verify", "env", "--env", "ci"])
         assert args.func.__name__ == "cmd_verify_env"
+
+    def test_verify_filters_skill_shadow_chatter(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from cli import orcho as cli_orcho
+        from sdk.verify import VerifyListResult
+
+        def fake_verify_list(**kwargs):
+            print(
+                "  ! skills: workspace skill 'x' (workspace) shadowed by "
+                "project skill at /tmp/x"
+            )
+            print("  kept diagnostic")
+            return VerifyListResult(run_id="r1", commands=[])
+
+        monkeypatch.setattr(cli_orcho, "verify_list", fake_verify_list)
+
+        rc = cli_orcho.cmd_verify_list(
+            _make_args(project=None, run_id=None, workspace=None)
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "shadowed by" not in out
+        assert "kept diagnostic" in out
+        assert "verify list" in out
 
 
 class TestCmdVerifyEnv:
@@ -4125,6 +4220,10 @@ class TestCmdVerifyListRun:
         assert rc == 0
         assert "show_cwd" in out
         assert "req" in out
+        assert "$ python -c" in out
+        assert "['python'" not in out
+        assert "Preview only" in out
+        assert "orcho verify run --required" in out
         # Nothing executed.
         assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
 
