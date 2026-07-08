@@ -448,92 +448,211 @@ def format_history(rows: list[RunSummary]) -> str:
 
 
 def format_metrics_run(m: RunMetrics) -> str:
-    """Reproduce `_print_run_metrics` (cli/orcho.py:382-405)."""
+    """Render one run's metrics detail."""
     out: list[str] = []
     sep = "─" * 60
     out.append("")
-    out.append(sep)
-    out.append(f"  Metrics: {m.run_id}")
-    out.append(sep)
+    out.append(_status_muted(sep))
     out.append(
-        f"  Tokens:  {m.total_tokens:,} "
-        f"(in={m.total_tokens_in:,} out={m.total_tokens_out:,})"
+        f"{_status_label('  Metrics:')} "
+        f"{_stdout_paint(m.run_id, C.GREEN, C.BOLD)}"
     )
-    out.append(f"  Time:    {m.total_duration_s:.1f}s")
+    out.append(_status_muted(sep))
+    out.append(
+        f"{_status_label('  Tokens:')}  "
+        f"{_stdout_paint(f'{m.total_tokens:,} ', C.WHITE)}"
+        f"{_status_muted(f'(in={m.total_tokens_in:,} out={m.total_tokens_out:,})')}"
+    )
+    if m.total_cost_usd_equivalent > 0.0:
+        out.append(
+            f"{_status_label('  Cost ref:')} "
+            f"{_cost_reference_text(
+                m.total_cost_usd_equivalent,
+                estimated=bool(m.raw.get('cost_estimated')),
+            )}"
+        )
+    out.append(
+        f"{_status_label('  Time:')}    "
+        f"{_stdout_paint(f'{m.total_duration_s:.1f}s', C.WHITE)}"
+    )
     if m.total_rounds:
-        out.append(f"  Rounds:  {m.total_rounds}")
+        out.append(
+            f"{_status_label('  Rounds:')}  "
+            f"{_stdout_paint(str(m.total_rounds), C.WHITE)}"
+        )
     if m.total_retries:
-        out.append(f"  Retries: {m.total_retries}")
+        out.append(
+            f"{_status_label('  Retries:')} "
+            f"{_status_warning(str(m.total_retries))}"
+        )
 
     if m.phases:
-        out.append("")
-        out.append(
-            f"  {'Phase':<12} {'Model':<26} {'In':>8} {'Out':>8} "
-            f"{'Total':>8} {'Time':>8}"
+        show_cost = any(
+            _float_metric(p.get("cost_usd_equivalent")) > 0.0
+            for p in m.phases.values()
+            if isinstance(p, dict)
         )
-        out.append(f"  {'─' * 76}")
-        for phase, p in m.phases.items():
+        out.append("")
+        if show_cost:
             out.append(
-                f"  {phase:<12} {p.get('model', ''):<26} "
-                f"{p.get('tokens_in', 0):>8,} {p.get('tokens_out', 0):>8,} "
-                f"{p.get('total_tokens', 0):>8,} {p.get('duration_s', 0.0):>7.1f}s"
+                f"  {'Phase':<16} {'Model':<26} {'In':>10} {'Out':>10} "
+                f"{'Total':>11} {'Time':>9}  {'Cost ref':>24}"
             )
-    out.append(sep)
+            out.append(_status_muted(f"  {'─' * 116}"))
+        else:
+            out.append(
+                f"  {'Phase':<16} {'Model':<26} {'In':>10} {'Out':>10} "
+                f"{'Total':>11} {'Time':>9}"
+            )
+            out.append(_status_muted(f"  {'─' * 90}"))
+        for phase, p in m.phases.items():
+            if not isinstance(p, dict):
+                continue
+            tokens_in = _int_metric(p.get("tokens_in"))
+            tokens_out = _int_metric(p.get("tokens_out"))
+            total_tokens = _int_metric(p.get("total_tokens"))
+            duration_s = _float_metric(p.get("duration_s"))
+            line = (
+                f"  {_stdout_paint(_clip_metrics_cell(phase, 16), C.CYAN)} "
+                f"{_status_muted(_clip_metrics_cell(str(p.get('model', '')), 26))} "
+                f"{_stdout_paint(f'{tokens_in:>10,}', C.WHITE)} "
+                f"{_stdout_paint(f'{tokens_out:>10,}', C.WHITE)} "
+                f"{_stdout_paint(f'{total_tokens:>11,}', C.WHITE)} "
+                f"{_stdout_paint(f'{duration_s:>8.1f}s', C.BLUE)}"
+            )
+            if show_cost:
+                line = f"{line}  {_metrics_cost_cell(p, width=24, key='cost_usd_equivalent')}"
+            out.append(line)
+    out.append(_status_muted(sep))
     out.append("")
     return "\n".join(out)
 
 
 def format_metrics_history(rows: list[RunMetrics], *, runs_dir: Path | None = None) -> str:
-    """Reproduce metrics-history block: prelude + table + totals.
-
-    Mirrors `cmd_metrics` historical path (cli/orcho.py:370-378) plus
-    `_print_totals` (lines 408-411). Table layout matches the legacy
-    `core.observability.metrics.format_history_table`.
-    """
+    """Render the metrics-history block."""
     if not rows:
         if runs_dir is not None:
             return f"No runs with metrics found in {runs_dir}"
         return "No runs with metrics found."
 
+    show_cost = any(m.total_cost_usd_equivalent > 0.0 for m in rows)
+    run_col = 24
+    project_col = 18
+    token_col = 13
+    cost_col = 24
+    time_col = 9
+    round_col = 3
+    separator_width = 126 if show_cost else 100
+
     lines: list[str] = []
     lines.append("")
-    lines.append(f"  Last {len(rows)} runs:")
+    lines.append(_cost_title(f"  Metrics history · last {len(rows)} runs"))
     lines.append("")
-    lines.append(
-        f"{'Run ID':<20} {'Project':<22} {'Tokens':>8} {'Time':>8} {'Rnd':>4}  Task"
-    )
-    lines.append("-" * 82)
-    for m in rows:
-        project_raw = (m.raw.get("project") or m.raw.get("meta", {}).get("project")) if m.raw else None
-        # Fallback: read meta.json sibling for the project name; cheap because
-        # the run dir is already on disk.
-        if not project_raw:
-            try:
-                meta_text = (m.run_dir / "meta.json").read_text(encoding="utf-8")
-                project_raw = json.loads(meta_text).get("project")
-            except (OSError, json.JSONDecodeError):
-                project_raw = None
-        project = Path(project_raw).name if project_raw else "?"
-        try:
-            meta_text = (m.run_dir / "meta.json").read_text(encoding="utf-8")
-            task = json.loads(meta_text).get("task", "?")
-        except (OSError, json.JSONDecodeError):
-            task = "?"
-        task_short = task[:32] + "…" if len(task) > 32 else task
-        lines.append(
-            f"{m.run_id:<20} {project:<22} "
-            f"{m.total_tokens:>8,} {m.total_duration_s:>7.1f}s {m.total_rounds:>4}  "
-            f"{task_short}"
-        )
 
     total_tok = sum(m.total_tokens for m in rows)
     total_dur = sum(m.total_duration_s for m in rows)
+    top_tokens = max(rows, key=lambda m: m.total_tokens)
+    top_time = max(rows, key=lambda m: m.total_duration_s)
+    top_bits = [
+        f"tokens {top_tokens.run_id} ({top_tokens.total_tokens:,})",
+        f"time {top_time.run_id} ({top_time.total_duration_s:.1f}s)",
+    ]
+    if show_cost:
+        total_cost = sum(m.total_cost_usd_equivalent for m in rows)
+        any_estimated = any(bool(m.raw.get("cost_estimated")) for m in rows)
+        top_cost = max(rows, key=lambda m: m.total_cost_usd_equivalent)
+        top_cost_text = format_cost_reference(
+            top_cost.total_cost_usd_equivalent,
+            estimated=bool(top_cost.raw.get("cost_estimated")),
+        )
+        top_bits.append(f"cost {top_cost.run_id} ({top_cost_text})")
+        lines.append(
+            f"  {_status_label('Total:')} "
+            f"{_stdout_paint(f'{total_tok:,} tok', C.WHITE)} "
+            f"{_status_muted('|')} "
+            f"{_stdout_paint(f'{total_dur:.1f}s', C.WHITE)} "
+            f"{_status_muted('|')} "
+            f"{_cost_reference_text(total_cost, estimated=any_estimated)} "
+            f"{_status_muted(f'across {len(rows)} runs')}"
+        )
+    else:
+        lines.append(
+            f"  {_status_label('Total:')} "
+            f"{_stdout_paint(f'{total_tok:,} tok', C.WHITE)} "
+            f"{_status_muted('|')} "
+            f"{_stdout_paint(f'{total_dur:.1f}s', C.WHITE)} "
+            f"{_status_muted(f'across {len(rows)} runs')}"
+        )
+    lines.append(f"  {_status_label('Top:')} {_status_muted(' · '.join(top_bits))}")
     lines.append("")
-    lines.append(
-        f"  Total: {total_tok:,} tokens | {total_dur:.1f}s across {len(rows)} runs"
+    header = (
+        f"  {'Run ID':<{run_col}} {'Project':<{project_col}} "
+        f"{'Tokens':>{token_col}} "
     )
+    if show_cost:
+        header += f"{'Cost ref':>{cost_col}} "
+    header += f"{'Time':>{time_col}} {'Rnd':>{round_col}}  Task"
+    lines.append(_status_muted(header))
+    lines.append(_status_muted("  " + "─" * separator_width))
+    for m in rows:
+        meta = _run_metrics_meta(m)
+        project_raw = meta.get("project")
+        project = Path(project_raw).name if project_raw else "?"
+        task = str(meta.get("task") or "?")
+        run_cell = _stdout_paint(_clip_metrics_cell(m.run_id, run_col), C.GREEN)
+        project_color = C.GREY if project.startswith("demo") else C.WHITE
+        project_cell = _stdout_paint(
+            _clip_metrics_cell(project, project_col),
+            project_color,
+        )
+        token_cell = _stdout_paint(f"{m.total_tokens:>{token_col},}", C.WHITE)
+        time_cell = _stdout_paint(f"{m.total_duration_s:>{time_col - 1}.1f}s", C.BLUE)
+        round_cell = _status_muted(f"{m.total_rounds:>{round_col}}")
+        task_cell = _status_muted(_clip_metrics_cell(task, 42))
+        line = f"  {run_cell} {project_cell} {token_cell} "
+        if show_cost:
+            line += f"{_metrics_cost_cell(m.raw, width=cost_col)} "
+        line += f"{time_cell} {round_cell}  {task_cell}"
+        lines.append(line.rstrip())
+
     lines.append("")
     return "\n".join(lines)
+
+
+def _clip_metrics_cell(value: object, width: int) -> str:
+    text = str(value or "?").replace("\n", " ").strip() or "?"
+    if len(text) > width:
+        text = text[: max(width - 1, 0)].rstrip() + "…"
+    return f"{text:<{width}}"
+
+
+def _run_metrics_meta(metrics: RunMetrics) -> dict[str, Any]:
+    raw_meta = metrics.raw.get("meta") if isinstance(metrics.raw, dict) else None
+    if isinstance(raw_meta, dict):
+        return raw_meta
+    try:
+        meta_text = (metrics.run_dir / "meta.json").read_text(encoding="utf-8")
+        loaded = json.loads(meta_text)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _metrics_cost_cell(
+    raw_metrics: dict[str, Any],
+    *,
+    width: int,
+    key: str = "total_cost_usd_equivalent",
+) -> str:
+    cost = _float_metric(raw_metrics.get(key))
+    if cost <= 0.0:
+        return _status_muted(f"{'—':>{width}}")
+    rendered = format_cost_reference(
+        cost,
+        estimated=bool(raw_metrics.get("cost_estimated")),
+    )
+    color = C.YELLOW if raw_metrics.get("cost_estimated") else C.GREEN
+    return _stdout_paint(f"{rendered:>{width}}", color)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
