@@ -223,15 +223,23 @@ def _sdk_flags_by_file(
     return flags
 
 
-def _in_plan_patterns(state: PipelineState, output_dir: Path) -> tuple[str, ...]:
-    """Glob patterns the durable plan + project allowed-modifications declare."""
+def _in_plan_patterns(
+    state: PipelineState, output_dir: Path | None,
+) -> tuple[str, ...]:
+    """Glob patterns the durable plan + project allowed-modifications declare.
+
+    ``output_dir=None`` skips the durable-artifact load and derives from the
+    in-memory plan only — the handoff-artifact enrichment path, where a missing
+    run dir must not fail the pause.
+    """
     from pipeline.plan_artifacts import load_parsed_plan_artifact
 
-    plan: Any = None
-    try:
-        plan = load_parsed_plan_artifact(Path(output_dir))
-    except Exception:  # noqa: BLE001 — fall back to the in-memory plan
-        plan = getattr(state, "parsed_plan", None)
+    plan: Any = getattr(state, "parsed_plan", None)
+    if output_dir is not None:
+        try:
+            plan = load_parsed_plan_artifact(Path(output_dir))
+        except Exception:  # noqa: BLE001 — fall back to the in-memory plan
+            plan = getattr(state, "parsed_plan", None)
     project_allowed = getattr(getattr(state, "plugin", None), "allowed_modifications", None)
     return derive_in_plan_patterns(plan, project_allowed or ())
 
@@ -538,12 +546,21 @@ def raise_scope_expansion_handoff(
     )
 
     paths = [item.path for item in routing.handoff_items]
+    # The declared scope the changes were judged against rides the signal so
+    # every consumer (TTY digest, MCP payload, advice) can show the full
+    # scope delta — offending paths alone forced the operator to dig through
+    # the reviewer transcript to learn what the plan scope even was.
+    output_dir = getattr(state, "output_dir", None)
+    in_plan = _in_plan_patterns(
+        state, Path(output_dir) if output_dir is not None else None,
+    )
     signal = build_scope_expansion_handoff_signal(
         trigger=SCOPE_EXPANSION_OUT_OF_PLAN_TRIGGER,
         artifacts={
             "operating_mode": routing.operating_mode.value,
             "handoff_paths": paths,
             "findings": _handoff_findings(routing),
+            "in_plan_patterns": list(in_plan),
         },
         last_output=last_output or (
             "Out-of-plan scope expansion routed to phase-handoff for operator "
