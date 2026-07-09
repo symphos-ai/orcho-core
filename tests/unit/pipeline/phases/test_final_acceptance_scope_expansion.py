@@ -590,6 +590,17 @@ class TestScopeExpansionHandoffEndToEnd:
             "continue", "halt", "continue_with_waiver",
         )
         assert "retry_feedback" not in signal.available_actions
+        # The signal artifacts carry the full scope delta — the offending
+        # paths, their classification, AND the declared in-plan patterns they
+        # were judged against — so every pause surface (TTY digest, persisted
+        # meta.phase_handoff, advice) can show what the scope was and what
+        # went out of it without digging through the reviewer transcript.
+        assert signal.artifacts["handoff_paths"] == ["sdk/new_wire.py"]
+        assert signal.artifacts["in_plan_patterns"] == ["src/in_scope.py"]
+        (finding,) = signal.artifacts["findings"]
+        assert finding["path"] == "sdk/new_wire.py"
+        assert finding["category"]
+        assert finding["status"]
 
     def test_fast_benign_blocker_raises_no_handoff(self, tmp_path: Path) -> None:
         # fast auto-continues a benign blocker → no pause request raised.

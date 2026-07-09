@@ -47,6 +47,11 @@ from pipeline.control.implement_handoff_digest import (
     classify_implement_incomplete,
     render_implement_incomplete_digest,
 )
+from pipeline.control.scope_handoff_digest import (
+    classify_scope_expansion,
+    is_scope_expansion_trigger,
+    render_scope_expansion_digest,
+)
 
 if TYPE_CHECKING:
     from pipeline.runtime.handoff import PhaseHandoffRequested
@@ -394,6 +399,12 @@ def _print_summary(
         # demoted handoff metadata. Every other phase / trigger keeps the
         # byte-for-byte legacy layout below.
         _print_implement_incomplete_summary(signal, out)
+    elif is_scope_expansion_trigger(signal.trigger):
+        # Decision-first digest for the engine-issued scope-expansion pause:
+        # the scope delta (out-of-plan changes vs declared scope) and the
+        # verdict provenance come before the demoted reviewer transcript —
+        # whose own verdict may contradict the engine's REJECTED.
+        _print_scope_expansion_summary(signal, out)
     else:
         _print_handoff_metadata(signal, out)
     print("", file=out)
@@ -462,6 +473,45 @@ def _print_implement_incomplete_summary(
     print(f"    policy     : {signal.type.value}", file=out)
     print(f"    trigger    : {signal.trigger}", file=out)
     print(f"    verdict    : {signal.verdict}", file=out)
+    if signal.last_output:
+        last = signal.last_output.strip()
+        if len(last) > _DIGEST_RAW_OUTPUT_MAX_LEN:
+            last = last[: _DIGEST_RAW_OUTPUT_MAX_LEN - 3] + "..."
+        print("", file=out)
+        print(f"    {_last_output_label(signal.phase)}:", file=out)
+        for line in last.splitlines():
+            print(f"      {line}", file=out)
+
+
+def _print_scope_expansion_summary(
+    signal: PhaseHandoffRequested, out: TextIO,
+) -> None:
+    """Render the scope-expansion digest, then a demoted ``Details`` block.
+
+    The digest (out-of-plan changes vs declared scope + verdict provenance)
+    is printed first; the handoff metadata and the raw reviewer transcript
+    follow under a secondary ``Details`` heading, truncated like the
+    implement digest so the decision stays at the top. The verdict line is
+    annotated in place — an engine-issued REJECTED above an APPROVED
+    reviewer transcript is exactly the contradiction the digest exists to
+    explain.
+    """
+    digest = classify_scope_expansion(signal.artifacts)
+    print("", file=out)
+    print(
+        render_scope_expansion_digest(digest, color=is_color_active(out)),
+        file=out,
+    )
+    print("", file=out)
+    print("  Details:", file=out)
+    print(f"    handoff_id : {signal.handoff_id}", file=out)
+    print(f"    policy     : {signal.type.value}", file=out)
+    print(f"    trigger    : {signal.trigger}", file=out)
+    print(
+        f"    verdict    : {signal.verdict} (engine scope-expansion "
+        "sanction — not the reviewer verdict)",
+        file=out,
+    )
     if signal.last_output:
         last = signal.last_output.strip()
         if len(last) > _DIGEST_RAW_OUTPUT_MAX_LEN:
