@@ -63,19 +63,23 @@ def _handle_advice_request(
         return None
 
     ctx = _adv.build_advice_context(run, signal)
-    try:
-        result = _adv.invoke_advisor(run, ctx)
-    except Exception as exc:  # advisor invocation must never break the loop
-        warn(f"Advisor invocation failed ({exc}); returning to menu.")
-        return None
-    advice = result.advice
-    if "advice_unparseable" in advice.parse_warnings:
-        warn("Advisor response could not be parsed; returning to menu.")
-        return None
+    advice = _adv.hygiene_gate_advice(signal)
+    usage: dict[str, Any] = {}
+    if advice is None:
+        try:
+            result = _adv.invoke_advisor(run, ctx)
+        except Exception as exc:  # advisor invocation must never break the loop
+            warn(f"Advisor invocation failed ({exc}); returning to menu.")
+            return None
+        advice = result.advice
+        usage = result.usage
+        if "advice_unparseable" in advice.parse_warnings:
+            warn("Advisor response could not be parsed; returning to menu.")
+            return None
 
     # The advice object is the only durable write here — never a decision.
     relpath = write_advice_artifact(
-        run_dir, signal.handoff_id, advice, ctx, usage=result.usage,
+        run_dir, signal.handoff_id, advice, ctx, usage=usage,
     )
     available = tuple(getattr(signal, "available_actions", ()) or ())
 
@@ -152,7 +156,7 @@ def _handle_advice_request(
         relpath = write_advice_artifact(
             run_dir, signal.handoff_id,
             replace(advice, retry_feedback=followup.feedback), ctx,
-            usage=result.usage,
+            usage=usage,
         )
         feedback = followup.feedback
     else:

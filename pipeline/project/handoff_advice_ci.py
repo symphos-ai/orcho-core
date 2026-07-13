@@ -86,6 +86,8 @@ def handle_ci_advice(
     proceed → a ``ci_agent`` ``retry_feedback`` decision input, else a typed stop.
     """
     available = tuple(getattr(signal, "available_actions", ()) or ())
+    if _adv.hygiene_gate_advice(signal) is not None:
+        return _stop("needs_operator", "waiver")
     if not policy.auto_retry_with_agent:
         return _stop("needs_operator", "policy_no_auto_retry")
     if "retry_feedback" not in available:
@@ -116,17 +118,23 @@ def handle_ci_advice(
 
     # The advice object is the ONLY durable write here — never a decision.
     relpath = write_advice_artifact(
-        run_dir, signal.handoff_id, advice, ctx, usage=result.usage,
+        run_dir,
+        signal.handoff_id,
+        advice,
+        ctx,
+        usage=result.usage,
     )
 
     scope = build_scope(getattr(run, "state", None))
-    repeated = (
-        prev_findings_fingerprint is not None
-        and fingerprint == prev_findings_fingerprint
-    )
+    repeated = prev_findings_fingerprint is not None and fingerprint == prev_findings_fingerprint
     safety = _adv.classify_advice_safety(advice, findings)
     decision = evaluate_ci_gates(
-        advice, safety, findings, scope, budget_remaining, repeated,
+        advice,
+        safety,
+        findings,
+        scope,
+        budget_remaining,
+        repeated,
     )
     advisor_fields["scope_unchecked"] = decision.scope_unchecked
 
@@ -139,7 +147,9 @@ def handle_ci_advice(
             note=build_provenance_note(relpath, source="ci_agent"),
         )
         return CiAdviceOutcome(
-            outcome="retry", decision_input=decision_input, **advisor_fields,
+            outcome="retry",
+            decision_input=decision_input,
+            **advisor_fields,
         )
     return _stop(decision.stop_state, decision.reason, **advisor_fields)
 

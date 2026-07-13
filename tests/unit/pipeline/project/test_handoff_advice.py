@@ -24,6 +24,7 @@ from pipeline.project.handoff_advice import (
     build_advice_prompt,
     build_provenance_note,
     classify_advice_safety,
+    hygiene_gate_advice,
     invoke_advisor,
     load_advice_artifact,
     parse_advice,
@@ -49,7 +50,10 @@ def _signal(
     approved: bool = False,
     phase: str = "review_changes",
     available_actions: tuple[str, ...] = (
-        "continue", "retry_feedback", "halt", "continue_with_waiver",
+        "continue",
+        "retry_feedback",
+        "halt",
+        "continue_with_waiver",
     ),
     artifacts: dict | None = None,
     last_output: str = "reviewer rejected the change",
@@ -141,8 +145,10 @@ def test_safety_high_retry_is_auto_appliable() -> None:
 
 def test_safety_low_confidence_needs_confirmation() -> None:
     advice = HandoffAdvice(
-        recommended_action="retry_feedback", confidence="low",
-        rationale="x", retry_feedback="fix it",
+        recommended_action="retry_feedback",
+        confidence="low",
+        rationale="x",
+        retry_feedback="fix it",
     )
     safety = classify_advice_safety(advice)
     assert safety.auto_apply_ok is False
@@ -153,8 +159,10 @@ def test_safety_low_confidence_needs_confirmation() -> None:
 def test_safety_non_retry_is_blocked() -> None:
     for action in ("continue", "halt"):
         advice = HandoffAdvice(
-            recommended_action=action, confidence="high",
-            rationale="x", retry_feedback="",
+            recommended_action=action,
+            confidence="high",
+            rationale="x",
+            retry_feedback="",
         )
         safety = classify_advice_safety(advice)
         assert safety.auto_apply_ok is False
@@ -163,8 +171,10 @@ def test_safety_non_retry_is_blocked() -> None:
 
 def test_safety_waiver_never_auto_applied() -> None:
     advice = HandoffAdvice(
-        recommended_action="continue_with_waiver", confidence="high",
-        rationale="x", retry_feedback="",
+        recommended_action="continue_with_waiver",
+        confidence="high",
+        rationale="x",
+        retry_feedback="",
     )
     safety = classify_advice_safety(advice, findings=[{"severity": "P1"}])
     assert safety.auto_apply_ok is False
@@ -173,8 +183,10 @@ def test_safety_waiver_never_auto_applied() -> None:
 
 def test_safety_blocking_severity_flagged_for_p1_p2_and_unknown() -> None:
     advice = HandoffAdvice(
-        recommended_action="continue", confidence="high",
-        rationale="x", retry_feedback="",
+        recommended_action="continue",
+        confidence="high",
+        rationale="x",
+        retry_feedback="",
     )
     for sev in ("P1", "P2", "", "totally-unknown"):
         safety = classify_advice_safety(advice, findings=[{"severity": sev}])
@@ -194,7 +206,9 @@ def test_eligible_rejected_with_findings() -> None:
 
 def test_eligible_incomplete_implement() -> None:
     sig = _signal(
-        trigger="incomplete", verdict="INCOMPLETE", phase="implement",
+        trigger="incomplete",
+        verdict="INCOMPLETE",
+        phase="implement",
         last_output="2 subtasks incomplete",
     )
     assert advice_actions_available(sig) is True
@@ -220,6 +234,28 @@ def test_not_eligible_when_retry_feedback_absent() -> None:
     assert advice_actions_available(sig) is False
 
 
+def test_hygiene_verification_gate_is_eligible_without_retry_and_recommends_waiver() -> None:
+    sig = _signal(
+        trigger="verification_gate_failed",
+        available_actions=("continue_with_waiver", "halt"),
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_provenance_failure",
+                    "severity": "P3",
+                    "failure_kind": "provenance_failure",
+                    "body": "class=provenance_failure; exit_code=0",
+                }
+            ]
+        },
+        last_output="class=provenance_failure; exit_code=0",
+    )
+    assert advice_actions_available(sig) is True
+    advice = hygiene_gate_advice(sig)
+    assert advice is not None
+    assert advice.recommended_action == "continue_with_waiver"
+
+
 def test_not_eligible_without_output_or_findings() -> None:
     sig = _signal(last_output="", artifacts={})
     assert advice_actions_available(sig) is False
@@ -238,8 +274,13 @@ def test_build_context_truncates_and_pulls_findings(tmp_path: Path) -> None:
     sig = _signal(
         artifacts={
             "findings": [
-                {"id": "F1", "severity": "P2", "title": "gap",
-                 "required_fix": "add test", "body": "y" * 9000},
+                {
+                    "id": "F1",
+                    "severity": "P2",
+                    "title": "gap",
+                    "required_fix": "add test",
+                    "body": "y" * 9000,
+                },
             ],
             "short_summary": "rejected: missing coverage",
         },
@@ -298,7 +339,11 @@ def test_write_returns_relpath_and_reads_back(tmp_path: Path) -> None:
     advice = parse_advice(_VALID_JSON)
     ctx = _ctx()
     rel = write_advice_artifact(
-        tmp_path, ctx.handoff_id, advice, ctx, created_at="2026-06-13T00:00:00+00:00",
+        tmp_path,
+        ctx.handoff_id,
+        advice,
+        ctx,
+        created_at="2026-06-13T00:00:00+00:00",
     )
     safe = safe_handoff_id(ctx.handoff_id)
     assert rel == f"phase_handoff_advice/{safe}.json"
@@ -328,8 +373,10 @@ def test_divergent_advice_writes_new_suffixed_file(tmp_path: Path) -> None:
     first = parse_advice(_VALID_JSON)
     rel1 = write_advice_artifact(tmp_path, ctx.handoff_id, first, ctx)
     second = HandoffAdvice(
-        recommended_action="halt", confidence="medium",
-        rationale="no safe path", retry_feedback="",
+        recommended_action="halt",
+        confidence="medium",
+        rationale="no safe path",
+        retry_feedback="",
     )
     rel2 = write_advice_artifact(tmp_path, ctx.handoff_id, second, ctx)
     safe = safe_handoff_id(ctx.handoff_id)
@@ -344,10 +391,7 @@ def test_divergent_advice_writes_new_suffixed_file(tmp_path: Path) -> None:
 
 def test_provenance_note_uses_actual_path() -> None:
     note = build_provenance_note("phase_handoff_advice/foo_2.json")
-    assert note == (
-        "feedback_source=agent_advice; "
-        "advice_artifact=phase_handoff_advice/foo_2.json"
-    )
+    assert note == ("feedback_source=agent_advice; advice_artifact=phase_handoff_advice/foo_2.json")
 
 
 # ── mock invocation (no real providers) ────────────────────────────────
@@ -361,7 +405,9 @@ def _run(tmp_path: Path, agent) -> SimpleNamespace:
     )
     state.phase_config = SimpleNamespace(review_changes_agent=agent)
     return SimpleNamespace(
-        state=state, git_cwd=str(tmp_path), session_ts="20260613_010101",
+        state=state,
+        git_cwd=str(tmp_path),
+        session_ts="20260613_010101",
     )
 
 

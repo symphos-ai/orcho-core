@@ -45,6 +45,7 @@ from pipeline.verification_contract import (
 from pipeline.verification_policy import (
     GapEntry,
     effective_delivery_policy_by_command,
+    outcome_aware_policy_by_command,
     partition_gaps,
 )
 from pipeline.verification_readiness import (
@@ -79,25 +80,28 @@ def _waiver_preview(text: str | None) -> str | None:
         return stripped
     return stripped[: _WAIVER_PREVIEW_LIMIT - 1].rstrip() + "…"
 
+
 # Path components that mark a generated runtime/verification artifact rather
 # than product source. Matched component-by-component (never substring), so
 # ``src/venv_utils.py`` is NOT garbage while ``.venv/lib/...`` is. The three
 # receipts directories are imported (not literal strings) so a rename of the
 # receipt layout stays single-sourced in
 # :mod:`pipeline.evidence.verification_receipt`.
-_GARBAGE_DIR_COMPONENTS: frozenset[str] = frozenset({
-    "venv",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-    ".tox",
-    "node_modules",
-    RECEIPTS_DIRNAME,
-    ENV_RECEIPTS_DIRNAME,
-    COMMAND_RECEIPTS_DIRNAME,
-})
+_GARBAGE_DIR_COMPONENTS: frozenset[str] = frozenset(
+    {
+        "venv",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".tox",
+        "node_modules",
+        RECEIPTS_DIRNAME,
+        ENV_RECEIPTS_DIRNAME,
+        COMMAND_RECEIPTS_DIRNAME,
+    }
+)
 
 
 # The note appended to every warn/suggest receipt-blocker line: a gap under a
@@ -245,13 +249,8 @@ class DeliveryVerificationAssessment:
         """
         if not self.manual_only_gaps:
             return None
-        names = ", ".join(
-            f"{e.command} ({e.status})" for e in self.manual_only_gaps
-        )
-        return (
-            "manual-only receipts (not auto-run, operator-run, not required): "
-            + names
-        )
+        names = ", ".join(f"{e.command} ({e.status})" for e in self.manual_only_gaps)
+        return "manual-only receipts (not auto-run, operator-run, not required): " + names
 
     @property
     def diagnostic_lines(self) -> tuple[str, ...]:
@@ -282,8 +281,7 @@ class DeliveryVerificationAssessment:
             out.append(manual_line)
         if self.garbage_paths:
             out.append(
-                "generated artifacts staged for delivery: "
-                + ", ".join(self.garbage_paths),
+                "generated artifacts staged for delivery: " + ", ".join(self.garbage_paths),
             )
         out.extend(self.diagnostic_lines)
         return tuple(out)
@@ -293,7 +291,9 @@ class DeliveryVerificationAssessment:
     def _stale_detail_for(self, command: str) -> str:
         """The ``"command (reason)"`` stale detail for ``command`` (name fallback)."""
         for name, detail in zip(
-            self.required_stale, self.stale_details, strict=False,
+            self.required_stale,
+            self.stale_details,
+            strict=False,
         ):
             if name == command:
                 return detail
@@ -304,10 +304,7 @@ class DeliveryVerificationAssessment:
         # require gaps — hard blockers, worded exactly as the legacy banner.
         bm = [e.command for e in self.blocking_gaps if e.status == "missing"]
         bf = [e.command for e in self.blocking_gaps if e.status == "failed"]
-        bs = [
-            self._stale_detail_for(e.command)
-            for e in self.blocking_gaps if e.status == "stale"
-        ]
+        bs = [self._stale_detail_for(e.command) for e in self.blocking_gaps if e.status == "stale"]
         if bm:
             out.append("missing required receipts: " + ", ".join(bm))
         if bf:
@@ -330,8 +327,7 @@ class DeliveryVerificationAssessment:
                 continue
             if status == "stale":
                 names = ", ".join(
-                    f"{self._stale_detail_for(e.command)} ({e.policy})"
-                    for e in entries
+                    f"{self._stale_detail_for(e.command)} ({e.policy})" for e in entries
                 )
             else:
                 names = ", ".join(f"{e.command} ({e.policy})" for e in entries)
@@ -350,8 +346,7 @@ class DeliveryVerificationAssessment:
             )
         if self.required_stale:
             out.append(
-                "stale required receipts: "
-                + ", ".join(self.stale_details or self.required_stale),
+                "stale required receipts: " + ", ".join(self.stale_details or self.required_stale),
             )
         return tuple(out)
 
@@ -437,8 +432,12 @@ def assess_delivery_verification(
     try:
         status_by_command = apply_environment_provenance(
             classify_required_receipts(
-                contract, run_dir, ctx,
-                checkout=str(diff_cwd), extras=extras, plan=plan,
+                contract,
+                run_dir,
+                ctx,
+                checkout=str(diff_cwd),
+                extras=extras,
+                plan=plan,
             ),
             contract,
             run_dir,
@@ -456,7 +455,14 @@ def assess_delivery_verification(
     except Exception:  # noqa: BLE001 — assessment must never break delivery
         manual_set = set()
     policy_by_command = effective_delivery_policy_by_command(
-        contract, plan, manual_set, boundary_policy=policy,
+        contract,
+        plan,
+        manual_set,
+        boundary_policy=policy,
+    )
+    policy_by_command = outcome_aware_policy_by_command(
+        status_by_command,
+        policy_by_command,
     )
     partition = partition_gaps(status_by_command, policy_by_command)
 
@@ -474,11 +480,7 @@ def assess_delivery_verification(
     kept_blocking: list[GapEntry] = []
     waived_gates: list[WaivedGate] = []
     for entry in partition.blocking:
-        waiver = (
-            waivers.get(entry.command)
-            if entry.status in ("failed", "missing")
-            else None
-        )
+        waiver = waivers.get(entry.command) if entry.status in ("failed", "missing") else None
         if waiver is None:
             kept_blocking.append(entry)
             continue
@@ -492,12 +494,8 @@ def assess_delivery_verification(
             )
         )
     blocking_gaps = tuple(kept_blocking)
-    waived_failed = tuple(
-        w.gate_command for w in waived_gates if w.status == "failed"
-    )
-    waived_missing = tuple(
-        w.gate_command for w in waived_gates if w.status == "missing"
-    )
+    waived_failed = tuple(w.gate_command for w in waived_gates if w.status == "failed")
+    waived_missing = tuple(w.gate_command for w in waived_gates if w.status == "missing")
 
     # Required (non-manual) gaps: the union of the *kept* require gaps +
     # warn/suggest buckets. Manual-only gaps are excluded from required_* (ADR
@@ -509,12 +507,14 @@ def assess_delivery_verification(
     stale = tuple(e.command for e in required_gaps if e.status == "stale")
     stale_details = tuple(
         f"{c} ({status_by_command[c].reason})"
-        if getattr(status_by_command.get(c), "reason", "") else c
+        if getattr(status_by_command.get(c), "reason", "")
+        else c
         for c in stale
     )
 
     untracked = _git_output_lines(
-        ["ls-files", "--others", "--exclude-standard"], diff_cwd,
+        ["ls-files", "--others", "--exclude-standard"],
+        diff_cwd,
     )
     changed = _git_output_lines(["diff", "--name-only", baseline_ref], diff_cwd)
     combined: list[str] = []
@@ -541,7 +541,8 @@ def assess_delivery_verification(
         # ``orcho verify`` hint — matching the readiness block and DONE timeline,
         # which build hints over the same (missing + stale + failed) set.
         suggested_commands = suggested_verify_commands(
-            contract, (*missing, *stale, *failed),
+            contract,
+            (*missing, *stale, *failed),
             run_id=Path(run_dir).name,
             project=str(getattr(ctx, "project", "") or ""),
         )
@@ -598,8 +599,4 @@ def _git_output_lines(args: list[str], cwd: Path | str) -> tuple[str, ...]:
         return ()
     if proc.returncode != 0:
         return ()
-    return tuple(
-        line.strip()
-        for line in (proc.stdout or "").splitlines()
-        if line.strip()
-    )
+    return tuple(line.strip() for line in (proc.stdout or "").splitlines() if line.strip())

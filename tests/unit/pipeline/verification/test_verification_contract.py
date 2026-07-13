@@ -752,9 +752,13 @@ def _write_failed_phase_receipt(run_dir: Path) -> Path:
 
 
 class TestEnvironmentProvenanceOverlay:
-    """ADR 0108 T1: the shared overlay downgrades a phase-scheduled require gate
-    whose ``verification_environment`` receipt failed, even when its own command
-    receipt passed, so readiness reports it failed and emits a release gap."""
+    """A phase provenance failure remains visible, but is hygiene-only at delivery.
+
+    ADR 0130 supersedes the terminal consequence of ADR 0108/0125: the shared
+    overlay still downgrades a phase-scheduled gate whose
+    ``verification_environment`` receipt failed, but its typed
+    ``provenance_failure`` outcome cannot create a require release gap.
+    """
 
     def test_failed_provenance_makes_readiness_required_failed(
         self, tmp_path: Path,
@@ -774,7 +778,7 @@ class TestEnvironmentProvenanceOverlay:
         assert "env-provenance" in summary.required_failed
         assert "env-provenance" not in summary.required_present
 
-    def test_failed_provenance_emits_require_release_gap(
+    def test_failed_provenance_does_not_emit_require_release_gap(
         self, tmp_path: Path,
     ) -> None:
         run_dir = tmp_path / "run"
@@ -787,7 +791,10 @@ class TestEnvironmentProvenanceOverlay:
             contract, run_dir, PlaceholderContext(checkout=str(tmp_path)),
         )
 
-        assert any("env-provenance" in g["risk"] for g in gaps)
+        # The failure is deliberately retained by readiness, but the
+        # outcome-aware delivery overlay downgrades typed hygiene failures to
+        # warn. A declared ``require`` policy must not reintroduce a blocker.
+        assert gaps == []
 
     def test_overlay_preserves_source_run_id_and_repoints_path(
         self, tmp_path: Path,
@@ -806,6 +813,7 @@ class TestEnvironmentProvenanceOverlay:
 
         cls = overlaid["env-provenance"]
         assert cls.status == "failed"
+        assert cls.failure_kind == "provenance_failure"
         assert cls.reason.startswith("pipeline_import:")
         assert cls.path == str(phase_path)
         # The base receipt's provenance (source run id) is preserved.

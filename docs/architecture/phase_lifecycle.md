@@ -487,6 +487,22 @@ the fresh-run path is byte-for-byte unchanged. Its sole consumer today is
 correction routing (ADR 0086) — it is a correction-specific mechanism, not
 a general branching primitive.
 
+## Verification hygiene handoff
+
+At the scheduled-gate routing seam, a typed `test_failure` continues through
+the established `repair_changes` loop and can expose `retry_feedback` on a
+handoff. A typed `provenance_failure` or `env_failure` is instead a hygiene
+handoff: no agent repair phase runs, and the available canonical actions are
+only `continue_with_waiver` and `halt`. The signal uses existing
+`artifacts.findings`, `artifacts.short_summary`, and `last_output`; it does not
+extend the phase-handoff wire shape.
+
+The advisor's waiver recommendation is read-only. CI stops at
+`needs_operator`; neither path records a decision or waiver. At the later
+readiness/delivery boundary, hygiene failures remain visible warnings, whereas
+`test_failure`, missing proof, and stale proof remain blocking under effective
+`require`. See [ADR 0130](../adr/0130-typed-verification-failure-and-hygiene-delivery-policy.md).
+
 Verification gates are bypassed on **both** sides of a skipped phase. The
 orchestrator's `_on_phase_pre` returns immediately after marking the skip,
 so `before_phase` / `before_delivery` gates never run for it. For the end

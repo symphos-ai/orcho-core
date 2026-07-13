@@ -56,7 +56,10 @@ def _plan(owned: tuple[str, ...] = ("a.py",)) -> ParsedPlan:
 
 def _run(tmp_path, parsed_plan: ParsedPlan | None) -> SimpleNamespace:
     state = SimpleNamespace(
-        parsed_plan=parsed_plan, phase_config=None, task="do a thing", extras={},
+        parsed_plan=parsed_plan,
+        phase_config=None,
+        task="do a thing",
+        extras={},
     )
     return SimpleNamespace(
         state=state,
@@ -70,11 +73,12 @@ def _signal(
     *,
     findings: tuple[dict, ...] = (),
     available: tuple[str, ...] = ("retry_feedback",),
+    trigger: str = "rejected",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         handoff_id="h1",
         phase="implement",
-        trigger="rejected",
+        trigger=trigger,
         verdict="REJECTED",
         approved=False,
         available_actions=available,
@@ -122,7 +126,9 @@ _AUTO = HandoffAdvicePolicy(auto_retry_with_agent=True)
 def test_eligible_retry_feedback_produces_ci_agent_decision(tmp_path, patch_advisor):
     patch_advisor(_advice(expected_files=("a.py",)))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan(owned=("a.py",))), _signal(), _AUTO,
+        _run(tmp_path, _plan(owned=("a.py",))),
+        _signal(),
+        _AUTO,
         budget_remaining=1,
     )
     assert out.outcome == "retry"
@@ -141,7 +147,10 @@ def test_eligible_retry_feedback_produces_ci_agent_decision(tmp_path, patch_advi
 def test_low_confidence_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(confidence="low"))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.reason == "advice_confidence_low"
@@ -150,7 +159,10 @@ def test_low_confidence_stops(tmp_path, patch_advisor):
 def test_halt_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(action="halt"))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.state == "halt"
@@ -159,7 +171,10 @@ def test_halt_stops(tmp_path, patch_advisor):
 def test_continue_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(action="continue"))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.reason == "continue"
@@ -168,17 +183,40 @@ def test_continue_stops(tmp_path, patch_advisor):
 def test_waiver_stops_needs_operator(tmp_path, patch_advisor):
     patch_advisor(_advice(action="continue_with_waiver"))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.reason == "waiver"
     assert out.state == "needs_operator"
 
 
+def test_hygiene_gate_stops_for_operator_waiver_without_advisor(tmp_path, patch_advisor):
+    counter = patch_advisor(_advice())
+    out = ci.handle_ci_advice(
+        _run(tmp_path, _plan()),
+        _signal(
+            trigger="verification_gate_failed",
+            available=("continue_with_waiver", "halt"),
+            findings=({"failure_kind": "env_failure", "severity": "P3"},),
+        ),
+        _AUTO,
+        budget_remaining=1,
+    )
+    assert out.outcome == "stop"
+    assert out.state == "needs_operator"
+    assert out.reason == "waiver"
+    assert counter.n == 0
+
+
 def test_out_of_scope_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(expected_files=("other/secret.py",)))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan(owned=("a.py",))), _signal(), _AUTO,
+        _run(tmp_path, _plan(owned=("a.py",))),
+        _signal(),
+        _AUTO,
         budget_remaining=1,
     )
     assert out.outcome == "stop"
@@ -188,7 +226,9 @@ def test_out_of_scope_stops(tmp_path, patch_advisor):
 def test_destructive_marker_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(risks=("we may need git reset --hard",)))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan(owned=("a.py",))), _signal(), _AUTO,
+        _run(tmp_path, _plan(owned=("a.py",))),
+        _signal(),
+        _AUTO,
         budget_remaining=1,
     )
     assert out.outcome == "stop"
@@ -203,8 +243,11 @@ def test_repeated_blocking_finding_stops(tmp_path, patch_advisor):
 
     prev = findings_fingerprint(findings)
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(findings=findings), _AUTO,
-        budget_remaining=1, prev_findings_fingerprint=prev,
+        _run(tmp_path, _plan()),
+        _signal(findings=findings),
+        _AUTO,
+        budget_remaining=1,
+        prev_findings_fingerprint=prev,
     )
     assert out.outcome == "stop"
     assert out.state == "repeated_finding"
@@ -216,7 +259,10 @@ def test_repeated_blocking_finding_stops(tmp_path, patch_advisor):
 def test_advisor_exception_stops_needs_operator(tmp_path, patch_advisor):
     counter = patch_advisor(_advice(), raise_exc=True)
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.state == "needs_operator"
@@ -227,7 +273,10 @@ def test_advisor_exception_stops_needs_operator(tmp_path, patch_advisor):
 def test_unparseable_advice_stops_needs_operator(tmp_path, patch_advisor):
     patch_advisor(_advice(parse_warnings=("advice_unparseable",)))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert out.state == "needs_operator"
@@ -240,8 +289,10 @@ def test_unparseable_advice_stops_needs_operator(tmp_path, patch_advisor):
 def test_policy_not_auto_stops_without_invoking(tmp_path, patch_advisor):
     counter = patch_advisor(_advice())
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(),
-        HandoffAdvicePolicy(auto_retry_with_agent=False), budget_remaining=1,
+        _run(tmp_path, _plan()),
+        _signal(),
+        HandoffAdvicePolicy(auto_retry_with_agent=False),
+        budget_remaining=1,
     )
     assert out.outcome == "stop"
     assert counter.n == 0
@@ -250,7 +301,9 @@ def test_policy_not_auto_stops_without_invoking(tmp_path, patch_advisor):
 def test_retry_feedback_unavailable_stops_without_invoking(tmp_path, patch_advisor):
     counter = patch_advisor(_advice())
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(available=("halt",)), _AUTO,
+        _run(tmp_path, _plan()),
+        _signal(available=("halt",)),
+        _AUTO,
         budget_remaining=1,
     )
     assert out.outcome == "stop"
@@ -261,7 +314,10 @@ def test_retry_feedback_unavailable_stops_without_invoking(tmp_path, patch_advis
 def test_budget_exhausted_stops_without_invoking(tmp_path, patch_advisor):
     counter = patch_advisor(_advice())
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan()), _signal(), _AUTO, budget_remaining=0,
+        _run(tmp_path, _plan()),
+        _signal(),
+        _AUTO,
+        budget_remaining=0,
     )
     assert out.outcome == "stop"
     assert out.state == "budget_exhausted"
@@ -274,7 +330,9 @@ def test_budget_exhausted_stops_without_invoking(tmp_path, patch_advisor):
 def test_result_always_carries_aggregate_fields(tmp_path, patch_advisor):
     patch_advisor(_advice(expected_files=("a.py",)))
     out = ci.handle_ci_advice(
-        _run(tmp_path, _plan(owned=("a.py",))), _signal(), _AUTO,
+        _run(tmp_path, _plan(owned=("a.py",))),
+        _signal(),
+        _AUTO,
         budget_remaining=1,
     )
     assert hasattr(out, "last_recommendation")
