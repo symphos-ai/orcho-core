@@ -342,16 +342,6 @@ class TestPlanPrompt:
         p = prompts.plan_prompt(task, "/project", plugin).text
         assert "Custom plan instruction XYZ" in p
 
-    def test_assigns_verification_to_engine_gate_and_implement_tasks(
-        self, task: str, full_plugin: PluginConfig,
-    ) -> None:
-        p = prompts.plan_prompt(task, "/project", full_plugin).text
-
-        assert "The engine runs the project's declared full or broad suite" in p
-        assert "required\npost-implement gate" in p
-        assert "implement tasks name only targeted tests" in p
-        assert "not as an implement action" in p
-
     def test_appends_change_handoff_strategy(self, task: str, full_plugin: PluginConfig) -> None:
         p = prompts.plan_prompt(task, "/project", full_plugin).text
         assert '<orcho:system-block kind="strategy" name="change_handoff" version="1">' in p

@@ -19,8 +19,7 @@ contract** at the top level:
 * ``goal`` — single-sentence machine-readable target
 * ``acceptance_criteria`` — list of checkable conditions
 * ``owned_files`` — files in the plan's write scope
-* ``commands_to_run`` — targeted verification commands (tests, linters);
-  full or broad suites are project gate-policy, not implement actions
+* ``commands_to_run`` — verification commands (tests, linters)
 * ``risks`` — invariants the agent must not violate
 * ``review_focus`` — what the reviewer should pay attention to
 * ``mcp_context`` — pre-fetched external context (REA-5 fills this in)
@@ -218,7 +217,7 @@ Emit exactly one JSON object with this shape:
   "acceptance_criteria": ["<checkable condition>"],
   "owned_files": ["path/to/file"],
   "allowed_modifications": ["<glob — reason; companion change allowed in any task>"],
-  "commands_to_run": ["<targeted command that verifies this change>"],
+  "commands_to_run": ["<command that verifies the change in this project>"],
   "risks": ["<invariant the agent must not violate>"],
   "review_focus": ["<what the reviewer should check>"],
   "mcp_context": [],
@@ -243,8 +242,6 @@ Rules:
 - Required: `short_summary`, `planning_context`, `tasks`; never emit `plan_summary`.
 - Keep `short_summary` <=280 chars and put discovery/constraints in `planning_context`.
 - Optional list fields are arrays of strings; `mcp_context` is a list of objects.
-- `commands_to_run` contains only targeted commands for the concrete change.
-  The project's full or broad suite is gate-policy, not an implement action.
 - `allowed_modifications` (top-level and per-task) lists companion changes allowed beyond the owned files — lockfiles, regenerated snapshots, derived artifacts — that a reviewer must not treat as a scope violation; their content is still reviewed.
 - Task ids are unique; `depends_on` references known ids only; dependency graph is acyclic.
 - Use [] for empty lists and null for absent optional `skill` / `model`.
