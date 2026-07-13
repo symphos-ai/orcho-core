@@ -225,6 +225,37 @@ class TestParser:
         assert args.func(args) == 0
         assert "DEMO golden-api workspace ready." in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        ("group", "func_name"),
+        [
+            ("profiles", "cmd_profiles_list"),
+            ("pricing", "cmd_pricing_show"),
+            ("workflows", "cmd_workflows_list"),
+        ],
+    )
+    def test_bare_listing_group_defaults_to_action(
+        self, group: str, func_name: str,
+    ) -> None:
+        # A subcommand group whose obvious bare action is a listing/show must
+        # not dead-end in argparse — bare `orcho <group>` resolves to that
+        # action instead of `error: arguments are required` (exit 2).
+        parser = self.build_parser()
+        args = parser.parse_args([group])
+        assert args.command == group
+        assert args.func.__name__ == func_name
+
+    @pytest.mark.parametrize("group", ["profile", "runtimes", "demos", "workspace"])
+    def test_bare_arg_only_group_prints_help_clean(
+        self, group: str, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Groups whose subcommands all need arguments print their own help and
+        # exit 0 on bare invocation, rather than argparse's exit-2 dead-end.
+        parser = self.build_parser()
+        args = parser.parse_args([group])
+        assert args.command == group
+        assert args.func(args) == 0
+        assert f"orcho {group}" in capsys.readouterr().out
+
     def test_run_all_flags(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([
@@ -2146,10 +2177,17 @@ class TestWorkspaceInitParser:
         assert args.dry_run is True
         assert args.no_scaffold is True
 
-    def test_workspace_requires_subcommand(self) -> None:
+    def test_workspace_bare_prints_help_clean(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Bare `orcho workspace` no longer dead-ends in argparse: its
+        # subcommands all need arguments, so it prints its own help and
+        # exits 0 (see test_bare_arg_only_group_prints_help_clean).
         parser = self.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["workspace"])
+        args = parser.parse_args(["workspace"])
+        assert args.workspace_cmd is None
+        assert args.func(args) == 0
+        assert "orcho workspace" in capsys.readouterr().out
 
     def test_workspace_fine_tune_dry_run_parses(self) -> None:
         parser = self.build_parser()
