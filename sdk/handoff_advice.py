@@ -35,6 +35,7 @@ verb. The returned ``provenance_note`` is the note a follow-up
 note=provenance_note)`` must carry — but issuing that decision stays the caller's
 explicit, separate step.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -119,7 +120,10 @@ def request_handoff_advice(
     meta = load_meta(ref.run_dir)
     status = meta.get("status") if isinstance(meta, dict) else None
     payload = load_active_phase_handoff(
-        run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd,
+        run_id,
+        workspace=workspace,
+        runs_dir=runs_dir,
+        cwd=cwd,
     )
 
     if payload is None:
@@ -159,6 +163,7 @@ def request_handoff_advice(
         build_advice_context,
         build_provenance_note,
         classify_advice_safety,
+        hygiene_gate_advice,
         invoke_advisor,
         write_advice_artifact,
     )
@@ -172,12 +177,21 @@ def request_handoff_advice(
         )
 
     run = _rebuild_readonly_run(
-        ref.run_dir, meta, run_id=resolved_run_id, provider=provider,
+        ref.run_dir,
+        meta,
+        run_id=resolved_run_id,
+        provider=provider,
     )
 
     ctx = build_advice_context(run, signal)
-    result = invoke_advisor(run, ctx, agent=agent)
-    advice = result.advice
+    hygiene_advice = hygiene_gate_advice(signal)
+    if hygiene_advice is not None:
+        advice = hygiene_advice
+        usage: dict[str, Any] = {}
+    else:
+        result = invoke_advisor(run, ctx, agent=agent)
+        advice = result.advice
+        usage = dict(result.usage or {})
     safety = classify_advice_safety(advice, ctx.findings)
 
     # Unparseable advisor output is handled like the existing dispatch / CI
@@ -189,7 +203,11 @@ def request_handoff_advice(
         provenance_note = ""
     else:
         relpath = write_advice_artifact(
-            ref.run_dir, signal.handoff_id, advice, ctx, usage=result.usage,
+            ref.run_dir,
+            signal.handoff_id,
+            advice,
+            ctx,
+            usage=usage,
         )
         provenance_note = build_provenance_note(relpath)
 
@@ -213,7 +231,7 @@ def request_handoff_advice(
         ),
         advice_artifact=relpath,
         provenance_note=provenance_note,
-        usage=dict(result.usage or {}),
+        usage=usage,
     )
 
 
@@ -292,37 +310,39 @@ def _rebuild_readonly_run(
     except ValueError:
         session_mode = SessionMode.AUTO
 
-    state_setup = build_pipeline_state(StateInputs(
-        task=task,
-        project_path=project_path,
-        plugin=plugin,
-        phase_config=runtime.phase_config,
-        agent_registry=runtime.agent_registry,
-        output_dir=run_dir,
-        dry_run=False,
-        session=meta,
-        session_ts=run_id,
-        git_cwd=git_cwd,
-        change_handoff=str(meta.get("change_handoff") or ""),
-        cross_handoff_text="",
-        plan_source=str(meta.get("plan_source") or "local"),
-        handoff_path=None,
-        auto_waiver_allowed=False,
-        followup_seed_count=0,
-        ckpt=None,
-        attachments=(),
-        session_mode=session_mode,
-        implement_model=runtime.implement_model,
-        repair_model=runtime.repair_model,
-        repair_escalation_model=runtime.repair_escalation_model,
-        chain_same_model_only=runtime.chain_same_model_only,
-        presentation=PresentationPolicy.SILENT,
-        render_phase_outputs=False,
-        from_run_plan_loaded=None,
-        followup_parent_run_id=None,
-        from_run_plan_parent_dir=None,
-        from_run_plan_stripped=(),
-    ))
+    state_setup = build_pipeline_state(
+        StateInputs(
+            task=task,
+            project_path=project_path,
+            plugin=plugin,
+            phase_config=runtime.phase_config,
+            agent_registry=runtime.agent_registry,
+            output_dir=run_dir,
+            dry_run=False,
+            session=meta,
+            session_ts=run_id,
+            git_cwd=git_cwd,
+            change_handoff=str(meta.get("change_handoff") or ""),
+            cross_handoff_text="",
+            plan_source=str(meta.get("plan_source") or "local"),
+            handoff_path=None,
+            auto_waiver_allowed=False,
+            followup_seed_count=0,
+            ckpt=None,
+            attachments=(),
+            session_mode=session_mode,
+            implement_model=runtime.implement_model,
+            repair_model=runtime.repair_model,
+            repair_escalation_model=runtime.repair_escalation_model,
+            chain_same_model_only=runtime.chain_same_model_only,
+            presentation=PresentationPolicy.SILENT,
+            render_phase_outputs=False,
+            from_run_plan_loaded=None,
+            followup_parent_run_id=None,
+            from_run_plan_parent_dir=None,
+            from_run_plan_stripped=(),
+        )
+    )
 
     return SimpleNamespace(
         state=state_setup.state,

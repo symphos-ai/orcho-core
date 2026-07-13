@@ -286,6 +286,31 @@ class TestFinalAcceptanceBackstop:
         assert entry["ship_ready"] is True
         assert "engine_backstop" not in entry
 
+    def test_provenance_receipt_is_a_hygiene_warning_not_a_backstop_gap(
+        self, tmp_path: Path,
+    ) -> None:
+        """An exit-0 provenance assertion does not override APPROVED status."""
+        state = _state(tmp_path, contract=_contract())
+        receipt = _passing_receipt(str(tmp_path / "wt"))
+        receipt["assertions"] = [
+            {
+                "name": "pipeline",
+                "kind": "import_path_equals",
+                "expected": "/work/pipeline/__init__.py",
+                "actual": "/installed/pipeline/__init__.py",
+                "passed": False,
+            }
+        ]
+        write_command_receipt(output_dir=state.output_dir, result=receipt)
+
+        new = default_registry().get("final_acceptance")(state)
+
+        entry = new.phase_log["final_acceptance"]
+        assert entry["approved"] is True
+        assert entry["verdict"] == "APPROVED"
+        assert entry["verification_gaps"] == []
+        assert "engine_backstop" not in entry
+
     def test_waiver_keeps_reviewer_verdict(self, tmp_path: Path) -> None:
         state = _state(tmp_path, contract=_contract(), waiver=True)
 

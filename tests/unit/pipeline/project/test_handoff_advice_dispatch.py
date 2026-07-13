@@ -84,6 +84,30 @@ def _signal(
     )
 
 
+def _hygiene_signal() -> SimpleNamespace:
+    return SimpleNamespace(
+        handoff_id="gate:test:1",
+        phase="implement",
+        type=SimpleNamespace(value="human_feedback_on_reject"),
+        trigger="verification_gate_failed",
+        verdict="REJECTED",
+        approved=False,
+        round_extras_key="repair_round",
+        round=1,
+        loop_max_rounds=2,
+        available_actions=("continue_with_waiver", "halt"),
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_provenance_failure",
+                    "failure_kind": "provenance_failure",
+                }
+            ]
+        },
+        last_output="class=provenance_failure; exit_code=0",
+    )
+
+
 def _run(tmp_path) -> SimpleNamespace:
     run_dir = tmp_path / "20260613_010101_adv"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +198,28 @@ def test_retry_with_advice_unavailable_retry_returns_none(
         stdout=_FakeTTY(),
     )
     assert di is None
+
+
+def test_hygiene_advice_is_deterministic_without_model_invocation(tmp_path, monkeypatch) -> None:
+    def _unexpected_model_call(*args, **kwargs):
+        raise AssertionError("hygiene advice must not invoke the model")
+
+    monkeypatch.setattr(adv, "invoke_advisor", _unexpected_model_call)
+    run = _run(tmp_path)
+
+    di = _handle_advice_request(
+        run,
+        _hygiene_signal(),
+        AdviceActionRequest(kind="retry_with_advice"),
+        stdout=_FakeTTY(),
+    )
+
+    assert di is None
+    artifacts = list((run.output_dir / "phase_handoff_advice").glob("*.json"))
+    assert len(artifacts) == 1
+    stored = adv.load_advice_artifact(artifacts[0])
+    assert stored is not None
+    assert stored["advice"]["recommended_action"] == "continue_with_waiver"
 
 
 # ── advice (kind=5) follow-up sub-menu ─────────────────────────────────────

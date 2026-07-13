@@ -75,6 +75,32 @@ This preserves agent autonomy during implementation while giving Orcho a
 durable, reviewable record of *what was actually tested and against which
 subject*.
 
+## Typed receipt outcomes and hygiene handoff
+
+ADR 0130 retains the receipt status vocabulary (`present`, `missing`, `failed`,
+`stale`) while adding `failure_kind`: no receipt is `missing`; a nonzero exit is
+`test_failure`; no exit code/execution detail is `env_failure`; and an exit-0
+failed assertion is `provenance_failure` for `import_path_*` or `env_failure`
+otherwise. Fingerprint, checkout HEAD, and depended-on dependency movement are
+`stale` after execution/assertion classification.
+
+| Effective declared policy | `test_failure` / `missing` / `stale` | `provenance_failure` / `env_failure` |
+| --- | --- | --- |
+| `require` | blocking readiness, release gap, and delivery | visible `warn`, not an engine gap or delivery blocker |
+| `warn` / `suggest` | visible warning | visible warning |
+| `manual_only` | visible manual-only item, never blocking | visible manual-only item, never blocking |
+
+A hygiene failure is not a source-code repair request. Its phase handoff uses
+existing `artifacts.findings`, `artifacts.short_summary`, and `last_output`, and
+offers only `continue_with_waiver` or `halt`. A waiver remains an explicit
+operator action; test failures retain repair-loop and `retry_feedback` behavior.
+
+No top-level handoff wire field is added. Core consumers use existing artifacts;
+an exact MCP `findings_summary` or
+`default_action=continue_with_waiver` requirement needs a separate `orcho-mcp`
+wire change and smoke, because the current adapter reads top-level findings and
+chooses its own default action.
+
 ## Why this exists
 
 Three recurring pains motivate the contract:

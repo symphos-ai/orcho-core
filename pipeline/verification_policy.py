@@ -51,6 +51,7 @@ __all__ = [
     "GapEntry",
     "GapPartition",
     "effective_delivery_policy_by_command",
+    "outcome_aware_policy_by_command",
     "partition_gaps",
 ]
 
@@ -171,6 +172,29 @@ def effective_delivery_policy_by_command(
         scheduled = plan_policy.get(command)
         result[command] = scheduled if scheduled else boundary_policy
     return result
+
+
+def outcome_aware_policy_by_command(
+    status_by_command: Mapping[str, Any],
+    declared_policy_by_command: Mapping[str, str],
+) -> dict[str, str]:
+    """Apply receipt-outcome policy without changing declared delivery policy.
+
+    A typed provenance/environment failure is a hygiene warning at readiness and
+    delivery, even when its declared policy is ``require``.  ``manual_only`` is
+    authoritative and remains manual; all other outcomes, especially missing,
+    stale, and ``test_failure``, retain their declared effective policy.
+    """
+    effective = dict(declared_policy_by_command)
+    for command, classification in status_by_command.items():
+        if effective.get(command) == MANUAL_ONLY_POLICY:
+            continue
+        if getattr(classification, "failure_kind", None) in {
+            "provenance_failure",
+            "env_failure",
+        }:
+            effective[command] = "warn"
+    return effective
 
 
 def partition_gaps(

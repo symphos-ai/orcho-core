@@ -32,8 +32,11 @@ from pipeline.verification_delivery import (
 )
 from pipeline.verification_dependencies import changed_files_fingerprint
 from pipeline.verification_readiness import (
+    apply_environment_provenance,
     build_final_acceptance_readiness,
+    classify_required_receipts,
     render_readiness_block,
+    required_receipt_gaps,
 )
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
@@ -75,7 +78,8 @@ def _contract(**verification_extra) -> VerificationContract:
 
 
 def _ctx(
-    checkout: str = "", dependencies: dict[str, str] | None = None,
+    checkout: str = "",
+    dependencies: dict[str, str] | None = None,
 ) -> PlaceholderContext:
     return PlaceholderContext(checkout=checkout, dependencies=dependencies or {})
 
@@ -104,7 +108,11 @@ def _dep_new_commit(path: Path) -> str:
 
 
 def _dep_record(
-    name: str, path: Path, head: str, *, depends_on: bool = True,
+    name: str,
+    path: Path,
+    head: str,
+    *,
+    depends_on: bool = True,
 ) -> dict:
     return {
         "name": name,
@@ -134,8 +142,11 @@ def _git_checkout(tmp_path: Path) -> Path:
 
 def _git_head(co: Path) -> str:
     return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=co, check=True,
-        capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=co,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
@@ -150,24 +161,27 @@ def _receipt(
     checkout_head: str | None = None,
     dependencies: list | None = None,
 ) -> None:
-    write_command_receipt(output_dir=run_dir, result={
-        "command": command,
-        "env": "ci",
-        "cwd": "/cwd",
-        "placeholders": {"checkout": "/co", "project": "/co"},
-        "argv": [command],
-        "assertions": assertions or [],
-        "exit_code": exit_code,
-        "duration_s": 0.1,
-        "parity": "absolute",
-        "detail": detail,
-        "git": {
-            "checkout_head": checkout_head,
-            "baseline_head": None,
-            "changed_files_fingerprint": fingerprint,
+    write_command_receipt(
+        output_dir=run_dir,
+        result={
+            "command": command,
+            "env": "ci",
+            "cwd": "/cwd",
+            "placeholders": {"checkout": "/co", "project": "/co"},
+            "argv": [command],
+            "assertions": assertions or [],
+            "exit_code": exit_code,
+            "duration_s": 0.1,
+            "parity": "absolute",
+            "detail": detail,
+            "git": {
+                "checkout_head": checkout_head,
+                "baseline_head": None,
+                "changed_files_fingerprint": fingerprint,
+            },
+            "dependencies": dependencies or [],
         },
-        "dependencies": dependencies or [],
-    })
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,44 +207,47 @@ class TestResolveDeliveryPolicy:
 
     def test_invalid_value_raises_on_load(self) -> None:
         with pytest.raises(VerificationContractError):
-            VerificationContract.from_plugin(PluginConfig(
-                verification={
-                    "commands": {"test": {"run": "x"}},
-                    "delivery_policy": "bogus",
-                },
-            ))
+            VerificationContract.from_plugin(
+                PluginConfig(
+                    verification={
+                        "commands": {"test": {"run": "x"}},
+                        "delivery_policy": "bogus",
+                    },
+                )
+            )
 
     def test_work_mode_never_escalates(self) -> None:
         # Governed mode + no explicit field + no scheduled require → warn.
         assert resolve_delivery_policy(_contract()) != "require"
-        assert resolve_delivery_policy(_contract(delivery_policy="require")) == (
-            "require"
-        )
+        assert resolve_delivery_policy(_contract(delivery_policy="require")) == ("require")
 
     def test_scheduled_require_at_delivery_derives_require(self) -> None:
         """ADR 0090: an explicit ``policy=require`` gate scheduled at
         ``before_delivery`` IS the delivery opt-in — letting the boundary
         stay ``warn`` would deliver unverified changes whenever the scheduled
         hook is skipped (the silent-skip incident)."""
-        contract = _contract(schedule=[
-            {"before_delivery": True, "policy": "require", "commands": ["test"]},
-        ])
+        contract = _contract(
+            schedule=[
+                {"before_delivery": True, "policy": "require", "commands": ["test"]},
+            ]
+        )
         assert resolve_delivery_policy(contract) == "require"
 
     def test_scheduled_require_elsewhere_does_not_escalate(self) -> None:
         # require at after_phase(implement) only — the delivery boundary
         # itself was not opted in.
-        contract = _contract(schedule=[
-            {"after_phase": "implement", "policy": "require", "commands": ["test"]},
-        ])
+        contract = _contract(
+            schedule=[
+                {"after_phase": "implement", "policy": "require", "commands": ["test"]},
+            ]
+        )
         assert resolve_delivery_policy(contract) == "warn"
 
     def test_explicit_field_wins_over_scheduled_require(self) -> None:
         contract = _contract(
             delivery_policy="warn",
             schedule=[
-                {"before_delivery": True, "policy": "require",
-                 "commands": ["test"]},
+                {"before_delivery": True, "policy": "require", "commands": ["test"]},
             ],
         )
         assert resolve_delivery_policy(contract) == "warn"
@@ -288,7 +305,8 @@ def _ctx_with_project(checkout: str) -> PlaceholderContext:
 @pytest.mark.git_worktree
 class TestPolicyAwareDeliveryLines:
     def test_warn_missing_is_not_blocking_and_says_shipping_allowed(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # Boundary policy warn, no per-gate require gate → the missing receipt is
         # a warn gap: surfaced, but delivery is allowed by policy and the line
@@ -297,43 +315,43 @@ class TestPolicyAwareDeliveryLines:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="warn"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="warn"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ("test",)
         assert assessment.blocking is False
         assert assessment.warning_gaps and not assessment.blocking_gaps
-        warn_line = next(
-            line for line in assessment.lines
-            if line.startswith("missing receipts")
-        )
+        warn_line = next(line for line in assessment.lines if line.startswith("missing receipts"))
         assert "shipping allowed by policy" in warn_line
         assert "(warn)" in warn_line  # effective per-gate policy named
 
     def test_require_missing_is_blocking_and_says_missing_required(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.blocking is True
         assert assessment.blocking_gaps and not assessment.warning_gaps
-        assert any(
-            line.startswith("missing required receipts")
-            for line in assessment.lines
-        )
-        assert not any(
-            "shipping allowed by policy" in line for line in assessment.lines
-        )
+        assert any(line.startswith("missing required receipts") for line in assessment.lines)
+        assert not any("shipping allowed by policy" in line for line in assessment.lines)
 
     def test_manual_only_command_excluded_from_required_but_visible(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
@@ -351,7 +369,11 @@ class TestPolicyAwareDeliveryLines:
             delivery_policy="require",
         )
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx_with_project(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         # The require gap "test" is required + blocking; the manual "audit" is
@@ -376,7 +398,11 @@ class TestPolicyAwareDeliveryLines:
             delivery_policy="warn",
         )
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx_with_project(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ()
@@ -385,7 +411,8 @@ class TestPolicyAwareDeliveryLines:
         assert assessment.blocking is False
 
     def test_policy_by_command_records_effective_per_gate_policy(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
@@ -403,7 +430,11 @@ class TestPolicyAwareDeliveryLines:
             delivery_policy="require",
         )
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx_with_project(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         policy_map = dict(assessment.policy_by_command)
@@ -425,14 +456,21 @@ class TestBlockingMatrix:
     @pytest.mark.parametrize("policy", ["off", "suggest", "warn"])
     def test_blockers_below_require_do_not_block(self, policy: str) -> None:
         a = DeliveryVerificationAssessment(
-            policy=policy, required_missing=("test",),
+            policy=policy,
+            required_missing=("test",),
         )
         assert a.has_blockers
         assert not a.blocking
 
-    @pytest.mark.parametrize("field", [
-        "required_missing", "required_failed", "required_stale", "garbage_paths",
-    ])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "required_missing",
+            "required_failed",
+            "required_stale",
+            "garbage_paths",
+        ],
+    )
     def test_require_with_any_blocker_blocks(self, field: str) -> None:
         a = DeliveryVerificationAssessment(policy="require", **{field: ("x",)})
         assert a.has_blockers
@@ -447,15 +485,29 @@ class TestBlockingMatrix:
 
 class TestAssessReturnsNone:
     def test_none_contract(self, tmp_path: Path) -> None:
-        assert assess_delivery_verification(
-            None, tmp_path, _ctx(), None, tmp_path,
-        ) is None
+        assert (
+            assess_delivery_verification(
+                None,
+                tmp_path,
+                _ctx(),
+                None,
+                tmp_path,
+            )
+            is None
+        )
 
     def test_policy_off(self, tmp_path: Path) -> None:
         contract = _contract(delivery_policy="off")
-        assert assess_delivery_verification(
-            contract, tmp_path, _ctx(), None, tmp_path,
-        ) is None
+        assert (
+            assess_delivery_verification(
+                contract,
+                tmp_path,
+                _ctx(),
+                None,
+                tmp_path,
+            )
+            is None
+        )
 
 
 @pytest.mark.git_worktree
@@ -466,7 +518,11 @@ class TestAssessReceiptClassification:
         run_dir.mkdir()
         # No receipt written for required "test" → missing.
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ("test",)
@@ -478,10 +534,13 @@ class TestAssessReceiptClassification:
         fingerprint = changed_files_fingerprint(str(co))
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test", exit_code=1,
-                 fingerprint=fingerprint, checkout_head=head)
+        _receipt(run_dir, "test", exit_code=1, fingerprint=fingerprint, checkout_head=head)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="warn"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="warn"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_failed == ("test",)
@@ -497,11 +556,13 @@ class TestAssessReceiptClassification:
         fingerprint = changed_files_fingerprint(str(co))
         run_dir = tmp_path / "run_20260619_FAILED"
         run_dir.mkdir()
-        _receipt(run_dir, "test", exit_code=1,
-                 fingerprint=fingerprint, checkout_head=head)
+        _receipt(run_dir, "test", exit_code=1, fingerprint=fingerprint, checkout_head=head)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_failed == ("test",)
@@ -509,9 +570,7 @@ class TestAssessReceiptClassification:
         assert assessment.blocking
         # The verify hint is built for failed-only too, and rides in the lines.
         assert assessment.suggested_commands
-        assert any(
-            line.startswith("failed required receipts") for line in assessment.lines
-        )
+        assert any(line.startswith("failed required receipts") for line in assessment.lines)
         assert any(line.startswith("searched:") for line in assessment.lines)
         assert any("orcho verify" in line for line in assessment.lines)
 
@@ -520,10 +579,13 @@ class TestAssessReceiptClassification:
         head = _git_head(co)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test", fingerprint="deadbeefdeadbeef",
-                 checkout_head=head)
+        _receipt(run_dir, "test", fingerprint="deadbeefdeadbeef", checkout_head=head)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_stale == ("test",)
@@ -538,7 +600,11 @@ class TestAssessReceiptClassification:
         run_dir.mkdir()
         _receipt(run_dir, "test", fingerprint=fingerprint, checkout_head=head)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ()
@@ -547,7 +613,8 @@ class TestAssessReceiptClassification:
         assert not assessment.blocking
 
     def test_degrade_to_present_without_checkout_identity(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # diff_cwd is not a git repo → no head/fingerprint → staleness is not
         # asserted; a valid-looking receipt degrades to present.
@@ -555,11 +622,13 @@ class TestAssessReceiptClassification:
         not_a_repo.mkdir()
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test", fingerprint="deadbeefdeadbeef",
-                 checkout_head="0" * 40)
+        _receipt(run_dir, "test", fingerprint="deadbeefdeadbeef", checkout_head="0" * 40)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir, _ctx(str(not_a_repo)),
-            None, not_a_repo,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(not_a_repo)),
+            None,
+            not_a_repo,
         )
         assert assessment is not None
         assert assessment.required_stale == ()
@@ -574,17 +643,22 @@ class TestAssessDependencyStale:
     unchanged) while ``lines`` carries the reason. The negatives never stale."""
 
     def _present_receipt_with_dep(
-        self, run_dir: Path, co: Path, dep_record: dict,
+        self,
+        run_dir: Path,
+        co: Path,
+        dep_record: dict,
     ) -> None:
         _receipt(
-            run_dir, "test",
+            run_dir,
+            "test",
             fingerprint=changed_files_fingerprint(str(co)),
             checkout_head=_git_head(co),
             dependencies=[dep_record],
         )
 
     def test_dependency_head_move_is_stale_with_reason_in_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
@@ -592,25 +666,27 @@ class TestAssessDependencyStale:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         self._present_receipt_with_dep(
-            run_dir, co, _dep_record("shared", dep, old, depends_on=True),
+            run_dir,
+            co,
+            _dep_record("shared", dep, old, depends_on=True),
         )
         new = _dep_new_commit(dep)
 
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx(str(co), {"shared": str(dep)}), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co), {"shared": str(dep)}),
+            None,
+            co,
         )
 
         assert assessment is not None
         # Audit-facing names unchanged.
         assert assessment.required_stale == ("test",)
         # The reason rides in stale_details / lines, naming dep + both SHAs.
-        assert assessment.stale_details == (
-            f"test (dependency shared HEAD moved {old} -> {new})",
-        )
+        assert assessment.stale_details == (f"test (dependency shared HEAD moved {old} -> {new})",)
         stale_line = next(
-            line for line in assessment.lines
-            if line.startswith("stale required receipts")
+            line for line in assessment.lines if line.startswith("stale required receipts")
         )
         assert "dependency shared HEAD moved" in stale_line
         assert old in stale_line and new in stale_line
@@ -623,13 +699,18 @@ class TestAssessDependencyStale:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         self._present_receipt_with_dep(
-            run_dir, co, _dep_record("shared", dep, old, depends_on=False),
+            run_dir,
+            co,
+            _dep_record("shared", dep, old, depends_on=False),
         )
         _dep_new_commit(dep)
 
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx(str(co), {"shared": str(dep)}), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co), {"shared": str(dep)}),
+            None,
+            co,
         )
 
         assert assessment is not None
@@ -637,7 +718,8 @@ class TestAssessDependencyStale:
         assert assessment.required_missing == ()
 
     def test_ctx_none_does_not_assert_dependency_stale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
@@ -645,20 +727,27 @@ class TestAssessDependencyStale:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         self._present_receipt_with_dep(
-            run_dir, co, _dep_record("shared", dep, old, depends_on=True),
+            run_dir,
+            co,
+            _dep_record("shared", dep, old, depends_on=True),
         )
         _dep_new_commit(dep)
 
         # No ctx → no declared-dependency heads → dependency staleness silent.
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir, None, None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            None,
+            None,
+            co,
         )
 
         assert assessment is not None
         assert assessment.required_stale == ()
 
     def test_receipt_without_dependencies_block_is_not_stale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
@@ -666,22 +755,27 @@ class TestAssessDependencyStale:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         _receipt(
-            run_dir, "test",
+            run_dir,
+            "test",
             fingerprint=changed_files_fingerprint(str(co)),
             checkout_head=_git_head(co),
         )  # no dependencies block
         _dep_new_commit(dep)
 
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx(str(co), {"shared": str(dep)}), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co), {"shared": str(dep)}),
+            None,
+            co,
         )
 
         assert assessment is not None
         assert assessment.required_stale == ()
 
     def test_dependency_not_git_does_not_assert_stale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         plain = tmp_path / "plain"
@@ -689,12 +783,17 @@ class TestAssessDependencyStale:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         self._present_receipt_with_dep(
-            run_dir, co, _dep_record("shared", plain, "0" * 40, depends_on=True),
+            run_dir,
+            co,
+            _dep_record("shared", plain, "0" * 40, depends_on=True),
         )
 
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx(str(co), {"shared": str(plain)}), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx(str(co), {"shared": str(plain)}),
+            None,
+            co,
         )
 
         assert assessment is not None
@@ -708,9 +807,9 @@ class TestAssessReadsPathsFromDiffCwd:
         head = _git_head(co)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test",
-                 fingerprint=changed_files_fingerprint(str(co)),
-                 checkout_head=head)
+        _receipt(
+            run_dir, "test", fingerprint=changed_files_fingerprint(str(co)), checkout_head=head
+        )
 
         # An untracked generated artifact + a changed product file + a changed
         # generated file. Only the generated ones land in garbage_paths.
@@ -721,7 +820,11 @@ class TestAssessReadsPathsFromDiffCwd:
         (co / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
 
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="warn"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="warn"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         # Fingerprint moved (new untracked/changed files) → the receipt is now
@@ -738,7 +841,11 @@ class TestAssessReadsPathsFromDiffCwd:
         (co / "src").mkdir()
         (co / "src" / "feature.py").write_text("x = 1\n", encoding="utf-8")
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="warn"), run_dir, _ctx(str(co)), None, co,
+            _contract(delivery_policy="warn"),
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.garbage_paths == ()
@@ -752,15 +859,19 @@ class TestAssessReadsPathsFromDiffCwd:
 @pytest.mark.git_worktree
 class TestAssessDiagnostics:
     def test_missing_receipt_banner_names_searched_dirs_and_both_commands(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run_20260613_ABCDEF"
         run_dir.mkdir()
         # No receipts anywhere → "test" is missing.
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ("test",)
@@ -771,17 +882,14 @@ class TestAssessDiagnostics:
         searched = next(line for line in lines if line.startswith("searched:"))
         assert str(run_dir) in searched
         # Both verify commands appear, each carrying the actual run id + project.
-        assert (
-            f"orcho verify env --env ci --run-id {run_id} --project {co}" in lines
-        )
-        assert (
-            f"orcho verify run --required --run-id {run_id} --project {co}" in lines
-        )
+        assert f"orcho verify env --env ci --run-id {run_id} --project {co}" in lines
+        assert f"orcho verify run --required --run-id {run_id} --project {co}" in lines
         # Field carries the same searched dirs (current run only, no parents).
         assert assessment.searched_run_dirs == (str(run_dir),)
 
     def test_selected_delivery_gate_hint_names_exact_commands(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run_20260613_DELIVERY"
@@ -800,25 +908,29 @@ class TestAssessDiagnostics:
         )
 
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx_with_project(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
 
         assert assessment is not None
         assert assessment.required_missing == (
-            "env-provenance", "lint", "run-state-unit",
+            "env-provenance",
+            "lint",
+            "run-state-unit",
         )
         expected = (
             f"orcho verify run env-provenance lint run-state-unit "
             f"--run-id {run_dir.name} --project {co}"
         )
         assert expected in assessment.lines
-        assert not any(
-            line.startswith("orcho verify run --required")
-            for line in assessment.lines
-        )
+        assert not any(line.startswith("orcho verify run --required") for line in assessment.lines)
 
     def test_searched_dirs_include_parent_run_from_extras(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "child_run"
@@ -829,32 +941,40 @@ class TestAssessDiagnostics:
             VERIFICATION_PARENT_RUNS_EXTRAS_KEY: ((parent_dir.name, str(parent_dir)),),
         }
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), extras, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            extras,
+            co,
         )
         assert assessment is not None
         # Current run first, then the follow-up parent — the same key readiness
         # reads, so the two surfaces searched the same dirs.
         assert assessment.searched_run_dirs == (str(run_dir), str(parent_dir))
-        searched = next(
-            line for line in assessment.lines if line.startswith("searched:")
-        )
+        searched = next(line for line in assessment.lines if line.startswith("searched:"))
         assert str(parent_dir) in searched
 
     def test_no_missing_receipt_keeps_lines_byte_identical(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # A present receipt → no missing → no searched/suggestion lines appended;
         # an all-clean assessment renders no diagnostics lines at all.
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test",
-                 fingerprint=changed_files_fingerprint(str(co)),
-                 checkout_head=_git_head(co))
+        _receipt(
+            run_dir,
+            "test",
+            fingerprint=changed_files_fingerprint(str(co)),
+            checkout_head=_git_head(co),
+        )
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ()
@@ -887,7 +1007,8 @@ class TestIncidentParentContinuity:
     actionable diagnostics, and the two surfaces agree on every verdict set."""
 
     def test_parent_receipts_for_current_checkout_are_inherited_present(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         head, fp = _git_head(co), changed_files_fingerprint(str(co))
@@ -895,12 +1016,14 @@ class TestIncidentParentContinuity:
         # Parent verified BOTH required commands against this very checkout.
         _receipt(parent, "test", fingerprint=fp, checkout_head=head)
         _receipt(parent, "lint", fingerprint=fp, checkout_head=head)
-        contract = _contract(required=["test", "lint"], schedule=[],
-                             delivery_policy="require")
+        contract = _contract(required=["test", "lint"], schedule=[], delivery_policy="require")
         extras = _incident_extras(parent)
 
         summary = build_final_acceptance_readiness(
-            contract, child, _ctx(str(co)), extras=extras,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras=extras,
         )
         # Readiness: both required receipts present (inherited), none missing.
         assert set(summary.required_present) == {"test", "lint"}
@@ -914,39 +1037,49 @@ class TestIncidentParentContinuity:
 
         # Delivery agrees: nothing missing → no "missing required receipts".
         assessment = assess_delivery_verification(
-            contract, child, _ctx(str(co)), extras, co,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ()
         assert assessment.required_stale == ()
-        assert not any(
-            line.startswith("missing required receipts")
-            for line in assessment.lines
-        )
+        assert not any(line.startswith("missing required receipts") for line in assessment.lines)
 
     def test_parent_receipt_with_foreign_fingerprint_is_stale_with_reason(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         head = _git_head(co)
         parent, child = _incident_dirs(tmp_path)
         # Parent verified a DIFFERENT change set → fingerprint will not match.
-        _receipt(parent, "test", fingerprint="deadbeefdeadbeef",
-                 checkout_head=head)
+        _receipt(parent, "test", fingerprint="deadbeefdeadbeef", checkout_head=head)
         contract = _contract(
-            commands={"test": {"run": "x"}}, required=["test"], schedule=[],
+            commands={"test": {"run": "x"}},
+            required=["test"],
+            schedule=[],
             delivery_policy="require",
         )
         extras = _incident_extras(parent)
 
         summary = build_final_acceptance_readiness(
-            contract, child, _ctx(str(co)), extras=extras,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras=extras,
         )
         assert summary.required_stale == ("test",)
         assert any("fingerprint" in r for r in summary.stale_reasons)
 
         assessment = assess_delivery_verification(
-            contract, child, _ctx(str(co)), extras, co,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras,
+            co,
         )
         assert assessment is not None
         assert assessment.required_stale == ("test",)
@@ -954,48 +1087,53 @@ class TestIncidentParentContinuity:
         assert assessment.required_missing == ()
 
     def test_no_receipts_anywhere_yields_dirs_and_hints(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         parent, child = _incident_dirs(tmp_path)
         contract = _contract(
-            commands={"test": {"run": "x"}}, required=["test"], schedule=[],
+            commands={"test": {"run": "x"}},
+            required=["test"],
+            schedule=[],
             delivery_policy="require",
         )
         extras = _incident_extras(parent)
         run_id = child.name
 
         summary = build_final_acceptance_readiness(
-            contract, child, _ctx_with_project(str(co)), extras=extras,
+            contract,
+            child,
+            _ctx_with_project(str(co)),
+            extras=extras,
         )
         assert summary.required_missing == ("test",)
         # Both searched dirs (child first, then parent) are named.
         assert summary.searched_run_dirs == (str(child), str(parent))
-        assert any(
-            f"--run-id {run_id}" in c for c in summary.suggested_commands
-        )
-        assert any(
-            "orcho verify run --required" in c for c in summary.suggested_commands
-        )
+        assert any(f"--run-id {run_id}" in c for c in summary.suggested_commands)
+        assert any("orcho verify run --required" in c for c in summary.suggested_commands)
         rendered = render_readiness_block(summary)
         assert rendered is not None
         assert "Searched run dirs:" in rendered
         assert str(parent) in rendered and str(child) in rendered
 
         assessment = assess_delivery_verification(
-            contract, child, _ctx_with_project(str(co)), extras, co,
+            contract,
+            child,
+            _ctx_with_project(str(co)),
+            extras,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ("test",)
         assert assessment.searched_run_dirs == (str(child), str(parent))
-        searched = next(
-            line for line in assessment.lines if line.startswith("searched:")
-        )
+        searched = next(line for line in assessment.lines if line.startswith("searched:"))
         assert str(parent) in searched and str(child) in searched
         assert any(f"--run-id {run_id}" in line for line in assessment.lines)
 
     def test_readiness_and_delivery_agree_on_every_verdict_set(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # Single-source contract: same (contract, run_dir, ctx, extras, checkout)
         # MUST give identical missing/failed/stale partitions on both surfaces.
@@ -1005,22 +1143,26 @@ class TestIncidentParentContinuity:
         # test: present (inherited from parent); lint: stale (foreign parent);
         # smoke: failed (fresh child failure on the same diff).
         _receipt(parent, "test", fingerprint=fp, checkout_head=head)
-        _receipt(parent, "lint", fingerprint="deadbeefdeadbeef",
-                 checkout_head=head)
+        _receipt(parent, "lint", fingerprint="deadbeefdeadbeef", checkout_head=head)
         _receipt(child, "smoke", exit_code=1, fingerprint=fp, checkout_head=head)
         contract = _contract(
             commands={
-                "test": {"run": "x"}, "lint": {"run": "y"},
+                "test": {"run": "x"},
+                "lint": {"run": "y"},
                 "smoke": {"run": "z"},
             },
-            required=["test", "lint", "smoke"], schedule=[],
+            required=["test", "lint", "smoke"],
+            schedule=[],
             delivery_policy="require",
         )
         ctx = _ctx(str(co))
         extras = _incident_extras(parent)
 
         summary = build_final_acceptance_readiness(
-            contract, child, ctx, extras=extras,
+            contract,
+            child,
+            ctx,
+            extras=extras,
         )
         assessment = assess_delivery_verification(contract, child, ctx, extras, co)
         assert assessment is not None
@@ -1036,7 +1178,8 @@ class TestIncidentParentContinuity:
         assert summary.required_missing == ()
 
     def test_invalid_child_receipt_yields_to_valid_parent(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # Incident variant: the child re-ran lint against a now-different diff
         # (its receipt is stale), but the parent's lint for THIS checkout is
@@ -1044,17 +1187,24 @@ class TestIncidentParentContinuity:
         co = _git_checkout(tmp_path)
         head, fp = _git_head(co), changed_files_fingerprint(str(co))
         parent, child = _incident_dirs(tmp_path)
-        _receipt(child, "lint", fingerprint="deadbeefdeadbeef",
-                 checkout_head=head)            # child stale (foreign diff)
+        _receipt(
+            child, "lint", fingerprint="deadbeefdeadbeef", checkout_head=head
+        )  # child stale (foreign diff)
         _receipt(parent, "lint", fingerprint=fp, checkout_head=head)  # valid parent
         contract = _contract(
-            commands={"lint": {"run": "y", "env": "ci"}}, required=["lint"],
-            schedule=[], delivery_policy="require",
+            commands={"lint": {"run": "y", "env": "ci"}},
+            required=["lint"],
+            schedule=[],
+            delivery_policy="require",
         )
         extras = _incident_extras(parent)
 
         assessment = assess_delivery_verification(
-            contract, child, _ctx(str(co)), extras, co,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras,
+            co,
         )
         assert assessment is not None
         assert assessment.required_missing == ()
@@ -1062,7 +1212,10 @@ class TestIncidentParentContinuity:
         assert assessment.lines == ()  # nothing to warn about — fully inherited
 
         summary = build_final_acceptance_readiness(
-            contract, child, _ctx(str(co)), extras=extras,
+            contract,
+            child,
+            _ctx(str(co)),
+            extras=extras,
         )
         assert summary.required_present == ("lint",)
         assert summary.required_stale == ()
@@ -1098,18 +1251,21 @@ def _gate_waiver_extras(
 @pytest.mark.git_worktree
 class TestDeliveryVerificationWaiver:
     def test_failed_required_with_exact_waiver_is_not_blocking(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         head = _git_head(co)
         fingerprint = changed_files_fingerprint(str(co))
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        _receipt(run_dir, "test", exit_code=1,
-                 fingerprint=fingerprint, checkout_head=head)
+        _receipt(run_dir, "test", exit_code=1, fingerprint=fingerprint, checkout_head=head)
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), _gate_waiver_extras(), co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            _gate_waiver_extras(),
+            co,
         )
         assert assessment is not None
         # The failed require gap is excused: not blocking, recorded as waived,
@@ -1128,15 +1284,19 @@ class TestDeliveryVerificationWaiver:
         assert gate.waiver_text and "pre-existing" in gate.waiver_text
 
     def test_missing_required_with_exact_waiver_is_not_blocking(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         # No receipt → missing; the waiver excuses the missing require gap.
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), _gate_waiver_extras(), co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            _gate_waiver_extras(),
+            co,
         )
         assert assessment is not None
         assert assessment.blocking is False
@@ -1146,16 +1306,19 @@ class TestDeliveryVerificationWaiver:
         assert assessment.waived_gates[0].status == "missing"
 
     def test_waiver_for_another_gate_does_not_unblock(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         # Waiver names a different command → the real "test" gap stays blocking.
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
+            _contract(delivery_policy="require"),
+            run_dir,
             _ctx_with_project(str(co)),
-            _gate_waiver_extras(command="some-other-gate"), co,
+            _gate_waiver_extras(command="some-other-gate"),
+            co,
         )
         assert assessment is not None
         assert assessment.blocking is True
@@ -1166,14 +1329,18 @@ class TestDeliveryVerificationWaiver:
         assert assessment.blocking_gaps  # the unwaived gap remains
 
     def test_no_waiver_keeps_prior_blocking_behaviour(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         assessment = assess_delivery_verification(
-            _contract(delivery_policy="require"), run_dir,
-            _ctx_with_project(str(co)), None, co,
+            _contract(delivery_policy="require"),
+            run_dir,
+            _ctx_with_project(str(co)),
+            None,
+            co,
         )
         assert assessment is not None
         assert assessment.blocking is True
@@ -1184,7 +1351,8 @@ class TestDeliveryVerificationWaiver:
         assert assessment.waived_gates == ()
 
     def test_malformed_waiver_input_never_raises_and_is_ignored(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
@@ -1192,14 +1360,16 @@ class TestDeliveryVerificationWaiver:
         # A non-gate handoff id (review waiver) and garbage shapes must not
         # excuse the gap, and must not raise.
         for extras in (
-            {"phase_handoff_waiver": {"handoff_id": "review:1",
-                                      "waiver_text": "x"}},
+            {"phase_handoff_waiver": {"handoff_id": "review:1", "waiver_text": "x"}},
             {"phase_handoff_waiver": "not-a-mapping"},
             {"phase_handoff_waiver": 12345},
         ):
             assessment = assess_delivery_verification(
-                _contract(delivery_policy="require"), run_dir,
-                _ctx_with_project(str(co)), extras, co,
+                _contract(delivery_policy="require"),
+                run_dir,
+                _ctx_with_project(str(co)),
+                extras,
+                co,
             )
             assert assessment is not None
             assert assessment.blocking is True
@@ -1220,8 +1390,7 @@ def _prov_delivery_contract(*, manual: bool = False) -> VerificationContract:
     phase link the overlay needs.
     """
     schedule: list = [
-        {"after_phase": "implement", "policy": "require",
-         "commands": ["env-provenance"]},
+        {"after_phase": "implement", "policy": "require", "commands": ["env-provenance"]},
     ]
     if manual:
         schedule.append({"manual_only": True, "commands": ["env-provenance"]})
@@ -1250,12 +1419,14 @@ def _write_failed_prov_phase_receipt(run_dir: Path) -> Path:
         phase="implement",
         round=1,
         cwd=run_dir,
-        checks=[{
-            "name": "pipeline_import",
-            "expected": "/abs/checkout/pipeline/__init__.py",
-            "actual": "/abs/install/pipeline/__init__.py",
-            "passed": False,
-        }],
+        checks=[
+            {
+                "name": "pipeline_import",
+                "expected": "/abs/checkout/pipeline/__init__.py",
+                "actual": "/abs/install/pipeline/__init__.py",
+                "passed": False,
+            }
+        ],
     )
     assert path is not None
     return path
@@ -1263,9 +1434,12 @@ def _write_failed_prov_phase_receipt(run_dir: Path) -> Path:
 
 class TestEnvironmentProvenanceOverlay:
     """A passing command receipt + a failed phase provenance receipt for a
-    phase-scheduled require gate blocks delivery (the gap is failed/blocking)."""
+    phase-scheduled require gate is a hygiene warning, not a delivery blocker."""
 
-    def test_failed_provenance_blocks_delivery(self, tmp_path: Path) -> None:
+    def test_failed_provenance_warns_without_blocking_or_release_gap(
+        self,
+        tmp_path: Path,
+    ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
@@ -1276,13 +1450,83 @@ class TestEnvironmentProvenanceOverlay:
         _write_failed_prov_phase_receipt(run_dir)
 
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
+        )
+
+        assert assessment is not None
+        assert assessment.blocking is False
+        assert assessment.required_failed == ("env-provenance",)
+        assert assessment.warning_gaps[0].command == "env-provenance"
+        assert assessment.warning_gaps[0].policy == "warn"
+        summary = build_final_acceptance_readiness(
+            contract,
+            run_dir,
+            _ctx(str(co)),
+        )
+        assert dict(summary.policy_by_command)["env-provenance"] == "warn"
+        rendered = render_readiness_block(summary)
+        assert rendered is not None
+        assert "env-provenance (warn) — shipping allowed by policy" in rendered
+        assert "Remaining before ready:" in rendered
+        assert "none blocking" in rendered
+        assert required_receipt_gaps(contract, run_dir, _ctx(str(co))) == []
+
+    def test_nonzero_exit_remains_require_blocker(self, tmp_path: Path) -> None:
+        co = _git_checkout(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        contract = _prov_delivery_contract()
+        _receipt(run_dir, "env-provenance", exit_code=1)
+
+        assessment = assess_delivery_verification(
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
 
         assert assessment is not None
         assert assessment.blocking is True
-        assert assessment.required_failed == ("env-provenance",)
-        assert "env-provenance" in {e.command for e in assessment.blocking_gaps}
+        assert assessment.warning_gaps == ()
+        assert assessment.blocking_gaps[0].command == "env-provenance"
+
+    def test_nonzero_exit_with_failed_phase_provenance_remains_require_blocker(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        co = _git_checkout(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        contract = _prov_delivery_contract()
+        _receipt(run_dir, "env-provenance", exit_code=1)
+        _write_failed_prov_phase_receipt(run_dir)
+
+        classified = classify_required_receipts(
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            checkout=str(co),
+        )
+        overlaid = apply_environment_provenance(classified, contract, run_dir)
+        assert overlaid["env-provenance"].failure_kind == "test_failure"
+
+        assessment = assess_delivery_verification(
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
+        )
+
+        assert assessment is not None
+        assert assessment.blocking is True
+        assert assessment.warning_gaps == ()
+        assert assessment.blocking_gaps[0].command == "env-provenance"
 
     def test_healthy_provenance_does_not_block(self, tmp_path: Path) -> None:
         co = _git_checkout(tmp_path)
@@ -1293,7 +1537,11 @@ class TestEnvironmentProvenanceOverlay:
         # No phase receipt -> no provenance failure -> the present gate stands.
 
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
 
         assert assessment is not None
@@ -1301,7 +1549,8 @@ class TestEnvironmentProvenanceOverlay:
         assert assessment.blocking is False
 
     def test_manual_only_provenance_gate_stays_non_blocking(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         co = _git_checkout(tmp_path)
         run_dir = tmp_path / "run"
@@ -1311,7 +1560,11 @@ class TestEnvironmentProvenanceOverlay:
         _write_failed_prov_phase_receipt(run_dir)
 
         assessment = assess_delivery_verification(
-            contract, run_dir, _ctx(str(co)), None, co,
+            contract,
+            run_dir,
+            _ctx(str(co)),
+            None,
+            co,
         )
 
         assert assessment is not None
