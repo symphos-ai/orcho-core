@@ -1133,6 +1133,19 @@ def cmd_prompts(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _print_group_help(subparser: argparse.ArgumentParser):
+    """Default ``func`` for a subcommand group that has no obvious bare
+    action (its subcommands all need arguments). Bare ``orcho <group>``
+    then prints that group's help and exits clean, instead of argparse's
+    ``error: the following arguments are required`` (exit 2) dead-end.
+    """
+    def _run(_args: argparse.Namespace, _p: argparse.ArgumentParser = subparser) -> int:
+        _p.print_help()
+        return 0
+
+    return _run
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orcho",
@@ -1484,7 +1497,9 @@ def build_parser() -> argparse.ArgumentParser:
         "pricing",
         help="Inspect / refresh pricing data used by ``orcho cost``",
     )
-    p_price_sub = p_price.add_subparsers(dest="action", required=True)
+    # Bare `orcho pricing` == `orcho pricing show` — print the effective table.
+    p_price.set_defaults(func=cmd_pricing_show)
+    p_price_sub = p_price.add_subparsers(dest="action")
 
     p_price_show = p_price_sub.add_parser(
         "show",
@@ -1516,7 +1531,10 @@ def build_parser() -> argparse.ArgumentParser:
         "profiles",
         help="List execution profiles",
     )
-    p_profiles_sub = p_profiles.add_subparsers(dest="profiles_cmd", required=True)
+    # Bare `orcho profiles` == `orcho profiles list` — a subcommand group whose
+    # obvious default is its only listing action should not dead-end in argparse.
+    p_profiles.set_defaults(func=cmd_profiles_list)
+    p_profiles_sub = p_profiles.add_subparsers(dest="profiles_cmd")
     p_profiles_list = p_profiles_sub.add_parser(
         "list",
         help="List available execution profiles",
@@ -1531,7 +1549,8 @@ def build_parser() -> argparse.ArgumentParser:
         "profile",
         help="Customize one execution profile",
     )
-    p_profile_sub = p_profile.add_subparsers(dest="profile_cmd", required=True)
+    p_profile.set_defaults(func=_print_group_help(p_profile))
+    p_profile_sub = p_profile.add_subparsers(dest="profile_cmd")
     p_profile_customize = p_profile_sub.add_parser(
         "customize",
         help="Write local overrides for a built-in execution profile",
@@ -1611,7 +1630,9 @@ def build_parser() -> argparse.ArgumentParser:
         "workflows",
         help="List workflow profiles",
     )
-    p_workflows_sub = p_workflows.add_subparsers(dest="workflows_cmd", required=True)
+    # Bare `orcho workflows` == `orcho workflows list`.
+    p_workflows.set_defaults(func=cmd_workflows_list)
+    p_workflows_sub = p_workflows.add_subparsers(dest="workflows_cmd")
     p_workflows_list = p_workflows_sub.add_parser(
         "list",
         help="List available workflow profiles",
@@ -1627,7 +1648,8 @@ def build_parser() -> argparse.ArgumentParser:
         "runtimes",
         help="Install runtime helper wrappers",
     )
-    p_runtimes_sub = p_runtimes.add_subparsers(dest="runtimes_cmd", required=True)
+    p_runtimes.set_defaults(func=_print_group_help(p_runtimes))
+    p_runtimes_sub = p_runtimes.add_subparsers(dest="runtimes_cmd")
     p_runtimes_install = p_runtimes_sub.add_parser(
         "install",
         help="Install a runtime helper wrapper",
@@ -1656,7 +1678,8 @@ def build_parser() -> argparse.ArgumentParser:
         "demos",
         help="Bootstrap packaged demo fixtures",
     )
-    p_demos_sub = p_demos.add_subparsers(dest="demos_cmd", required=True)
+    p_demos.set_defaults(func=_print_group_help(p_demos))
+    p_demos_sub = p_demos.add_subparsers(dest="demos_cmd")
     for demos_cmd in ("bootstrap", "install"):
         p_demos_bootstrap = p_demos_sub.add_parser(
             demos_cmd,
@@ -1721,7 +1744,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Subcommand `init` is the user-facing bootstrap."
         ),
     )
-    p_ws_sub = p_ws.add_subparsers(dest="workspace_cmd", required=True)
+    p_ws.set_defaults(func=_print_group_help(p_ws))
+    p_ws_sub = p_ws.add_subparsers(dest="workspace_cmd")
 
     p_ws_init = p_ws_sub.add_parser(
         "init",
