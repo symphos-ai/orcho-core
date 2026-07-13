@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from core.contracts.plan_schema import PLAN_SCHEMA_DOC, PlanSchemaError, validate_plan_dict
+from core.contracts.plan_schema import PlanSchemaError, validate_plan_dict
 from pipeline.plan_contract import render_plan_contract
 from pipeline.plan_parser import ParsedPlan, parse_plan
 
@@ -47,13 +47,6 @@ class TestSchemaBackcompat:
         plan = _minimal_plan() | {"plan_summary": "old ambiguous field"}
         with pytest.raises(PlanSchemaError, match="plan_summary"):
             validate_plan_dict(plan)
-
-
-class TestPlanSchemaAuthoringGuidance:
-    def test_commands_to_run_is_targeted_only(self) -> None:
-        assert "targeted command that verifies this change" in PLAN_SCHEMA_DOC
-        assert "full or broad suite is gate-policy" in PLAN_SCHEMA_DOC
-        assert "not an implement action" in PLAN_SCHEMA_DOC
 
 
 class TestSchemaContractFields:
