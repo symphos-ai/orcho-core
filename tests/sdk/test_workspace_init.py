@@ -50,6 +50,21 @@ def test_creates_workspace_layout(tmp_path: Path) -> None:
     )
 
 
+def test_task_files_readme_includes_authoring_guidance(tmp_path: Path) -> None:
+    r = init_workspace(tmp_path / "g")
+    readme = (
+        Path(r.workspace_dir) / ".orcho" / ".task-files" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Writing a good task file" in readme
+    assert "Verification is the engine's job" in readme
+    assert "targeted tests" in readme
+    assert (
+        "https://github.com/symphos-ai/orcho-core/blob/main/"
+        "docs/authoring-task-files.md"
+    ) in readme
+
+
 def test_workspace_plugin_scaffold_is_importable_empty_plugin(
     tmp_path: Path,
 ) -> None:
@@ -298,6 +313,19 @@ def test_scaffold_does_not_overwrite_existing_files(tmp_path: Path) -> None:
 
     assert plugin.read_text(encoding="utf-8") == "PLUGIN = {'name': 'Custom'}\n"
     assert str(plugin) in r2.skipped_paths
+
+
+def test_scaffold_does_not_overwrite_existing_task_files_readme(
+    tmp_path: Path,
+) -> None:
+    r1 = init_workspace(tmp_path / "g")
+    readme = Path(r1.workspace_dir) / ".orcho" / ".task-files" / "README.md"
+    readme.write_text("# Custom task-file guidance\n", encoding="utf-8")
+
+    r2 = init_workspace(tmp_path / "g")
+
+    assert readme.read_text(encoding="utf-8") == "# Custom task-file guidance\n"
+    assert str(readme) in r2.skipped_paths
 
 
 def test_no_scaffold_skips_extension_templates(tmp_path: Path) -> None:

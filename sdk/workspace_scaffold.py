@@ -73,6 +73,16 @@ Bare NAME.md lookup checks the explicit project's .orcho/.task-files first,
 then walks up from the current directory looking for .orcho/.task-files.
 Workspace-level task files are a convention guide here; copy task files into a
 project when you want bare-name lookup to find them predictably.
+
+## Writing a good task file
+
+Verification is the engine's job. A full or broad suite is not an implement
+subtask: implement work uses only targeted tests for its concrete change. The
+project's required gate runs separately after implementation.
+
+For the complete authoring guide, see:
+
+https://github.com/symphos-ai/orcho-core/blob/main/docs/authoring-task-files.md
 """
 
 
