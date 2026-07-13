@@ -224,8 +224,14 @@ def require_profile_or_exit(
     * operator declined the interactive menu (``ABORTED``) → print a brief
       cancellation note and return exit code ``0`` (clean exit);
     * the menu could not be shown (``SKIPPED`` in a non-interactive / non-TTY
-      context) → print an error with a ``--profile`` hint on stderr and
-      return exit code ``2``.
+      context):
+
+      - with ``include_auto_detect`` (the ``orcho run`` facade) → default to
+        the ``auto-detect`` selector and proceed (``None``). A headless run
+        then infers a work kind + mode from the project rather than dead-ending;
+        the downstream resolver errors clearly if detection fails.
+      - otherwise (e.g. the cross facade) → print an actionable error naming
+        ``--profile`` / ``orcho profiles list`` on stderr and return ``2``.
 
     Returns ``None`` when the caller should proceed: a profile is set, or the
     run is a ``--resume`` / ``--from-run-plan`` (profile inherits from
@@ -261,9 +267,28 @@ def require_profile_or_exit(
         print(paint("Aborted: no profile selected.", C.GREY))
         return 0
 
+    # SKIPPED: no interactive terminal to show the picker (headless / CI / MCP).
+    if include_auto_detect:
+        # The `orcho run` facade: a missing --profile is not a dead end. Default
+        # to the auto-detect selector so a headless run infers a work kind + mode
+        # from the project instead of exiting 2. The token is resolved downstream
+        # (pipeline.project.cli / auto_detect), which errors clearly if detection
+        # fails — no silent `feature` default, so profile enforcement holds.
+        args.profile = AUTO_DETECT_CHOICE
+        print(
+            paint(
+                f"No --profile given; using '{AUTO_DETECT_CHOICE}' "
+                "(work kind & mode inferred from the project).",
+                C.GREY,
+            )
+        )
+        return None
+
+    # Other facades (e.g. cross) keep explicit selection — but say why and how.
     print(
         paint(
-            "profile: provide --profile or select one interactively",
+            "profile: no --profile given and no interactive terminal to pick "
+            "one.\n  Pass --profile <name> (see `orcho profiles list`).",
             C.RED,
         ),
         file=sys.stderr,
