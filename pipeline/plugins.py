@@ -194,6 +194,16 @@ class PluginConfig:
         default_factory=list,
     )
 
+    # Optional worktree cleanup steps, symmetric to ``worktree_bootstrap``
+    # (ADR 0131). Declared as WHAT to tear down (e.g. ``docker compose down``);
+    # the engine guarantees WHEN — at run finalization, in the worktree cwd,
+    # only for a terminal run (never on a resumable pause), best-effort. Lets an
+    # isolated run bring up and tear down a per-worktree external stack keyed on
+    # ``ORCHO_ISOLATION_ID`` without leaking containers/volumes on halt.
+    worktree_teardown: list[dict[str, Any]] | dict[str, Any] = field(
+        default_factory=list,
+    )
+
     # Pipeline profile selector. Phase 5d: dispatch goes through v2
     # profiles in ``_config/pipeline_profiles_v2.json`` —
     # ``ORCHO_PIPELINE`` env override picks among shipped names

@@ -255,6 +255,48 @@ portable actions are `{"copy": <path>}` and `{"run": [argv...]}`.
 > Implemented today via `PluginConfig.worktree_bootstrap`
 > ([ADR 0074](../adr/0074-worktree-bootstrap.md)).
 
+### worktree_teardown
+
+Cleanup steps symmetric to `worktree_bootstrap` — same step shapes — declared as
+*what* to tear down. The engine guarantees *when*: at run finalization, in the
+worktree cwd, immediately before the git worktree is released, and only for a
+**terminal** run. A run paused awaiting a phase-handoff decision keeps its
+worktree (and its external stack) for resume and is not torn down. Teardown is
+best-effort: a failing step is recorded but never raises, so cleanup cannot mask
+the run's real outcome.
+
+> Implemented via `PluginConfig.worktree_teardown`
+> ([ADR 0131](../adr/0131-worktree-teardown-and-isolation-id.md)).
+
+#### Isolated runs against a Docker Compose stack
+
+A project whose gates run against a live Compose stack can run under worktree
+isolation without collision by keying the stack on `ORCHO_ISOLATION_ID` — a
+stable, per-worktree namespace Orcho exports into the environment (alongside
+`ORCHO_RUN_ID`, and — like it — not stripped from gate command environments).
+Bring the stack up in `worktree_bootstrap`, run gates against it, and tear it
+down in `worktree_teardown`:
+
+```python
+PLUGIN = {
+    # bring up an isolated, per-worktree stack (unique project name + ephemeral
+    # ports so parallel runs on the same repo never collide)
+    "worktree_bootstrap": [
+        {"run": ["docker", "compose", "up", "-d", "--wait"]},
+        {"run": ["make", "prepare-test-env"]},
+    ],
+    "worktree_teardown": [
+        {"run": ["docker", "compose", "down", "-v"]},
+    ],
+}
+```
+
+The Compose file (a full copy lives in each worktree) should read
+`COMPOSE_PROJECT_NAME=orcho_${ORCHO_ISOLATION_ID}` and bind ephemeral (or no)
+host ports for its test services. Because both `worktree_bootstrap` and gate
+commands inherit `ORCHO_ISOLATION_ID`, they target the same stack; the teardown
+hook removes it at run-terminal even if the run halted.
+
 ### verification_envs
 
 Named environments that define the subject under test and command context.
@@ -1393,6 +1435,7 @@ receipt is written, or any transition is blocked.
 | Concept | Status |
 |---|---|
 | `worktree_bootstrap` | **Implemented (execution)** — `PluginConfig.worktree_bootstrap`, [ADR 0074](../adr/0074-worktree-bootstrap.md) |
+| `worktree_teardown` + `ORCHO_ISOLATION_ID` | **Implemented (execution)** — `PluginConfig.worktree_teardown`, [ADR 0131](../adr/0131-worktree-teardown-and-isolation-id.md) |
 | verification-environment receipt | **Implemented (execution)** — `pipeline/evidence/verification_receipt.py`, [ADR 0076](../adr/0076-durable-verification-environment-receipt.md) |
 | env-assertion execution + receipt | **Implemented (execution, Stage 2)** — `pipeline/verification_env.py` + `verification_env_receipts/`, [ADR 0078](../adr/0078-verification-contract-env-assertions.md) |
 | command execution + command-receipt | **Implemented (execution, Stage 3)** — `pipeline/verification_command.py` + `verification_command_receipts/`, [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |

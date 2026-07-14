@@ -2054,6 +2054,37 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
         return
 
 
+def _run_plugin_worktree_teardown(run: Any) -> None:
+    """Best-effort ADR 0131 plugin ``worktree_teardown`` at run finalization.
+
+    Runs the plugin's declared teardown steps in the worktree cwd before the git
+    worktree is released — but only for a **terminal** run. A run paused awaiting
+    a phase-handoff decision keeps its worktree AND its external stack for
+    resume, so teardown is skipped there.
+
+    Wholly best-effort: the run is already terminal, so any failure (import,
+    config shape, a failing ``docker compose down``) is swallowed here — the
+    engine step-runner itself also never raises — so cleanup can never mask the
+    run's real outcome.
+    """
+    # Resumable pause: the worktree (and its stack) must survive for resume.
+    if run.session.get("status") == "awaiting_phase_handoff":
+        return
+    steps = getattr(getattr(run, "plugin", None), "worktree_teardown", None)
+    if not steps:
+        return
+    ctx = run.worktree_context
+    try:
+        from pipeline.engine.worktree_bootstrap import run_worktree_teardown
+        run_worktree_teardown(
+            steps,
+            source_root=ctx.project_dir,
+            worktree_path=ctx.path,
+        )
+    except Exception:  # noqa: BLE001 — terminal-run cleanup must never raise
+        pass
+
+
 def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
     """Silent structured finalization. No terminal output.
 
@@ -2251,6 +2282,11 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
     # 9) Worktree teardown (ADR 0033) + ContextVar resets.
     worktree_teardown_message: str | None = None
     if run.worktree_context is not None:
+        # ADR 0131: plugin-declared external-resource teardown (e.g. a
+        # per-worktree docker stack) runs in the worktree cwd BEFORE the git
+        # worktree is released. The helper gates on terminal status (a run
+        # paused for a phase-handoff decision keeps its worktree + stack).
+        _run_plugin_worktree_teardown(run)
         from pipeline.engine.worktree import teardown_worktree
         td = teardown_worktree(run.worktree_context, retain=True)
         # retain=True: ``td.error`` carries the "retained at <path>"
