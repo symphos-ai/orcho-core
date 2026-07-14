@@ -111,7 +111,7 @@ _UNKNOWN = "unknown"
 # single most-consequential declared policy when several gate sets back one
 # command; this is a presentation choice, not a gate computation (it mirrors
 # :func:`pipeline.verification_selection._merge_defaults`' max-strictness merge).
-_POLICY_STRENGTH: tuple[str, ...] = ("off", "suggest", "warn", "require")
+_POLICY_STRENGTH: tuple[str, ...] = ("manual", "suggest", "warn", "require")
 
 
 def _gate_policy(entry: ScheduleEntry, backing: Sequence[GateSet]) -> str:
@@ -167,7 +167,7 @@ def effective_stage(
     A pure function of already-derived facts — it reads no schedule, runs no
     ``fnmatch``, and executes no command. It answers "at what point in a run does
     this gate get exercised?", which the raw timing hook alone cannot: a
-    ``require`` gate runs at its timing hook, but a ``warn`` / ``off`` gate is
+    ``require`` gate runs at its timing hook, but a ``warn`` / ``manual`` gate is
     only surfaced, not auto-run, so its real stage depends on whether the profile
     even has a final delivery phase.
 
@@ -176,7 +176,7 @@ def effective_stage(
       scheduled.
     * a ``manual_only`` / ``on_resume`` hook, or a ``suggest`` policy → ``operator``:
       a human runs it, it is never part of the automatic flow.
-    * ``warn`` / ``off`` (and any other non-required auto gate) → it is not enforced
+    * ``warn`` / ``manual`` (and any other non-required auto gate) → it is not enforced
       inline, so it surfaces only near delivery: ``pre-final`` when the profile has
       a final phase (``has_final_phase`` truthy), ``not auto-run`` when it provably
       does not (``has_final_phase is False``), and ``profile-dependent`` when the
@@ -187,7 +187,7 @@ def effective_stage(
         return gate_timing(hook, phase)
     if hook in ("manual_only", "on_resume") or policy == "suggest":
         return "operator"
-    # warn / off / unknown on an auto hook: not enforced inline, so its real
+    # warn / manual / unknown on an auto hook: not enforced inline, so its real
     # stage hinges on whether the profile has a final delivery phase.
     if has_final_phase is None:
         return "profile-dependent"
@@ -216,11 +216,14 @@ class GateLedgerRow:
       set), ``operator`` (a ``manual_only`` hook or an ``operator`` rule),
       ``on_path`` (a ``paths`` rule — ``condition_paths`` carries the union of its
       globs), or ``task_kind``.
+    * ``activation_binding`` — the normalized binding consumed by presentation;
+      a directly scheduled command carries explicit ``always`` rather than a
+      consumer-side fallback.
     * ``resolved`` — ``None`` at start (no plan / changed files supplied);
       otherwise ``manual`` for an operator/manual gate, ``active`` when this
       row's identity is among the plan's entries, else ``dormant``.
     * ``policy`` — the effective declared receipt-enforcement policy for this gate
-      (off|suggest|warn|require), or ``unknown`` when it would only resolve after
+      (manual|suggest|warn|require), or ``unknown`` when it would only resolve after
       the work_mode transform (from :func:`_gate_policy`). This is the ledger's
       single source of policy; the banner no longer recomputes it.
     * ``kind`` — declared cost: ``cheap`` when the command (or its gate set)
@@ -243,6 +246,7 @@ class GateLedgerRow:
     gate_sets: tuple[str, ...]
     condition: str
     condition_paths: tuple[str, ...] = ()
+    activation_binding: str = ""
     resolved: str | None = None
     policy: str = _UNKNOWN
     kind: str = _UNKNOWN
@@ -298,10 +302,10 @@ def _read_selection_conditions(
     )
 
 
-def _row_condition(
+def _activation_binding(
     backing: Sequence[str], hook: str, conditions: _SelectionConditions,
 ) -> tuple[str, tuple[str, ...]]:
-    """Derive ``(condition, condition_paths)`` for a row from its backing sets.
+    """Read the normalized activation binding for a declared row.
 
     Priority (per the contract's declared selection algebra, read for display):
 
@@ -310,8 +314,7 @@ def _row_condition(
        ``operator`` (an operator/manual gate is never disguised as auto);
     3. any backing set in a ``paths`` rule → ``on_path`` with the union of globs;
     4. any backing set in a ``task_kind`` rule → ``task_kind``;
-    5. otherwise (a directly-scheduled command with no gate set, so nothing
-       narrows it) → ``always``.
+    5. directly scheduled commands carry the explicit ``always`` binding.
     """
     if any(name in conditions.always for name in backing):
         return "always", ()
@@ -328,7 +331,9 @@ def _row_condition(
         return "on_path", tuple(globs)
     if any(name in conditions.task_kind for name in backing):
         return "task_kind", ()
-    return "always", ()
+    if not backing:
+        return "always", ()
+    return "unreachable", ()
 
 
 # ── the projection builder ─────────────────────────────────────────────────
@@ -349,8 +354,8 @@ def build_gate_ledger(
     and deduping on it — so the ledger's row set is identical to the banner's.
 
     Resolve (optional): when ``plan`` or ``changed_files`` is supplied, each row
-    is resolved by IDENTITY. An operator/manual gate (``condition == "operator"``)
-    is always ``manual``. Otherwise the row is ``active`` iff its
+    is resolved by IDENTITY. A manual hook or operator/manual gate is always
+    ``manual``. Otherwise the row is ``active`` iff its
     ``(command, hook, phase)`` is one of the plan's entries, else ``dormant``.
     ``plan.selected_commands`` is never consulted for disposition. When
     ``changed_files`` is given without a ``plan``, the plan is built via the
@@ -406,7 +411,7 @@ def build_gate_ledger(
             if identity in seen:
                 continue
             seen.add(identity)
-            condition, condition_paths = _row_condition(
+            activation_binding, condition_paths = _activation_binding(
                 backing[command], entry.hook, conditions,
             )
             policy = _gate_policy(entry, backing_sets[command])
@@ -419,8 +424,9 @@ def build_gate_ledger(
                     timing=gate_timing(entry.hook, entry.phase),
                     run_mode=gate_run_mode(entry.hook),
                     gate_sets=tuple(backing[command]),
-                    condition=condition,
+                    condition=activation_binding,
                     condition_paths=condition_paths,
+                    activation_binding=activation_binding,
                     policy=policy,
                     kind=kind,
                     when=effective_stage(
@@ -433,11 +439,11 @@ def build_gate_ledger(
     if resolve_plan is None:
         return tuple(rows)
 
-    active_identities = {
-        (entry.command, entry.hook, entry.phase)
+    active_bindings = {
+        (entry.command, entry.hook, entry.phase): entry.activation_binding
         for entry in resolve_plan.entries
     }
-    return tuple(_resolve_row(row, active_identities) for row in rows)
+    return tuple(_resolve_row(row, active_bindings) for row in rows)
 
 
 def _resolve_plan(
@@ -466,18 +472,32 @@ def _resolve_plan(
 
 
 def _resolve_row(
-    row: GateLedgerRow, active_identities: set[tuple[str, str, str]],
+    row: GateLedgerRow,
+    active_bindings: dict[tuple[str, str, str], str],
 ) -> GateLedgerRow:
     """Attach the identity-based disposition to a row (does not mutate)."""
     from dataclasses import replace
 
-    if row.condition == "operator":
+    planned_binding = active_bindings.get((row.gate, row.hook, row.phase))
+    is_manual = row.hook in ("manual_only", "on_resume") or (
+        row.activation_binding == "operator"
+    )
+    # Selection uses ``selected`` as its internal generic binding for gate-set
+    # entries; the ledger retains their declared condition (always/on_path/etc.).
+    # Only an automatic direct command's explicit ``always`` binding replaces it.
+    # A plan must not turn an operator/manual row into an automatic one.
+    binding = (
+        row.activation_binding
+        if is_manual
+        else planned_binding if planned_binding == "always" else row.activation_binding
+    )
+    if is_manual:
         resolved = "manual"
-    elif (row.gate, row.hook, row.phase) in active_identities:
+    elif (row.gate, row.hook, row.phase) in active_bindings:
         resolved = "active"
     else:
         resolved = "dormant"
-    return replace(row, resolved=resolved)
+    return replace(row, activation_binding=binding, condition=binding, resolved=resolved)
 
 
 __all__ = [

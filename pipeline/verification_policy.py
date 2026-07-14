@@ -217,7 +217,7 @@ def partition_gaps(
     * ``warn`` / ``suggest`` → ``warning`` (delivery allowed by policy);
     * ``manual_only`` → ``manual_only`` (visible, never blocking, never missing
       required);
-    * any other policy (e.g. ``off``) → dropped (not a surfaced gap).
+    * ``manual`` → ``manual_only`` (visible, never blocking).
 
     Input order is preserved within each bucket.
     """
@@ -230,13 +230,12 @@ def partition_gaps(
             continue
         policy = policy_by_command.get(command, "")
         entry = GapEntry(command=command, status=status, policy=policy)
-        if policy == MANUAL_ONLY_POLICY:
+        if policy in (MANUAL_ONLY_POLICY, "manual"):
             manual_only.append(entry)
         elif policy == "require":
             blocking.append(entry)
         elif policy in ("warn", "suggest"):
             warning.append(entry)
-        # any other policy (e.g. "off") is intentionally not surfaced as a gap.
     return GapPartition(
         blocking=tuple(blocking),
         warning=tuple(warning),

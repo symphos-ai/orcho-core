@@ -36,7 +36,7 @@ class TestDeriveEffectivePolicy:
         ("work_mode", "required", "expected"),
         [
             # cost is no longer an input: tier (require/suggest) × work_mode only.
-            ("fast", False, "off"),       # suggest tier relaxed to off for speed
+            ("fast", False, "manual"),    # suggest tier relaxes to manual
             ("fast", True, "require"),    # require honored despite cost
             ("pro", False, "suggest"),    # declared tier honored
             ("pro", True, "require"),     # declared tier honored
@@ -59,6 +59,19 @@ class TestDeriveEffectivePolicy:
 
     def test_unset_keeps_base_policy(self) -> None:
         assert derive_effective_policy("warn", "", required=False) == "warn"
+
+    @pytest.mark.parametrize(
+        ("tier", "mode", "expected"),
+        [
+            (tier, mode, {"fast": "manual" if tier == "suggest" else tier,
+                          "governed": "require" if tier == "warn" else tier,
+                          "pro": tier}[mode])
+            for tier in ("manual", "suggest", "warn", "require")
+            for mode in ("fast", "pro", "governed")
+        ],
+    )
+    def test_exact_declared_tier_mode_matrix(self, tier, mode, expected) -> None:
+        assert derive_effective_policy(tier, mode, required=False) == expected
 
 
 class TestDeriveEffectiveAction:
@@ -306,8 +319,8 @@ class TestTieBreakerAndManualOnly:
         plan = build_scheduled_gate_plan(
             contract, SelectionContext(work_mode="governed"),
         )
-        # explicit warn participates; the None entry does not force a derive.
-        assert _entry(plan, "test", "after_phase").policy == "warn"
+        # Every declared tier is mode-projected: governed escalates warn.
+        assert _entry(plan, "test", "after_phase").policy == "require"
 
     def test_command_without_schedule_is_manual_only(self) -> None:
         contract = _contract(
@@ -317,9 +330,45 @@ class TestTieBreakerAndManualOnly:
         )
         plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro"))
         entry = _entry(plan, "test", "manual_only")
+        assert entry.policy == "manual"
         assert entry.action == "continue_warn"
 
-    def test_schedule_of_unselected_command_is_ignored(self) -> None:
+    @pytest.mark.parametrize("default_policy", ("warn", "require"))
+    def test_unscheduled_command_ignores_gate_set_default_policy(
+        self, default_policy: str,
+    ) -> None:
+        contract = _contract(
+            commands={"test": {"run": "pytest"}},
+            gate_sets={
+                "core": {
+                    "commands": ["test"],
+                    "default_policy": default_policy,
+                },
+            },
+            selection=[{"always": ["core"]}],
+        )
+        entry = _entry(
+            build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro")),
+            "test",
+            "manual_only",
+        )
+        assert entry.policy == "manual"
+
+    def test_required_unscheduled_command_is_manual_only(self) -> None:
+        contract = _contract(
+            commands={"test": {"run": "pytest"}},
+            required=["test"],
+            gate_sets={"core": {"commands": ["test"], "default_policy": "require"}},
+            selection=[{"always": ["core"]}],
+        )
+        entry = _entry(
+            build_scheduled_gate_plan(contract, SelectionContext(work_mode="governed")),
+            "test",
+            "manual_only",
+        )
+        assert (entry.hook, entry.policy) == ("manual_only", "manual")
+
+    def test_direct_schedule_command_is_unconditionally_selected(self) -> None:
         contract = _contract(
             commands={"test": {"run": "pytest"}, "lint": {"run": "ruff"}},
             gate_sets={"core": {"commands": ["test"]}},
@@ -327,8 +376,9 @@ class TestTieBreakerAndManualOnly:
             schedule=[{"after_phase": "implement", "commands": ["lint"]}],
         )
         plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro"))
-        # lint is not in any selected set -> never appears.
-        assert all(e.command != "lint" for e in plan.entries)
+        entry = _entry(plan, "lint", "after_phase")
+        assert entry.activation_binding == "always"
+        assert entry.contributing_gate_sets == ()
         # test has no applicable schedule entry -> manual_only.
         assert _entry(plan, "test", "manual_only")
 
@@ -364,7 +414,10 @@ class TestEffectiveActionAlgebra:
         contract = _contract(
             commands={"test": {"run": "pytest"}},
             gate_sets={
-                "core": {"commands": ["test"], "default_action": "handoff"},
+                "core": {
+                    "commands": ["test"], "default_policy": "require",
+                    "default_action": "handoff",
+                },
             },
             selection=[{"always": ["core"]}],
             schedule=[{"after_phase": "implement", "commands": ["test"]}],
@@ -398,7 +451,7 @@ class TestOperatorOptIn:
         )
         # the expensive operator gate is NOT selected by a default run.
         assert "expensive" not in plan.selected_gate_sets
-        assert "parity" not in plan.selected_commands
+        assert "parity" in plan.selected_commands
 
     def test_operator_set_selected_when_requested(self) -> None:
         plan = build_scheduled_gate_plan(

@@ -92,6 +92,11 @@ def _selection_contract() -> VerificationContract:
             {"always": ["core"]},
             {"paths": ["src/*"], "include": ["pathset"]},
         ],
+        schedule=[
+            {"after_phase": "implement", "commands": ["lint"]},
+            {"before_delivery": True, "policy": "require",
+             "gate_sets": ["pathset"]},
+        ],
     )
 
 

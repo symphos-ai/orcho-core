@@ -1529,7 +1529,7 @@ def test_recorder_executed_fail_non_blocking(
 
     project, workspace, run_dir = _layout(tmp_path)
     contract = _routing_contract([
-        {"after_phase": "implement", "commands": ["lint"], "action": "continue_warn"},
+        {"after_phase": "implement", "policy": "require", "commands": ["lint"], "action": "continue_warn"},
     ])
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)
@@ -1559,7 +1559,7 @@ def test_recorder_repair_loop_records_fail_then_pass_recheck(
 
     project, workspace, run_dir = _layout(tmp_path)
     contract = _routing_contract([
-        {"after_phase": "implement", "commands": ["lint"], "action": "repair_loop"},
+        {"after_phase": "implement", "policy": "require", "commands": ["lint"], "action": "repair_loop"},
     ])
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)

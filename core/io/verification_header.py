@@ -18,7 +18,7 @@ is read straight from the shared gate ledger
 (:mod:`pipeline.verification_ledger`); the header keeps no second projection of
 policy/kind. The ``when`` column shows the stage a gate actually runs at
 (``after_implement`` / ``delivery`` for a required gate, ``pre-final`` /
-``not auto-run`` / ``profile-dependent`` for a warn/off gate depending on the
+``not auto-run`` / ``profile-dependent`` for a warn/manual gate depending on the
 profile, ``operator`` for a manual gate) so a warn gate never reads as if it ran
 inline at its hook. The **activation** column shows *when the gate is selected* —
 ``always`` (baseline / broad), ``on-path: <globs>`` (a subsystem gate keyed on
@@ -72,7 +72,7 @@ _UNKNOWN = "unknown"
 # Declared schedule policies ordered weakest -> strongest. Used only to pick
 # the single most-consequential declared policy for the operator-facing
 # ``effect`` line; this is a presentation choice, not a gate computation.
-_POLICY_STRENGTH: tuple[str, ...] = ("off", "suggest", "warn", "require")
+_POLICY_STRENGTH: tuple[str, ...] = ("manual", "suggest", "warn", "require")
 
 # Operator-facing effect phrasing per declared policy. Each phrase mentions
 # "receipts" so the receipt-expectation dimension is always legible, and none
@@ -82,7 +82,7 @@ _EFFECT_TEXT: dict[str, str] = {
     "require": "require receipts; missing/failed resolved at gate time",
     "warn": "warn on missing/failed receipts",
     "suggest": "suggested; missing/failed receipts noted, not blocking",
-    "off": "receipts not enforced",
+    "manual": "manual receipts; missing/failed receipts do not block",
 }
 
 _AUTO_DERIVED = "auto-derived from mode/plugin defaults"
@@ -109,14 +109,14 @@ class GateRowView:
     * ``when`` — the operator-facing stage the gate actually runs at, derived by
       the ledger's ``effective_stage`` (``after_implement`` / ``delivery`` for a
       required gate, ``pre-final`` / ``not auto-run`` / ``profile-dependent`` for a
-      warn/off gate depending on the profile, ``operator`` for a manual/suggest
+      warn/manual gate depending on the profile, ``operator`` for a manual/suggest
       gate). This is the matrix column that replaces the raw ``timing`` display so
       a warn gate never reads as if it runs inline at its hook.
     * ``run_mode`` — ``auto`` for before_phase/after_phase/before_delivery,
       ``manual`` for manual_only/on_resume. A manual_only gate is always legible
       as ``operator`` / ``manual``, never disguised as an ordinary auto gate.
     * ``policy`` — the effective declared receipt-enforcement policy for this
-      gate (off|suggest|warn|require), or ``unknown`` when it would only resolve
+      gate (manual|suggest|warn|require), or ``unknown`` when it would only resolve
       after the work_mode transform we deliberately do not recompute here. This
       is a *distinct* dimension from activation and drives only the top-level
       ``policy`` / ``effect`` summary; it is no longer a per-gate matrix cell.
@@ -142,6 +142,7 @@ class GateRowView:
     kind: str
     condition: str = "always"
     condition_paths: tuple[str, ...] = ()
+    activation_binding: str = ""
     when: str = ""
 
 
@@ -262,7 +263,7 @@ def _strongest_policy(declared: list[str]) -> str | None:
 # header re-reads neither the raw ``contract.schedule`` nor its gate sets, and no
 # longer computes policy/kind in a second pass. The ledger owns the dedup that
 # keeps two schedule entries of one command under different ``(hook, phase)`` as
-# distinct rows, and the ``has_final_phase`` that resolves each warn/off gate's
+# distinct rows, and the ``has_final_phase`` that resolves each warn/manual gate's
 # honest ``when``.
 
 
@@ -298,6 +299,7 @@ def _build_gate_rows(
                 kind=row.kind,
                 condition=row.condition,
                 condition_paths=row.condition_paths,
+                activation_binding=row.activation_binding,
                 when=row.when,
             ),
         )
@@ -393,15 +395,18 @@ def _activation_label(row: GateRowView) -> str:
     gate, and ``task-kind`` for a task-kind gate. This surfaces *when* the gate
     activates so a subsystem gate is never read as an unconditional require.
     """
-    if row.condition == "on_path":
+    binding = row.activation_binding or row.condition
+    if binding == "on_path":
         if row.condition_paths:
             return "on-path: " + ", ".join(row.condition_paths)
         return "on-path"
-    if row.condition == "operator":
+    if binding == "operator":
         return "manual"
-    if row.condition == "task_kind":
+    if binding == "task_kind":
         return "task-kind"
-    return "always"
+    if binding == "always":
+        return "always"
+    return binding
 
 
 def _gate_cell(row: GateRowView, attr: str) -> str:

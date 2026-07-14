@@ -210,7 +210,6 @@ PLUGIN = {
                 "after_phase": "implement",
                 "gate_sets": ["baseline"],
                 "policy": "warn",
-                "action": "continue_warn",
             },
             {
                 "after_phase": "implement",
