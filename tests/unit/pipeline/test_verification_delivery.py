@@ -190,8 +190,8 @@ def _receipt(
 
 
 class TestResolveDeliveryPolicy:
-    def test_none_contract_is_off(self) -> None:
-        assert resolve_delivery_policy(None) == "off"
+    def test_none_contract_stays_absent(self) -> None:
+        assert resolve_delivery_policy(None) is None
 
     def test_declared_without_field_is_warn(self) -> None:
         # work_mode=governed must NOT escalate the policy, and a schedule
@@ -199,7 +199,7 @@ class TestResolveDeliveryPolicy:
         # before_delivery entry here carries policy=None.
         assert resolve_delivery_policy(_contract()) == "warn"
 
-    @pytest.mark.parametrize("value", ["off", "suggest", "warn", "require"])
+    @pytest.mark.parametrize("value", ["manual", "suggest", "warn", "require"])
     def test_explicit_value_honoured(self, value: str) -> None:
         contract = _contract(delivery_policy=value)
         assert contract.delivery_policy == value
@@ -496,18 +496,9 @@ class TestAssessReturnsNone:
             is None
         )
 
-    def test_policy_off(self, tmp_path: Path) -> None:
-        contract = _contract(delivery_policy="off")
-        assert (
-            assess_delivery_verification(
-                contract,
-                tmp_path,
-                _ctx(),
-                None,
-                tmp_path,
-            )
-            is None
-        )
+    def test_policy_off_is_rejected(self) -> None:
+        with pytest.raises(VerificationContractError, match="delivery_policy"):
+            _contract(delivery_policy="off")
 
 
 @pytest.mark.git_worktree

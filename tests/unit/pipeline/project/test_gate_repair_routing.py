@@ -313,7 +313,7 @@ def test_budget_exhaustion_escalates_to_handoff(monkeypatch) -> None:
 
 def test_action_handoff_escalates_immediately(monkeypatch) -> None:
     contract = _contract(
-        schedule=[{"after_phase": "implement", "action": "handoff", "commands": ["test"]}],
+        schedule=[{"after_phase": "implement", "policy": "require", "action": "handoff", "commands": ["test"]}],
     )
     run = _run(contract)
     calls = _patch_gate_results(monkeypatch, [_receipt(1)])
@@ -328,7 +328,7 @@ def test_action_handoff_escalates_immediately(monkeypatch) -> None:
 
 def test_action_abort_halts(monkeypatch) -> None:
     contract = _contract(
-        schedule=[{"after_phase": "implement", "action": "abort", "commands": ["test"]}],
+        schedule=[{"after_phase": "implement", "policy": "require", "action": "abort", "commands": ["test"]}],
     )
     run = _run(contract)
     calls = _patch_gate_results(monkeypatch, [_receipt(1)])

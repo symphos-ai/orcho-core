@@ -215,9 +215,9 @@ def test_partition_accepts_classification_like_objects() -> None:
     assert part.blocking == (GapEntry("test", "failed", "require"),)
 
 
-def test_partition_off_policy_gap_is_dropped() -> None:
-    part = partition_gaps({"test": "missing"}, {"test": "off"})
-    assert part == GapPartition()
+def test_partition_manual_policy_gap_is_visible_as_manual_only() -> None:
+    part = partition_gaps({"test": "missing"}, {"test": "manual"})
+    assert part.manual_only == (GapEntry("test", "missing", "manual"),)
 
 
 def test_partition_preserves_input_order() -> None:

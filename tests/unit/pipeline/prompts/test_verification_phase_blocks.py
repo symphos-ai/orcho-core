@@ -140,7 +140,7 @@ def test_empty_plan_returns_none() -> None:
                 "commands": {"test": {"run": "pytest"}},
                 "gate_sets": {"core": {"commands": ["test"]}},
                 "selection": [{"task_kind": "feature", "include": ["core"]}],
-                "schedule": [{"after_phase": "implement", "commands": ["test"]}],
+                "schedule": [{"after_phase": "implement", "gate_sets": ["core"]}],
             },
         ),
     )

@@ -157,6 +157,7 @@ def test_gate_row_carries_orthogonal_columns() -> None:
     assert row.run_mode == "auto"
     assert row.policy == "warn"
     assert row.kind == "cheap"
+    assert row.activation_binding == "always"
 
 
 def test_manual_only_gate_visible_as_manual_operator() -> None:
@@ -165,7 +166,7 @@ def test_manual_only_gate_visible_as_manual_operator() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         schedule=[
-            {"manual_only": True, "policy": "require", "commands": ["e2e"]},
+            {"manual_only": True, "policy": "suggest", "commands": ["e2e"]},
         ],
     )
     view = build_verification_header_view(contract)
@@ -173,7 +174,7 @@ def test_manual_only_gate_visible_as_manual_operator() -> None:
     row = _gate(view, "e2e")
     assert row.timing == "operator"
     assert row.run_mode == "manual"
-    assert row.policy == "require"
+    assert row.policy == "suggest"
 
 
 def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
@@ -202,7 +203,7 @@ def test_gate_set_default_policy_fills_unknown_entry_policy() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "require"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -211,7 +212,7 @@ def test_gate_set_default_policy_fills_unknown_entry_policy() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     # entry.policy is None -> fall back to the gate set's default_policy.
-    assert _gate(view, "e2e").policy == "require"
+    assert _gate(view, "e2e").policy == "suggest"
 
 
 def test_gate_set_default_policy_drives_top_summary() -> None:
@@ -221,7 +222,7 @@ def test_gate_set_default_policy_drives_top_summary() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "require"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -229,13 +230,13 @@ def test_gate_set_default_policy_drives_top_summary() -> None:
     )
     view = build_verification_header_view(contract)
     assert view is not None
-    # Matrix row already shows require...
-    assert _gate(view, "e2e").policy == "require"
+    # Matrix row already shows suggest...
+    assert _gate(view, "e2e").policy == "suggest"
     # ...and the top summary agrees: declared (not auto-derived), warned.
     assert "declared in contract" in view.policy_source
-    assert "require" in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert "suggest" in view.policy_source
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_mixed_source_command_keeps_gate_set_defaults() -> None:
@@ -247,7 +248,7 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
         gate_sets={
             "manuals": {
                 "commands": ["e2e"],
-                "default_policy": "require",
+                "default_policy": "suggest",
                 "default_cheap": True,
             },
         },
@@ -263,13 +264,13 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     row = e2e_rows[0]
     assert row.timing == "operator"
     assert row.run_mode == "manual"
-    assert row.policy == "require"
+    assert row.policy == "suggest"
     assert row.kind == "cheap"
     # ...and the declared data drives the summary, not auto-derived.
     assert "declared in contract" in view.policy_source
     assert "auto-derived" not in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
@@ -286,7 +287,7 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
             },
             "strict": {
                 "commands": ["e2e"],
-                "default_policy": "require",
+                "default_policy": "suggest",
                 "default_cheap": True,
             },
         },
@@ -297,12 +298,12 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     row = _gate(view, "e2e")
-    assert row.policy == "require"  # strictest, not the first 'suggest'
+    assert row.policy == "suggest"
     assert row.kind == "cheap"  # OR-ed across gate sets, not the first False
     # Summary reflects the strictest declared policy too.
-    assert "require" in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert "suggest" in view.policy_source
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_gate_set_default_policy_warn_warns_in_summary() -> None:
@@ -310,7 +311,7 @@ def test_gate_set_default_policy_warn_warns_in_summary() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "warn"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -318,10 +319,10 @@ def test_gate_set_default_policy_warn_warns_in_summary() -> None:
     )
     view = build_verification_header_view(contract)
     assert view is not None
-    assert _gate(view, "e2e").policy == "warn"
+    assert _gate(view, "e2e").policy == "suggest"
     assert "declared in contract" in view.policy_source
-    assert view.effect == "warn on missing/failed receipts"
-    assert view.warned is True
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_unavailable_properties_render_unknown() -> None:

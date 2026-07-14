@@ -292,7 +292,7 @@ class TestScheduleAbsenceVsExplicit:
         assert contract is not None
         assert contract.schedule[0].policy == "suggest"
 
-    def test_explicit_off_policy_is_distinct_from_absence(self) -> None:
+    def test_explicit_off_policy_is_rejected(self) -> None:
         plugin = _contract_plugin(
             verification={
                 "commands": {"lint": "ruff check ."},
@@ -302,9 +302,20 @@ class TestScheduleAbsenceVsExplicit:
                 ],
             },
         )
-        contract = VerificationContract.from_plugin(plugin)
-        assert contract is not None
-        assert contract.schedule[0].policy == "off"
+        with pytest.raises(VerificationContractError, match="schedule policy"):
+            VerificationContract.from_plugin(plugin)
+
+    @pytest.mark.parametrize("field", ["default_policy", "delivery_policy"])
+    def test_off_is_rejected_in_every_policy_field(self, field: str) -> None:
+        verification = {"commands": {"lint": "ruff check ."}}
+        if field == "default_policy":
+            verification["gate_sets"] = {
+                "core": {"commands": ["lint"], field: "off"},
+            }
+        else:
+            verification[field] = "off"
+        with pytest.raises(VerificationContractError, match="off"):
+            VerificationContract.from_plugin(_contract_plugin(verification=verification))
 
     def test_explicit_action_is_preserved(self) -> None:
         plugin = _contract_plugin(
@@ -312,7 +323,7 @@ class TestScheduleAbsenceVsExplicit:
                 "commands": {"lint": "ruff check ."},
                 "schedule": [
                     {"after_phase": "implement",
-                     "action": "repair_loop", "commands": ["lint"]},
+                     "policy": "require", "action": "repair_loop", "commands": ["lint"]},
                 ],
             },
         )
@@ -340,6 +351,7 @@ class TestGateSets:
             verification={
                 "commands": {"lint": "ruff check ."},
                 "gate_sets": {"core": {"commands": ["lint"]}},
+                "selection": [{"always": ["core"]}],
             },
         )
         contract = VerificationContract.from_plugin(plugin)
@@ -501,6 +513,7 @@ class TestSelection:
             verification={
                 "commands": {"lint": "ruff check ."},
                 "gate_sets": {"core": {"commands": ["lint"]}},
+                "selection": [{"always": ["core"]}],
                 "schedule": [
                     {"after_phase": "implement",
                      "commands": ["lint"], "gate_sets": ["core"]},
@@ -510,6 +523,86 @@ class TestSelection:
         contract = VerificationContract.from_plugin(plugin)
         assert contract is not None
         assert contract.schedule[0].gate_sets == ("core",)
+
+    def test_automatic_schedule_rejects_unreachable_gate_set(self) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"lint": "ruff check ."},
+            "gate_sets": {"core": {"commands": ["lint"]}},
+            "schedule": [{"after_phase": "implement", "gate_sets": ["core"]}],
+        })
+        with pytest.raises(VerificationContractError, match=r"after_phase\+implement.*core"):
+            VerificationContract.from_plugin(plugin)
+
+    def test_action_accepts_max_merged_gate_set_default(self) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"test": "pytest -q"},
+            "gate_sets": {
+                "required": {"commands": ["test"], "default_policy": "require"},
+                "advisory": {"commands": ["test"], "default_policy": "warn"},
+            },
+            "selection": [{"always": ["required", "advisory"]}],
+            "schedule": [{
+                "after_phase": "implement",
+                "gate_sets": ["required", "advisory"],
+                "action": "repair_loop",
+            }],
+        })
+        assert VerificationContract.from_plugin(plugin) is not None
+
+    def test_manual_only_blanket_rejects_contributing_require_default(self) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"test": "pytest -q"},
+            "gate_sets": {
+                "core": {"commands": ["test"], "default_policy": "require"},
+            },
+            "selection": [{"always": ["core"]}],
+            "schedule": [{"manual_only": True}],
+        })
+        with pytest.raises(VerificationContractError, match="manual_only schedule"):
+            VerificationContract.from_plugin(plugin)
+
+    def test_default_action_rejects_schedule_policy_override(self) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"test": "pytest -q"},
+            "gate_sets": {
+                "core": {
+                    "commands": ["test"],
+                    "default_policy": "require",
+                    "default_action": "repair_loop",
+                },
+            },
+            "selection": [{"always": ["core"]}],
+            "schedule": [{
+                "after_phase": "implement",
+                "policy": "warn",
+                "gate_sets": ["core"],
+            }],
+        })
+        with pytest.raises(VerificationContractError, match="schedule action requires"):
+            VerificationContract.from_plugin(plugin)
+
+    @pytest.mark.parametrize("default_policy", ["manual", "suggest", "warn"])
+    def test_default_action_accepts_require_schedule_override(
+        self, default_policy: str,
+    ) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"test": "pytest -q"},
+            "gate_sets": {
+                "core": {
+                    "commands": ["test"],
+                    "default_policy": default_policy,
+                    "default_action": "repair_loop",
+                },
+            },
+            "selection": [{"always": ["core"]}],
+            "schedule": [{
+                "after_phase": "implement",
+                "policy": "require",
+                "gate_sets": ["core"],
+            }],
+        })
+
+        assert VerificationContract.from_plugin(plugin) is not None
 
 
 class TestSelectionIntent:

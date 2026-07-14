@@ -27,6 +27,10 @@ def _contract(
     commands: dict | None = None,
 ) -> VerificationContract:
     commands = commands or {"test": {"run": "pytest", "cheap": True}}
+    schedule = [
+        {**entry, **({"policy": "require"} if entry.get("action") and "policy" not in entry else {})}
+        for entry in schedule
+    ]
     contract = VerificationContract.from_plugin(
         PluginConfig(
             work_mode=work_mode,
@@ -234,9 +238,9 @@ def test_non_require_policy_never_blocks(monkeypatch) -> None:
     assert calls["gate"] == 0
 
 
-def test_explicit_off_policy_never_blocks(monkeypatch) -> None:
+def test_explicit_manual_policy_never_blocks(monkeypatch) -> None:
     contract = _contract(
-        [{"after_phase": "implement", "policy": "off", "commands": ["test"]}],
+        [{"after_phase": "implement", "policy": "manual", "commands": ["test"]}],
     )
     run = _run(contract)
     calls = _patch_gate(monkeypatch, [_receipt(1)])
@@ -283,6 +287,7 @@ def test_before_delivery_passes_clean_receipt(monkeypatch) -> None:
 def test_before_delivery_warn_policy_does_not_block(monkeypatch) -> None:
     contract = _contract(
         [{"before_delivery": True, "policy": "warn", "commands": ["test"]}],
+        work_mode="pro",
     )
     run = _run(contract)
     calls = _patch_gate(monkeypatch, [_receipt(1)])
@@ -508,7 +513,7 @@ class TestSelectionInputsThreaded:
             "required": ["bug"],
             "gate_sets": {"bugfix": {"commands": ["bug"]}},
             "selection": [{"task_kind": "bugfix", "include": ["bugfix"]}],
-            "schedule": [{"after_phase": "implement", "commands": ["bug"]}],
+            "schedule": [{"after_phase": "implement", "gate_sets": ["bugfix"], "policy": "require", "action": "repair_loop"}],
         }
         if declare_kind:
             verification["task_kind"] = "bugfix"  # declared production source
@@ -556,7 +561,7 @@ class TestSelectionInputsThreaded:
             "required": ["par"],
             "gate_sets": {"expensive": {"commands": ["par"]}},
             "selection": [{"operator": ["expensive"]}],
-            "schedule": [{"after_phase": "implement", "commands": ["par"]}],
+            "schedule": [{"after_phase": "implement", "gate_sets": ["expensive"], "policy": "require", "action": "repair_loop"}],
         }
         if declare_request:
             verification["operator_sets"] = ["expensive"]  # declared opt-in

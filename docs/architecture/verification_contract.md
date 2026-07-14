@@ -27,7 +27,7 @@
 > execution and no block. **Stage 6
 > ([ADR 0083](../adr/0083-verification-contract-delivery-gate-awareness.md))**
 > reads the contract at the *delivery* boundary: a `delivery_policy`
-> (`off|suggest|warn|require`, default `warn` when a contract is declared,
+> (`manual|suggest|warn|require`, default `warn` when a contract is declared,
 > `require` only by explicit opt-in) that warns or — non-interactively under
 > `require` — blocks delivery on missing/failed/stale required receipts or
 > detected generated garbage, classifying that garbage separately from the
@@ -75,6 +75,35 @@ This preserves agent autonomy during implementation while giving Orcho a
 durable, reviewable record of *what was actually tested and against which
 subject*.
 
+## Current ADR 0132 foundation
+
+This section is the normative vocabulary for the current contract foundation;
+historical Stage descriptions below do not override it. Policy tiers are
+`manual`, `suggest`, `warn`, and `require`, in increasing strictness. An absent
+verification contract remains `None`; it is not a `manual` contract. A declared
+contract whose `delivery_policy` is absent continues to resolve to `warn`.
+
+`schedule` assigns a hook, phase, and policy to an identity. `selection`
+answers whether a named gate set is selected; it does not schedule it and does
+not select an executor. An automatic schedule that names a gate set with no
+selection rule is rejected. A directly scheduled command has an explicit
+`always` activation binding and no synthetic gate-set attribution. A selected
+command with no applicable schedule gets `manual_only` with policy `manual`,
+even when it appears in `verification.required`.
+
+| Policy | Selected execution eligibility | Base consequence |
+|---|---|---|
+| `manual` / `suggest` | operator | none |
+| `warn` on an executable hook | engine | warning |
+| `require` on an executable hook | engine | required action |
+
+`manual_only` accepts only `manual` or `suggest`; declared actions are allowed
+only for `require`. Selection, execution policy, base consequence, and terminal
+disposition are distinct facts. `pipeline.verification_execution` currently
+provides the pure eligibility resolver only: scheduled-gates task 2 will adopt
+it in executors, and task 3 will migrate durable/SDK disposition. Neither is
+implemented by this foundation.
+
 ## Typed receipt outcomes and hygiene handoff
 
 ADR 0130 retains the receipt status vocabulary (`present`, `missing`, `failed`,
@@ -88,7 +117,7 @@ otherwise. Fingerprint, checkout HEAD, and depended-on dependency movement are
 | --- | --- | --- |
 | `require` | blocking readiness, release gap, and delivery | visible `warn`, not an engine gap or delivery blocker |
 | `warn` / `suggest` | visible warning | visible warning |
-| `manual_only` | visible manual-only item, never blocking | visible manual-only item, never blocking |
+| `manual` | visible operator-owned item, never blocking | visible operator-owned item, never blocking |
 
 A hygiene failure is not a source-code repair request. Its phase handoff uses
 existing `artifacts.findings`, `artifacts.short_summary`, and `last_output`, and
@@ -373,10 +402,10 @@ manual_only
 Per-entry policy:
 
 ```text
-off      do not schedule automatically; command is available manually
-suggest  show a prompt hint only
-warn     run/check receipt and warn when missing/failed
-require  block the configured transition when missing/failed/stale
+manual   operator-owned; no automatic execution
+suggest  operator-visible suggestion; no automatic execution
+warn     executable warning policy
+require  executable policy with a required action on failure
 ```
 
 Per-entry action (optional; what happens when a `require` gate fails):
@@ -398,10 +427,8 @@ defaults-merge source.
 > ([ADR 0077](../adr/0077-verification-contract-read-only-projection.md)) loads,
 > validates, and surfaces hooks/policies into each phase's prompt block. **Stage 4
 > ([ADR 0081](../adr/0081-verification-contract-scheduling-and-repair-routing.md))**
-> makes the schedule *executable*: a `require` gate that fails is routed per its
-> effective action, and `before_phase` / `after_phase` / `before_delivery` /
-> `on_resume` are wired to real transitions. `manual_only` is never
-> auto-planned; `off` / `suggest` / `warn` never block.
+> ADR 0132 foundation validates and normalizes schedule/selection identities.
+> It does not adopt the new eligibility resolver in transition executors.
 
 ### work_mode
 
@@ -414,21 +441,21 @@ pro       balanced default, run important gates and repair obvious failures
 governed  strict delivery discipline, require declared proof before key transitions
 ```
 
-Gate policy is derived from the declared **tier** (`require` / `warn` /
-`suggest`) and the work_mode — **never** from cost. The declared tier `T` is the
+Gate policy is derived from the declared **tier** (`manual` / `suggest` / `warn` /
+`require`) and the work_mode — **never** from cost. The declared tier `T` is the
 explicit base policy when set, else `require` for a required command and
 `suggest` for an advisory one. The mode × tier projection (cost is not an input):
 
-| Mode | `require` tier | `warn` tier | `suggest` tier | Failed pre-review gate | Failed final/delivery gate |
-|---|---|---|---|---|---|
-| `fast` | `require` | `warn` | `off` | continue with warning | warn; operator decides |
-| `pro` | `require` | `warn` | `suggest` | auto repair loop for required gates | handoff or repair loop |
-| `governed` | `require` | `require` | `suggest` | auto repair loop, then handoff | block without receipt/waiver |
-| unset | `require` | `warn` | `suggest` | continue with warning | continue with warning |
+| Mode | `manual` tier | `suggest` tier | `warn` tier | `require` tier |
+|---|---|---|---|---|
+| `fast` | `manual` | `manual` | `warn` | `require` |
+| `pro` | `manual` | `suggest` | `warn` | `require` |
+| `governed` | `manual` | `suggest` | `require` | `require` |
+| unset | `manual` | `suggest` | `warn` | `require` |
 
 `require` is honored in every mode (the must-block tier — mode-independent);
 `governed` escalates `warn → require`; `fast` relaxes only the advisory
-`suggest → off` for speed; `pro` and unset honor the declared tier as-is. So an
+`suggest → manual` for speed; `pro` and unset honor the declared tier as-is. So an
 expensive `require` gate (e.g. the broad suite) still blocks; the lever to make a
 gate advisory is choosing a lower tier, not its cost (see
 [ADR 0117](../adr/0117-verification-blocking-tier-independent-of-cost.md)).
@@ -540,16 +567,16 @@ becomes relevant only after `implement`.
 optional, and **absence (`None`) is not an explicit value**:
 
 - **Absent** → flows through the merged gate-set base + the work_mode transform.
-- **Explicit** (including `policy: suggest` and `action: abort`) → authoritative;
-  it is **not** transformed or derived away.
+- **Explicit** policy supplies the declared tier; it is still projected through
+  the selected work mode. An explicit action is valid only with `require`.
 
-This is why omitting `policy` differs from writing `policy: suggest`, and why an
-operator's `action: abort` survives untouched.
+This is why omitting `policy` differs from writing `policy: suggest`; both are
+then subject to the same exact mode matrix.
 
 ### Effective policy resolution
 
 ```text
-1. explicit schedule.policy (not None, incl. "suggest")  -> authoritative (no transform)
+1. explicit schedule.policy (not None, incl. "suggest")  -> declared base tier
 2. else merged gate_set default_policy (may be None)      -> base_policy
 3. else derive the tier from base_policy / required-ness  -> per the work_mode table
    + work_mode
@@ -559,7 +586,7 @@ The work_mode policy table (same as the [work_mode](#work_mode) section) keys on
 the declared **tier** and **never** on cost. The declared tier `T` is the
 explicit base policy when set, else `require` for a required command and
 `suggest` for an advisory one. `fast` relaxes only the advisory `suggest` tier to
-`off`; `warn` and `require` are honored. `pro` honors the declared tier exactly.
+`manual`; `warn` and `require` are honored. `pro` honors the declared tier exactly.
 `governed` escalates `warn → require`; `require` and `suggest` are honored. An
 unset work_mode honors the declared tier. So a `gate_set.default_policy: require`
 blocks under **every** mode regardless of cost — an expensive `require` gate
@@ -589,7 +616,7 @@ When a selected command belongs to several gate sets, their defaults merge
 deterministically:
 
 ```text
-merged_default_policy = max strictness (off < suggest < warn < require) among
+merged_default_policy = max strictness (manual < suggest < warn < require) among
                         contributing sets that declare one  (None if none)
 merged_default_action = max strictness (continue_warn < repair_loop < handoff
                         < abort) among contributing sets that declare one
@@ -603,8 +630,8 @@ identity for `before_phase` / `after_phase`, so the same command scheduled under
 one hook for two phases yields two distinct gates (it never collapses). When two
 schedule entries target the *same* `(command, hook, phase)`, a tie-breaker keeps
 the max-strictness pair; a `None` policy is treated as *absent* (an explicit
-entry participates; all-`None` stays `None`). A command with no applicable
-schedule entry becomes `manual_only`.
+entry participates; all-`None` stays `None`). A selected command with no
+applicable schedule entry becomes `manual_only` with policy `manual`.
 
 ### The repair_loop-by-hook matrix (user-visible)
 
@@ -631,8 +658,9 @@ A failed required `after_phase(implement)` gate whose effective action is
    escalates to a handoff.
 
 `continue_warn` warns without blocking; `handoff` pauses; `abort` stops the run.
-`off` / `suggest` / `warn` policies never block — they are surfaced read-only in
-the per-phase prompt blocks.
+The ADR 0132 foundation does not change executor routing; `manual` and `suggest`
+are operator-owned in the eligibility contract, while `warn` has consequence
+`warning` and `require` has `required_action`.
 
 Every gate command the Stage 4 router executes is run with the **run worktree
 checkout** as the `{checkout}` subject and its receipt is **persisted** under
@@ -816,12 +844,12 @@ only one that acts on the final tree, so it is where declared proof can
 actually gate the change leaving the run.
 
 A new optional contract field `verification.delivery_policy` (validated against
-the existing `off | suggest | warn | require` vocabulary — no new policy
+the canonical `manual | suggest | warn | require` vocabulary — no new policy
 constants) selects the behaviour. Defaults are conservative:
 
 | Situation                                                          | Effective delivery policy |
 | ------------------------------------------------------------------ | ------------------------- |
-| No verification contract                                            | `off` (no gate)           |
+| No verification contract                                            | `None` (no gate)          |
 | Contract declared, `delivery_policy` unset, no scheduled require    | `warn`                    |
 | Schedule entry at `before_delivery` with explicit `policy: require` | `require` (ADR 0090)      |
 | `delivery_policy` declared explicitly                               | that value                |
@@ -1184,7 +1212,7 @@ PLUGIN = {
     "verification": {
         "default_env": "canonical-core",
         "required": ["lint", "architecture", "mcp-smoke"],
-        # Stage 6 delivery gate (ADR 0083). Optional; off|suggest|warn|require.
+        # Stage 6 delivery gate (ADR 0083). Optional; manual|suggest|warn|require.
         # Omitted with a contract declared → effective `warn`. `require` (a hard
         # non-interactive block on missing/failed/stale receipts or generated
         # garbage) is only ever reached by this explicit value — work_mode never
@@ -1444,11 +1472,11 @@ receipt is written, or any transition is blocked.
 | `verification.commands` | **Implemented (execution, Stage 3)** — projected in Stage 1, executed via `orcho verify run`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `verification.required` (list of command names) | **Implemented (Stage 3)** — validated list of declared names; drives `verify run --required`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `parity` (absolute/differential) | **Implemented (Stage 3)** — validated enum per command; differential lens on the receipt; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
-| `verification.schedule` (+ optional `policy`/`action`/`gate_sets`) | **Implemented (executable, Stage 4)** — projected in Stage 1; routed to blocking transitions in Stage 4; [ADR 0081](../adr/0081-verification-contract-scheduling-and-repair-routing.md) |
-| `verification.gate_sets` / `verification.selection` | **Implemented (Stage 4)** — selection model + defaults merge feeding the `ScheduledGatePlan`; [ADR 0081](../adr/0081-verification-contract-scheduling-and-repair-routing.md) |
-| `work_mode` (fast/pro/governed) | **Implemented (executable, Stage 4)** — derives effective gate policy **and** action when a schedule entry omits them; header still name-only, off the wire; [ADR 0081](../adr/0081-verification-contract-scheduling-and-repair-routing.md) |
+| `verification.schedule` (+ optional `policy`/`action`/`gate_sets`) | **Implemented (ADR 0132 foundation)** — validated normalized identities; executor adoption remains scheduled-gates task 2. |
+| `verification.gate_sets` / `verification.selection` | **Implemented (ADR 0132 foundation)** — deterministic selection and defaults merge feed `ScheduledGatePlan`; durable disposition migration remains task 3. |
+| `work_mode` (fast/pro/governed) | **Implemented (ADR 0132 foundation)** — exact policy projection; action/executor adoption is not part of this foundation. |
 | final-acceptance readiness summary | **Implemented (read-only, Stage 5)** — `pipeline/verification_readiness.py` prompt block (present/missing/failed/stale required receipts, env status, exploratory count) + additive evidence `verification_readiness` digest; [ADR 0082](../adr/0082-verification-contract-final-acceptance-readiness.md) |
-| `verification.delivery_policy` (off/suggest/warn/require) | **Implemented (Stage 6)** — validated against existing policy vocabulary; no contract→off, contract→warn; require via explicit opt-in **or** a scheduled `policy: require` gate at `before_delivery` (work_mode never escalates); [ADR 0083](../adr/0083-verification-contract-delivery-gate-awareness.md), [ADR 0090](../adr/0090-require-gate-no-silent-green.md) |
+| `verification.delivery_policy` (manual/suggest/warn/require) | **Implemented (foundation vocabulary)** — absent contract stays `None`; declared contract defaults to `warn`; executor/durable migration is out of scope. |
 | delivery gate awareness | **Implemented (Stage 6)** — `pipeline/verification_delivery.py` warns/blocks delivery on missing/failed/stale required receipts + generated garbage (classified separately from the product diff); decision status `verification_blocked`, halt `commit_delivery_verification_blocked`; reuses Stage 5 `classify_required_receipts`; [ADR 0083](../adr/0083-verification-contract-delivery-gate-awareness.md) |
 | cross-repo dependency provenance + stale | **Implemented (Stage 7)** — `pipeline/verification_dependencies.py`; command-receipt schema v2 records a per-`dependency_repos` `dependencies` block (name/path/HEAD/dirty-summary/`depends_on`), and a depended-on dependency's HEAD move marks the receipt stale at Stage 5/6 (HEAD-only, `depends_on` only; degrades, never raises). Evidence v1 / MCP wire unchanged (falsifier); [ADR 0084](../adr/0084-verification-contract-cross-repo-receipt-graph.md) |
 | `prompt_policy` | Partially implemented — Orcho default projection live (Stage 1 raw schedule / Stage 4 resolved plan); override chain still proposed ([ADR 0081](../adr/0081-verification-contract-scheduling-and-repair-routing.md)) |
@@ -1720,7 +1748,7 @@ orcho quality-gates [--profile WORK_KIND] [--paths GLOBS...] [--project PROJECT]
   delegated wholesale to the selection engine; the command re-implements none of
   it.
 - **No `--profile`** renders the declared matrix with the profile deliberately
-  unknown, so non-required (`warn` / `off`) gates read `profile-dependent`
+  unknown, so non-required (`warn` / `manual`) gates read `profile-dependent`
   rather than a guessed stage. Required gates still show their own timing hook.
 
 Exit codes: **0** on success (including the *no verification contract declared*
@@ -1742,7 +1770,7 @@ operator-facing axes (rendered as columns alongside `run` = auto/manual and
     scheduled;
   - a **`suggest`** policy, or a `manual_only` / `on_resume` hook → `operator`:
     a human runs it, it is never part of the automatic flow;
-  - a **`warn`** / **`off`** (or otherwise non-required auto) gate is not
+  - a **`warn`** / **`manual`** (or otherwise non-required auto) gate is not
     enforced inline, so it surfaces only near delivery: **`pre-final`** when the
     resolved profile has a final delivery phase, **`not auto-run`** when it
     provably does not (a profile such as `fast` or `small_task` with no final
@@ -1750,7 +1778,7 @@ operator-facing axes (rendered as columns alongside `run` = auto/manual and
     and **`profile-dependent`** when no `--profile` was given so the stage
     genuinely cannot be known.
 - **`policy`** — the effective *declared* receipt-enforcement policy for the
-  gate: `off` / `suggest` / `warn` / `require`, or `unknown` when it would only
+  gate: `manual` / `suggest` / `warn` / `require`, or `unknown` when it would only
   resolve after the `work_mode` transform. This is the declared strictness tier,
   read from the schedule entry (else the strictest backing gate-set default) —
   distinct from `when` and from activation.

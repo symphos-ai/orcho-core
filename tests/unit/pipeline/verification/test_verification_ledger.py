@@ -92,7 +92,6 @@ def _reference_contract() -> VerificationContract:
                 "after_phase": "implement",
                 "gate_sets": ["baseline"],
                 "policy": "warn",
-                "action": "continue_warn",
             },
             {
                 "after_phase": "implement",
@@ -203,6 +202,44 @@ def test_condition_operator_for_e2e() -> None:
     row = _row(build_gate_ledger(_reference_contract()), "e2e")
     assert row.condition == "operator"
     assert row.condition_paths == ()
+
+
+def test_direct_schedule_row_uses_explicit_always_activation_binding() -> None:
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            verification={
+                "commands": {"lint": "ruff check ."},
+                "schedule": [{"after_phase": "implement", "commands": ["lint"]}],
+            },
+        ),
+    )
+    assert contract is not None
+    row = _row(build_gate_ledger(contract, changed_files=()), "lint")
+    assert row.activation_binding == "always"
+    assert row.condition == "always"
+    assert row.resolved == "active"
+
+
+def test_direct_manual_only_row_keeps_operator_binding_when_plan_resolves() -> None:
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            verification={
+                "commands": {"parity": "pytest tests/parity"},
+                "gate_sets": {"expensive": {"commands": ["parity"]}},
+                "selection": [{"operator": ["expensive"]}],
+                "schedule": [{"manual_only": True, "commands": ["parity"]}],
+            },
+        ),
+    )
+    assert contract is not None
+
+    # The direct schedule creates a plan entry with ``always`` even though the
+    # operator-gated set was not selected. That plan binding must not overwrite
+    # this manual hook's explicit operator binding in the ledger.
+    row = _row(build_gate_ledger(contract, changed_files=()), "parity")
+    assert row.activation_binding == "operator"
+    assert row.condition == "operator"
+    assert row.resolved == "manual"
 
 
 # ── resolve: start (no plan/changed files) ──────────────────────────────────

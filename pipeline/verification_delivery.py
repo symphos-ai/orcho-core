@@ -132,7 +132,7 @@ class WaivedGate:
 class DeliveryVerificationAssessment:
     """Typed Stage 6 delivery-gate verdict (read-only).
 
-    ``policy`` is the effective *boundary* delivery policy (off|suggest|warn|
+    ``policy`` is the effective *boundary* delivery policy (manual|suggest|warn|
     require) — :func:`resolve_delivery_policy`, unchanged. The three
     ``required_*`` tuples are the required (non-manual) delivery commands whose
     receipt is missing / failed / stale; ``garbage_paths`` are generated
@@ -351,10 +351,10 @@ class DeliveryVerificationAssessment:
         return tuple(out)
 
 
-def resolve_delivery_policy(contract: VerificationContract | None) -> str:
+def resolve_delivery_policy(contract: VerificationContract | None) -> str | None:
     """Resolve the effective Stage 6 delivery policy.
 
-    ``None`` contract → ``"off"`` (no verification contract, no gate). An explicit
+    ``None`` contract → ``None`` (no verification contract, no gate). An explicit
     ``contract.delivery_policy`` is honoured verbatim. Otherwise a contract that
     *explicitly schedules* a ``require``-policy gate at the delivery boundary
     (``before_delivery``) derives ``require``: declaring a required delivery gate
@@ -365,7 +365,7 @@ def resolve_delivery_policy(contract: VerificationContract | None) -> str:
     its own.
     """
     if contract is None:
-        return "off"
+        return None
     explicit = getattr(contract, "delivery_policy", None)
     if explicit is not None:
         return explicit
@@ -403,8 +403,7 @@ def assess_delivery_verification(
 ) -> DeliveryVerificationAssessment | None:
     """The fixed Stage 6 orchestration contract: assess delivery readiness.
 
-    Returns ``None`` when there is no contract or the effective policy is
-    ``off`` (the no-gate path stays byte-identical to prior delivery). Otherwise
+    Returns ``None`` when there is no contract. Otherwise
     reads, from ``diff_cwd`` itself:
 
     * untracked paths — ``git ls-files --others --exclude-standard``;
@@ -419,7 +418,7 @@ def assess_delivery_verification(
     not asserted).
     """
     policy = resolve_delivery_policy(contract)
-    if contract is None or policy == "off":
+    if contract is None:
         return None
 
     # Resolve the delivery plan once so receipt classification and the per-gate
