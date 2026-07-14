@@ -31,6 +31,8 @@ import dataclasses
 import json
 import os
 import sys
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -589,11 +591,20 @@ def _apply_worktree_bootstrap(
         run_worktree_bootstrap,
     )
     try:
-        bootstrap_result = run_worktree_bootstrap(
-            config,
-            source_root=git_root,
-            worktree_path=worktree_ctx.path,
-        )
+        if presentation is PresentationPolicy.TERMINAL:
+            reporter = _WorktreeBootstrapReporter(clock=time.monotonic)
+            bootstrap_result = run_worktree_bootstrap(
+                config,
+                source_root=git_root,
+                worktree_path=worktree_ctx.path,
+                on_step=reporter.on_step,
+            )
+        else:
+            bootstrap_result = run_worktree_bootstrap(
+                config,
+                source_root=git_root,
+                worktree_path=worktree_ctx.path,
+            )
     except WorktreeBootstrapError as exc:
         session["worktree_bootstrap"] = {
             "status": "failed",
@@ -607,8 +618,82 @@ def _apply_worktree_bootstrap(
         print_error(f"Worktree bootstrap failed: {exc}")
         sys.exit(2)
     if bootstrap_result.get("status") != "skipped":
+        if presentation is PresentationPolicy.TERMINAL:
+            reporter.finish()
         session["worktree_bootstrap"] = bootstrap_result
         _save_session_quietly(output_dir, session)
+
+
+@dataclasses.dataclass
+class _WorktreeBootstrapReporter:
+    """Render transient bootstrap progress without changing durable state."""
+
+    clock: Callable[[], float]
+    started_at: float | None = None
+    step_starts: dict[int, tuple[str, float]] = dataclasses.field(default_factory=dict)
+
+    def on_step(
+        self,
+        stage: str,
+        index: int,
+        action: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if stage == "start":
+            self._start(index, action, payload)
+        elif stage == "complete":
+            self._complete(index, payload)
+
+    def _start(self, index: int, action: str, step: Mapping[str, Any]) -> None:
+        now = self.clock()
+        if self.started_at is None:
+            from core.io.transcript import render_phase_header
+            print(render_phase_header("SETUP", "Worktree bootstrap"))
+            self.started_at = now
+        label = _bootstrap_step_label(action, step)
+        self.step_starts[index] = (label, now)
+        print(f"  {index}. {label} …")
+
+    def _complete(self, index: int, record: Mapping[str, Any]) -> None:
+        label, started_at = self.step_starts.pop(index)
+        elapsed = self.clock() - started_at
+        status = "skipped" if record.get("status") == "skipped" else "done"
+        print(f"  {index}. {label} {status} ({elapsed:.2f}s)")
+
+    def finish(self) -> None:
+        if self.started_at is not None:
+            elapsed = self.clock() - self.started_at
+            print(f"  Worktree bootstrap complete ({elapsed:.2f}s)")
+
+
+def _bootstrap_step_label(action: str, step: Mapping[str, Any]) -> str:
+    """Return a bounded, provider-neutral terminal label for one declaration."""
+    if action == "run":
+        command = step.get("run", step.get("command", step.get("cmd", "")))
+        return _bounded_bootstrap_text(_format_bootstrap_command(command))
+    if action == "copy":
+        source = step.get("from", step.get("copy", ""))
+        target = step.get("to")
+        label = f"copy {source}" if not target else f"copy {source} → {target}"
+        return _bounded_bootstrap_text(label)
+    if action == "python":
+        return _bounded_bootstrap_text(f"python {step.get('python', step.get('script', ''))}")
+    if action == "shell":
+        return _bounded_bootstrap_text(f"shell {step.get('shell', step.get('cmd', ''))}")
+    return _bounded_bootstrap_text(action)
+
+
+def _format_bootstrap_command(command: Any) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, Sequence) and not isinstance(command, bytes):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def _bounded_bootstrap_text(text: str, *, limit: int = 120) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[:limit - 1]}…"
 
 
 def _save_session_quietly(output_dir: Path | None, session: dict) -> None:

@@ -12,7 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ def run_worktree_bootstrap(
     *,
     source_root: Path,
     worktree_path: Path,
+    on_step: Callable[[str, int, str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run a plugin-declared bootstrap against ``worktree_path``.
 
@@ -54,22 +55,29 @@ def run_worktree_bootstrap(
     records: list[dict[str, Any]] = []
     for index, raw_step in enumerate(steps, start=1):
         step = _require_mapping(raw_step, index)
+        action = _action_name(step)
+        if on_step is not None:
+            on_step("start", index, action, step)
         if not _platform_matches(step):
-            records.append({
+            record = {
                 "index": index,
-                "action": _action_name(step),
+                "action": action,
                 "status": "skipped",
                 "reason": "platform mismatch",
-            })
+            }
+            records.append(record)
+            if on_step is not None:
+                on_step("complete", index, action, record)
             continue
-        records.append(
-            _run_step(
-                step,
-                index=index,
-                source_root=source_root,
-                worktree_path=worktree_path,
-            ),
+        record = _run_step(
+            step,
+            index=index,
+            source_root=source_root,
+            worktree_path=worktree_path,
         )
+        records.append(record)
+        if on_step is not None:
+            on_step("complete", index, action, record)
     return {"status": "ok", "steps": records}
 
 

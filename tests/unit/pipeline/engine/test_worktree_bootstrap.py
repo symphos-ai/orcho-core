@@ -198,6 +198,60 @@ def test_platform_mismatch_skips_step(tmp_path: Path) -> None:
     }]
 
 
+def test_callback_reports_start_then_completion_without_changing_result(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    (source / "libs").mkdir(parents=True)
+    worktree.mkdir()
+    (source / "libs" / "native.dll").write_bytes(b"dll")
+    events = []
+
+    result = run_worktree_bootstrap(
+        [{"copy": "libs"}],
+        source_root=source,
+        worktree_path=worktree,
+        on_step=lambda stage, index, action, payload: events.append(
+            (stage, index, action, dict(payload), (worktree / "libs").exists()),
+        ),
+    )
+
+    assert events == [
+        ("start", 1, "copy", {"copy": "libs"}, False),
+        ("complete", 1, "copy", result["steps"][0], True),
+    ]
+    assert result == {
+        "status": "ok",
+        "steps": [{
+            "index": 1,
+            "action": "copy",
+            "status": "ok",
+            "from": str((source / "libs").resolve()),
+            "to": str((worktree / "libs").resolve()),
+        }],
+    }
+
+
+def test_callback_reports_platform_skip_completion(tmp_path: Path) -> None:
+    events = []
+
+    result = run_worktree_bootstrap(
+        [{"copy": "libs", "platforms": ["definitely-not-this-platform"]}],
+        source_root=tmp_path,
+        worktree_path=tmp_path,
+        on_step=lambda stage, index, action, payload: events.append(
+            (stage, index, action, dict(payload)),
+        ),
+    )
+
+    assert events[0] == (
+        "start", 1, "copy",
+        {"copy": "libs", "platforms": ["definitely-not-this-platform"]},
+    )
+    assert events[1] == ("complete", 1, "copy", result["steps"][0])
+
+
 def _roots(tmp_path: Path) -> tuple[Path, Path]:
     """Create empty source + worktree roots; return (source, worktree)."""
     source = tmp_path / "source"
