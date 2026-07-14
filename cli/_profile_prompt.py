@@ -20,6 +20,7 @@ from cli._profile_menu import (
     AUTO_DETECT_CHOICE,
     _print_profile_details,
     _render_menu,
+    render_autodetect_headless,
     render_autodetect_result,
 )
 from core.io.ansi import C, get_color_enabled, is_color_active
@@ -333,9 +334,11 @@ def resolve_topology_choice(
     semantic-profile confidence at or above :data:`_CROSS_CONFIDENCE_FLOOR`.
     For such a resolution:
 
-    * **non-interactive** — the recommendation is only *recorded*: no block is
-      printed, no cross run starts, and delivery is not widened. The returned
-      ``delivery_scope`` stays ``strict_mono``;
+    * **non-interactive** — no cross run starts and delivery is not widened
+      (returned ``delivery_scope`` stays ``strict_mono``), but the
+      recommendation is *surfaced* (cross parity): a headless block echoes the
+      detected topology + the ready ``orcho cross`` directive before proceeding
+      as the safe mono default. It is never silently swallowed;
     * **interactive** — print the ``Auto-detect result`` block and the three
       choices, read the operator's pick (1/2/3), and map it to a delivery scope
       via :func:`pipeline.project.auto_detect.apply_topology_choice`.
@@ -369,14 +372,18 @@ def resolve_topology_choice(
     if confidence is None or confidence < _CROSS_CONFIDENCE_FLOOR:
         return resolution
 
-    # Non-interactive: never prompt, never start cross, never widen delivery.
-    # The cross topology is still recorded in meta via the resolution echo.
-    if not interactive:
-        return resolution
-
     if color is None:
         resolved = get_color_enabled()
         color = resolved if resolved is not None else is_color_active()
+
+    # Non-interactive: never prompt, never start cross, never widen delivery —
+    # but never SILENTLY proceed mono either (cross parity). Surface the same
+    # recommendation the interactive picker would, plus the ready `orcho cross`
+    # directive, then continue as the safe mono default. The cross topology is
+    # still recorded in meta via the resolution echo.
+    if not interactive:
+        render_autodetect_headless(resolution, color=color)
+        return resolution
 
     render_autodetect_result(resolution, color=color)
 

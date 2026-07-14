@@ -303,3 +303,38 @@ def render_autodetect_result(
     print(bold("Choices", color=color))
     for line in _TOPOLOGY_CHOICE_LINES:
         print(f"  {line}")
+
+
+def render_autodetect_headless(
+    resolution: AutoDetectResolution, *, color: bool,
+) -> None:
+    """Surface a high-confidence ``cross_recommended`` resolution in a headless
+    run (no TTY / ``--no-interactive``).
+
+    Cross parity: a headless auto-detect must SHOW the recommendation the
+    interactive picker would — never silently proceed mono. There is no operator
+    to choose, so this prints the same facts block as
+    :func:`render_autodetect_result` (minus the interactive choices) and states
+    the safe default (single-project / mono run) plus the ready ``orcho cross``
+    directive. It never reads stdin and never starts a cross run.
+    """
+    print(title("Auto-detect result", color=color))
+    print(divider(color=color))
+    print(f"  profile     {bold(resolution.actual_profile.value, color=color)}")
+    print(f"  topology    {bold('cross recommended', color=color)}")
+    if resolution.confidence is not None:
+        print(f"  confidence  {resolution.confidence:.2f}")
+    print(f"  projects    {', '.join(resolution.delivery_projects)}")
+    if resolution.topology_reason:
+        print(f"  reason      {grey(resolution.topology_reason, color=color)}")
+    print(divider(color=color))
+    directive = (
+        "orcho cross --projects "
+        + " ".join(f"{alias}:<path>" for alias in resolution.delivery_projects)
+        + " --task '...'"
+    )
+    print(grey(
+        "Headless: proceeding as a single-project (mono) run — the safe "
+        "default. To run cross instead:", color=color,
+    ))
+    print(f"  {bold(directive, color=color)}")
