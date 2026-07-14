@@ -151,6 +151,33 @@ class TestLoadPlugin:
             {"run": ["composer", "install"]},
         ]
 
+    def test_worktree_teardown_key_loaded(self, project_dir: str) -> None:
+        # ADR 0131: symmetric to worktree_bootstrap; loaded straight off the
+        # PluginConfig dataclass field with no bespoke loader.
+        plugin_code = textwrap.dedent("""
+            PLUGIN = {
+                "worktree_teardown": [
+                    {"run": ["docker", "compose", "down", "-v"]},
+                ],
+            }
+        """)
+        plugin_path = Path(project_dir) / ".orcho" / "multiagent"
+        plugin_path.mkdir(parents=True)
+        (plugin_path / "plugin.py").write_text(plugin_code)
+
+        cfg = load_plugin(project_dir)
+
+        assert cfg.worktree_teardown == [
+            {"run": ["docker", "compose", "down", "-v"]},
+        ]
+
+    def test_worktree_teardown_defaults_empty(self, project_dir: str) -> None:
+        plugin_path = Path(project_dir) / ".orcho" / "multiagent"
+        plugin_path.mkdir(parents=True)
+        (plugin_path / "plugin.py").write_text("PLUGIN = {}\n")
+
+        assert load_plugin(project_dir).worktree_teardown == []
+
     def test_allowed_modifications_list_loaded(self, project_dir: str) -> None:
         plugin_code = textwrap.dedent("""
             PLUGIN = {

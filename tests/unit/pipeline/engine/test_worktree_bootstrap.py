@@ -11,6 +11,7 @@ import pytest
 from pipeline.engine.worktree_bootstrap import (
     WorktreeBootstrapError,
     run_worktree_bootstrap,
+    run_worktree_teardown,
 )
 
 
@@ -111,6 +112,69 @@ def test_failed_run_step_raises_without_capturing_output(tmp_path: Path) -> None
     message = str(excinfo.value)
     assert "exit code 7" in message
     assert "secret-output" not in message
+
+
+# ── worktree_teardown (ADR 0131) ─────────────────────────────────────────────
+
+
+def test_teardown_runs_step_in_worktree(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    source.mkdir()
+    worktree.mkdir()
+
+    result = run_worktree_teardown(
+        [{
+            "run": [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('down.ok').write_text('ok')",
+            ],
+        }],
+        source_root=source,
+        worktree_path=worktree,
+    )
+
+    assert result["status"] == "ok"
+    assert (worktree / "down.ok").read_text(encoding="utf-8") == "ok"
+
+
+@pytest.mark.parametrize("config", [[], None, False, {"enabled": False}])
+def test_teardown_disabled_or_empty_is_skipped(tmp_path: Path, config) -> None:
+    result = run_worktree_teardown(
+        config, source_root=tmp_path, worktree_path=tmp_path,
+    )
+    assert result["status"] == "skipped"
+    assert result["steps"] == []
+
+
+def test_teardown_failing_step_is_best_effort_not_raised(tmp_path: Path) -> None:
+    # A terminal-run cleanup must never raise — a failing step (e.g. a
+    # ``docker compose down`` against a stack already gone) is recorded and the
+    # remaining steps still run.
+    source = tmp_path / "source"
+    worktree = tmp_path / "worktree"
+    source.mkdir()
+    worktree.mkdir()
+
+    result = run_worktree_teardown(
+        [
+            {"run": [sys.executable, "-c", "import sys; sys.exit(7)"]},
+            {"run": [
+                sys.executable, "-c",
+                "from pathlib import Path; Path('after.ok').write_text('ok')",
+            ]},
+        ],
+        source_root=source,
+        worktree_path=worktree,
+    )
+
+    assert result["status"] == "failed"
+    assert result["steps"][0]["status"] == "failed"
+    assert "exit code 7" in result["steps"][0]["error"]
+    # The step after the failure still ran (best-effort, no short-circuit).
+    assert (worktree / "after.ok").read_text(encoding="utf-8") == "ok"
+    assert result["steps"][1]["status"] == "ok"
 
 
 def test_platform_mismatch_skips_step(tmp_path: Path) -> None:
