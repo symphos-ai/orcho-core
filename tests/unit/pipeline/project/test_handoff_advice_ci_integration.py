@@ -32,6 +32,7 @@ from pipeline.project.handoff import (
 from pipeline.project.handoff_advice import AdvisorResult, HandoffAdvice
 from pipeline.project.handoff_advice_policy import HandoffAdvicePolicy
 from pipeline.project.handoff_noninteractive import UNATTENDED_HALT_REASON
+from pipeline.project.types import PresentationPolicy
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ def _run(
     *,
     parsed_plan: ParsedPlan | None,
     unattended: bool = False,
+    presentation: PresentationPolicy = PresentationPolicy.TERMINAL,
 ) -> SimpleNamespace:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -118,6 +120,7 @@ def _run(
         registry=None,
         _ckpt=None,
         _dispatch_active=False,
+        _presentation=presentation,
     )
 
 
@@ -470,20 +473,57 @@ def test_unattended_ci_stop_auto_continues(tmp_path, wired):
     assert agg["stopped"] == 1
 
 
-def test_unattended_implement_handoff_halts_instead_of_parking(tmp_path, wired):
+@pytest.mark.parametrize(
+    ("presentation", "expect_terminal_message"),
+    [
+        (PresentationPolicy.TERMINAL, True),
+        (PresentationPolicy.SILENT, False),
+    ],
+)
+def test_unattended_implement_handoff_halts_instead_of_parking(
+    tmp_path, wired, capsys, presentation, expect_terminal_message,
+):
     wired.install_advice(_advice())
     wired.monkeypatch.setattr(
         _policy, "resolve_handoff_advice_policy",
         lambda run: HandoffAdvicePolicy(auto_retry_with_agent=False),
     )
     wired.monkeypatch.setattr(handoff_mod, "save_session", lambda *a, **k: None)
-    run = _run(tmp_path, _signal(), parsed_plan=_plan(), unattended=True)
+    signal = _signal()
+    run = _run(
+        tmp_path,
+        signal,
+        parsed_plan=_plan(),
+        unattended=True,
+        presentation=presentation,
+    )
 
     result = process_pending_phase_handoffs(run, profile="P", ctx="C")
+    captured = capsys.readouterr()
 
     assert result.continue_dispatch is True
     assert run.state.halt is True
     assert run.state.halt_reason == UNATTENDED_HALT_REASON
     assert run.state.phase_handoff_request is None
-    assert run.session["phase_handoff_unattended"]["reason"] == "implement_handoff"
+    assert run._dispatch_active is False
+    assert run.session["phase_handoff_unattended"] == {
+        "reason": "implement_handoff",
+        "note": (
+            "auto-halted by unattended policy "
+            "(reason=implement_handoff; phase=implement; trigger=rejected; "
+            "ci_stop=advice_ineligible)"
+        ),
+        "handoff_id": signal.handoff_id,
+        "phase": signal.phase,
+        "trigger": signal.trigger,
+    }
     assert len(wired.decide.calls) == 0
+    if expect_terminal_message:
+        assert captured.err == ""
+        assert len(captured.out.splitlines()) == 1
+        assert run.session["phase_handoff_unattended"]["note"] in captured.out
+        assert run.session_ts in captured.out
+        assert "resume this run or rerun it without unattended mode" in captured.out
+    else:
+        assert captured.out == ""
+        assert captured.err == ""

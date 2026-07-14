@@ -1701,6 +1701,19 @@ def _record_unattended_halt(run: Any, signal: Any, resolution: Any) -> None:
     run.state.halt_reason = UNATTENDED_HALT_REASON
     run._dispatch_active = False
 
+    if (
+        getattr(run, "_presentation", PresentationPolicy.TERMINAL)
+        is PresentationPolicy.TERMINAL
+    ):
+        run_id = str(getattr(run, "session_ts", "") or "")
+        if not run_id:
+            output_dir = getattr(run, "output_dir", None)
+            run_id = str(getattr(output_dir, "name", "") or "<unknown>")
+        warn(
+            f"{resolution.note} Run {run_id!r} is halted; resume this run "
+            "or rerun it without unattended mode to make the handoff decision."
+        )
+
 
 def _resolve_unattended_handoff(
     run: Any,
