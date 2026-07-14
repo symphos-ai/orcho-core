@@ -335,6 +335,9 @@ def setup_isolation(
         if output_dir is not None:
             with contextlib.suppress(Exception):
                 save_session(output_dir, session)
+        if presentation is PresentationPolicy.TERMINAL:
+            from pipeline.project.app import print_error
+            print_error(_pre_run_dirty_halt_message(_pre_run_dirty))
         return IsolationSetup(halted=True)
 
     # Cross children carry ``parent_run_id`` (the cross run id) + a stable
@@ -528,6 +531,39 @@ def setup_isolation(
         sandbox_policy=_sandbox_policy,
         pre_run_dirty=_pre_run_dirty,
     )
+
+
+def _pre_run_dirty_halt_message(intake: Any) -> str:
+    """Build a compact operator-facing explanation for a dirty-checkout halt."""
+    reason = getattr(intake, "reason", None) or "dirty checkout requires intake"
+    details = _format_pre_run_dirty_paths(
+        "changed", getattr(intake, "changed_paths", ()),
+    )
+    details += _format_pre_run_dirty_paths(
+        "untracked", getattr(intake, "untracked_paths", ()),
+    )
+    path_details = f" Paths: {'; '.join(details)}." if details else ""
+    return (
+        f"Dirty working tree halted before worktree creation: {reason}."
+        f"{path_details} Commit or stash your changes, then rerun; or rerun "
+        "with --no-worktree-isolation."
+    )
+
+
+def _format_pre_run_dirty_paths(
+    label: str,
+    paths: tuple[str, ...],
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Return a bounded path summary suitable for one terminal line."""
+    if not paths:
+        return []
+    examples = ", ".join(paths[:limit])
+    remaining = len(paths) - limit
+    if remaining > 0:
+        examples += f", +{remaining} more"
+    return [f"{label} ({len(paths)}): {examples}"]
 
 
 def _apply_worktree_bootstrap(

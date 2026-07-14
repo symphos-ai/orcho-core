@@ -179,12 +179,19 @@ def test_bootstrap_failure_terminal_exits_2_with_message(
     assert "phase_handoff" not in session
 
 
-def test_pre_run_dirty_halt_clears_stale_phase_handoff(tmp_path: Path) -> None:
+def test_pre_run_dirty_halt_silent_is_quiet_and_clears_stale_phase_handoff(
+    tmp_path: Path, capsys,
+) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     session = {"phase_handoff": {"pending": "decision"}, "status": "running"}
     halted_intake = PreRunDirtyIntake(
-        action="halt", status="halted", dirty=True, reason="operator halt",
+        action="halt",
+        status="halted",
+        dirty=True,
+        reason="operator halted dirty intake",
+        changed_paths=("src/app.py",),
+        untracked_paths=("notes.txt",),
     )
 
     with patch(
@@ -204,6 +211,51 @@ def test_pre_run_dirty_halt_clears_stale_phase_handoff(tmp_path: Path) -> None:
     assert session["status"] == "halted"
     assert session["halt_reason"] == "pre_run_dirty_halt"
     assert session["pre_run_dirty"]["action"] == "halt"
+    assert "phase_handoff" not in session
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_pre_run_dirty_halt_terminal_prints_actionable_message(
+    tmp_path: Path, capsys,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = {"phase_handoff": {"pending": "decision"}, "status": "running"}
+    halted_intake = PreRunDirtyIntake(
+        action="halt",
+        status="halted",
+        dirty=True,
+        reason="non-interactive policy selected halt",
+        changed_paths=("src/app.py", "pyproject.toml"),
+        untracked_paths=("notes.txt",),
+    )
+
+    with patch(
+        "pipeline.engine.pre_run_dirty.resolve_pre_run_dirty_intake",
+        return_value=halted_intake,
+    ):
+        result = setup_isolation(
+            **_setup_isolation_kwargs(
+                session=session,
+                output_dir=run_dir,
+                git_root=tmp_path,
+                presentation=PresentationPolicy.TERMINAL,
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Dirty working tree" in captured.err
+    assert "non-interactive policy selected halt" in captured.err
+    assert "src/app.py" in captured.err
+    assert "notes.txt" in captured.err
+    assert "Commit or stash" in captured.err
+    assert "--no-worktree-isolation" in captured.err
+    assert result.halted is True
+    assert session["status"] == "halted"
+    assert session["halt_reason"] == "pre_run_dirty_halt"
     assert "phase_handoff" not in session
 
 
