@@ -125,7 +125,7 @@ def test_choice_cross_raises_launch_directive_not_a_mono_run(
 # ── non-interactive: record only, no cross, no widening ──────────────────────
 
 
-def test_non_interactive_records_only_no_block_no_widening(
+def test_non_interactive_surfaces_recommendation_without_widening(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     res = _cross_resolution()
@@ -139,9 +139,14 @@ def test_non_interactive_records_only_no_block_no_widening(
     # No widening, no cross start — delivery stays strict_mono.
     assert updated.delivery_scope is DeliveryScope.STRICT_MONO
     assert updated.recommended_topology is RunTopology.CROSS_RECOMMENDED
+    # Cross parity: the recommendation is SURFACED (not silently swallowed) —
+    # the headless block echoes the topology + a ready `orcho cross` directive,
+    # but without the interactive 1/2/3 choices.
     out = capsys.readouterr().out
-    assert "Auto-detect result" not in out
-    assert "orcho cross" not in out
+    assert "Auto-detect result" in out
+    assert "orcho cross --projects" in out
+    assert "mono" in out
+    assert "Choices" not in out
 
 
 # ── pass-through cases ───────────────────────────────────────────────────────
