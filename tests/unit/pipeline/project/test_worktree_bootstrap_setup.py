@@ -6,7 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -177,6 +177,66 @@ def test_bootstrap_failure_terminal_exits_2_with_message(
     assert session["status"] == "halted"
     assert session["halt_reason"] == "worktree_bootstrap_failed"
     assert "phase_handoff" not in session
+
+
+def test_bootstrap_terminal_renders_step_and_total_elapsed(
+    tmp_path: Path, capsys,
+) -> None:
+    session = {}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+    clock = Mock(side_effect=[10.0, 11.25, 12.5])
+    record = {"index": 1, "action": "run", "status": "ok"}
+
+    def bootstrap(*args, on_step, **kwargs):
+        on_step("start", 1, "run", {"run": ["composer", "install"]})
+        on_step("complete", 1, "run", record)
+        return {"status": "ok", "steps": [record]}
+
+    with patch("pipeline.project.isolation_setup.time.monotonic", clock), patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
+    ):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["composer", "install"]}],
+            session=session,
+            output_dir=None,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.TERMINAL,
+    )
+
+    output = capsys.readouterr().out
+    assert "[SETUP] Worktree bootstrap" in output or "▶ setup" in output
+    assert "composer install" in output
+    assert "done (1.25s)" in output
+    assert "Worktree bootstrap complete (2.50s)" in output
+
+
+def test_bootstrap_silent_is_quiet_and_does_not_pass_reporter(
+    tmp_path: Path, capsys,
+) -> None:
+    session = {}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+    engine = Mock(return_value={"status": "ok", "steps": []})
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", engine,
+    ):
+        _apply_worktree_bootstrap(
+            config=[{"copy": "libs"}],
+            session=session,
+            output_dir=None,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.SILENT,
+        )
+
+    assert engine.call_args.kwargs == {
+        "source_root": tmp_path,
+        "worktree_path": tmp_path,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_pre_run_dirty_halt_silent_is_quiet_and_clears_stale_phase_handoff(
