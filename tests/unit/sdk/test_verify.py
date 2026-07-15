@@ -226,6 +226,78 @@ class TestVerificationSubjectResolution:
         with pytest.raises(VerifyEnvError, match=message):
             verify_list(project=str(project), run_id="child")
 
+    @pytest.mark.parametrize(
+        ("case", "message"),
+        [
+            ("missing_id", "missing parent_run_id"),
+            ("invalid_id", "parent_run_id is invalid"),
+            ("conflicting_dir", "parent_run_dir conflicts"),
+            ("mismatched_project", "parent project does not match"),
+        ],
+    )
+    def test_correction_child_rejects_untrusted_parent_identity(
+        self, tmp_path: Path, runs_dir: Path, case: str, message: str,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "retained"
+        worktree.mkdir()
+        parent_dir = _write_meta_run(
+            runs_dir, "parent", project=project,
+            worktree={"isolation": "worktree", "path": str(worktree)},
+        )
+        child_dir = runs_dir / "child"
+        child_dir.mkdir()
+        child_meta = {
+            "task": "fix", "status": "running", "project": str(project),
+            "profile": "correction", "resume_mode": "followup",
+            "parent_run_id": "parent", "parent_run_dir": str(parent_dir),
+        }
+        if case == "missing_id":
+            child_meta.pop("parent_run_id")
+        elif case == "invalid_id":
+            child_meta["parent_run_id"] = "../parent"
+        elif case == "conflicting_dir":
+            child_meta["parent_run_dir"] = str(runs_dir / "other")
+        else:
+            parent_meta_path = parent_dir / "meta.json"
+            parent_meta = json.loads(parent_meta_path.read_text(encoding="utf-8"))
+            parent_meta["project"] = str(tmp_path / "other-project")
+            parent_meta_path.write_text(json.dumps(parent_meta), encoding="utf-8")
+        (child_dir / "meta.json").write_text(
+            json.dumps(child_meta), encoding="utf-8",
+        )
+
+        with pytest.raises(VerifyEnvError, match=message):
+            verify_list(project=str(project), run_id="child")
+
+    def test_correction_child_normalizes_parent_meta_read_failure(
+        self, tmp_path: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _write_project(tmp_path)
+        parent_dir = runs_dir / "parent"
+        parent_dir.mkdir()
+        (parent_dir / "meta.json").write_text("{}", encoding="utf-8")
+        child_dir = runs_dir / "child"
+        child_dir.mkdir()
+        child_meta = {
+            "task": "fix", "status": "running", "project": str(project),
+            "profile": "correction", "resume_mode": "followup",
+            "parent_run_id": "parent", "parent_run_dir": str(parent_dir),
+        }
+        (child_dir / "meta.json").write_text(
+            json.dumps(child_meta), encoding="utf-8",
+        )
+
+        def _load_meta(run_dir: Path) -> dict:
+            if run_dir.name == "child":
+                return child_meta
+            raise OSError("unreadable parent")
+
+        monkeypatch.setattr("sdk.verify.load_meta", _load_meta)
+
+        with pytest.raises(VerifyEnvError, match="parent metadata is unavailable"):
+            verify_list(project=str(project), run_id="child")
+
     def test_all_entry_points_share_recorded_worktree_and_source(
         self, tmp_path: Path, runs_dir: Path,
     ) -> None:
