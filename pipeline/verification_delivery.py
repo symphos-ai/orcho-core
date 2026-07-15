@@ -143,7 +143,7 @@ class DeliveryVerificationAssessment:
     per-gate policy (from :func:`pipeline.verification_policy.effective_delivery_policy_by_command`).
     :attr:`blocking_gaps` are the gaps whose effective policy is ``require``;
     :attr:`warning_gaps` are ``warn`` / ``suggest`` gaps (delivery is allowed by
-    policy); :attr:`manual_only_gaps` are gaps on manual/operator-only commands —
+    policy); :attr:`operator_gaps` are gaps on manual/operator-only commands —
     visible, but NEVER counted as a missing-required receipt and NEVER blocking
     (ADR 0090). ``policy_by_command`` lists ``(command, policy)`` for every gap,
     render-only.
@@ -176,7 +176,7 @@ class DeliveryVerificationAssessment:
     # and the legacy ``require``-boundary blocking fallback.
     blocking_gaps: tuple[GapEntry, ...] = ()
     warning_gaps: tuple[GapEntry, ...] = ()
-    manual_only_gaps: tuple[GapEntry, ...] = ()
+    operator_gaps: tuple[GapEntry, ...] = ()
     policy_by_command: tuple[tuple[str, str], ...] = ()
     # Verification-gate waivers (T2), additive and default empty so a
     # directly-constructed assessment and the no-waiver path stay byte-identical:
@@ -190,8 +190,8 @@ class DeliveryVerificationAssessment:
     waived_gates: tuple[WaivedGate, ...] = ()
 
     @property
-    def manual_only_commands(self) -> tuple[str, ...]:
-        return tuple(e.command for e in self.manual_only_gaps)
+    def operator_commands(self) -> tuple[str, ...]:
+        return tuple(e.command for e in self.operator_gaps)
 
     @property
     def has_blockers(self) -> bool:
@@ -217,7 +217,7 @@ class DeliveryVerificationAssessment:
             return True
         if self.policy == "require" and self.garbage_paths:
             return True
-        if self.blocking_gaps or self.warning_gaps or self.manual_only_gaps:
+        if self.blocking_gaps or self.warning_gaps or self.operator_gaps:
             # Partition present and no require gap → not blocking.
             return False
         return self.policy == "require" and self.has_blockers
@@ -241,16 +241,16 @@ class DeliveryVerificationAssessment:
         return self._legacy_blocker_lines()
 
     @property
-    def manual_only_line(self) -> str | None:
+    def operator_line(self) -> str | None:
         """One advisory line naming manual/operator-only gaps, or ``None``.
 
         Manual-only gaps are visible but neither required nor blocking; the line
         states that plainly so they are never read as a missing-required receipt.
         """
-        if not self.manual_only_gaps:
+        if not self.operator_gaps:
             return None
-        names = ", ".join(f"{e.command} ({e.status})" for e in self.manual_only_gaps)
-        return "manual-only receipts (operator-available, not auto-run, not required): " + names
+        names = ", ".join(f"{e.command} ({e.status})" for e in self.operator_gaps)
+        return "operator-available receipts (manual, not auto-run, not required): " + names
 
     @property
     def diagnostic_lines(self) -> tuple[str, ...]:
@@ -276,7 +276,7 @@ class DeliveryVerificationAssessment:
     def lines(self) -> tuple[str, ...]:
         """Render-ready warning lines (one per non-empty blocker category)."""
         out: list[str] = list(self.receipt_blocker_lines)
-        manual_line = self.manual_only_line
+        manual_line = self.operator_line
         if manual_line is not None:
             out.append(manual_line)
         if self.garbage_paths:
@@ -557,7 +557,7 @@ def assess_delivery_verification(
         suggested_commands=suggested_commands,
         blocking_gaps=blocking_gaps,
         warning_gaps=partition.warning,
-        manual_only_gaps=partition.manual_only,
+        operator_gaps=partition.operator,
         policy_by_command=tuple(policy_by_command.items()),
         waived_failed=waived_failed,
         waived_missing=waived_missing,

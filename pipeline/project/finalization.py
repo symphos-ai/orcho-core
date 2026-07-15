@@ -2139,6 +2139,12 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
 
     run = ctx.run
 
+    # Close the scheduled-gate artifact before any evidence/DONE consumer can
+    # inspect the run, so every terminal surface sees one durable disposition.
+    from pipeline.project.verification_ledger_runtime import finalize as finalize_ledger
+
+    finalize_ledger(run)
+
     # 1) Status from state.halt + profile_name (pre-delivery).
     _resolve_terminal_status(run)
 

@@ -16,15 +16,20 @@ both the start banner and the DONE summary consume. These tests lock:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import core.io.verification_header as verification_header
 from pipeline.plugins import PluginConfig
 from pipeline.verification_contract import VerificationContract
 from pipeline.verification_ledger import (
+    TERMINAL_DISPOSITIONS,
     GateLedgerRow,
+    GateTrailEvent,
     build_gate_ledger,
     effective_stage,
     gate_run_mode,
     gate_timing,
+    reduce_disposition,
 )
 from pipeline.verification_selection import (
     ScheduledGateEntry,
@@ -202,6 +207,44 @@ def test_condition_operator_for_e2e() -> None:
     row = _row(build_gate_ledger(_reference_contract()), "e2e")
     assert row.condition == "operator"
     assert row.condition_paths == ()
+
+
+def test_task_kind_condition_keeps_its_snapshot_values() -> None:
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            verification={
+                "commands": {"api": "pytest tests/api"},
+                "gate_sets": {"api": {"commands": ["api"]}},
+                "selection": [{"task_kind": "api", "include": ["api"]}],
+                "schedule": [{"after_phase": "implement", "gate_sets": ["api"]}],
+            },
+        ),
+    )
+    assert contract is not None
+
+    row = _row(build_gate_ledger(contract), "api")
+
+    assert row.condition == "task_kind"
+    assert row.selection_task_kinds == ("api",)
+
+
+def test_execution_policy_is_normalized_when_declaration_is_unspecified() -> None:
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            work_mode="governed",
+            verification={
+                "commands": {"lint": "ruff check ."},
+                "required": ["lint"],
+                "schedule": [{"after_phase": "implement", "commands": ["lint"]}],
+            },
+        ),
+    )
+    assert contract is not None
+
+    row = _row(build_gate_ledger(contract), "lint")
+
+    assert row.policy == "unknown"
+    assert row.execution_policy == "require"
 
 
 def test_direct_schedule_row_uses_explicit_always_activation_binding() -> None:
@@ -541,3 +584,66 @@ def test_total_on_empty_selection_schedule() -> None:
     assert contract is not None
     assert build_gate_ledger(contract) == ()
     assert build_gate_ledger(contract, changed_files=("a.py",)) == ()
+
+
+# ── durable closure reducer ────────────────────────────────────────────────
+
+
+def _durable_row(*, selected: bool, policy: str = "require") -> GateLedgerRow:
+    return GateLedgerRow(
+        gate="check", hook="after_phase", phase="implement",
+        timing="after_implement", run_mode="auto", gate_sets=(),
+        condition="always", selected=selected, execution_policy=policy,
+    )
+
+
+def test_reducer_covers_all_nine_terminal_dispositions() -> None:
+    row = _durable_row(selected=True)
+    cases = {
+        "not_selected": (_durable_row(selected=False), ()),
+        "manual_available": (_durable_row(selected=True, policy="manual"), ()),
+        "suggested": (_durable_row(selected=True, policy="suggest"), ()),
+        "skipped_fresh": (row, (GateTrailEvent("check", "after_phase", "implement", "reuse", "fresh"),)),
+        "executed_pass": (row, (GateTrailEvent("check", "after_phase", "implement", "execution", "pass"),)),
+        "executed_fail": (row, (GateTrailEvent("check", "after_phase", "implement", "execution", "fail"),)),
+        "residual_missing": (row, ()),
+        "residual_stale": (row, (GateTrailEvent("check", "after_phase", "implement", "receipt", "stale"),)),
+        "residual_failed": (row, (GateTrailEvent("check", "after_phase", "implement", "receipt", "failed"),)),
+    }
+    assert set(cases) == TERMINAL_DISPOSITIONS
+    for expected, (candidate, events) in cases.items():
+        assert reduce_disposition(candidate, events) == expected
+
+
+def test_not_selected_carries_each_explicit_selection_reason() -> None:
+    for reason in ("paths", "task_kind", "operator"):
+        row = replace(_durable_row(selected=False), selection_reason=reason)
+        assert reduce_disposition(row, ()) == "not_selected"
+
+
+def test_unvisited_manual_identity_remains_available_but_explicit_nonselection_wins() -> None:
+    available = replace(_durable_row(selected=True, policy="manual"), selected=None)
+    declined = replace(available, selected=False, selection_reason="operator")
+
+    assert reduce_disposition(available, ()) == "manual_available"
+    assert reduce_disposition(declined, ()) == "not_selected"
+
+
+def test_present_receipt_cannot_infer_executed_pass() -> None:
+    row = _durable_row(selected=True)
+    receipt = GateTrailEvent(
+        "check", "after_phase", "implement", "receipt", "present", "", "receipt.json",
+    )
+    assert reduce_disposition(row, (receipt,)) == "residual_missing"
+
+
+def test_reducer_uses_full_identity_for_same_command() -> None:
+    executed = _durable_row(selected=True)
+    other = GateLedgerRow(
+        gate="check", hook="before_phase", phase="plan", timing="before_plan",
+        run_mode="auto", gate_sets=(), condition="always", selected=True,
+        execution_policy="require",
+    )
+    event = GateTrailEvent("check", "after_phase", "implement", "execution", "pass")
+    assert reduce_disposition(executed, (event,)) == "executed_pass"
+    assert reduce_disposition(other, (event,)) == "residual_missing"

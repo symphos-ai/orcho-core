@@ -144,6 +144,9 @@ class GateRowView:
     condition_paths: tuple[str, ...] = ()
     activation_binding: str = ""
     when: str = ""
+    trigger: str = ""
+    executor: str | None = None
+    consequence: str = "none"
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,7 @@ def build_verification_header_view(
     contract: VerificationContract | None,
     *,
     has_final_phase: bool | None = None,
+    ledger_rows: tuple[object, ...] | None = None,
 ) -> VerificationHeaderView | None:
     """Project a declared contract into a :class:`VerificationHeaderView`.
 
@@ -195,7 +199,9 @@ def build_verification_header_view(
 
     mode = contract.work_mode or "default"
     envs = tuple(sorted(contract.verification_envs))
-    gates = _build_gate_rows(contract, has_final_phase=has_final_phase)
+    gates = _build_gate_rows(
+        contract, has_final_phase=has_final_phase, ledger_rows=ledger_rows,
+    )
     policy_source, effect, warned = _summarize_policy(gates)
 
     return VerificationHeaderView(
@@ -271,6 +277,7 @@ def _build_gate_rows(
     contract: VerificationContract,
     *,
     has_final_phase: bool | None = None,
+    ledger_rows: tuple[object, ...] | None = None,
 ) -> tuple[GateRowView, ...]:
     """Project the shared gate ledger into the deduplicated gate matrix.
 
@@ -289,18 +296,40 @@ def _build_gate_rows(
     from pipeline.verification_ledger import build_gate_ledger
 
     rows: list[GateRowView] = []
-    for row in build_gate_ledger(contract, has_final_phase=has_final_phase):
+    source = (
+        ledger_rows
+        if ledger_rows is not None
+        else build_gate_ledger(contract, has_final_phase=has_final_phase)
+    )
+    for row in source:
+        policy = getattr(row, "execution_policy", "") or row.policy
+        executor = getattr(row, "executor", None)
+        trigger = getattr(row, "trigger", None) or row.timing
+        if executor is None and policy in {"manual", "suggest", "warn", "require"}:
+            from pipeline.verification_execution import resolve_execution_eligibility
+
+            eligibility = resolve_execution_eligibility(
+                True, policy, row.hook, row.phase,
+            )
+            executor = eligibility.executor
+            trigger = eligibility.trigger
+        # A manual/suggest policy is operator-owned even on a lifecycle hook;
+        # never label it automatic just because the hook is automatic.
+        run_mode = "auto" if executor == "engine" else "operator"
         rows.append(
             GateRowView(
                 gate=row.gate,
                 timing=row.timing,
-                run_mode=row.run_mode,
-                policy=row.policy,
+                run_mode=run_mode,
+                policy=policy,
                 kind=row.kind,
                 condition=row.condition,
                 condition_paths=row.condition_paths,
                 activation_binding=row.activation_binding,
                 when=row.when,
+                trigger=trigger,
+                executor=executor,
+                consequence=getattr(row, "consequence", "none"),
             ),
         )
     return tuple(rows)
@@ -379,11 +408,11 @@ def render_verification_header(
 # long.
 _GATE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("gate", "gate"),
-    ("when", "when"),
-    ("run_mode", "run"),
+    ("trigger", "trigger"),
+    ("run_mode", "executor"),
     ("policy", "policy"),
-    ("kind", "kind"),
-    ("activation", "activation"),
+    ("consequence", "consequence"),
+    ("activation", "selection"),
 )
 
 
@@ -413,6 +442,10 @@ def _gate_cell(row: GateRowView, attr: str) -> str:
     """Value for one matrix column of a row (``activation`` is computed)."""
     if attr == "activation":
         return _activation_label(row)
+    if attr == "trigger":
+        return row.trigger or row.timing
+    if attr == "run_mode":
+        return row.executor or row.run_mode
     return getattr(row, attr)
 
 

@@ -363,7 +363,7 @@ class TestPhaseIdentity:
 
 class TestRoutingPlanLifecycle:
     def test_one_plan_per_epoch_across_hooks(self, monkeypatch) -> None:
-        import pipeline.verification_selection as vs
+        import pipeline.project.verification_ledger_runtime as ledger_runtime
 
         contract = _contract(
             [{"after_phase": "implement", "commands": ["test"]}],
@@ -372,13 +372,13 @@ class TestRoutingPlanLifecycle:
         _patch_gate(monkeypatch, [_receipt(0)])
 
         builds = {"n": 0}
-        real_build = vs.build_scheduled_gate_plan
+        real_build = ledger_runtime.build_scheduled_gate_plan
 
         def counting_build(c, ctx):
             builds["n"] += 1
             return real_build(c, ctx)
 
-        monkeypatch.setattr(gate_repair, "build_scheduled_gate_plan", counting_build)
+        monkeypatch.setattr(ledger_runtime, "build_scheduled_gate_plan", counting_build)
 
         # Each distinct hook:phase position is its own epoch -> three builds.
         for hook, phase in (
@@ -388,7 +388,7 @@ class TestRoutingPlanLifecycle:
         ):
             gate_repair.run_gate_hook(run, object(), object(), hook=hook, phase=phase)
         assert builds["n"] == 3
-        plans = run.state.extras["verification_gate_routing_plans"]
+        plans = run.state._verification_ledger_epoch_cache
         assert set(plans) == {
             "before_phase:implement", "after_phase:implement", "before_delivery:",
         }
@@ -402,7 +402,7 @@ class TestRoutingPlanLifecycle:
         gate_repair.run_gate_hook(
             run, object(), object(), hook="after_phase", phase="implement",
         )
-        plans = run.state.extras["verification_gate_routing_plans"]
+        plans = run.state._verification_ledger_epoch_cache
         cached = plans["after_phase:implement"]
         run.state.extras["verification_task_kind"] = "something-else"
         gate_repair.run_gate_hook(
@@ -477,7 +477,7 @@ class TestRoutingPlanLifecycle:
         run, outcome = self._run_path_gate_lifecycle(
             monkeypatch, early_hook="before_phase", early_phase="implement",
         )
-        plans = run.state.extras["verification_gate_routing_plans"]
+        plans = run.state._verification_ledger_epoch_cache
         assert "mcp" not in plans["before_phase:implement"].selected_gate_sets
         assert outcome.active and outcome.paused
         assert "mcp" in plans["after_phase:implement"].selected_gate_sets
@@ -493,7 +493,7 @@ class TestRoutingPlanLifecycle:
         run, outcome = self._run_path_gate_lifecycle(
             monkeypatch, early_hook="after_phase", early_phase="plan",
         )
-        plans = run.state.extras["verification_gate_routing_plans"]
+        plans = run.state._verification_ledger_epoch_cache
         assert "mcp" not in plans["after_phase:plan"].selected_gate_sets
         assert outcome.active and outcome.paused
         assert "mcp" in plans["after_phase:implement"].selected_gate_sets

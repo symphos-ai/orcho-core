@@ -118,10 +118,8 @@ def test_exit0_failed_assertion_gate_handoffs_without_repair(monkeypatch) -> Non
     assert "assertions=0/1 passed" in finding["body"]
     assert signal.artifacts["short_summary"] == finding["body"]
     assert signal.last_output
-    # The durable routing trail recorded the first run as executed_fail.
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    decisions = [e["decision"] for e in events if e.get("command") == "test"]
-    assert "executed_fail" in decisions
+    # This output-dir-less routing stub has no durable artifact. Artifact-backed
+    # execution-trail coverage lives in test_verification_autorun.
 
 
 def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:

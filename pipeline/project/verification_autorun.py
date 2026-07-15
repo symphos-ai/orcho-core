@@ -511,5 +511,32 @@ def auto_run_required_receipts(
         dry_run=False,
         reason=reason,
     )
+    # Pre-final materialization is a concrete execution seam. Associate each
+    # attempt with the actual before-delivery identity instead of treating a
+    # command-level receipt as proof that every scheduled identity executed.
+    from pipeline.project.verification_ledger_runtime import (
+        record_execution,
+        record_reuse,
+        select_epoch,
+    )
+    from pipeline.verification_selection import selection_context_from_extras
+
+    plan = select_epoch(
+        run,
+        contract,
+        epoch="before_delivery:",
+        context=selection_context_from_extras(extras, contract),
+    )
+    by_command = {
+        entry.command: entry
+        for entry in plan.entries
+        if entry.hook == "before_delivery"
+    }
+    for command in result.ran_commands:
+        if entry := by_command.get(command):
+            record_execution(run, entry, passed=command not in result.failed)
+    for command in result.skipped_fresh:
+        if entry := by_command.get(command):
+            record_reuse(run, entry, fresh=True)
     _record_autorun_evidence(run, phase, result)
     return result

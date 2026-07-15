@@ -123,6 +123,42 @@ def test_plan_is_not_serialized_into_any_contract_projection() -> None:
     assert not hasattr(plan, "write")
 
 
+def test_scheduled_gate_artifact_evidence_and_sdk_keep_duplicate_identities(
+    tmp_path, monkeypatch,
+) -> None:
+    """The core-owned artifact is the shared source for evidence and SDK rows."""
+    from pipeline.evidence.collector import collect_evidence
+    from pipeline.verification_ledger import GateLedgerRow, GateTrailEvent
+    from pipeline.verification_ledger_store import ScheduledGateLedger, write_ledger
+    from sdk.verification_timeline import get_verification_timeline
+
+    runs = tmp_path / "runs"
+    run_dir = runs / "mock-ledger"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        '{"run_id":"mock-ledger","project":"/project","status":"done"}',
+        encoding="utf-8",
+    )
+    rows = (
+        GateLedgerRow("check", "after_phase", "implement", "after_implement", "auto", (), "always", selected=True, execution_policy="require", disposition="executed_pass"),
+        GateLedgerRow("check", "before_delivery", "", "delivery", "auto", (), "on_path", selected=False, execution_policy="require", selection_reason="paths", disposition="not_selected"),
+    )
+    trail = (GateTrailEvent("check", "after_phase", "implement", "execution", "pass"),)
+    write_ledger(run_dir, ScheduledGateLedger(rows, trail, finalized=True))
+    monkeypatch.setenv("ORCHO_RUNSPACE", str(tmp_path))
+
+    evidence = collect_evidence(run_dir)
+    sdk_rows = get_verification_timeline(run_id="mock-ledger").rows
+
+    artifact_rows = evidence["scheduled_gate_ledger"]["rows"]
+    assert [(row["gate"], row["hook"], row["phase"]) for row in artifact_rows] == [
+        (row.command, row.hook, row.phase) for row in sdk_rows
+    ]
+    assert [row["disposition"] for row in artifact_rows] == [
+        row.disposition for row in sdk_rows
+    ]
+
+
 # ---------------------------------------------------------------------------
 # small_task bypass → implement advisory-critique forwarding smoke.
 #

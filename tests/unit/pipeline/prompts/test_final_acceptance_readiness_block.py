@@ -709,12 +709,12 @@ class TestPolicyAwareReadiness:
         assert "audit" not in summary.required_missing
         assert "audit" not in summary.required_failed
         assert "audit" not in summary.required_stale
-        assert summary.manual_only_gaps == ("audit",)
+        assert summary.operator_gaps == ("audit",)
         assert "test" in summary.required_missing
         rendered = render_readiness_block(summary)
         assert rendered is not None
         # Visible, marked not auto-run, and never in Remaining before ready.
-        assert "audit (manual_only) — operator available, not auto-run" in rendered
+        assert "audit (manual) — operator available, not auto-run" in rendered
         remaining = rendered.split("Remaining before ready:", 1)[1]
         assert "audit" not in remaining
 
@@ -756,7 +756,7 @@ class TestPolicyAwareReadiness:
         assert rendered is not None
         assert expected_fragment in rendered
         if operator_owned:
-            assert summary.manual_only_gaps == ("test",)
+            assert summary.operator_gaps == ("test",)
         else:
             assert summary.required_missing == ("test",)
         assert "missing required: test" not in rendered

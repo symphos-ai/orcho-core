@@ -78,7 +78,7 @@ def test_auto_derived_warn_policy_and_effect() -> None:
     view = build_verification_header_view(contract)
 
     assert view is not None
-    assert view.policy_source == "auto-derived from mode/plugin defaults"
+    assert view.policy_source == "declared in contract (suggest, warn)"
     assert view.effect == "warn on missing/failed receipts"
     assert "receipts" in view.effect
     assert view.warned is True
@@ -132,9 +132,8 @@ def test_derived_only_schedule_effect_mentions_receipts() -> None:
     view = build_verification_header_view(contract)
 
     assert view is not None
-    assert view.policy_source == "auto-derived from mode/plugin defaults"
-    assert view.effect == "receipts policy auto-derived from mode/plugin defaults"
-    assert "receipts" in view.effect
+    assert view.policy_source == "declared in contract (suggest)"
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
     assert view.warned is False
 
 
@@ -173,7 +172,7 @@ def test_manual_only_gate_visible_as_manual_operator() -> None:
     assert view is not None
     row = _gate(view, "e2e")
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
+    assert row.run_mode == "operator"
     assert row.policy == "suggest"
 
 
@@ -194,7 +193,7 @@ def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
     assert view is not None
     row = _gate(view, "e2e")
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
+    assert row.run_mode == "operator"
     # default_cheap=False is non-cheap with no declared taxonomy -> unknown.
     assert row.kind == "unknown"
 
@@ -263,7 +262,7 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     assert len(e2e_rows) == 1
     row = e2e_rows[0]
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
+    assert row.run_mode == "operator"
     assert row.policy == "suggest"
     assert row.kind == "cheap"
     # ...and the declared data drives the summary, not auto-derived.
@@ -336,7 +335,7 @@ def test_unavailable_properties_render_unknown() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     row = _gate(view, "lint")
-    assert row.policy == "unknown"
+    assert row.policy == "suggest"
     assert row.kind == "unknown"
 
 
@@ -430,7 +429,7 @@ def test_activation_rendered_as_on_path_manual_always() -> None:
     view = build_verification_header_view(_reference_contract())
     assert view is not None
     out = _strip(render_verification_header(view, compact=False))
-    assert "activation" in out
+    assert "selection" in out
 
     verification_line = next(
         ln for ln in out.splitlines() if "verification-unit" in ln
@@ -510,11 +509,11 @@ def test_when_rendered_in_matrix_distinguishes_require_from_warn() -> None:
     )
     assert view is not None
     out = _strip(render_verification_header(view, compact=False))
-    assert "when" in out
+    assert "trigger" in out
     ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
-    assert "after_implement" in ver_line
+    assert "after_phase" in ver_line
     lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
-    assert "pre-final" in lint_line
+    assert "after_phase" in lint_line
 
 
 # ── render_gate_matrix: the shared, reusable formatter ─────────────────
@@ -531,7 +530,7 @@ def test_render_gate_matrix_column_contract_and_reuse() -> None:
     # Header row + one row per gate.
     assert len(matrix) == len(view.gates) + 1
     header = strip_ansi(matrix[0]).split()
-    assert header == ["gate", "when", "run", "policy", "kind", "activation"]
+    assert header == ["gate", "trigger", "executor", "policy", "consequence", "selection"]
     # The banner renders through the same helper: every matrix data row appears
     # verbatim inside the banner output (indented under the ``gates`` label).
     banner = _strip(render_verification_header(view, compact=False))
@@ -591,20 +590,17 @@ def test_structured_block_has_all_dimension_labels() -> None:
 
 def test_structured_matrix_has_separate_columns_per_gate() -> None:
     out = _strip(render_verification_header(_warn_view(), compact=False))
-    # The matrix header names the orthogonal columns: ``when`` supersedes the raw
-    # timing display, ``policy`` is restored as its own column, and ``activation``
-    # is the trailing column.
-    assert "when" in out
-    assert "run" in out
+    # The matrix header names the durable execution axes.
+    assert "trigger" in out
+    assert "executor" in out
     assert "policy" in out
-    assert "kind" in out
-    assert "activation" in out
+    assert "selection" in out
     assert "timing" not in out  # the raw timing column is gone
     # Each gate row keeps command identity beside its own property cells, on a
     # single line — not a flat comma bucket fusing identity with properties.
     e2e_line = next(ln for ln in out.splitlines() if "e2e" in ln)
     assert "operator" in e2e_line  # its when stage
-    assert "unknown" in e2e_line   # its kind
+    assert "require" in e2e_line   # its execution policy
     assert "require" in e2e_line   # its restored policy column
     # The operator gate's activation cell is the trailing column and reads
     # ``manual``.

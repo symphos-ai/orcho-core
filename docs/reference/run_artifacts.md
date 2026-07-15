@@ -9,9 +9,23 @@
 Every run, regardless of outcome, lives in a single directory under
 `<workspace>/runspace/runs/<run_id>/`. The directory's filesystem layout is the
 canonical interchange format for post-mortem tooling, the SDK
-evidence slices, and the MCP wire surface. This page enumerates what
-files are written, what shape they carry, and what changes per
-terminal status.
+evidence slices, and the MCP wire surface. This page enumerates what files are
+written, what shape they carry, and what changes per terminal status.
+
+## Scheduled-gate ledger
+
+Runs with a verification contract persist `scheduled_gate_ledger.json`. It is
+schema version `"1"`, ordered by `(command, hook, phase)`, and contains the
+declaration/selection/execution axes plus an append-only identity trail. Each
+terminal row is exactly one of `not_selected`, `manual_available`, `suggested`,
+`skipped_fresh`, `executed_pass`, `executed_fail`, `residual_missing`,
+`residual_stale`, or `residual_failed`; non-selection preserves `paths`,
+`task_kind`, or `operator` when applicable. `manual_only` is a hook; `manual`
+is the policy. Finalization closes this artifact before evidence and DONE.
+
+Resume reuses the snapshot and epoch decisions. Evidence copies the validated
+artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
+project plugin.
 
 ---
 

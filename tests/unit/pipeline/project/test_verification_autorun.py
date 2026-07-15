@@ -49,7 +49,6 @@ from pipeline.project.verification_timeline import (
     VerificationTimeline,
     build_verification_timeline,
     render_gate_live_block,
-    render_scheduled_gate_live_block,
     render_verification_gate_done_block,
 )
 from pipeline.verification_contract import (
@@ -57,6 +56,7 @@ from pipeline.verification_contract import (
     placeholder_context_for,
 )
 from pipeline.verification_dependencies import changed_files_fingerprint
+from pipeline.verification_ledger_store import load_ledger
 from pipeline.verification_readiness import (
     ROUTING_PLANS_EXTRAS_KEY,
     classify_required_receipts,
@@ -582,8 +582,8 @@ def test_manual_required_is_skipped_and_blocks_delivery(
     )
     assert assessment is not None
     assert "manual_cmd" not in assessment.required_missing
-    assert "manual_cmd" in assessment.manual_only_commands
-    assert dict(assessment.policy_by_command)["manual_cmd"] == "manual_only"
+    assert "manual_cmd" in assessment.operator_commands
+    assert dict(assessment.policy_by_command)["manual_cmd"] == "manual"
     assert "lint" not in assessment.required_missing
 
 
@@ -1602,6 +1602,15 @@ def _gate_run(contract: Any, ctx: Any, output_dir: Path) -> Any:
     )
 
 
+def _ledger_events(run: Any) -> tuple[Any, ...]:
+    """The scheduled-gate trail is durable; state.extras is not its cache."""
+    return load_ledger(run.state.output_dir).trail
+
+
+def _execution_events(run: Any) -> tuple[Any, ...]:
+    return tuple(event for event in _ledger_events(run) if event.kind != "selection")
+
+
 def test_recorder_executed_pass_without_changing_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1620,12 +1629,10 @@ def test_recorder_executed_pass_without_changing_outcome(
 
     # GateRepairOutcome is byte-identical to the no-recorder routing result.
     assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [e["decision"] for e in events] == ["executed_pass"]
-    assert events[0]["command"] == "lint"
-    assert events[0]["hook"] == "after_phase"
-    assert events[0]["phase"] == "implement"
-    assert events[0]["exit_code"] == 0
+    events = _execution_events(run)
+    assert [(e.kind, e.outcome) for e in events] == [("execution", "pass")]
+    assert events[0].identity == ("lint", "after_phase", "implement")
+    assert gate_repair.VERIFICATION_GATE_EVENTS_KEY not in run.state.extras
 
 
 def test_recorder_executed_fail_non_blocking(
@@ -1648,9 +1655,8 @@ def test_recorder_executed_fail_non_blocking(
 
     # continue_warn keeps the run going; the recorder still proves the execution.
     assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [e["decision"] for e in events] == ["executed_fail"]
-    assert events[0]["exit_code"] == 1
+    events = _execution_events(run)
+    assert [(e.kind, e.outcome) for e in events] == [("execution", "fail")]
 
 
 def test_phase_warn_executes_once_and_continues_after_failure(
@@ -1681,7 +1687,7 @@ def test_phase_warn_executes_once_and_continues_after_failure(
     assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
     assert calls == 1
     assert run.state.phase_handoff_request is None and run.state.halt is False
-    assert run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY][0]["decision"] == "executed_fail"
+    assert _execution_events(run)[0].outcome == "fail"
 
 
 def test_before_delivery_reuses_prefinal_receipt_without_late_execution(
@@ -1705,9 +1711,10 @@ def test_before_delivery_reuses_prefinal_receipt_without_late_execution(
     outcome = gate_repair.run_gate_hook(run, object(), object(), hook="before_delivery")
 
     assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [(event["command"], event["hook"], event["phase"], event["decision"])
-            for event in events] == [("lint", "before_delivery", "", "skipped_fresh")]
+    events = _execution_events(run)
+    assert [(event.identity, event.kind, event.outcome) for event in events] == [
+        (("lint", "before_delivery", ""), "reuse", "fresh"),
+    ]
 
 
 def test_before_delivery_routes_failed_prefinal_warn_without_rerun(
@@ -1869,29 +1876,11 @@ def test_recorder_repair_loop_records_fail_then_pass_recheck(
         active=True, passed=True, rounds=1,
     )
     # Both the initial fail AND the recheck pass are in the durable trail.
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [e["decision"] for e in events] == ["executed_fail", "executed_pass"]
-    assert all(e["command"] == "lint" and e["hook"] == "after_phase"
-               and e["phase"] == "implement" for e in events)
-    assert [e["exit_code"] for e in events] == [1, 0]
-
-    # Timeline groups the hook's decisions: lint shows in BOTH ran_fail (initial)
-    # and ran_pass (recheck) — the full audit, not just the initial fail.
-    timeline = build_verification_timeline(
-        run_dir=run_dir, extras=run.state.extras,
-    )
-    assert timeline is not None
-    by_label = {e.hook_label: e for e in timeline.events}
-    event = by_label["after_phase(implement)"]
-    assert event.ran_fail == ("lint",)
-    assert event.ran_pass == ("lint",)
-
-    # Live block sources both statuses from the same recorded decisions.
-    block = "\n".join(render_scheduled_gate_live_block(
-        events, hook_label="after_phase(implement)",
-    ))
-    assert "lint FAIL" in block
-    assert "lint PASS" in block
+    events = _execution_events(run)
+    assert [(e.kind, e.outcome) for e in events] == [
+        ("execution", "fail"), ("execution", "pass"),
+    ]
+    assert all(e.identity == ("lint", "after_phase", "implement") for e in events)
 
 
 def test_reconcile_records_skipped_manual_and_fresh(
@@ -1921,13 +1910,12 @@ def test_reconcile_records_skipped_manual_and_fresh(
         run, contract, plan, hook="before_delivery", phase="", executed=set(),
     )
 
-    events = {
-        e["command"]: e["decision"]
-        for e in run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    }
-    # Durable facts decide: e2e withheld manual -> skipped_manual; lint has a
-    # fresh present receipt -> skipped_fresh; neither command is re-executed.
-    assert events == {"lint": "skipped_fresh", "e2e": "skipped_manual"}
+    events = _ledger_events(run)
+    # Operator-owned rows close as manual_available at finalization; no synthetic
+    # execution/skip event is written for them. The fresh reuse is explicit.
+    assert [(event.command, event.kind, event.outcome) for event in events] == [
+        ("lint", "reuse", "fresh"),
+    ]
 
 
 def test_reconcile_missing_required_writes_no_hook_skip(
@@ -1953,11 +1941,9 @@ def test_reconcile_missing_required_writes_no_hook_skip(
         run, contract, plan, hook="before_delivery", phase="", executed=set(),
     )
 
-    # An operator-owned suggest identity is recorded as skipped, never executed.
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [(event["command"], event["decision"]) for event in events] == [
-        ("lint", "skipped_manual"),
-    ]
+    # An operator-owned suggest identity has no execution/reuse event; terminal
+    # closure derives its intentional suggested disposition from the row.
+    assert not (run_dir / "scheduled_gate_ledger.json").exists()
 
 
 def test_reconcile_tolerates_stub_run_without_output_dir() -> None:
@@ -2008,19 +1994,10 @@ def test_fresh_receipt_unexecuted_gate_is_skipped_fresh_end_to_end(
 
     # suggest gate is not a require gate -> routing executed nothing here.
     assert outcome == gate_repair.GateRepairOutcome(active=False)
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    assert [(e["command"], e["decision"]) for e in events] == [
-        ("lint", "skipped_fresh"),
+    events = _execution_events(run)
+    assert [(e.command, e.kind, e.outcome) for e in events] == [
+        ("lint", "reuse", "fresh"),
     ]
-
-    timeline = build_verification_timeline(
-        run_dir=run_dir, extras=run.state.extras, session=None,
-    )
-    assert timeline is not None
-    delivery = [e for e in timeline.events if e.hook_label == "before_delivery"]
-    assert len(delivery) == 1  # the event is present, not absent
-    assert delivery[0].skipped_fresh == ("lint",)
-    assert delivery[0].ran_pass == ()  # never inferred from the on-disk receipt
 
 
 # ── T1: per-event timeline aggregation ─────────────────────────────────────

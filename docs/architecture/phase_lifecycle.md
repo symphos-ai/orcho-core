@@ -408,7 +408,7 @@ calls `auto_run_required_receipts(self, name, reason=…)`. That thin adapter ru
 the shared `materialize_required_receipts` executor — auto-running only `missing`
 / `stale` required commands, skipping `present` (fresh), never re-running
 `failed` (the "never falsely green" invariant), and never auto-running
-`manual_only` / operator-only commands (those stay an explicit operator
+`manual_only` hooks / operator-owned commands (those stay an explicit operator
 escape-hatch). It is a strict no-op under dry-run, no contract, or empty
 `required`. The auto-run records durable evidence: an append-only
 `state.extras['verification_autorun']` list plus a per-phase mirror at

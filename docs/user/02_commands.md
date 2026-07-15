@@ -4,6 +4,14 @@ Orcho is a production harness and control plane for agentic software delivery:
 one task becomes an observable workflow with typed plans, gates, evidence, run
 state, and cross-project coordination when you need it.
 
+## Verification gates
+
+`orcho quality-gates --paths …` shows each scheduled identity and its durable
+selection result: `selected`, or `not_selected (paths|task_kind|operator)`. Run
+header, live output, and DONE use the same rows. Manual/suggest operator gates
+remain visible as intentional non-execution and never block delivery solely for
+an absent receipt.
+
 ## Quick start
 
 ```bash

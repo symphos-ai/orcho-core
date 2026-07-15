@@ -26,6 +26,33 @@ from pipeline.verification_contract import (
 )
 
 
+def test_done_ledger_projection_keeps_duplicate_identities_and_dispositions(tmp_path: Path) -> None:
+    """Ledger-backed DONE never collapses a duplicated command by name."""
+    from pipeline.verification_ledger import GateLedgerRow
+    from pipeline.verification_ledger_store import ScheduledGateLedger, write_ledger
+
+    rows = (
+        GateLedgerRow(
+            "check", "after_phase", "implement", "after_implement", "auto", (), "always",
+            selected=True, execution_policy="require", consequence="required_action",
+            disposition="executed_pass",
+        ),
+        GateLedgerRow(
+            "check", "before_delivery", "", "delivery", "auto", (), "on_path",
+            selected=False, execution_policy="require", selection_reason="paths",
+            disposition="not_selected",
+        ),
+    )
+    write_ledger(tmp_path, ScheduledGateLedger(rows, finalized=True))
+    timeline = build_verification_timeline(run_dir=tmp_path, extras={})
+    assert timeline is not None
+    block = "\n".join(render_verification_gate_done_block(timeline))
+    assert "check (after_phase:implement)" in block
+    assert "check (before_delivery)" in block
+    assert "disposition=executed_pass" in block
+    assert "disposition=not_selected" in block
+
+
 def _prov_contract() -> VerificationContract:
     """A contract whose required ``env-provenance`` gate is scheduled at
     after_phase(implement) with a ``require`` policy."""

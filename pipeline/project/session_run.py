@@ -451,6 +451,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         from_run_plan_stripped=ctx.from_run_plan_stripped,
         verification_contract=ctx.verification_contract,
         resume_completed_phases=resume_completed_phases,
+        resume_requested=bool(request.resume_from),
     ))
     ctx.state = _state_setup.state
     ctx.codemap = _state_setup.codemap

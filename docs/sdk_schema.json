@@ -83,63 +83,6 @@
         {
           "default": null,
           "default_factory": null,
-          "name": "phase",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "source",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "hook_label",
-          "type": "str"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "ran_pass",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "ran_fail",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "skipped_fresh",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "skipped_manual",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "receipt_paths",
-          "type": "tuple[str, ...]"
-        }
-      ],
-      "frozen": true,
-      "kind": "dataclass",
-      "module": "sdk.verification_timeline",
-      "name": "AutorunEvent",
-      "slots": true
-    },
-    {
-      "fields": [
-        {
-          "default": null,
-          "default_factory": null,
           "name": "command",
           "type": "str"
         },
@@ -976,93 +919,6 @@
       "kind": "dataclass",
       "module": "sdk.fine_tune",
       "name": "FineTuneResult",
-      "slots": true
-    },
-    {
-      "fields": [
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "command",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "env",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "hook",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "policy",
-          "type": "str"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "required",
-          "type": "bool"
-        },
-        {
-          "default": null,
-          "default_factory": null,
-          "name": "status",
-          "type": "GateStatus"
-        },
-        {
-          "default": "''",
-          "default_factory": null,
-          "name": "receipt_path",
-          "type": "str"
-        },
-        {
-          "default": "''",
-          "default_factory": null,
-          "name": "source_run_id",
-          "type": "str"
-        },
-        {
-          "default": "False",
-          "default_factory": null,
-          "name": "inherited",
-          "type": "bool"
-        },
-        {
-          "default": "''",
-          "default_factory": null,
-          "name": "stale_reason",
-          "type": "str"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "searched_run_dirs",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "rerun_hint",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "''",
-          "default_factory": null,
-          "name": "detail",
-          "type": "str"
-        }
-      ],
-      "frozen": true,
-      "kind": "dataclass",
-      "module": "sdk.verification_timeline",
-      "name": "GateProjection",
       "slots": true
     },
     {
@@ -2043,6 +1899,51 @@
     {
       "fields": [
         {
+          "default": "''",
+          "default_factory": null,
+          "name": "classification",
+          "type": "str"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "path",
+          "type": "str"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "source",
+          "type": "str"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "inherited",
+          "type": "bool"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "rerun",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "ReceiptEvidence",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
           "default": null,
           "default_factory": null,
           "name": "run_id",
@@ -2750,6 +2651,144 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hook",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "receipt_evidence",
+          "type": "ReceiptEvidence | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "ScheduledGateEvent",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hook",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "declared",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "selectable",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "selected",
+          "type": "bool | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "execution_policy",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "consequence",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "disposition",
+          "type": "Disposition | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "selection_reason",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "executor",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "trigger",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "receipt_evidence",
+          "type": "ReceiptEvidence | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.verification_timeline",
+      "name": "ScheduledGateRow",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "name",
           "type": "str"
         },
@@ -2891,6 +2930,12 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "schema_version",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
           "name": "run_id",
           "type": "str"
         },
@@ -2903,86 +2948,20 @@
         {
           "default": "False",
           "default_factory": null,
-          "name": "has_contract",
+          "name": "finalized",
           "type": "bool"
         },
         {
           "default": "()",
           "default_factory": null,
-          "name": "gates",
-          "type": "tuple[GateProjection, ...]"
+          "name": "rows",
+          "type": "tuple[ScheduledGateRow, ...]"
         },
         {
           "default": "()",
           "default_factory": null,
-          "name": "env_statuses",
-          "type": "tuple[tuple[str, bool], ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "residual_missing",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "residual_stale",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "residual_failed",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "manual_only",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "inherited",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "searched_run_dirs",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "suggested_commands",
-          "type": "tuple[str, ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "policy_by_command",
-          "type": "tuple[tuple[str, str], ...]"
-        },
-        {
-          "default": "()",
-          "default_factory": null,
-          "name": "autorun_events",
-          "type": "tuple[AutorunEvent, ...]"
-        },
-        {
-          "default": "False",
-          "default_factory": null,
-          "name": "scheduled_trail_available",
-          "type": "bool"
-        },
-        {
-          "default": "'per-firing scheduled-gate events (verification_gate_events) are not persisted durably; core must mirror the gate_repair routing-decision trail to a durable run artifact before a per-scheduled-hook firing timeline can be projected. Terminal banners are not parsed as a source of truth.'",
-          "default_factory": null,
-          "name": "scheduled_trail_gap",
-          "type": "str"
+          "name": "events",
+          "type": "tuple[ScheduledGateEvent, ...]"
         }
       ],
       "frozen": true,

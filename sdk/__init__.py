@@ -150,8 +150,9 @@ from sdk.types import (
     RunSummary,
 )
 from sdk.verification_timeline import (
-    AutorunEvent,
-    GateProjection,
+    ReceiptEvidence,
+    ScheduledGateEvent,
+    ScheduledGateRow,
     VerificationTimelineProjection,
     get_verification_timeline,
 )
@@ -301,8 +302,9 @@ __all__ = [
     # Verification timeline projection (read-only, durable)
     "get_verification_timeline",
     "VerificationTimelineProjection",
-    "GateProjection",
-    "AutorunEvent",
+    "ReceiptEvidence",
+    "ScheduledGateEvent",
+    "ScheduledGateRow",
     # Fine-tune
     "fine_tune_project",
     "FineTuneResult",

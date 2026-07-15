@@ -24,7 +24,6 @@ from pipeline.plugins import PluginConfig
 from pipeline.verification_contract import VerificationContract, placeholder_context_for
 from pipeline.verification_failure import ReceiptClassification
 from pipeline.verification_policy import (
-    MANUAL_ONLY_POLICY,
     GapEntry,
     GapPartition,
     consequence_by_command,
@@ -120,7 +119,7 @@ def test_manual_only_command_resolves_to_manual_only_token() -> None:
     policies = effective_delivery_policy_by_command(
         contract, plan, manual_set={"audit"}, boundary_policy="warn",
     )
-    assert policies["audit"] == MANUAL_ONLY_POLICY
+    assert policies["audit"] == "manual"
     assert policies["test"] == "require"
 
 
@@ -193,7 +192,7 @@ def test_partition_require_gap_is_blocking() -> None:
     )
     assert part.blocking == (GapEntry("test", "missing", "require"),)
     assert part.warning == ()
-    assert part.manual_only == ()
+    assert part.operator == ()
     assert part.has_blocking is True
     assert part.blocking_commands == ("test",)
     assert part.commands_with_status("missing") == ("test",)
@@ -212,10 +211,10 @@ def test_partition_warn_and_suggest_gaps_are_warnings_not_blocking() -> None:
 def test_partition_manual_only_gap_is_separate_bucket_never_blocking() -> None:
     part = partition_gaps(
         {"test": "missing", "audit": "missing"},
-        {"test": "require", "audit": MANUAL_ONLY_POLICY},
+        {"test": "require", "audit": "manual"},
     )
     assert part.blocking_commands == ("test",)
-    assert part.manual_only_commands == ("audit",)
+    assert part.operator_commands == ("audit",)
     # The manual_only gap is NOT counted among blocking/required gaps.
     assert "audit" not in part.blocking_commands
 
@@ -240,7 +239,7 @@ def test_partition_accepts_classification_like_objects() -> None:
 
 def test_partition_manual_policy_gap_is_visible_as_manual_only() -> None:
     part = partition_gaps({"test": "missing"}, {"test": "manual"})
-    assert part.manual_only == (GapEntry("test", "missing", "manual"),)
+    assert part.operator == (GapEntry("test", "missing", "manual"),)
 
 
 def test_partition_preserves_input_order() -> None:

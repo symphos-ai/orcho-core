@@ -31,8 +31,8 @@ delegated wholesale to :func:`build_scheduled_gate_plan` /
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
 
 from pipeline.verification_selection import (
     SelectionContext,
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
         ScheduleEntry,
         VerificationContract,
     )
-    from pipeline.verification_selection import ScheduledGatePlan
+    from pipeline.verification_selection import ScheduledGateEntry, ScheduledGatePlan
 
 
 # ── timing / run-mode derivation (single source) ──────────────────────────
@@ -156,6 +156,31 @@ def _gate_kind(
     return "cheap" if cheap else _UNKNOWN
 
 
+def _execution_policy(
+    contract: VerificationContract,
+    entry: ScheduleEntry,
+    command: str,
+    backing: Sequence[GateSet],
+) -> str:
+    """Freeze the executable policy even when header presentation is unknown.
+
+    ``policy`` intentionally remains a conservative declaration-facing field
+    for existing header consumers.  The durable execution axis cannot defer to
+    a later plugin resolve, though: snapshot/resume needs the work-mode-derived
+    policy that the selection resolver would use for this exact identity.
+    """
+    declared = _gate_policy(entry, backing)
+    if declared != _UNKNOWN:
+        return declared
+    from pipeline.verification_selection import derive_effective_policy
+
+    return derive_effective_policy(
+        None,
+        contract.work_mode or "",
+        required=False if entry.hook == "manual_only" else command in contract.required,
+    )
+
+
 # ── effective stage (pure derivation of the operator-facing ``when``) ──────
 
 
@@ -246,11 +271,95 @@ class GateLedgerRow:
     gate_sets: tuple[str, ...]
     condition: str
     condition_paths: tuple[str, ...] = ()
+    selection_task_kinds: tuple[str, ...] = ()
     activation_binding: str = ""
     resolved: str | None = None
     policy: str = _UNKNOWN
     kind: str = _UNKNOWN
     when: str = ""
+    # Durable scheduled-gate axes (ADR 0132).  The presentation fields above
+    # remain for the current header consumers; these facts are deliberately not
+    # derived from a terminal receipt.
+    declared: bool = True
+    selectable: bool = True
+    selected: bool | None = None
+    execution_policy: str = _UNKNOWN
+    consequence: str = "none"
+    disposition: str | None = None
+    selection_reason: str | None = None
+    executor: str | None = None
+    trigger: str | None = None
+    receipt_evidence: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        """The only key for a scheduled gate; commands alone never identify it."""
+        return (self.gate, self.hook, self.phase)
+
+
+Disposition = Literal[
+    "not_selected", "manual_available", "suggested", "skipped_fresh",
+    "executed_pass", "executed_fail", "residual_missing", "residual_stale",
+    "residual_failed",
+]
+
+TERMINAL_DISPOSITIONS: frozenset[str] = frozenset({
+    "not_selected", "manual_available", "suggested", "skipped_fresh",
+    "executed_pass", "executed_fail", "residual_missing", "residual_stale",
+    "residual_failed",
+})
+
+
+@dataclass(frozen=True)
+class GateTrailEvent:
+    """An append-only, identity-scoped durable observation.
+
+    ``kind`` is intentionally small: an execution observation is the *only*
+    source allowed to produce an executed disposition.  ``receipt`` records
+    evidence separately and can only contribute a residual classification.
+    """
+
+    command: str
+    hook: str
+    phase: str
+    kind: Literal["selection", "execution", "reuse", "receipt"]
+    outcome: str = ""
+    reason: str = ""
+    receipt_evidence: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        return (self.command, self.hook, self.phase)
+
+
+def reduce_disposition(row: GateLedgerRow, events: Sequence[GateTrailEvent]) -> Disposition:
+    """Close one row using only its own trail, in ADR precedence order.
+
+    Execution and reuse are evaluated before receipt evidence.  In particular a
+    present receipt with no execution event can never become ``executed_pass``.
+    """
+    own = tuple(event for event in events if event.identity == row.identity)
+    # ``False`` is the durable fact that a path/task-kind/operator rule declined
+    # this identity.  ``None`` is merely an unvisited lifecycle epoch; declared
+    # manual availability still closes intentionally as operator-visible.
+    if row.selected is False:
+        return "not_selected"
+    if row.execution_policy == "manual":
+        return "manual_available"
+    if row.execution_policy == "suggest":
+        return "suggested"
+    executions = [event for event in own if event.kind == "execution"]
+    if executions:
+        return "executed_pass" if executions[-1].outcome == "pass" else "executed_fail"
+    if any(event.kind == "reuse" and event.outcome == "fresh" for event in own):
+        return "skipped_fresh"
+    receipts = [event for event in own if event.kind == "receipt"]
+    status = receipts[-1].outcome if receipts else "missing"
+    if status == "stale":
+        return "residual_stale"
+    if status == "failed":
+        return "residual_failed"
+    return "residual_missing"
 
 
 # ── selection-rule reading (declared conditions, not path-matching) ────────
@@ -262,7 +371,7 @@ class _SelectionConditions:
 
     always: frozenset[str]
     operator: frozenset[str]
-    task_kind: frozenset[str]
+    task_kind: dict[str, tuple[str, ...]]
     paths: dict[str, tuple[str, ...]]
 
 
@@ -279,7 +388,7 @@ def _read_selection_conditions(
     """
     always: set[str] = set()
     operator: set[str] = set()
-    task_kind: set[str] = set()
+    task_kind: dict[str, list[str]] = {}
     paths: dict[str, list[str]] = {}
     for rule in contract.selection:
         if rule.kind == "always":
@@ -287,7 +396,10 @@ def _read_selection_conditions(
         elif rule.kind == "operator":
             operator.update(rule.include)
         elif rule.kind == "task_kind":
-            task_kind.update(rule.include)
+            for name in rule.include:
+                bucket = task_kind.setdefault(name, [])
+                if rule.task_kind and rule.task_kind not in bucket:
+                    bucket.append(rule.task_kind)
         elif rule.kind == "paths":
             for name in rule.include:
                 bucket = paths.setdefault(name, [])
@@ -297,14 +409,14 @@ def _read_selection_conditions(
     return _SelectionConditions(
         always=frozenset(always),
         operator=frozenset(operator),
-        task_kind=frozenset(task_kind),
+        task_kind={name: tuple(kinds) for name, kinds in task_kind.items()},
         paths={name: tuple(globs) for name, globs in paths.items()},
     )
 
 
 def _activation_binding(
     backing: Sequence[str], hook: str, conditions: _SelectionConditions,
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     """Read the normalized activation binding for a declared row.
 
     Priority (per the contract's declared selection algebra, read for display):
@@ -317,23 +429,28 @@ def _activation_binding(
     5. directly scheduled commands carry the explicit ``always`` binding.
     """
     if any(name in conditions.always for name in backing):
-        return "always", ()
+        return "always", (), ()
     if hook == "manual_only" or any(
         name in conditions.operator for name in backing
     ):
-        return "operator", ()
+        return "operator", (), ()
     globs: list[str] = []
     for name in backing:
         for glob in conditions.paths.get(name, ()):
             if glob not in globs:
                 globs.append(glob)
     if globs:
-        return "on_path", tuple(globs)
-    if any(name in conditions.task_kind for name in backing):
-        return "task_kind", ()
+        return "on_path", tuple(globs), ()
+    task_kinds: list[str] = []
+    for name in backing:
+        for task_kind in conditions.task_kind.get(name, ()):
+            if task_kind not in task_kinds:
+                task_kinds.append(task_kind)
+    if task_kinds:
+        return "task_kind", (), tuple(task_kinds)
     if not backing:
-        return "always", ()
-    return "unreachable", ()
+        return "always", (), ()
+    return "unreachable", (), ()
 
 
 # ── the projection builder ─────────────────────────────────────────────────
@@ -411,7 +528,7 @@ def build_gate_ledger(
             if identity in seen:
                 continue
             seen.add(identity)
-            activation_binding, condition_paths = _activation_binding(
+            activation_binding, condition_paths, selection_task_kinds = _activation_binding(
                 backing[command], entry.hook, conditions,
             )
             policy = _gate_policy(entry, backing_sets[command])
@@ -426,12 +543,20 @@ def build_gate_ledger(
                     gate_sets=tuple(backing[command]),
                     condition=activation_binding,
                     condition_paths=condition_paths,
+                    selection_task_kinds=selection_task_kinds,
                     activation_binding=activation_binding,
                     policy=policy,
                     kind=kind,
                     when=effective_stage(
                         policy, entry.hook, entry.phase, has_final_phase,
                     ),
+                    selectable=activation_binding in {
+                        "always", "on_path", "task_kind", "operator",
+                    },
+                    execution_policy=_execution_policy(
+                        contract, entry, command, backing_sets[command],
+                    ),
+                    selection_reason=_selection_reason(activation_binding),
                 ),
             )
 
@@ -439,11 +564,11 @@ def build_gate_ledger(
     if resolve_plan is None:
         return tuple(rows)
 
-    active_bindings = {
-        (entry.command, entry.hook, entry.phase): entry.activation_binding
+    active_entries = {
+        (entry.command, entry.hook, entry.phase): entry
         for entry in resolve_plan.entries
     }
-    return tuple(_resolve_row(row, active_bindings) for row in rows)
+    return tuple(_resolve_row(row, active_entries) for row in rows)
 
 
 def _resolve_plan(
@@ -473,12 +598,11 @@ def _resolve_plan(
 
 def _resolve_row(
     row: GateLedgerRow,
-    active_bindings: dict[tuple[str, str, str], str],
+    active_entries: dict[tuple[str, str, str], ScheduledGateEntry],
 ) -> GateLedgerRow:
     """Attach the identity-based disposition to a row (does not mutate)."""
-    from dataclasses import replace
-
-    planned_binding = active_bindings.get((row.gate, row.hook, row.phase))
+    planned_entry = active_entries.get((row.gate, row.hook, row.phase))
+    planned_binding = planned_entry.activation_binding if planned_entry else None
     is_manual = row.hook in ("manual_only", "on_resume") or (
         row.activation_binding == "operator"
     )
@@ -493,17 +617,52 @@ def _resolve_row(
     )
     if is_manual:
         resolved = "manual"
-    elif (row.gate, row.hook, row.phase) in active_bindings:
+    elif planned_entry is not None:
         resolved = "active"
     else:
         resolved = "dormant"
-    return replace(row, activation_binding=binding, condition=binding, resolved=resolved)
+    selected = planned_entry is not None
+    # The selected plan owns effective policy.  For an unselected row the
+    # declaration remains visible, but there is intentionally no executor.
+    policy = planned_entry.policy if planned_entry is not None else row.policy
+    executor: str | None = None
+    trigger: str | None = None
+    consequence = "none"
+    if selected and policy in {"manual", "suggest", "warn", "require"}:
+        from pipeline.verification_execution import resolve_execution_eligibility
+
+        eligibility = resolve_execution_eligibility(
+            True, policy, row.hook, row.phase,
+        )
+        executor = eligibility.executor
+        trigger = eligibility.trigger
+        consequence = eligibility.consequence
+    return replace(
+        row,
+        activation_binding=binding,
+        condition=binding,
+        resolved=resolved,
+        selected=selected,
+        execution_policy=policy,
+        executor=executor,
+        trigger=trigger,
+        consequence=consequence,
+        selection_reason=None if selected else _selection_reason(row.activation_binding),
+    )
+
+
+def _selection_reason(binding: str) -> str | None:
+    """Translate presentation binding to the durable unselected vocabulary."""
+    return {"on_path": "paths", "task_kind": "task_kind", "operator": "operator"}.get(binding)
 
 
 __all__ = [
     "GateLedgerRow",
+    "GateTrailEvent",
+    "TERMINAL_DISPOSITIONS",
     "build_gate_ledger",
     "effective_stage",
     "gate_run_mode",
     "gate_timing",
+    "reduce_disposition",
 ]

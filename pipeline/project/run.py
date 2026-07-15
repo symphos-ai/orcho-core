@@ -92,11 +92,15 @@ from pipeline.verification_delivery import assess_delivery_verification
 # presentation: the line *content* is built by verification_timeline; this only
 # overlays the house color style (neutral header, never success-green).
 _GATE_STATUS_COLORS: tuple[tuple[str, str], ...] = (
-    ("SKIPPED MANUAL", C.YELLOW),
-    ("MISSING/STALE", C.RED),
-    ("FRESH", C.CYAN),
-    ("FAIL", C.RED),
-    ("PASS", C.GREEN),
+    ("residual_failed", C.RED),
+    ("residual_stale", C.RED),
+    ("residual_missing", C.RED),
+    ("executed_fail", C.RED),
+    ("manual_available", C.YELLOW),
+    ("suggested", C.YELLOW),
+    ("skipped_fresh", C.CYAN),
+    ("executed_pass", C.GREEN),
+    ("not_selected", C.GREY),
 )
 
 
@@ -263,12 +267,25 @@ def _auto_run_required_receipts_live(
 
 
 def _gate_events_list(run: Any) -> list:
-    """Read-only view of the durable scheduled-gate decision trail (or [])."""
-    from pipeline.project.gate_repair import VERIFICATION_GATE_EVENTS_KEY
+    """Read-only projection of the durable scheduled-gate ledger trail."""
+    from pipeline.project.verification_ledger_runtime import live_delta
 
-    extras = getattr(getattr(run, "state", None), "extras", None)
-    events = extras.get(VERIFICATION_GATE_EVENTS_KEY) if isinstance(extras, dict) else None
-    return events if isinstance(events, list) else []
+    decisions = {
+        ("execution", "pass"): "executed_pass",
+        ("execution", "fail"): "executed_fail",
+        ("reuse", "fresh"): "skipped_fresh",
+    }
+    return [
+        {
+            "command": event.command,
+            "hook": event.hook,
+            "phase": event.phase,
+            "decision": decisions[(event.kind, event.outcome)],
+            "receipt_path": event.receipt_evidence,
+        }
+        for event in live_delta(run)
+        if (event.kind, event.outcome) in decisions
+    ]
 
 
 def _print_scheduled_gate_live_blocks(
@@ -276,9 +293,8 @@ def _print_scheduled_gate_live_blocks(
 ) -> None:
     """Print one framed live block per hook for scheduled gate decisions (F2).
 
-    ``new_records`` is the *delta* of ``extras['verification_gate_events']``
-    recorded across a single gate seam (the gate_repair recorder appends its
-    routing decisions there). This is purely READ-ONLY over that recorded
+    ``new_records`` is the *delta* of the durable scheduled-gate ledger
+    recorded across a single gate seam. This is purely READ-ONLY over that recorded
     evidence — it never re-runs a gate or re-reads the receipt directory; a
     fresh-but-unexecuted gate surfaces from its ``skipped_fresh`` decision, not
     from the on-disk receipt. No-op outside TERMINAL or with no decisions. The

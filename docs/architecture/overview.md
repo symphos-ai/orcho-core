@@ -3,6 +3,14 @@
 > Top-level mental model. Start here, then descend into the concept docs
 > only when you need implementation or reference detail.
 
+## Scheduled verification gates
+
+Verification scheduling is core-owned through a durable per-run ledger. Its
+snapshot, identity-scoped events, evidence bundle, terminal summary, and SDK
+retain the same `(command, hook, phase)` rows. Resume uses the snapshot rather
+than resolving a changed plugin. Core wire delivery remains stopped pending the
+paired `scheduled-gates-4` `orcho-mcp` L1–L4 validation.
+
 ## What orcho is
 
 **Autonomous multi-agent pipeline orchestrator.** Given a task and a

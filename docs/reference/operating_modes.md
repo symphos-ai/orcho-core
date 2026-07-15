@@ -53,7 +53,7 @@ Modes only project policy. Selection answers whether an identity enters the
 plan; execution eligibility answers who may execute it and with what base
 consequence; disposition records its eventual outcome. These are separate
 facts. The pure ADR 0132 eligibility resolver exists, but scheduled-gates task
-2 has not adopted it in executors and task 3 has not migrated the durable/SDK
+2 adopts it in executors; the durable ledger and SDK use the same typed
 ledger.
 
 ---
