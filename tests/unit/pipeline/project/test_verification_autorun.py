@@ -87,19 +87,25 @@ def _contract(
         if name in per_cmd_env:
             spec["env"] = per_cmd_env[name]
         commands[name] = spec
+    automatic = [name for name in required if name not in manual]
     verification: dict[str, Any] = {
         "default_env": default_env,
         "required": list(required),
         "commands": commands,
+        "schedule": [{
+            "before_delivery": True,
+            "policy": "require",
+            "commands": automatic,
+        }],
     }
     envs = {default_env: {}}
     for env_name in per_cmd_env.values():
         envs[env_name] = {}
     if manual:
         verification["gate_sets"] = {"manuals": {"commands": list(manual)}}
-        verification["schedule"] = [
+        verification["schedule"].append(
             {"manual_only": True, "gate_sets": ["manuals"]},
-        ]
+        )
     plugin = PluginConfig(verification_envs=envs, verification=verification)
     contract = VerificationContract.from_plugin(plugin)
     assert contract is not None
@@ -358,6 +364,104 @@ def test_stale_required_is_rerun_exactly_once(
         contract, run_dir, ctx, checkout=str(checkout),
     )
     assert after["lint"].status == "present"
+
+
+def test_phase_only_required_gate_is_refreshed_before_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale phase-only require gate gets the implicit delivery refresh."""
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    plugin = PluginConfig(
+        verification_envs={"ci": {}},
+        verification={
+            "default_env": "ci",
+            "delivery_policy": "require",
+            "commands": {"lint": {"run": "true"}},
+            "required": ["lint"],
+            "schedule": [{
+                "before_phase": "implement",
+                "policy": "require",
+                "commands": ["lint"],
+            }],
+        },
+    )
+    contract = VerificationContract.from_plugin(plugin)
+    assert contract is not None
+    _write_receipt(run_dir, "lint", checkout_head="0" * 40)
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert result.residual_required == ()
+    assert len(rec.run_calls) == 1
+
+
+def test_before_delivery_operator_commands_are_not_required_residuals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual and suggested delivery gates stay operator-owned end to end."""
+    project, workspace, run_dir = _layout(tmp_path)
+    plugin = PluginConfig(
+        verification_envs={"ci": {}},
+        verification={
+            "default_env": "ci",
+            "commands": {
+                "manual": {"run": "true"},
+                "suggest": {"run": "true"},
+            },
+            "required": ["manual", "suggest"],
+            "schedule": [
+                {"before_delivery": True, "policy": "manual", "commands": ["manual"]},
+                {"before_delivery": True, "policy": "suggest", "commands": ["suggest"]},
+            ],
+        },
+    )
+    contract = VerificationContract.from_plugin(plugin)
+    assert contract is not None
+    ctx = _ctx(contract, checkout=project, project=project,
+               workspace=workspace, run_dir=run_dir)
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(project), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert result.skipped_manual == ("manual", "suggest")
+    assert result.residual_required == ()
+    assert rec.env_calls == [] and rec.run_calls == []
+    live = "\n".join(render_gate_live_block(
+        result, hook_label="pre-final auto-run",
+    ))
+    assert "manual SKIPPED MANUAL" in live
+    assert "suggest SKIPPED MANUAL" in live
+    assert "MISSING/STALE" not in live
+
+    timeline = build_verification_timeline(
+        run_dir=run_dir,
+        extras={
+            "verification_contract": contract,
+            "verification_placeholders": ctx,
+        },
+    )
+    assert timeline is not None
+    assert timeline.manual_only == ("manual", "suggest")
+    assert timeline.residual_missing == ()
+    assert timeline.residual_stale == ()
+    assert timeline.residual_failed == ()
+    assert "operator available" in "\n".join(
+        render_verification_gate_done_block(timeline),
+    )
 
 
 # ── case 4: failed auto-run stays failed ──────────────────────────────────
@@ -772,7 +876,8 @@ def _path_selected_contract(
     gate_sets: dict[str, Any] = {"cli-sdk": {"commands": ["cli-sdk-unit"]}}
     required = ["lint"] if with_lint else []
     schedule: list[dict[str, Any]] = [
-        {"before_delivery": True},
+        {"before_delivery": True, "policy": "warn", "commands": ["lint"] if with_lint else []},
+        {"before_delivery": True, "policy": "warn", "gate_sets": ["cli-sdk"]},
         {"after_phase": "implement"},
     ]
     if manual_e2e:
@@ -1547,6 +1652,181 @@ def test_recorder_executed_fail_non_blocking(
     assert events[0]["exit_code"] == 1
 
 
+def test_phase_warn_executes_once_and_continues_after_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Warn is engine-owned: one failed execution is a warning, never a halt."""
+    from pipeline.project import gate_repair
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract(
+        [{"after_phase": "implement", "policy": "warn", "commands": ["lint"]}],
+        work_mode="pro",
+    )
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _gate_run(contract, ctx, run_dir)
+    calls = 0
+
+    def _failed(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"exit_code": 1}
+
+    monkeypatch.setattr(gate_repair, "_run_gate_command", _failed)
+    outcome = gate_repair.run_gate_hook(
+        run, object(), object(), hook="after_phase", phase="implement",
+    )
+
+    assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
+    assert calls == 1
+    assert run.state.phase_handoff_request is None and run.state.halt is False
+    assert run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY][0]["decision"] == "executed_fail"
+
+
+def test_before_delivery_reuses_prefinal_receipt_without_late_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh pre-final receipt is reconciled, not claimed as hook execution."""
+    from pipeline.project import gate_repair
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract([
+        {"before_delivery": True, "policy": "require", "commands": ["lint"]},
+    ])
+    _write_receipt(run_dir, "lint", exit_code=0)
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _gate_run(contract, ctx, run_dir)
+    monkeypatch.setattr(
+        gate_repair, "_run_gate_command",
+        lambda *_args, **_kwargs: pytest.fail("fresh receipt must not rerun the command"),
+    )
+
+    outcome = gate_repair.run_gate_hook(run, object(), object(), hook="before_delivery")
+
+    assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
+    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
+    assert [(event["command"], event["hook"], event["phase"], event["decision"])
+            for event in events] == [("lint", "before_delivery", "", "skipped_fresh")]
+
+
+def test_before_delivery_routes_failed_prefinal_warn_without_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pre-final warn is reused for its warning consequence once."""
+    from pipeline.project import gate_repair
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract([
+        {"before_delivery": True, "policy": "warn", "commands": ["lint"]},
+    ], work_mode="pro")
+    _write_receipt(run_dir, "lint", exit_code=1)
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _gate_run(contract, ctx, run_dir)
+    monkeypatch.setattr(
+        gate_repair,
+        "_run_gate_command",
+        lambda *_args, **_kwargs: pytest.fail("failed pre-final receipt must not rerun"),
+    )
+
+    outcome = gate_repair.run_gate_hook(run, object(), object(), hook="before_delivery")
+
+    assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
+    assert run.state.extras.get(gate_repair.VERIFICATION_GATE_EVENTS_KEY, []) == []
+
+
+def test_materializer_targets_only_engine_owned_before_delivery_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual/suggest do not reach verify_env or verify_run; warn/require do."""
+    from pipeline.verification_selection import SelectionContext, build_scheduled_gate_plan
+
+    project, workspace, run_dir = _layout(tmp_path)
+    names = ("manual", "suggest", "warn", "require")
+    contract = _routing_contract(
+        [
+            {"before_delivery": True, "policy": policy, "commands": [policy]}
+            for policy in names
+        ],
+        required=names,
+        work_mode="pro",
+    )
+    plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro"))
+    extras = {ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": plan}}
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    recorder = _Recorder(run_dir).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project), checkout=str(project),
+        contract=contract, ctx=ctx, workspace=str(workspace), extras=extras, reason="pre-final",
+    )
+
+    assert result.skipped_manual == ("manual", "suggest")
+    assert result.ran_commands == ("warn", "require")
+    assert recorder.run_calls[0]["commands"] == ["warn", "require"]
+    assert recorder.env_calls and all(
+        set(call) >= {"project", "env", "run_id", "workspace"} for call in recorder.env_calls
+    )
+
+
+def test_materializer_refreshes_after_phase_delivery_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale after_phase(implement) require remains materializable pre-final."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract([
+        {
+            "after_phase": "implement",
+            "policy": "require",
+            "commands": ["lint"],
+        },
+    ])
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    recorder = _Recorder(run_dir).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project), checkout=str(project),
+        contract=contract, ctx=ctx, workspace=str(workspace), reason="pre-final",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert recorder.run_calls[0]["commands"] == ["lint"]
+
+
+@pytest.mark.parametrize(
+    ("policy", "executions", "paused"),
+    (("manual", 0, False), ("suggest", 0, False), ("warn", 1, False), ("require", 1, True)),
+)
+def test_on_resume_uses_typed_execution_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    policy: str, executions: int, paused: bool,
+) -> None:
+    from pipeline.project import gate_repair
+
+    project, workspace, run_dir = _layout(tmp_path)
+    schedule = {"on_resume": True, "policy": policy, "commands": ["lint"]}
+    if policy == "require":
+        schedule["action"] = "handoff"
+    contract = _routing_contract(
+        [schedule],
+        work_mode="pro",
+    )
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _gate_run(contract, ctx, run_dir)
+    calls = 0
+
+    def _failed(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"exit_code": 1}
+
+    monkeypatch.setattr(gate_repair, "_run_gate_command", _failed)
+    outcome = gate_repair.run_gate_hook(run, object(), object(), hook="on_resume")
+
+    assert calls == executions
+    assert outcome.paused is paused
+    assert outcome.passed is (executions == 1 and not paused)
+
+
 def test_recorder_repair_loop_records_fail_then_pass_recheck(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1672,8 +1952,11 @@ def test_reconcile_missing_required_writes_no_hook_skip(
         run, contract, plan, hook="before_delivery", phase="", executed=set(),
     )
 
-    # missing required stays run-level residual — never a hook-skip event.
-    assert gate_repair.VERIFICATION_GATE_EVENTS_KEY not in run.state.extras
+    # An operator-owned suggest identity is recorded as skipped, never executed.
+    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
+    assert [(event["command"], event["decision"]) for event in events] == [
+        ("lint", "skipped_manual"),
+    ]
 
 
 def test_reconcile_tolerates_stub_run_without_output_dir() -> None:

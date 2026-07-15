@@ -295,8 +295,8 @@ def test_before_delivery_warn_policy_does_not_block(monkeypatch) -> None:
     outcome = gate_repair.run_gate_hook(
         run, object(), object(), hook="before_delivery",
     )
-    assert outcome.active is False
-    assert calls["gate"] == 0
+    assert outcome.active and outcome.passed
+    assert calls["gate"] == 1
 
 
 def test_on_resume_routes_required_gate(monkeypatch) -> None:

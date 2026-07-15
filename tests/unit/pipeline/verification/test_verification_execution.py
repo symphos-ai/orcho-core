@@ -11,8 +11,11 @@ import pytest
 from pipeline.verification_execution import (
     ExecutionEligibility,
     ExecutionEligibilityError,
+    VerificationIdentity,
     resolve_execution_eligibility,
+    resolve_selected_execution,
 )
+from pipeline.verification_selection import derive_effective_policy
 
 _PHASES = {"before_phase": "implement", "after_phase": "implement"}
 _HOOKS = ("before_phase", "after_phase", "before_delivery", "manual_only", "on_resume")
@@ -57,6 +60,27 @@ def test_accepted_adr_0132_matrix(policy: str, hook: str, selected: bool) -> Non
 def test_manual_only_rejects_automatic_policies(policy: str) -> None:
     with pytest.raises(ExecutionEligibilityError, match="manual_only"):
         resolve_execution_eligibility(True, policy, "manual_only", "")
+
+
+@pytest.mark.parametrize("work_mode", ("fast", "pro", "governed"))
+@pytest.mark.parametrize("hook", _HOOKS)
+@pytest.mark.parametrize("policy", _POLICIES)
+def test_effective_policy_hook_work_mode_composition(
+    policy: str, hook: str, work_mode: str,
+) -> None:
+    """Every mode-derived policy is resolved by the same identity resolver."""
+    effective = derive_effective_policy(policy, work_mode, required=False)
+    phase = _PHASES.get(hook, "")
+    identity = VerificationIdentity("verify", hook, phase, effective)
+    if hook == "manual_only" and effective in ("warn", "require"):
+        with pytest.raises(ExecutionEligibilityError, match="manual_only"):
+            resolve_selected_execution(identity)
+        return
+
+    resolved = resolve_selected_execution(identity)
+    assert resolved.identity == identity
+    assert resolved.executor == _expected(effective, hook, True).executor
+    assert resolved.consequence == _expected(effective, hook, True).consequence
 
 
 @pytest.mark.parametrize(
