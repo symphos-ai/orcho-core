@@ -12,6 +12,9 @@
 **Orcho** is a production harness and control plane for agentic software
 delivery.
 
+**Run one task. Watch Orcho plan, implement, reject false-ready work, repair
+it, and prove what is ready to deliver.**
+
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
 ![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
@@ -19,8 +22,9 @@ delivery.
 <sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
 with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
 
-Use the coding agents you already trust; Orcho supervises the workflow
-around them: plan → implementation → review → repair → final acceptance.
+Use the coding agents you already trust. They remain the workers; Orcho owns
+the delivery protocol around them: plan → implementation → review → repair
+→ final acceptance.
 
 It is built for work that needs more structure than a single interactive
 agent session:
