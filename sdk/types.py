@@ -13,7 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pipeline.control.continuation import ContinuationDecision
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run identity / metadata
@@ -101,6 +104,7 @@ class RunStatus:
     raw_meta: dict[str, Any] = field(default_factory=dict)
     raw_metrics: dict[str, Any] = field(default_factory=dict)
     next_actions: tuple = ()  # tuple[Action, ...] — avoids forward-ref cycle
+    continuation_decision: ContinuationDecision | None = None
     artefacts: tuple = ()  # tuple[ArtefactRef, ...] — avoids forward-ref order
 
 

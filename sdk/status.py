@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.observability.metrics import scrub_accounting_fields
+from pipeline.control.continuation import resolve_continuation_decision
 from pipeline.run_state.setup_failure import merged_status
 from sdk._runspace_context import accounting_enabled_for_context
 from sdk.actions import compute_next_actions
@@ -210,6 +211,11 @@ def load_status(
     # warning surfaces in next_actions while the phase is still running, before
     # any terminal failure.
     live_stalls = active_stall_diagnostics(ref.run_dir)
+    continuation_decision = resolve_continuation_decision(
+        run_id=ref.run_id,
+        meta=raw_meta or None,
+        parent_run_dir=ref.run_dir,
+    )
     next_actions = compute_next_actions(
         raw_meta or None,
         run_id=ref.run_id,
@@ -218,6 +224,7 @@ def load_status(
             artifact.kind == "parsed_plan" for artifact in artefacts
         ),
         status=merged_status_value,
+        continuation_decision=continuation_decision,
     )
 
     return RunStatus(
@@ -235,5 +242,6 @@ def load_status(
         raw_meta=raw_meta,
         raw_metrics=raw_metrics,
         next_actions=next_actions,
+        continuation_decision=continuation_decision,
         artefacts=artefacts,
     )

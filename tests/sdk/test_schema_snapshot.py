@@ -161,6 +161,19 @@ def test_build_schema_shape_in_process() -> None:
     assert {e["name"] for e in schema["exports"]} == set(sdk.__all__)
 
 
+def test_run_status_continuation_decision_is_typed() -> None:
+    """The public status snapshot must preserve the canonical DTO type."""
+    dumper = _load_dumper()
+    schema = dumper.build_schema()
+    run_status = next(e for e in schema["exports"] if e["name"] == "RunStatus")
+    field = next(
+        field
+        for field in run_status["fields"]
+        if field["name"] == "continuation_decision"
+    )
+    assert field["type"] == "ContinuationDecision | None"
+
+
 def test_check_mode_matches_committed_in_process() -> None:
     """``--check`` against the committed snapshot passes in-process (exit 0)."""
     dumper = _load_dumper()

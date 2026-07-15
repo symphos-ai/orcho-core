@@ -73,6 +73,21 @@ class TestActionShape:
         # The Action's args is unchanged (Mapping copy on serialize).
         assert "mutated" not in a.args
 
+    def test_to_dict_includes_readiness_fields_when_input_is_required(self) -> None:
+        action = Action(
+            intent="Need input", tool="orcho_run_resume", args={"run_id": "r1"},
+            optional=False, kind="operator_input_required",
+            requires_operator_input=True, choices=("followup", "exit"),
+            input_schema={"type": "object"}, context={"blocked": False},
+        )
+        assert action.to_dict() == {
+            "intent": "Need input", "tool": "orcho_run_resume",
+            "args": {"run_id": "r1"}, "optional": False,
+            "kind": "operator_input_required", "requires_operator_input": True,
+            "choices": ["followup", "exit"],
+            "input_schema": {"type": "object"}, "context": {"blocked": False},
+        }
+
 
 # ── compute_next_actions: terminal / running / missing ──────────────────────
 
@@ -410,6 +425,30 @@ class TestFromRunPlanRule:
         actions = compute_next_actions(meta, run_id="r1")
         tools = [a.tool for a in actions]
         assert "orcho_run_start" not in tools
+
+    def test_missing_parent_task_requires_operator_input(self) -> None:
+        action = next(
+            action for action in compute_next_actions(
+                _meta(status="halted", plan_source="local"), run_id="r1",
+            ) if action.tool == "orcho_run_start"
+        )
+        assert action.kind == "operator_input_required"
+        assert action.requires_operator_input is True
+        assert action.input_schema == {
+            "type": "object",
+            "required": ["task"],
+            "properties": {"task": {"type": "string", "minLength": 1}},
+        }
+
+    def test_parent_task_makes_plan_action_ready(self) -> None:
+        meta = _meta(status="halted", plan_source="local")
+        meta["task"] = "Implement the approved plan"
+        action = next(
+            action for action in compute_next_actions(meta, run_id="r1")
+            if action.tool == "orcho_run_start"
+        )
+        assert action.kind == "ready_call"
+        assert action.args["task"] == "Implement the approved plan"
 
 
 # ── plan-artifact continuation semantics + legacy-name regression ───────────

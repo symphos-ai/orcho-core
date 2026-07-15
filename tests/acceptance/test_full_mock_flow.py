@@ -715,11 +715,12 @@ class TestA9_RejectedReleaseTerminal:
         runs_dir = run_dir.parent
         run_id = run_dir.name
 
-        # Delivery gate (ADR 0111): an auto-refused rejected release is a
-        # decidable correction whose only forward motion is a from_run_plan
-        # follow-up. Shipping, ``skip`` (ADR 0106) AND the now-inert ``fix``
-        # repeat are all blocked — only ``halt`` remains — and the reason routes
-        # the client to the follow-up (NOT 'no pending delivery gate').
+        # Delivery gate (ADR 0111 + ADR 0133): an auto-refused rejected release
+        # is a decidable correction whose only forward motion is an ordinary
+        # follow-up through resume with an operator comment. Shipping, ``skip``
+        # (ADR 0106) AND the now-inert ``fix`` repeat are all blocked — only
+        # ``halt`` remains — and the reason routes the client to the follow-up
+        # (NOT 'no pending delivery gate').
         state = delivery_decision_state(run_id, runs_dir=runs_dir, cwd=None)
         assert state.decidable is True
         assert state.kind == "correction"
@@ -732,8 +733,9 @@ class TestA9_RejectedReleaseTerminal:
         # The reason names the follow-up handle as the run's resolved (stamped)
         # id from the persisted gate context — which the run-dir name may differ
         # from in this fixture, so assert against ``state.run_id``.
-        assert f"from_run_plan={state.run_id}" in state.reason
-        assert "orcho_run_start" in state.reason
+        assert f"orcho_run_resume run_id={state.run_id}" in state.reason
+        assert "operator comment" in state.reason
+        assert "from_run_plan" not in state.reason
         assert "inert" in state.reason
 
         # The durable rejected blockers stay on the persisted gate context (the

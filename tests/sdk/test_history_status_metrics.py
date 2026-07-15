@@ -410,7 +410,7 @@ def test_rejected_release_gate_is_decidable_correction(runs_root: Path) -> None:
     assert state.decidable is True
     assert state.kind == "correction"
     # ADR 0111: an auto-refused rejected release (``_is_rejected_release_gate``)
-    # is a dead-end whose only forward motion is a from_run_plan follow-up.
+    # is a dead-end whose only forward motion is an ordinary correction follow-up.
     # Repeating ``fix`` is inert, so it is blocked alongside the shipping actions
     # and ``skip`` (ADR 0106) — only ``halt`` (give up) remains available.
     assert set(state.blocked_actions) == {"fix", "approve", "apply", "skip"}
@@ -420,11 +420,10 @@ def test_rejected_release_gate_is_decidable_correction(runs_root: Path) -> None:
     assert "approve" not in state.available_actions
     # No inert in-gate repeat is advertised as the actionable next step.
     assert state.default_action is None
-    # The reason routes the client to a from_run_plan follow-up (no diff.patch
-    # file written here, so the held-diff suffix is omitted).
+    # The reason routes the client to an ordinary follow-up; diff artifacts are
+    # never replayed as correction input.
     assert state.reason is not None
-    assert f"from_run_plan={run_id}" in state.reason
-    assert "orcho_run_start" in state.reason
+    assert f"orcho_run_resume run_id={run_id}" in state.reason
     assert "inert" in state.reason
     assert "diff.patch" not in state.reason
 
