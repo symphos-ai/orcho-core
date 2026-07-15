@@ -122,12 +122,10 @@ def test_correction_followup_required_fix_requested(tmp_path: Path) -> None:
         "project": "/x",
     })
     d = _diag(runs, "r")
-    assert d.condition == diag.CONDITION_CORRECTION_FOLLOWUP_REQUIRED
-    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.condition == diag.CONDITION_BLOCKED_WORKTREE
+    assert d.continuation_subject == diag.SUBJECT_RETAINED_CHANGE
     assert d.recommended_next_action == diag.ACTION_START_FOLLOWUP
-    assert d.delivery_gate_kind == "correction"
-    # A fix-marked correction offers only ``halt`` in-gate — repeating fix is inert.
-    assert "fix" not in d.available_actions
+    assert d.blocked is True
 
 
 def test_superseded_by_child(tmp_path: Path) -> None:
@@ -317,6 +315,7 @@ _MCP_CONTINUATION_SUBJECTS = frozenset({
     "active_child_run",
     "delivery_gate",
     "plan_artifact",
+    "retained_change",
     "none",
     "unknown",
 })
@@ -355,7 +354,7 @@ def _scenarios(runs: Path) -> list[tuple[str, str, str | None]]:
         },
         "project": "/x",
     })
-    table.append(("correct", "correction_followup_required", "plan_artifact"))
+    table.append(("correct", "blocked_worktree", "retained_change"))
 
     _mk(runs, "20270101_000001", {
         "status": "halted", "halt_reason": "final_acceptance_rejected",
@@ -444,7 +443,6 @@ def test_parity_against_mcp_branch_contract(tmp_path: Path) -> None:
         diag.CONDITION_ACTIVE,
         diag.CONDITION_NEEDS_DECISION,
         diag.CONDITION_NEEDS_DELIVERY_DECISION,
-        diag.CONDITION_CORRECTION_FOLLOWUP_REQUIRED,
         diag.CONDITION_SUPERSEDED_BY_CHILD,
         diag.CONDITION_BLOCKED_WORKTREE,
         diag.CONDITION_RECOVER_VIA_SOURCE_RUN,
@@ -458,7 +456,8 @@ def test_parity_against_mcp_branch_contract(tmp_path: Path) -> None:
     assert produced_subjects == {
         None,
         diag.SUBJECT_DELIVERY_GATE,
-        diag.SUBJECT_PLAN_ARTIFACT,
+            diag.SUBJECT_PLAN_ARTIFACT,
+            diag.SUBJECT_RETAINED_CHANGE,
         diag.SUBJECT_ACTIVE_CHILD_RUN,
         diag.SUBJECT_SOURCE_RUN_CHECKPOINT,
         diag.SUBJECT_NONE,

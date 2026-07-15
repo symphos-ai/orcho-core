@@ -75,8 +75,8 @@ class ResumeIntentOptions:
     # True when the parent dead-ended on a correction-required terminal
     # (``commit_decision_fix`` / ``final_acceptance_rejected`` /
     # ``final_acceptance_no_diff``): a bare task-less resume is meaningless and
-    # the actionable next step is a from_run_plan follow-up that carries the held
-    # diff. The frontend must require a follow-up task; ``can_checkpoint`` is
+    # the actionable next step is an ordinary correction follow-up. The frontend
+    # must require operator input; ``can_checkpoint`` is
     # always False in this state. Default False keeps every other intent shape
     # (success / halt / incomplete / awaiting) byte-identical.
     requires_followup_task: bool = False
@@ -751,9 +751,9 @@ def get_resume_intent_options(
         # Correction requested (``commit_decision_fix``) or rejected dead-end
         # (``final_acceptance_rejected`` / ``final_acceptance_no_diff``): a bare
         # task-less resume is meaningless — neither a checkpoint continuation nor
-        # an empty follow-up advances the run. The actionable next step is a
-        # from_run_plan follow-up carrying the held diff, so signal that a
-        # follow-up task is required.
+        # an empty follow-up advances the run. The actionable next step is an
+        # ordinary correction follow-up in the retained worktree, so signal that a
+        # operator comment is required by the correction launch surface.
         return ResumeIntentOptions(
             can_checkpoint=False,
             can_followup=True,

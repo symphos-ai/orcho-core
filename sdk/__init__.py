@@ -12,6 +12,7 @@ from __future__ import annotations
 # from the control layer so MCP/CLI consume one source of truth. These are pure
 # predicate functions (no dataclass payload, no wire schema); the re-export
 # changes no signatures or behavior.
+from pipeline.control.continuation import ContinuationDecision, resolve_continuation_decision
 from pipeline.control.resume_context import (
     get_resume_intent_options,
     is_terminal_commit_decision_fix,
@@ -221,6 +222,8 @@ __all__ = [
     "is_terminal_commit_delivery_scope_blocked",
     "is_terminal_final_acceptance_rejected",
     "get_resume_intent_options",
+    "ContinuationDecision",
+    "resolve_continuation_decision",
     # Generic phase handoff
     "phase_handoff_decide",
     "load_active_phase_handoff",

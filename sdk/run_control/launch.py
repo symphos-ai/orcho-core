@@ -39,6 +39,11 @@ from typing import Any
 
 from core.observability.logging import normalize_output_mode
 from pipeline.argv import build_orch_argv
+from pipeline.control.continuation import resolve_continuation_decision
+from pipeline.project.correction_followup import (
+    compose_correction_context,
+    compose_correction_task,
+)
 from sdk.errors import LaunchError, RunNotFound
 from sdk.runs import find_runs_dir
 
@@ -108,6 +113,21 @@ class LaunchSpec:
     attach_image: list[str] | None = None
     attach_binary: list[str] | None = None
     from_run_plan: str | None = None
+
+
+@dataclass(frozen=True)
+class CorrectionFollowupLaunchRequest:
+    """Client-neutral request for an ordinary retained-change follow-up.
+
+    No profile or runtime override is accepted: correction recovery always uses
+    the fixed correction profile and the parent's retained worktree.
+    """
+
+    parent_run_id: str
+    operator_comment: str
+    runs_dir: str | None = None
+    workspace: str | None = None
+    output_mode: str = "summary"
 
 
 @dataclass(frozen=True)
@@ -540,6 +560,67 @@ def resume_run(
         started_at=now_iso(),
         mock=original_mock,
         output_mode=original_output_mode,
+    )
+    write_launch_state(run)
+    return LaunchResult(run=run, popen=popen)
+
+
+def launch_correction_followup(
+    request: CorrectionFollowupLaunchRequest, *, run_id: str | None = None,
+) -> LaunchResult:
+    """Spawn a correction child after rechecking the parent's durable state."""
+    comment = request.operator_comment.strip()
+    if not comment:
+        raise LaunchError("operator_comment is required for a correction follow-up")
+    runs_dir = find_runs_dir(
+        workspace=request.workspace, runs_dir=request.runs_dir, cwd=None,
+    )
+    parent_dir = runs_dir / request.parent_run_id
+    parent_meta = _read_meta(parent_dir)
+    if parent_meta is None:
+        raise RunNotFound(f"run {request.parent_run_id}: meta.json is unavailable")
+    decision = resolve_continuation_decision(
+        run_id=request.parent_run_id, meta=parent_meta, parent_run_dir=parent_dir,
+    )
+    if decision.blocked or decision.continuation_subject != "retained_change":
+        raise LaunchError(f"correction follow-up cannot start: {decision.reason}")
+    project_dir = parent_meta.get("project")
+    task = parent_meta.get("task")
+    if not isinstance(project_dir, str) or not project_dir.strip():
+        raise LaunchError("parent meta.json missing project")
+    if not isinstance(task, str) or not task.strip():
+        raise LaunchError("parent meta.json missing task")
+    child_id = run_id or _mint_run_id()
+    child_dir = runs_dir / child_id
+    child_dir.mkdir(parents=True)
+    context = child_dir / "correction_context.md"
+    context.write_text(
+        compose_correction_context(parent_meta)
+        + "\n\n## Operator comment\n\n"
+        + comment + "\n",
+        encoding="utf-8",
+    )
+    correction_task = (
+        compose_correction_task(parent_meta)
+        + f"\n\nDetailed rejection context: {context}\n\nOperator comment: {comment}"
+    )
+    output_mode = normalize_output_mode(request.output_mode)
+    argv = build_orch_argv(
+        project=project_dir, task=correction_task,
+        workspace=_workspace_from_runs_dir(runs_dir), resume=request.parent_run_id,
+        run_id=child_id, output_dir=str(child_dir), profile="correction",
+        output_mode=output_mode, no_interactive=True,
+    )
+    cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
+    env = os.environ.copy()
+    env["ORCHO_RUN_ID"] = child_id
+    env["ORCHO_PIPELINE"] = "correction"
+    log_fd = (child_dir / "runner.log").open("w", encoding="utf-8")
+    popen = _spawn_detached(cmd, project_dir=project_dir, env=env, log_fd=log_fd)
+    run = LaunchedRun(
+        run_id=child_id, pid=popen.pid, pgid=popen.pid, run_dir=child_dir,
+        project_dir=project_dir, command=cmd, started_at=now_iso(), mock=False,
+        output_mode=output_mode,
     )
     write_launch_state(run)
     return LaunchResult(run=run, popen=popen)

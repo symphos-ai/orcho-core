@@ -968,12 +968,12 @@ def test_state_current_rejected_still_correction_fix_or_halt(tmp_path: Path) -> 
         assert result.blocker == "release_blocked"
 
 
-# ── T1: rejected / fix-marked correction directs to a from_run_plan follow-up ─
+# ── T1: rejected / fix-marked correction directs to an ordinary follow-up ────
 #
 # After ``fix`` is accepted (status='fix_requested') — or when the run dead-ended
 # on an auto-refused rejected release (_is_rejected_release_gate) — repeating
 # ``fix`` is inert and a bare resume cannot advance the run. The state advertises
-# no inert repeat (only ``halt`` stays) and routes the client to a from_run_plan
+    # no inert repeat (only ``halt`` stays) and routes the client to an ordinary
 # follow-up via the already-mapped ``reason`` field, naming the held diff.patch.
 
 
@@ -981,7 +981,7 @@ def test_state_fix_requested_directs_to_followup(tmp_path: Path) -> None:
     runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
     fix = decide_delivery("r1", "fix", runs_dir=runs_dir, cwd=None)
     assert fix.status == "fix_requested"
-    # Stamp a held diff so the reason names the durable patch path.
+    # An artifact diff must not alter the ordinary follow-up instruction.
     (runs_dir / "r1" / "diff.patch").write_text("patch\n", encoding="utf-8")
 
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
@@ -999,11 +999,10 @@ def test_state_fix_requested_directs_to_followup(tmp_path: Path) -> None:
     assert set(state.blocked_actions) == {"fix", "approve", "apply", "skip"}
     for inert in ("approve", "apply", "skip"):
         assert inert not in state.available_actions
-    # The reason routes the client to a from_run_plan follow-up + the held diff.
+    # The reason routes the client to an ordinary follow-up; diff artifacts are
+    # not replayed as correction input.
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
-    assert "orcho_run_start" in state.reason
-    assert str(runs_dir / "r1" / "diff.patch") in state.reason
+    assert "orcho_run_resume run_id=r1" in state.reason
 
 
 def test_state_fix_requested_without_held_diff_still_points_to_followup(
@@ -1018,8 +1017,8 @@ def test_state_fix_requested_without_held_diff_still_points_to_followup(
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
 
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
-    # No file → the durable patch path is omitted (patch_text is never persisted).
+    assert "orcho_run_resume run_id=r1" in state.reason
+    # Artifact presence is never part of the correction launch request.
     assert "diff.patch" not in state.reason
 
 
@@ -1041,7 +1040,7 @@ def test_state_rejected_dead_end_directs_to_followup(tmp_path: Path) -> None:
     assert state.default_action is None
     assert "fix" not in state.available_actions
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
+    assert "orcho_run_resume run_id=r1" in state.reason
 
 
 def test_state_approved_pending_serialization_is_byte_identical(

@@ -37,6 +37,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from pipeline.control.continuation import resolve_continuation_decision
 from pipeline.control.resume_context import (
     detect_active_followup_child,
     is_terminal_resume_parent,
@@ -66,6 +67,7 @@ SUBJECT_ACTIVE_CHILD_RUN = "active_child_run"
 SUBJECT_DELIVERY_GATE = "delivery_gate"
 SUBJECT_SOURCE_RUN_CHECKPOINT = "source_run_checkpoint"
 SUBJECT_PLAN_ARTIFACT = "plan_artifact"
+SUBJECT_RETAINED_CHANGE = "retained_change"
 SUBJECT_NONE = "none"
 
 ACTION_RESUME_ACTIVE_CHILD = "resume_active_child"
@@ -455,6 +457,9 @@ def _build_recovery_lineage(
     plan_source_run_id = _optional_str(meta.get("plan_source_run_id"))
 
     terminal = is_terminal_resume_parent(meta)
+    continuation = resolve_continuation_decision(
+        run_id=run_id, meta=meta, parent_run_dir=run_dir,
+    )
 
     # (1) active follow-up child supersedes the inspected run (composed predicate).
     child = _safe_active_child(run_id, run_dir.parent)
@@ -483,6 +488,18 @@ def _build_recovery_lineage(
                 f"a newer unfinished follow-up child {active_child_run_id} "
                 "supersedes this run; resume the child"
             ),
+        )
+
+    if continuation.continuation_subject == SUBJECT_RETAINED_CHANGE:
+        return RecoveryLineage(
+            run_id=run_id,
+            is_terminal_or_rejected=True,
+            continuation_subject=SUBJECT_RETAINED_CHANGE,
+            recommended_next_action=continuation.recommended_next_action,
+            recommended_run_id=run_id if not continuation.blocked else None,
+            source_worktree_preserved=not continuation.blocked,
+            missing_facts=() if not continuation.blocked else (_MISSING_SOURCE,),
+            reason=continuation.reason,
         )
 
     # (2) pending delivery / correction gate — a decision, not a dead-end.

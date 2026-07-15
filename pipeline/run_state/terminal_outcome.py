@@ -637,7 +637,7 @@ def supersede_parent_meta(
         "child_run_id": child_run_id,
         "child_status": child_status,
         "delivery_status": delivery_status,
-        "reason": "correction delivered via from_run_plan follow-up",
+        "reason": "correction delivered via ordinary follow-up",
     }
 
 
