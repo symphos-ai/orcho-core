@@ -280,6 +280,9 @@ def test_completed_phases_union_keeps_implement(tmp_path, monkeypatch):
 
     fake_ckpt = SimpleNamespace(
         load=lambda ts: SimpleNamespace(completed={"plan", "validate_plan"}),
+        get_phase_records=lambda ts: (),
+        get_loop_cursors=lambda ts: (),
+        save_loop_cursors=lambda records: None,
     )
     run = SimpleNamespace(
         max_rounds=1,
@@ -385,6 +388,9 @@ def test_retry_feedback_invalidates_checkpoint_completed_downstream(
                 "final_acceptance",
             },
         ),
+        get_phase_records=lambda ts: (),
+        get_loop_cursors=lambda ts: (),
+        save_loop_cursors=lambda records: None,
     )
     run = SimpleNamespace(
         max_rounds=1,

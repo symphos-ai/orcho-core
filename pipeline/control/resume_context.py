@@ -80,6 +80,7 @@ class ResumeIntentOptions:
     # always False in this state. Default False keeps every other intent shape
     # (success / halt / incomplete / awaiting) byte-identical.
     requires_followup_task: bool = False
+    checkpoint_blocked_reason: str | None = None
 
 
 @dataclass(frozen=True)

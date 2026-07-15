@@ -88,6 +88,25 @@ class PipelineState:
         return name in self.completed
 
 
+@dataclass(frozen=True, slots=True)
+class PhaseCheckpointRecord:
+    """One committed phase row in append order."""
+
+    phase: str
+    data: dict[str, Any] | list[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class LoopCursorRecord:
+    """Durable boundary committed atomically with a loop-inner phase."""
+
+    loop_key: str
+    loop_phases: tuple[str, ...]
+    round_n: int
+    completed_phase: str
+    next_phase: str | None
+
+
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS checkpoints (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +135,17 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     session_id TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (run_id, role_attr)
+);
+
+CREATE TABLE IF NOT EXISTS loop_cursors (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           TEXT    NOT NULL,
+    loop_key         TEXT    NOT NULL,
+    loop_phases_json TEXT    NOT NULL,
+    round_n          INTEGER NOT NULL,
+    completed_phase  TEXT    NOT NULL,
+    next_phase       TEXT,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -162,16 +192,47 @@ class CheckpointStore:
         )
         self._conn.commit()
 
-    def save_phase(self, phase: str, data: dict[str, Any] | list[Any]) -> None:
+    def save_phase(
+        self,
+        phase: str,
+        data: dict[str, Any] | list[Any],
+        *,
+        loop_cursor: LoopCursorRecord | None = None,
+    ) -> None:
         """Record a completed phase. ``data`` is JSON-serialized as-is; both
         dict (single-shot phases) and list (multi-attempt phases like
         plan/validate_plan with rounds) are accepted. Repeat calls for the same
-        phase append rows; ``load()`` returns the last write."""
-        self._conn.execute(
-            "INSERT INTO checkpoints (run_id, phase, data_json) VALUES (?, ?, ?)",
-            (self._run_id, phase, json.dumps(data, ensure_ascii=False)),
-        )
-        self._conn.commit()
+        phase append rows; ``load()`` returns the last write.
+
+        When ``loop_cursor`` is supplied, its boundary row is committed in the
+        same SQLite transaction as the phase row. A crash therefore cannot
+        expose "phase completed" without the cursor needed to continue its
+        enclosing loop.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO checkpoints (run_id, phase, data_json) "
+                "VALUES (?, ?, ?)",
+                (self._run_id, phase, json.dumps(data, ensure_ascii=False)),
+            )
+            if loop_cursor is not None:
+                self._conn.execute(
+                    "INSERT INTO loop_cursors "
+                    "(run_id, loop_key, loop_phases_json, round_n, "
+                    "completed_phase, next_phase) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        self._run_id,
+                        loop_cursor.loop_key,
+                        json.dumps(loop_cursor.loop_phases, ensure_ascii=False),
+                        loop_cursor.round_n,
+                        loop_cursor.completed_phase,
+                        loop_cursor.next_phase,
+                    ),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def set_status(self, status: PipelineStatus) -> None:
         """Update overall pipeline status."""
@@ -180,6 +241,34 @@ class CheckpointStore:
             (status.value, self._run_id),
         )
         self._conn.commit()
+
+    def save_loop_cursor(self, cursor: LoopCursorRecord) -> None:
+        """Persist a validated legacy cursor migration before dispatch."""
+        self.save_loop_cursors((cursor,))
+
+    def save_loop_cursors(self, cursors: tuple[LoopCursorRecord, ...]) -> None:
+        """Atomically persist a validated legacy cursor migration."""
+        try:
+            self._conn.executemany(
+                "INSERT INTO loop_cursors "
+                "(run_id, loop_key, loop_phases_json, round_n, completed_phase, "
+                "next_phase) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    (
+                        self._run_id,
+                        cursor.loop_key,
+                        json.dumps(cursor.loop_phases, ensure_ascii=False),
+                        cursor.round_n,
+                        cursor.completed_phase,
+                        cursor.next_phase,
+                    )
+                    for cursor in cursors
+                ),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     def set_agent_session(self, role_attr: str, session_id: str | None) -> None:
         """Persist ``agent.session_id`` for ``role_attr``.
@@ -251,6 +340,48 @@ class CheckpointStore:
             (rid,),
         ).fetchall()
         return {r[0]: r[1] for r in rows}
+
+    def get_phase_records(
+        self, run_id: str | None = None,
+    ) -> tuple[PhaseCheckpointRecord, ...]:
+        """Return committed phase rows in append order."""
+        rid = run_id or self._run_id
+        rows = self._conn.execute(
+            "SELECT phase, data_json FROM checkpoints "
+            "WHERE run_id = ? ORDER BY id ASC",
+            (rid,),
+        ).fetchall()
+        return tuple(
+            PhaseCheckpointRecord(phase=phase, data=json.loads(data_json))
+            for phase, data_json in rows
+        )
+
+    def get_loop_cursors(
+        self, run_id: str | None = None,
+    ) -> tuple[LoopCursorRecord, ...]:
+        """Return durable loop boundaries in commit order."""
+        rid = run_id or self._run_id
+        rows = self._conn.execute(
+            "SELECT loop_key, loop_phases_json, round_n, completed_phase, "
+            "next_phase FROM loop_cursors WHERE run_id = ? ORDER BY id ASC",
+            (rid,),
+        ).fetchall()
+        return tuple(
+            LoopCursorRecord(
+                loop_key=loop_key,
+                loop_phases=tuple(json.loads(loop_phases_json)),
+                round_n=int(round_n),
+                completed_phase=completed_phase,
+                next_phase=next_phase,
+            )
+            for (
+                loop_key,
+                loop_phases_json,
+                round_n,
+                completed_phase,
+                next_phase,
+            ) in rows
+        )
 
     def list_runs(self) -> list[dict[str, Any]]:
         """List all runs in the store, most recent first."""
