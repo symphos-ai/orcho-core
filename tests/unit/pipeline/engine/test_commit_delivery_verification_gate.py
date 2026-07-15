@@ -172,7 +172,7 @@ def _manual_only_gate(
     # policy is irrelevant to the manual-only line (default ``warn`` here).
     return DeliveryVerificationAssessment(
         policy=boundary_policy,
-        manual_only_gaps=tuple(
+        operator_gaps=tuple(
             GapEntry(c, "missing", "manual_only") for c in manual
         ),
         policy_by_command=tuple((c, "manual_only") for c in manual),
@@ -790,7 +790,7 @@ class TestManualOnlyVisible:
         assert not gate.blocking
         assert not gate.has_blockers
         logged = capsys.readouterr().out
-        assert "manual-only" in logged
+        assert "operator-available" in logged
         assert "not auto-run" in logged
         assert "e2e" in logged
         assert "missing required" not in logged
@@ -819,7 +819,7 @@ class TestManualOnlyVisible:
         )
         joined = "\n".join(printed)
         assert decision.action == "approve"
-        assert "manual-only" in joined
+        assert "operator-available" in joined
         assert "not auto-run" in joined
         assert "e2e" in joined
         assert "missing required" not in joined

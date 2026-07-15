@@ -946,8 +946,8 @@ class TestEnvironmentProvenanceOverlay:
             contract, run_dir, PlaceholderContext(checkout=str(tmp_path)),
         )
 
-        # Manual gate is surfaced as manual-only, never a required/blocking gap.
-        assert "env-provenance" in summary.manual_only_gaps
+        # Manual gate is operator-visible, never a required/blocking gap.
+        assert "env-provenance" in summary.operator_gaps
         assert "env-provenance" not in summary.required_failed
         # And it never becomes a require release gap.
         gaps = required_receipt_gaps(

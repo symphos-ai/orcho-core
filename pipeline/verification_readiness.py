@@ -175,7 +175,7 @@ class ReadinessSummary:
     # Per-gate policy awareness (T3, ADR 0097), additive. ``policy_by_command``
     # is the effective delivery policy (require|warn|suggest|manual_only) for
     # every required delivery command, render-only. The ``required_*`` gaps above
-    # exclude manual/operator-only commands; those land in ``manual_only_gaps``
+    # exclude manual/operator-only commands; those land in ``operator_gaps``
     # instead — visible, but never a missing-required receipt and never in
     # "Remaining before ready" (ADR 0090). Default empty so a no-blocker summary
     # renders byte-identically.
@@ -185,7 +185,7 @@ class ReadinessSummary:
     # visible for audit. Internal prompt projection only; no durable receipt or
     # SDK shape consumes this field.
     consequence_by_command: tuple[tuple[str, str], ...] = ()
-    manual_only_gaps: tuple[str, ...] = ()
+    operator_gaps: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -196,7 +196,7 @@ class ReadinessSummary:
             or self.required_missing
             or self.required_failed
             or self.required_stale
-            or self.manual_only_gaps
+            or self.operator_gaps
             or self.exploratory_count
         )
 
@@ -901,7 +901,7 @@ def build_final_acceptance_readiness(
             stale_reasons.append(
                 f"{command}: {classification.reason or 'stale'}",
             )
-    manual_only_gaps = tuple(manual)
+    operator_gaps = tuple(manual)
 
     env_statuses = tuple(
         (str(r.get("env", "")), bool(r.get("all_passed", False)))
@@ -962,7 +962,7 @@ def build_final_acceptance_readiness(
         suggested_commands=suggested_commands,
         policy_by_command=tuple(policy_by_command.items()),
         consequence_by_command=tuple(consequences.items()),
-        manual_only_gaps=manual_only_gaps,
+        operator_gaps=operator_gaps,
     )
 
 
@@ -1027,11 +1027,11 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # Manual/operator-only receipts (ADR 0090): visible, but not auto-run and
     # never a required/blocking gap. Absent — and thus byte-identical — when
     # there are no manual-only gaps.
-    if summary.manual_only_gaps:
+    if summary.operator_gaps:
         lines.append("  Operator-available receipts:")
         lines.extend(
-            f"    {name} ({policy_map.get(name, 'manual_only')}) — operator available, not auto-run"
-            for name in summary.manual_only_gaps
+            f"    {name} ({policy_map.get(name, 'manual')}) — operator available, not auto-run"
+            for name in summary.operator_gaps
         )
 
     lines.append("  Exploratory commands:")
@@ -1078,7 +1078,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
         summary.required_missing
         or summary.required_failed
         or summary.required_stale
-        or summary.manual_only_gaps
+        or summary.operator_gaps
     ):
         # Non-require gaps remain (warn/suggest/manual): surfaced above, but
         # shipping is allowed by policy — nothing blocks readiness.

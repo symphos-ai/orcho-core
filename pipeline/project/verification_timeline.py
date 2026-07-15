@@ -123,10 +123,15 @@ def render_gate_live_block(
 # autorun live vocabulary (``render_gate_live_block``) and the caller's
 # status-tint table, so a scheduled block tints identically.
 _SCHEDULED_DECISION_STATUS = {
-    "executed_pass": "PASS",
-    "executed_fail": "FAIL",
-    "skipped_fresh": "FRESH",
-    "skipped_manual": "SKIPPED MANUAL",
+    "executed_pass": "executed_pass",
+    "executed_fail": "executed_fail",
+    "skipped_fresh": "skipped_fresh",
+    "manual_available": "manual_available",
+    "suggested": "suggested",
+    "not_selected": "not_selected",
+    "residual_missing": "residual_missing",
+    "residual_stale": "residual_stale",
+    "residual_failed": "residual_failed",
 }
 
 
@@ -339,6 +344,9 @@ class VerificationTimeline:
     # empty so a directly-constructed timeline renders byte-identically.
     not_selected_on_path: tuple[str, ...] = ()
     manual_declared: tuple[str, ...] = ()
+    # Durable-ledger projection.  When present this is the complete typed
+    # identity model; legacy receipt/plugin aggregation is intentionally bypassed.
+    ledger_rows: tuple[Any, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
@@ -352,6 +360,7 @@ class VerificationTimeline:
             or self.waived
             or self.not_selected_on_path
             or self.manual_declared
+            or self.ledger_rows
         )
 
     def _residual_commands(self) -> tuple[str, ...]:
@@ -741,6 +750,12 @@ def build_verification_timeline(
     """
     run_dir = Path(run_dir)
 
+    from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+    if ledger_path(run_dir).exists():
+        ledger = load_ledger(run_dir)
+        return VerificationTimeline(ledger_rows=ledger.rows)
+
     trail = _autorun_trail_entries(extras, session)
     scheduled_records = _scheduled_gate_events(extras)
     contract = extras.get("verification_contract") if isinstance(extras, Mapping) else None
@@ -881,6 +896,14 @@ def _event_line_segments(event: VerificationGateEvent) -> str:
     return ", ".join(parts)
 
 
+def _ledger_identity_label(row: Any, rows: tuple[Any, ...]) -> str:
+    """Disambiguate duplicate command identities without collapsing their rows."""
+    if sum(other.gate == row.gate for other in rows) == 1:
+        return row.gate
+    phase = f":{row.phase}" if row.phase else ""
+    return f"{row.gate} ({row.hook}{phase})"
+
+
 def render_verification_gate_done_block(
     timeline: VerificationTimeline | None,
 ) -> tuple[str, ...]:
@@ -924,6 +947,19 @@ def render_verification_gate_done_block(
     """
     if timeline is None or timeline.is_empty():
         return ()
+
+    if timeline.ledger_rows:
+        lines = ["Verification gates:"]
+        for row in timeline.ledger_rows:
+            identity = _ledger_identity_label(row, timeline.ledger_rows)
+            selection = row.selection_reason or row.condition
+            disposition = row.disposition or "open"
+            lines.append(
+                f"  {identity}: selection={selection} trigger={row.trigger or row.timing} "
+                f"executor={row.executor or 'operator'} policy={row.execution_policy} "
+                f"consequence={row.consequence} disposition={disposition}",
+            )
+        return tuple(lines)
 
     lines: list[str] = ["Verification gates:"]
     lines.append(f"  events: {len(timeline.events)} official gate events")

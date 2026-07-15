@@ -84,6 +84,8 @@ def cmd_quality_gates(args: argparse.Namespace) -> int:
     print(
         _render_matrix(
             ledger,
+            contract=contract,
+            has_final_phase=has_final_phase,
             profile_name=profile_name,
             resolved=changed_files is not None,
         ),
@@ -131,6 +133,8 @@ def _load_profiles() -> dict:
 def _render_matrix(
     ledger: tuple[GateLedgerRow, ...],
     *,
+    contract: object,
+    has_final_phase: bool | None,
     profile_name: str | None,
     resolved: bool,
 ) -> str:
@@ -144,21 +148,15 @@ def _render_matrix(
     lists each gate's on-path disposition (``active`` / ``dormant`` / ``manual``)
     read straight from the ledger's identity-based resolve.
     """
-    from core.io.verification_header import GateRowView, render_gate_matrix
-
-    views = tuple(
-        GateRowView(
-            gate=row.gate,
-            timing=row.timing,
-            run_mode=row.run_mode,
-            policy=row.policy,
-            kind=row.kind,
-            condition=row.condition,
-            condition_paths=row.condition_paths,
-            when=row.when,
-        )
-        for row in ledger
+    from core.io.verification_header import (
+        build_verification_header_view,
+        render_gate_matrix,
     )
+
+    view = build_verification_header_view(
+        contract, has_final_phase=has_final_phase, ledger_rows=ledger,
+    )
+    views = view.gates if view is not None else ()
 
     if profile_name is not None:
         title = f"Verification gate matrix — profile={profile_name}"
@@ -177,10 +175,15 @@ def _render_matrix(
 
     if resolved:
         lines.append("")
-        lines.append("Resolution for given paths:")
+        lines.append("Selection for given paths:")
         width = max((len(row.gate) for row in ledger), default=0)
         for row in ledger:
-            disposition = row.resolved or "unresolved"
-            lines.append(f"  {row.gate:<{width}}  {disposition}")
+            if row.selected:
+                selection = "selected"
+            elif row.selection_reason:
+                selection = f"not_selected ({row.selection_reason})"
+            else:
+                selection = "unresolved"
+            lines.append(f"  {row.gate:<{width}}  {selection}")
 
     return "\n".join(lines)

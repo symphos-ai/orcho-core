@@ -132,16 +132,13 @@ def test_parser_routes_to_command_body() -> None:
 def test_profile_prints_three_axis_matrix(monkeypatch) -> None:
     rc, out, err = _run(monkeypatch, ["quality-gates", "--profile", "withfinal"])
     assert rc == 0, err
-    # Column header names all three axes plus identity/run/kind.
-    header = next(ln for ln in out.splitlines() if "activation" in ln)
-    assert header.split() == ["gate", "when", "run", "policy", "kind", "activation"]
-    # require gate reads its hook; warn gate defers to pre-final under a
-    # profile that HAS a final phase; e2e is operator.
+    header = next(ln for ln in out.splitlines() if "selection" in ln)
+    assert header.split() == ["gate", "trigger", "executor", "policy", "consequence", "selection"]
     ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
-    assert "after_implement" in ver_line
+    assert "after_phase" in ver_line
     assert "require" in ver_line
     lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
-    assert "pre-final" in lint_line
+    assert "after_phase" in lint_line
     assert "warn" in lint_line
     e2e_line = next(ln for ln in out.splitlines() if ln.strip().startswith("e2e"))
     assert "operator" in e2e_line
@@ -151,10 +148,9 @@ def test_profile_without_final_phase_marks_warn_not_auto_run(monkeypatch) -> Non
     rc, out, err = _run(monkeypatch, ["quality-gates", "--profile", "nofinal"])
     assert rc == 0, err
     lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
-    assert "not auto-run" in lint_line
-    # A required gate still reads its own timing hook regardless of the profile.
+    assert "after_phase" in lint_line
     ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
-    assert "after_implement" in ver_line
+    assert "after_phase" in ver_line
 
 
 def test_unknown_profile_errors_without_guessing(monkeypatch) -> None:
@@ -174,17 +170,15 @@ def test_paths_resolve_active_vs_dormant(monkeypatch) -> None:
          "--paths", "pipeline/verification_ledger.py"],
     )
     assert rc == 0, err
-    resolution = out.split("Resolution for given paths:", 1)
+    resolution = out.split("Selection for given paths:", 1)
     assert len(resolution) == 2, out
     body = resolution[1]
-    # The verification subsystem gate is on-path -> active; the other narrow
-    # gates stay dormant; always gates active; the operator gate manual.
-    assert _disposition(body, "verification-unit") == "active"
-    assert _disposition(body, "run-state-unit") == "dormant"
-    assert _disposition(body, "cli-sdk-unit") == "dormant"
-    assert _disposition(body, "broad-non-e2e") == "active"
-    assert _disposition(body, "lint") == "active"
-    assert _disposition(body, "e2e") == "manual"
+    assert _disposition(body, "verification-unit") == "selected"
+    assert _disposition(body, "run-state-unit") == "(paths)"
+    assert _disposition(body, "cli-sdk-unit") == "(paths)"
+    assert _disposition(body, "broad-non-e2e") == "selected"
+    assert _disposition(body, "lint") == "selected"
+    assert _disposition(body, "e2e") == "(operator)"
 
 
 def test_non_subsystem_paths_leave_narrow_gates_dormant(monkeypatch) -> None:
@@ -193,16 +187,16 @@ def test_non_subsystem_paths_leave_narrow_gates_dormant(monkeypatch) -> None:
         ["quality-gates", "--profile", "withfinal", "--paths", "README.md"],
     )
     assert rc == 0, err
-    body = out.split("Resolution for given paths:", 1)[1]
+    body = out.split("Selection for given paths:", 1)[1]
     for narrow in ("verification-unit", "run-state-unit", "cli-sdk-unit"):
-        assert _disposition(body, narrow) == "dormant", narrow
-    assert _disposition(body, "broad-non-e2e") == "active"
+        assert _disposition(body, narrow) == "(paths)", narrow
+    assert _disposition(body, "broad-non-e2e") == "selected"
 
 
 def test_no_paths_has_no_resolution_section(monkeypatch) -> None:
     rc, out, err = _run(monkeypatch, ["quality-gates", "--profile", "withfinal"])
     assert rc == 0, err
-    assert "Resolution for given paths:" not in out
+    assert "Selection for given paths:" not in out
 
 
 def _disposition(body: str, gate: str) -> str:
@@ -222,10 +216,9 @@ def test_no_profile_marks_warn_profile_dependent(monkeypatch) -> None:
     assert rc == 0, err
     assert "no profile" in out  # the title says the profile was not guessed
     lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
-    assert "profile-dependent" in lint_line
-    # require gate is unaffected — it still reads its own hook.
+    assert "after_phase" in lint_line
     ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
-    assert "after_implement" in ver_line
+    assert "after_phase" in ver_line
 
 
 def test_no_contract_reports_cleanly(monkeypatch) -> None:

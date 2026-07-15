@@ -535,7 +535,7 @@ def resolve_commit_delivery(
         and not verification_gate.blocking
         and (
             verification_gate.has_blockers
-            or verification_gate.manual_only_gaps
+            or verification_gate.operator_gaps
             or verification_gate.waived_gates
         )
     ):
@@ -598,7 +598,7 @@ def resolve_commit_delivery(
             ),
             verification_suggest_hint=_verification_suggest_hint(verification_gate),
             verification_garbage=_verification_prompt_garbage(verification_gate),
-            verification_manual_only=_verification_prompt_manual_only(
+            verification_operator=_verification_prompt_operator(
                 verification_gate,
             ),
             destination=destination,
@@ -1455,7 +1455,7 @@ def _verification_prompt_garbage(
     return gate.garbage_paths
 
 
-def _verification_prompt_manual_only(
+def _verification_prompt_operator(
     gate: DeliveryVerificationAssessment | None,
 ) -> tuple[str, ...]:
     """Manual/operator-only advisory line for the prompt, or empty.
@@ -1467,7 +1467,7 @@ def _verification_prompt_manual_only(
     """
     if gate is None:
         return ()
-    line = gate.manual_only_line
+    line = gate.operator_line
     return (line,) if line else ()
 
 
@@ -2238,7 +2238,7 @@ def _prompt_action(
     verification_warning_lines: tuple[str, ...] = (),
     verification_suggest_hint: str = "",
     verification_garbage: tuple[str, ...] = (),
-    verification_manual_only: tuple[str, ...] = (),
+    verification_operator: tuple[str, ...] = (),
     destination: str = _DESTINATION_CHECKOUT_COMMIT,
 ) -> str:
     color = is_color_active()
@@ -2303,8 +2303,8 @@ def _prompt_action(
     # blocker, never a missing-required receipt, but always visible as
     # not-auto-run — even when they are the only gap and delivery proceeds on the
     # apply/approve default.
-    if verification_manual_only:
-        for line in verification_manual_only:
+    if verification_operator:
+        for line in verification_operator:
             output_fn(f"  {help_line(line, color=color)}")
         output_fn("")
     if release_summary:

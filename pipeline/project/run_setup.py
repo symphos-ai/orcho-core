@@ -381,8 +381,14 @@ def print_pipeline_header(
         if profile_obj is not None
         else None
     )
+    ledger_rows = None
+    if output_dir is not None:
+        from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+        if ledger_path(output_dir).exists():
+            ledger_rows = load_ledger(output_dir).rows
     verification_view = build_verification_header_view(
-        contract, has_final_phase=has_final_phase,
+        contract, has_final_phase=has_final_phase, ledger_rows=ledger_rows,
     )
     output_log = str(output_dir / "output.log") if output_dir is not None else None
     events_log = str(output_dir / "events.jsonl") if output_dir is not None else None

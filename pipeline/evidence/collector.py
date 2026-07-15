@@ -134,6 +134,7 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         # stale/missing call is impossible here — that classification is
         # owned by the prompt layer (pipeline.verification_readiness).
         "verification_readiness": _build_verification_readiness(target),
+        "scheduled_gate_ledger": _build_scheduled_gate_ledger(target),
         "prompt_render": build_prompt_render_evidence(meta),
         "worktree": meta.get("worktree"),
         "worktree_projects": _build_worktree_projects(meta),
@@ -345,6 +346,22 @@ def _string_list_from_payload(
         return []
     n = int(payload.get(count_key, 0) or 0)
     return [f"<entry {i + 1}>" for i in range(n)]
+
+
+def _build_scheduled_gate_ledger(run_dir: Path) -> dict[str, Any] | None:
+    """Copy only a valid ledger artifact; terminal output is never consulted."""
+    from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+    if not ledger_path(run_dir).exists():
+        return None
+    ledger = load_ledger(run_dir)
+    from dataclasses import asdict
+
+    return {
+        "schema_version": "1", "finalized": ledger.finalized,
+        "rows": [asdict(row) for row in ledger.rows],
+        "trail": [asdict(event) for event in ledger.trail],
+    }
 
 
 def _build_verification_receipts(run_dir: Path) -> list[dict[str, Any]]:

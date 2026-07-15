@@ -383,9 +383,9 @@ class TestPolicyAwareDeliveryLines:
         assert "audit" not in assessment.required_failed
         assert "audit" not in assessment.required_stale
         # ...but it IS visible in its own field + advisory line.
-        assert assessment.manual_only_commands == ("audit",)
-        manual_line = assessment.manual_only_line
-        assert manual_line is not None and "audit" in manual_line
+        assert assessment.operator_commands == ("audit",)
+        operator_line = assessment.operator_line
+        assert operator_line is not None and "audit" in operator_line
 
     def test_manual_only_gap_alone_never_blocks(self, tmp_path: Path) -> None:
         co = _git_checkout(tmp_path)
@@ -406,7 +406,7 @@ class TestPolicyAwareDeliveryLines:
         )
         assert assessment is not None
         assert assessment.required_missing == ()
-        assert assessment.manual_only_commands == ("audit",)
+        assert assessment.operator_commands == ("audit",)
         assert assessment.has_blockers is False
         assert assessment.blocking is False
 
@@ -439,7 +439,7 @@ class TestPolicyAwareDeliveryLines:
         assert assessment is not None
         policy_map = dict(assessment.policy_by_command)
         assert policy_map["test"] == "require"
-        assert policy_map["audit"] == "manual_only"
+        assert policy_map["audit"] == "manual"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1561,7 +1561,7 @@ class TestEnvironmentProvenanceOverlay:
         )
 
         assert assessment is not None
-        # Downgraded by the overlay, but routed to manual-only — never blocking.
+        # Downgraded by the overlay, but routed to the operator — never blocking.
         assert assessment.blocking is False
         assert assessment.required_failed == ()
-        assert "env-provenance" in assessment.manual_only_commands
+        assert "env-provenance" in assessment.operator_commands

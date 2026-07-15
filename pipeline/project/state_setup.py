@@ -118,6 +118,7 @@ class StateInputs:
     # ``ResumeArtifactSpec.required_when`` — ``'plan'`` here means PLAN already
     # ran in a prior process, so its durable artifact must be recoverable.
     resume_completed_phases: frozenset[str] = frozenset()
+    resume_requested: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -254,6 +255,11 @@ def build_pipeline_state(inputs: StateInputs) -> StateSetup:
             checkout=inputs.git_cwd,
             participant_set=state.extras.get(PARTICIPANT_SET_EXTRAS_KEY),
         )
+        # Durable scheduled-gate declaration snapshot is created after state /
+        # isolation resolution and before any phase hook can resolve selection.
+        from pipeline.project.verification_ledger_runtime import initialize
+
+        initialize(state, resume=inputs.resume_requested)
 
     # Correction follow-up: thread the parent run as a verification-receipt
     # search source so readiness (``build_final_acceptance_readiness`` via

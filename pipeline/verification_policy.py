@@ -48,7 +48,6 @@ from pipeline.verification_contract import SCHEDULE_POLICIES, VerificationContra
 from pipeline.verification_readiness import resolve_delivery_selection
 
 __all__ = [
-    "MANUAL_ONLY_POLICY",
     "GapEntry",
     "GapPartition",
     "effective_delivery_policy_by_command",
@@ -56,10 +55,6 @@ __all__ = [
     "partition_gaps",
 ]
 
-# The synthetic effective-policy token for a command the caller marked
-# manual/operator-only. Distinct from the four real schedule policies so a
-# manual_only gap can never be confused with an enforced ``require`` gate.
-MANUAL_ONLY_POLICY = "manual_only"
 
 # Delivery-relevant (hook, phase) positions — a deliberate literal copy of
 # ``pipeline.verification_readiness._DELIVERY_HOOKS`` so this pure module stays
@@ -103,7 +98,7 @@ class GapPartition:
 
     blocking: tuple[GapEntry, ...] = ()
     warning: tuple[GapEntry, ...] = ()
-    manual_only: tuple[GapEntry, ...] = ()
+    operator: tuple[GapEntry, ...] = ()
 
     @property
     def has_blocking(self) -> bool:
@@ -118,8 +113,8 @@ class GapPartition:
         return tuple(e.command for e in self.warning)
 
     @property
-    def manual_only_commands(self) -> tuple[str, ...]:
-        return tuple(e.command for e in self.manual_only)
+    def operator_commands(self) -> tuple[str, ...]:
+        return tuple(e.command for e in self.operator)
 
     @property
     def blocking_policies(self) -> tuple[str, ...]:
@@ -168,7 +163,7 @@ def effective_delivery_policy_by_command(
     result: dict[str, str] = {}
     for command in resolve_delivery_selection(contract, plan).receipt_commands:
         if command in manual:
-            result[command] = MANUAL_ONLY_POLICY
+            result[command] = "manual"
             continue
         scheduled = plan_policy.get(command)
         result[command] = scheduled if scheduled else boundary_policy
@@ -231,7 +226,7 @@ def partition_gaps(
     """
     blocking: list[GapEntry] = []
     warning: list[GapEntry] = []
-    manual_only: list[GapEntry] = []
+    operator: list[GapEntry] = []
     for command, raw_status in status_by_command.items():
         status = getattr(raw_status, "status", raw_status)
         if status not in _GAP_STATUSES:
@@ -239,8 +234,8 @@ def partition_gaps(
         policy = policy_by_command.get(command, "")
         entry = GapEntry(command=command, status=status, policy=policy)
         consequence = (consequence_by_command or {}).get(command)
-        if policy in (MANUAL_ONLY_POLICY, "manual"):
-            manual_only.append(entry)
+        if policy == "manual":
+            operator.append(entry)
         elif consequence == "required_action" or (
             consequence is None and policy == "require"
         ):
@@ -250,7 +245,7 @@ def partition_gaps(
     return GapPartition(
         blocking=tuple(blocking),
         warning=tuple(warning),
-        manual_only=tuple(manual_only),
+        operator=tuple(operator),
     )
 
 

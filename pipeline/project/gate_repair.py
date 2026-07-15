@@ -47,17 +47,19 @@ from pipeline.verification_execution import (
 )
 from pipeline.verification_selection import (
     SelectionContext,
-    build_scheduled_gate_plan,
     repair_loop_target,
     selection_context_from_extras,
 )
+
+# Deprecated compatibility name for readers that have not yet migrated to the
+# ledger runtime. No writer stores this key in ``state.extras``.
+VERIFICATION_GATE_EVENTS_KEY = "verification_gate_events"
 
 #: Append-only durable trail of per-scheduled-gate routing decisions (T1). One
 #: entry per gate per hook firing — ``executed_pass`` / ``executed_fail`` written
 #: inline at execution, ``skipped_fresh`` / ``skipped_manual`` written by the
 #: per-hook reconciliation pass. Purely observational: the recorder never changes
 #: which commands routing executes, nor the :class:`GateRepairOutcome`.
-VERIFICATION_GATE_EVENTS_KEY = "verification_gate_events"
 
 
 @dataclass(frozen=True)
@@ -801,9 +803,9 @@ def _passed(receipt: dict) -> bool:
 
 # ── gate-event recorder (append-only, observational) ─────────────────────────
 #
-# A thin durable trail of per-scheduled-gate routing decisions, appended to
-# ``state.extras[VERIFICATION_GATE_EVENTS_KEY]``. It records what routing DID —
-# it never decides what routing does. ``executed_pass`` / ``executed_fail`` are
+# A thin durable trail of per-scheduled-gate routing decisions, persisted by
+# ``verification_ledger_runtime``. It records what routing DID — it never
+# decides what routing does. ``executed_pass`` / ``executed_fail`` are
 # stamped inline the moment a gate command runs (proof the hook executed it);
 # ``skipped_fresh`` / ``skipped_manual`` are stamped by a per-hook reconciliation
 # over the plan's entries for this hook+phase that routing did not execute. The
@@ -812,13 +814,25 @@ def _passed(receipt: dict) -> bool:
 
 
 def _append_gate_event(run: Any, event: dict) -> None:
-    """Append one routing-decision event; no-op on a stub/odd run state."""
-    extras = getattr(getattr(run, "state", None), "extras", None)
-    if not isinstance(extras, dict):
-        return
-    trail = extras.setdefault(VERIFICATION_GATE_EVENTS_KEY, [])
-    if isinstance(trail, list):
-        trail.append(event)
+    """Record routing observations in the durable identity-scoped ledger."""
+    from pipeline.project.verification_ledger_runtime import (
+        record_execution,
+        record_reuse,
+    )
+
+    entry = type("LedgerEntry", (), {
+        "command": event["command"],
+        "hook": event["hook"],
+        "phase": event["phase"],
+    })()
+    decision = event["decision"]
+    receipt = event.get("receipt_path")
+    if decision == "executed_pass":
+        record_execution(run, entry, passed=True, receipt_evidence=receipt)
+    elif decision == "executed_fail":
+        record_execution(run, entry, passed=False, receipt_evidence=receipt)
+    elif decision == "skipped_fresh":
+        record_reuse(run, entry, fresh=True, receipt_evidence=receipt)
 
 
 def _gate_event(
@@ -1235,14 +1249,11 @@ def _plan(run: Any, contract: Any, *, epoch: str) -> Any:
     earlier ``after_phase:plan``) builds its own plan from the changed files
     current at that point. Routing never reads the prompt preview.
     """
-    state = run.state
-    plans = state.extras.setdefault(VERIFICATION_GATE_ROUTING_PLANS_KEY, {})
-    cached = plans.get(epoch)
-    if cached is not None:
-        return cached
-    plan = build_scheduled_gate_plan(contract, _selection_context(run, contract))
-    plans[epoch] = plan
-    return plan
+    from pipeline.project.verification_ledger_runtime import select_epoch
+
+    return select_epoch(
+        run, contract, epoch=epoch, context=_selection_context(run, contract),
+    )
 
 
 def _selection_context(run: Any, contract: Any) -> SelectionContext:

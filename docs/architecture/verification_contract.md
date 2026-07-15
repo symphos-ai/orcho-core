@@ -101,7 +101,7 @@ even when it appears in `verification.required`.
 only for `require`. Selection, execution policy, base consequence, and terminal
 disposition are distinct facts. `pipeline.verification_execution` currently
 provides the pure eligibility resolver only: scheduled-gates task 2 will adopt
-it in executors, and task 3 will migrate durable/SDK disposition. Neither is
+  it in executors. The durable ledger and SDK projection are the authoritative
 implemented by this foundation.
 
 ## Typed receipt outcomes and hygiene handoff
@@ -1745,8 +1745,8 @@ orcho quality-gates [--profile WORK_KIND] [--paths GLOBS...] [--project PROJECT]
   with the known names listed (exit 2); it is never guessed.
 - **`--paths <globs/files>`** feeds the paths to the ledger as `changed_files`,
   so a trailing *Resolution for given paths* section reports each gate's
-  identity-resolved disposition — `active` (this gate's `(command, hook, phase)`
-  identity is selected by the given paths), `dormant` (declared but not selected
+  identity-resolved selection — `selected` or `not_selected` with a durable
+  `paths`, `task_kind`, or `operator` reason; terminal state is one of the nine
   for these paths), or `manual` (an operator/manual gate). The path-matching is
   delegated wholesale to the selection engine; the command re-implements none of
   it.
@@ -1788,7 +1788,7 @@ operator-facing axes (rendered as columns alongside `run` = auto/manual and
 - **`activation`** — *when the gate is selected* at all, read straight from the
   contract's declared `selection` rules: `always` (an `always` rule includes a
   backing set), `on-path: <globs>` (a `paths` rule — the gate is selected only
-  when the changed files match), `manual` (a `manual_only` hook or an `operator`
+  when the changed files match), `manual` (the `manual` execution policy; the
   rule), or `task_kind`. This keeps a path-gated gate from reading as an
   unconditional `require`: a gate can be `require` on the `policy` axis yet only
   `on-path` on the `activation` axis.
