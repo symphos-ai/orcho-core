@@ -12,6 +12,7 @@ import pytest
 
 from agents.runtimes import MockAgentProvider
 from pipeline.engine.pre_run_dirty import PreRunDirtyIntake
+from pipeline.engine.worktree import WorktreeConfigError
 from pipeline.engine.worktree_bootstrap import WorktreeBootstrapError
 from pipeline.plugins import PluginConfig
 from pipeline.project.app import run_project_pipeline
@@ -357,3 +358,157 @@ def test_pre_run_dirty_seed_failed_clears_stale_phase_handoff(
     assert session["halt_reason"] == "pre_run_dirty_seed_failed"
     assert session["pre_run_dirty"]["status"] == "seed_failed"
     assert "phase_handoff" not in session
+
+
+def _retained_followup_decision(parent_worktree: dict[str, str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        blocked=False,
+        effective_parent_worktree=parent_worktree,
+        diff_source="worktree",
+        mode_label="reuse retained parent worktree",
+        to_dict=lambda: {
+            "mode_label": "reuse retained parent worktree",
+            "blocked": False,
+            "reason": None,
+            "diff_source": "worktree",
+        },
+    )
+
+
+def _correction_followup_setup_kwargs(
+    *, session: dict, output_dir: Path, git_root: Path,
+    parent_worktree: dict[str, str],
+) -> dict:
+    kwargs = _setup_isolation_kwargs(
+        session=session,
+        output_dir=output_dir,
+        git_root=git_root,
+        presentation=PresentationPolicy.SILENT,
+    )
+    kwargs.update(
+        followup_parent_worktree=parent_worktree,
+        resume_mode="followup",
+        followup_parent_run_id="parent-run",
+        v2_profile=SimpleNamespace(
+            name="correction", worktree_isolation=None, sandbox=None,
+        ),
+    )
+    return kwargs
+
+
+def test_correction_followup_publishes_exact_retained_worktree(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / "retained"
+    parent_path.mkdir()
+    output_dir = tmp_path / "child-run"
+    output_dir.mkdir()
+    parent_worktree = {"path": str(parent_path / ".")}
+    worktree_ctx = SimpleNamespace(
+        is_isolated=True,
+        degraded_reason=None,
+        path=parent_path,
+        to_dict=lambda: {"path": str(parent_path), "isolation": "per_run"},
+    )
+    session: dict = {}
+
+    with patch(
+        "pipeline.project.followup_worktree.classify_followup_worktree",
+        return_value=_retained_followup_decision(parent_worktree),
+    ), patch(
+        "pipeline.engine.worktree.resolve_worktree_for_run",
+        return_value=worktree_ctx,
+    ):
+        result = setup_isolation(
+            **_correction_followup_setup_kwargs(
+                session=session,
+                output_dir=output_dir,
+                git_root=tmp_path,
+                parent_worktree=parent_worktree,
+            ),
+        )
+
+    assert result.worktree_ctx is worktree_ctx
+    assert result.git_cwd == str(parent_path)
+    assert result.halted is False
+    assert result.worktree_ctx.path.resolve() == parent_path.resolve()
+    assert session["worktree"]["path"] == str(parent_path)
+    assert session["worktree"]["followup_continuity"]["diff_source"] == "worktree"
+
+
+def test_correction_followup_rejects_substituted_retained_worktree(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / "retained"
+    substituted_path = tmp_path / "substituted"
+    parent_path.mkdir()
+    substituted_path.mkdir()
+    output_dir = tmp_path / "child-run"
+    output_dir.mkdir()
+    parent_worktree = {"path": str(parent_path)}
+    worktree_ctx = SimpleNamespace(
+        is_isolated=True,
+        degraded_reason=None,
+        path=substituted_path,
+        to_dict=lambda: {"path": str(substituted_path), "isolation": "per_run"},
+    )
+
+    with patch(
+        "pipeline.project.followup_worktree.classify_followup_worktree",
+        return_value=_retained_followup_decision(parent_worktree),
+    ), patch(
+        "pipeline.engine.worktree.resolve_worktree_for_run",
+        return_value=worktree_ctx,
+    ), pytest.raises(
+        WorktreeConfigError,
+        match="must reuse the exact retained parent worktree",
+    ):
+        setup_isolation(
+            **_correction_followup_setup_kwargs(
+                session={},
+                output_dir=output_dir,
+                git_root=tmp_path,
+                parent_worktree=parent_worktree,
+            ),
+        )
+
+
+def test_correction_followup_rejects_unreadable_retained_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_path = tmp_path / "retained"
+    parent_path.mkdir()
+    output_dir = tmp_path / "child-run"
+    output_dir.mkdir()
+    parent_worktree = {"path": str(parent_path)}
+    worktree_ctx = SimpleNamespace(
+        is_isolated=True,
+        degraded_reason=None,
+        path=parent_path,
+        to_dict=lambda: {"path": str(parent_path), "isolation": "per_run"},
+    )
+
+    def _unreadable_resolve(*_args, **_kwargs):
+        raise OSError("unreadable worktree")
+
+    monkeypatch.setattr(
+        "pipeline.project.isolation_setup.Path.resolve", _unreadable_resolve,
+    )
+    with patch(
+        "pipeline.project.followup_worktree.classify_followup_worktree",
+        return_value=_retained_followup_decision(parent_worktree),
+    ), patch(
+        "pipeline.engine.worktree.resolve_worktree_for_run",
+        return_value=worktree_ctx,
+    ), pytest.raises(
+        WorktreeConfigError,
+        match="must reuse the exact retained parent worktree",
+    ):
+        setup_isolation(
+            **_correction_followup_setup_kwargs(
+                session={},
+                output_dir=output_dir,
+                git_root=tmp_path,
+                parent_worktree=parent_worktree,
+            ),
+        )

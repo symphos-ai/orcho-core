@@ -39,6 +39,7 @@ import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from agents.protocols import SessionMode
 from core.infra import config
@@ -102,6 +103,54 @@ def run_pipeline(**kwargs: object) -> dict:
     """CLI patch seam that routes through the typed project boundary."""
     request = ProjectRunRequest.from_kwargs(**kwargs)
     return run_project_pipeline(request).session
+
+
+def _run_correction_followup_prompt(
+    *, run_id: str, meta: dict, runs_dir: Path | None,
+) -> Literal["not_correction", "exit", "started", "error"]:
+    """Render the correction-only followup/exit interaction for ``--resume``.
+
+    The explicit outcome lets :func:`main` preserve a successful exit status
+    only for an operator-selected exit or a launched child.  Invalid or
+    blocked correction decisions are operator-action errors, not successful
+    resumes.
+    """
+    from pipeline.control.continuation import resolve_continuation_decision
+    from sdk.run_control.launch import (
+        CorrectionFollowupLaunchRequest,
+        launch_correction_followup,
+    )
+
+    parent_dir = runs_dir / run_id if runs_dir is not None else None
+    decision = resolve_continuation_decision(
+        run_id=run_id, meta=meta, parent_run_dir=parent_dir,
+    )
+    if decision.continuation_subject != "retained_change":
+        return "not_correction"
+    if decision.blocked:
+        print_error(f"Correction follow-up is blocked: {decision.reason}")
+        return "error"
+
+    print(f"Run {run_id} requires a correction follow-up.")
+    choice = input("Choose [followup/exit] (followup): ").strip().lower() or "followup"
+    if choice == "exit":
+        return "exit"
+    if choice != "followup":
+        print_error("Choose exactly 'followup' or 'exit'.")
+        return "error"
+    comment = input("Operator comment (required): ").strip()
+    if not comment:
+        print_error("Operator comment is required for a correction follow-up.")
+        return "error"
+    launched = launch_correction_followup(
+        CorrectionFollowupLaunchRequest(
+            parent_run_id=run_id,
+            runs_dir=str(runs_dir) if runs_dir is not None else None,
+            operator_comment=comment,
+        ),
+    )
+    print(f"Started correction follow-up {launched.run.run_id}.")
+    return "started"
 
 
 def _looks_like_single_project(path: Path) -> bool:
@@ -875,6 +924,43 @@ Examples:
         resumed=_resumed,
         fresh_default=DEFAULT_PROFILE_NAME,
     )
+
+    # Retained-change correction is a distinct control surface, not a generic
+    # task-bearing follow-up.  The CLI only renders its two core intents and
+    # delegates spawning to the detached client-neutral launch seam.
+    if (
+        args.resume
+        and _resumed is not None
+        and not args.task
+        and not args.task_file
+    ):
+        if _stdio_interactive() and not bool(getattr(args, "no_interactive", False)):
+            _correction_prompt_outcome = _run_correction_followup_prompt(
+                run_id=args.resume,
+                meta=_resumed.meta,
+                runs_dir=_resume_runs_dir,
+            )
+            if _correction_prompt_outcome == "error":
+                sys.exit(2)
+            if _correction_prompt_outcome in {"exit", "started"}:
+                sys.exit(0)
+        else:
+            from pipeline.control.continuation import resolve_continuation_decision
+
+            _continuation = resolve_continuation_decision(
+                run_id=args.resume,
+                meta=_resumed.meta,
+                parent_run_dir=(
+                    _resume_runs_dir / args.resume
+                    if _resume_runs_dir is not None else None
+                ),
+            )
+            if _continuation.continuation_subject == "retained_change":
+                print_error(
+                    "Correction follow-up requires operator input: "
+                    "followup or exit, plus a non-empty operator comment."
+                )
+                sys.exit(2)
 
     # Lineage: a newer, still-unfinished follow-up child of this parent
     # is a likely better resume target. Detected once here; offered (never

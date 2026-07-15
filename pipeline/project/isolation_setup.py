@@ -430,6 +430,25 @@ def setup_isolation(
         )
 
     git_cwd = str(_worktree_ctx.path)
+    # Correction follow-ups have a stronger continuity contract than generic
+    # follow-ups: they repair the retained parent change, never a newly-created
+    # checkout. Verify the resolver honoured the exact recorded subject before
+    # publishing the child worktree in durable metadata.
+    if (
+        resume_mode == "followup"
+        and getattr(v2_profile, "name", None) == "correction"
+        and _followup_decision is not None
+        and _followup_decision.diff_source == "worktree"
+    ):
+        parent_path = (followup_parent_worktree or {}).get("path")
+        try:
+            exact_parent = parent_path is not None and Path(parent_path).resolve() == _worktree_ctx.path.resolve()
+        except OSError:
+            exact_parent = False
+        if not exact_parent:
+            raise WorktreeConfigError(
+                "correction follow-up must reuse the exact retained parent worktree",
+            )
     session["worktree"] = _worktree_ctx.to_dict()
     # Persist the follow-up continuity classification into the session
     # worktree block so the chosen mode (reuse / clean HEAD) stays

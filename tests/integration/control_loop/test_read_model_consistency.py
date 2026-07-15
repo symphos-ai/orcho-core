@@ -897,9 +897,8 @@ def test_recover_via_source_run_consistency_and_drift(fresh_base) -> None:
 # ``terminal_outcome.supersede_parent_meta`` reducer behind the finalization seam.
 
 
-def test_delivered_followup_supersedes_parent_to_done(fresh_base) -> None:
-    """POSITIVE: a delivered ``from_run_plan`` child reconciles its rejected-FA
-    parent to ``done`` + ``superseded_by_followup``, evicting the stale residue.
+def test_plan_artifact_child_does_not_supersede_rejected_parent(fresh_base) -> None:
+    """A delivered ``from_run_plan`` child is not correction reconciliation.
 
     The parent dead-ended at ``halted`` / ``final_acceptance_rejected`` with a
     phantom ``commit_delivery`` gate and a ``rejected_outcome`` marker. Its
@@ -922,41 +921,14 @@ def test_delivered_followup_supersedes_parent_to_done(fresh_base) -> None:
     assert res.child_meta.get("plan_source_run_id") == res.parent_run_id
 
     parent = res.parent_meta
-    # Parent reconciled to a clean done with the durable supersede marker.
-    assert parent.get("status") == "done"
-    assert parent.get("halt_reason") is None
-    marker = parent.get("superseded_by_followup")
-    assert isinstance(marker, dict)
-    assert marker.get("child_run_id") == res.child_run_id
-    assert marker.get("child_status") == "done"
-    assert marker.get("delivery_status") == "committed"
-    assert marker.get("reason") == "correction delivered via from_run_plan follow-up"
-
-    # The stale-correction residue is gone: the canonical transient markers AND
-    # the site-local delivery record were evicted, so no surface still reads the
-    # parent as a decidable correction.
-    for residue in (
-        "rejected_outcome",
-        "halt_reason",
-        "halted_at",
-        "halt",
-        "delivery_override",
-        "commit_delivery",
-        "multi_project_delivery",
-    ):
-        assert residue not in parent, (
-            f"superseded parent still carries stale {residue!r}"
-        )
-
-    # Read-model agreement: the reconciled parent is no longer a rejected-FA
-    # terminal; the SDK reads it as closed by its follow-up (the durable
-    # ``superseded_by_followup`` marker drives ``closed_by_followup``), and it
-    # carries no decidable delivery gate.
-    assert is_terminal_final_acceptance_rejected(parent) is False
+    assert parent.get("status") == "halted"
+    assert parent.get("halt_reason") == "final_acceptance_rejected"
+    assert "superseded_by_followup" not in parent
+    assert is_terminal_final_acceptance_rejected(parent) is True
     diag = run_diagnosis(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
-    assert diag.condition == "closed_by_followup"
+    assert diag.condition == "correction_followup_required"
     dds = delivery_decision_state(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
-    assert dds.decidable is False
+    assert dds.decidable is True
 
 
 def test_non_delivering_followup_leaves_parent_halted(fresh_base) -> None:
@@ -1213,13 +1185,20 @@ def test_eviction_finalization_site_b_parent_supersede(tmp_path) -> None:
     (parent_dir / "meta.json").write_text(json.dumps(parent_meta), encoding="utf-8")
     before_parent = set(parent_meta)
 
-    # Minimal fake run: a delivered (``committed``) follow-up child pointing at
-    # the parent via plan_source_run_id — the only inputs the helper reads.
+    # Minimal delivered ordinary correction child.  Plan-artifact lineage is
+    # intentionally insufficient to supersede a retained-change parent.
+    (child_dir / "correction_context.md").write_text("# Correction Context\n")
     run = SimpleNamespace(
         output_dir=child_dir,
-        session={"commit_delivery": {"status": "committed"}, "status": "done"},
+        session={
+            "commit_delivery": {"status": "committed"},
+            "status": "done",
+            "resume_mode": "followup",
+            "profile": "correction",
+            "parent_run_id": "parent_run",
+        },
         session_ts="child_run",
-        state=SimpleNamespace(extras={"plan_source_run_id": "parent_run"}),
+        state=SimpleNamespace(extras={}),
     )
     _supersede_parent_correction_after_followup(run)
 
