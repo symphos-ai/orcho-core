@@ -47,19 +47,6 @@ from pipeline.project.correction_followup import (
 from sdk.errors import LaunchError, RunNotFound
 from sdk.runs import find_runs_dir
 
-# ``auto-detect`` is a run-start *selector token* consumed by orcho-core's
-# CLI before any profile resolution — NOT a registered profile name. Import
-# the canonical token defensively so a stale core that predates the selector
-# still loads (falling back to the literal); this keeps the env-guard below
-# comparing against a single source of truth instead of a duplicated literal.
-try:
-    from pipeline.project.auto_detect import (
-        AUTO_DETECT_PROFILE_TOKEN as _AUTO_DETECT_PROFILE_TOKEN,
-    )
-except ImportError:  # pragma: no cover - exercised by the stale-core unit test
-    _AUTO_DETECT_PROFILE_TOKEN = "auto-detect"
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -213,6 +200,20 @@ def _dump_state(run_dir: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+
+def _launch_env(run_id: str) -> dict[str, str]:
+    """Build a detached-launch environment without profile override leakage.
+
+    SDK launches always carry their effective profile explicitly in argv.
+    ``ORCHO_PIPELINE`` remains a direct-CLI A/B surface, but an ambient value
+    must not displace the profile chosen by an embedder or leak into project
+    verification subprocesses spawned by the run.
+    """
+    env = os.environ.copy()
+    env["ORCHO_RUN_ID"] = run_id
+    env.pop("ORCHO_PIPELINE", None)
+    return env
 
 
 def write_launch_state(run: LaunchedRun) -> None:
@@ -447,18 +448,7 @@ def launch_run(spec: LaunchSpec, *, run_id: str | None = None) -> LaunchResult:
     )
     cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
 
-    env = os.environ.copy()
-    env["ORCHO_RUN_ID"] = run_id
-    # ``--profile`` argv is the active selection surface; ``ORCHO_PIPELINE``
-    # is an explicit concrete-profile override honoured by orcho-core. The
-    # ``auto-detect`` selector resolves to a concrete profile *before* any
-    # registry lookup and routes only through argv, so setting the env var
-    # to the selector token would pre-resolve (and break) the lookup — drop
-    # any inherited override for that path instead.
-    if spec.profile == _AUTO_DETECT_PROFILE_TOKEN:
-        env.pop("ORCHO_PIPELINE", None)
-    elif spec.profile and spec.profile != "feature":
-        env["ORCHO_PIPELINE"] = spec.profile
+    env = _launch_env(run_id)
 
     log_fd = (run_dir / "runner.log").open("w", encoding="utf-8")
     popen = _spawn_detached(cmd, project_dir=project_dir, env=env, log_fd=log_fd)
@@ -542,8 +532,7 @@ def resume_run(
     )
     cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
 
-    env = os.environ.copy()
-    env["ORCHO_RUN_ID"] = run_id
+    env = _launch_env(run_id)
 
     log_fd = (run_dir / "runner.log").open("a", encoding="utf-8")
     log_fd.write(f"\n=== resume @ {now_iso()} ===\n")
@@ -612,9 +601,7 @@ def launch_correction_followup(
         output_mode=output_mode, no_interactive=True,
     )
     cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
-    env = os.environ.copy()
-    env["ORCHO_RUN_ID"] = child_id
-    env["ORCHO_PIPELINE"] = "correction"
+    env = _launch_env(child_id)
     log_fd = (child_dir / "runner.log").open("w", encoding="utf-8")
     popen = _spawn_detached(cmd, project_dir=project_dir, env=env, log_fd=log_fd)
     run = LaunchedRun(

@@ -1692,6 +1692,11 @@ belongs to the project, and load the contract from the canonical project; the
 declared commands then resolve against the **recorded physical subject**. An
 isolated subject must be its recorded readable worktree; missing or ambiguous
 metadata fails closed rather than falling back to the canonical project.
+For a correction child observed before its own reused-worktree block is
+persisted, the resolver follows the durable correction parent lineage to the
+nearest recorded retained identity. That lineage must be acyclic and stay
+within the same canonical project; otherwise resolution still fails before any
+command or receipt write ([ADR 0135](../adr/0135-sdk-profile-authority-and-correction-verification-lineage.md)).
 
 ```bash
 orcho verify list [-p PROJECT] [--run-id ID] [-w WORKSPACE]

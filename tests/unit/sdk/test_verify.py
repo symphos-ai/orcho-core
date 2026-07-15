@@ -170,6 +170,62 @@ class TestVerifyList:
 
 
 class TestVerificationSubjectResolution:
+    def test_correction_child_inherits_retained_parent_subject(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "retained"
+        _init_repo(worktree)
+        baseline = _head_sha(worktree)
+        parent_dir = _write_meta_run(
+            runs_dir, "parent", project=project,
+            worktree={
+                "isolation": "worktree", "path": str(worktree),
+                "base_ref": baseline,
+            },
+        )
+        child_dir = runs_dir / "child"
+        child_dir.mkdir()
+        (child_dir / "meta.json").write_text(json.dumps({
+            "task": "fix", "status": "running", "project": str(project),
+            "profile": "correction", "resume_mode": "followup",
+            "parent_run_id": "parent", "parent_run_dir": str(parent_dir),
+        }), encoding="utf-8")
+
+        env = verify_env(project=str(project), env="ci", run_id="child")
+        listed = verify_list(project=str(project), run_id="child")
+        ran = verify_run(
+            project=str(project), run_id="child", commands=["echo_co"],
+        )
+
+        assert env.subject["checkout"] == str(worktree.resolve())
+        assert listed.subject_checkout == ran.subject_checkout == str(worktree.resolve())
+        assert ran.outcomes[0].stdout_tail.strip() == str(worktree.resolve())
+        assert ran.outcomes[0].baseline_head == baseline
+
+    @pytest.mark.parametrize(
+        ("child_update", "message"),
+        [
+            ({"parent_run_id": "child"}, "cycle"),
+            ({"parent_run_id": "missing"}, "unavailable"),
+        ],
+    )
+    def test_correction_child_invalid_lineage_fails_closed(
+        self, tmp_path: Path, runs_dir: Path, child_update: dict, message: str,
+    ) -> None:
+        project = _write_project(tmp_path)
+        child_dir = runs_dir / "child"
+        child_dir.mkdir()
+        meta = {
+            "task": "fix", "status": "running", "project": str(project),
+            "profile": "correction", "resume_mode": "followup",
+            **child_update,
+        }
+        (child_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+        with pytest.raises(VerifyEnvError, match=message):
+            verify_list(project=str(project), run_id="child")
+
     def test_all_entry_points_share_recorded_worktree_and_source(
         self, tmp_path: Path, runs_dir: Path,
     ) -> None:
