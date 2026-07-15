@@ -152,9 +152,8 @@ def test_committed_published_branch_banner_names_pr_opened() -> None:
     assert any("not modified" in line for line in lines)
 
 
-def test_committed_published_branch_no_pr_names_branch_pushed() -> None:
-    """When no PR was opened (pr_url=None), a BRANCH PUSHED banner shows the
-    next step, and the degrade reason on ``delivery_warnings`` stays visible."""
+def test_committed_published_branch_no_pr_does_not_claim_push() -> None:
+    """Without a PR URL the durable shape does not prove a remote push."""
     lines, out = _capture()
     decision = _decision(
         action="approve",
@@ -172,10 +171,12 @@ def test_committed_published_branch_no_pr_names_branch_pushed() -> None:
     render_delivery_outcome(decision, output_fn=out)
 
     joined = "\n".join(lines)
-    assert "📦  DELIVERY — BRANCH PUSHED" in joined
+    assert "📦  DELIVERY — DELIVERY BRANCH READY" in joined
+    assert "BRANCH PUSHED" not in joined
+    assert "(pushed)" not in joined
     assert "COMMITTED TO YOUR CHECKOUT" not in joined
     assert "orcho/deliver/r1-abc" in joined
-    assert "open a pull request or push it manually" in joined
+    assert "push the branch if needed, then open a pull request" in joined
     # the degrade reason from delivery_warnings is surfaced, not swallowed.
     assert "git provider offline" in joined
 
@@ -187,9 +188,7 @@ def test_committed_published_branch_no_pr_names_branch_pushed() -> None:
 
 
 def test_no_pr_banner_uses_yellow_needs_attention_tone() -> None:
-    """BRANCH PUSHED · no PR yet is a needs-attention state (the operator must
-    open a PR), so the banner is YELLOW — not the GREEN of a completed PULL
-    REQUEST OPENED."""
+    """A branch without a PR is needs-attention, without claiming a push."""
     lines: list[str] = []
     decision = _decision(
         action="approve",
@@ -201,9 +200,31 @@ def test_no_pr_banner_uses_yellow_needs_attention_tone() -> None:
 
     _render_published_branch(decision, output_fn=lines.append, color=True)
 
-    headline = next(line for line in lines if "BRANCH PUSHED" in line)
+    headline = next(line for line in lines if "DELIVERY BRANCH READY" in line)
     assert C.YELLOW in headline
     assert C.GREEN not in headline
+
+
+def test_local_delivery_branch_names_checkout_mutation_and_ordered_next_step(
+) -> None:
+    lines, out = _capture()
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha="e96b71670985",
+        final_message="fix: local delivery",
+        delivery_branch="orcho/deliver/r1-local",
+    )
+
+    render_delivery_outcome(decision, output_fn=out)
+
+    joined = "\n".join(lines)
+    assert "COMMITTED TO LOCAL DELIVERY BRANCH" in joined
+    assert "e96b716" in joined
+    assert "switched to the delivery branch" in joined
+    assert "push the branch, then open a pull request if desired" in joined
+    assert "untouched" not in joined
+    assert "(pushed)" not in joined
 
 
 def test_pr_opened_banner_uses_green_tone() -> None:

@@ -1825,8 +1825,8 @@ def _approve_helptext(destination: str, *, correction: bool) -> str:
         )
     elif destination == _DESTINATION_BRANCH_IN_CHECKOUT:
         body = (
-            "commit onto a delivery branch in your project checkout and open a "
-            "pull request."
+            "commit onto a local delivery branch in your project checkout. "
+            "This does not push the branch or open a pull request."
         )
     else:  # fallback — honest for both publish and in-place under the policy.
         body = (
@@ -1982,20 +1982,58 @@ def _render_published_branch(
             color=color,
         )
     else:
-        # Delivery did not fully complete — the branch is pushed but no PR
-        # exists yet, so the operator must act. That is a needs-attention state:
-        # yellow banner (not the green of a clean PULL REQUEST OPENED).
+        # ``pr_url=None`` does not prove whether the provider pushed the branch:
+        # the current durable decision intentionally stores no ``pushed`` bit.
+        # Stay honest about the known state and give an ordered next action.
         _delivery_banner(
-            "BRANCH PUSHED  ·  no PR yet",
+            "DELIVERY BRANCH READY  ·  no PR",
             (
-                ("Branch", f"{decision.delivery_branch or ''}  (pushed)"),
-                ("Next", "open a pull request or push it manually"),
+                ("Branch", decision.delivery_branch or ""),
+                (
+                    "Next",
+                    "push the branch if needed, then open a pull request",
+                ),
                 ("Checkout", checkout_note),
             ),
             tone=C.YELLOW,
             output_fn=output_fn,
             color=color,
         )
+
+
+def _render_local_delivery_branch(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render an in-place protected commit on a local delivery branch."""
+    sha7 = (decision.commit_sha or "")[:7]
+    first_line = (
+        decision.final_message.splitlines()[0]
+        if decision.final_message else ""
+    )
+    _delivery_banner(
+        "COMMITTED TO LOCAL DELIVERY BRANCH",
+        (
+            ("Commit", f"{sha7}  {first_line}".rstrip()),
+            ("Branch", decision.delivery_branch or ""),
+            (
+                "Checkout",
+                help_line(
+                    "switched to the delivery branch; working tree is clean",
+                    color=color,
+                ),
+            ),
+            (
+                "Next",
+                "push the branch, then open a pull request if desired",
+            ),
+        ),
+        tone=C.GREEN,
+        output_fn=output_fn,
+        color=color,
+    )
 
 
 def _render_checkout_commit(
@@ -2074,10 +2112,10 @@ def render_delivery_outcome(
     and print one block describing what happened, followed by any
     non-fatal delivery diagnostics (:func:`_render_delivery_diagnostics`).
 
-    The ``committed`` status has two shapes (ADR 0119/0121): a pushed
-    delivery branch (``delivery_branch`` set, ``commit_sha is None``) and a
-    real checkout commit (``commit_sha`` set, no ``delivery_branch``). Each
-    renders an accurate, non-overlapping block.
+    The ``committed`` status has three shapes (ADR 0119/0121): a publish-path
+    branch (``delivery_branch`` set, ``commit_sha is None``), an in-place
+    protected local branch (both fields set), and a plain checkout commit
+    (``commit_sha`` set, no ``delivery_branch``). Each renders a distinct block.
     """
     status = decision.status
     if status in _OUTCOME_SILENT:
@@ -2085,7 +2123,11 @@ def render_delivery_outcome(
     color = is_color_active()
 
     if status == "committed":
-        if decision.delivery_branch:
+        if decision.delivery_branch and decision.commit_sha:
+            _render_local_delivery_branch(
+                decision, output_fn=output_fn, color=color,
+            )
+        elif decision.delivery_branch:
             _render_published_branch(
                 decision, output_fn=output_fn, color=color,
             )

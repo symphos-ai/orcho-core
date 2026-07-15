@@ -608,6 +608,28 @@ def test_interactive_menu_bypass_keeps_checkout_commit_wording(
     assert "open a pull request" not in blob
 
 
+def test_interactive_menu_in_place_delivery_does_not_promise_push_or_pr(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    blob = _menu_blob(
+        repo=repo,
+        worktree=repo,
+        run_dir=run_dir,
+        monkeypatch=monkeypatch,
+        branch_policy=None,
+    )
+
+    assert "local delivery branch" in blob
+    assert "does not push the branch or open a pull request" in blob
+    assert "push it, and open a pull request" not in blob
+
+
 def test_interactive_prompt_marks_tracked_and_untracked_paths(
     tmp_path: Path,
     monkeypatch,
