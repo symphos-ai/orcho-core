@@ -277,7 +277,7 @@ def test_missing_required_is_materialized_then_classifies_present(
     }
 
 
-def test_materializer_threads_subject_checkout_into_verify_run(
+def test_materializer_threads_subject_checkout_into_both_verify_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The resolved subject checkout is pinned through to verify_run, so gates
@@ -296,6 +296,7 @@ def test_materializer_threads_subject_checkout_into_verify_run(
         workspace=str(workspace), reason="pre-final",
     )
 
+    assert rec.env_calls[0]["subject_checkout"] == str(worktree)
     assert rec.run_calls[0]["subject_checkout"] == str(worktree)
 
 

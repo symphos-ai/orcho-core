@@ -2073,6 +2073,7 @@ def format_verify_env(result: VerifyEnvResult) -> str:
     out.append(f"  verify env [{result.env}] — {overall}")
     subject = result.subject or {}
     out.append(f"  checkout: {subject.get('checkout', '')}")
+    out.append(f"  source:   {subject.get('source', '')}")
     out.append(f"  project:  {subject.get('project', '')}")
     out.append("")
     for a in result.assertions:
@@ -2115,6 +2116,8 @@ def format_verify_list(result: VerifyListResult) -> str:
         _status_section(f"  verify list · {len(result.commands)} declared command(s)"),
     ]
     out.append(_status_muted("  Preview only: nothing executed, no receipts written."))
+    out.append(f"  checkout: {result.subject_checkout}")
+    out.append(f"  source:   {result.subject_source}")
     out.append(_status_muted("  * = required"))
     out.append("")
     for cmd in result.commands:
@@ -2149,6 +2152,8 @@ def format_verify_run(result: VerifyRunResult) -> str:
     out: list[str] = [""]
     overall = "PASS" if result.all_passed else "FAIL"
     out.append(f"  verify run — {overall}  (official declared command-receipts)")
+    out.append(f"  checkout: {result.subject_checkout}")
+    out.append(f"  source:   {result.subject_source}")
     out.append("")
     for o in result.outcomes:
         mark = "PASS" if o.exit_code == 0 else "FAIL"

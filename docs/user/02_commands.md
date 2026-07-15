@@ -399,6 +399,11 @@ orcho verify run lint        # run one declared command by name
 Receipts land in the run directory; see
 [04_results.md](04_results.md).
 
+With `--run-id`, `--project` names the canonical contract owner while the run
+metadata names the physical subject. `env`, `list`, and `run` display the same
+effective checkout and provenance source. A missing recorded isolated checkout
+is an error (exit 2); it never falls back to the current or canonical directory.
+
 ---
 
 ## `orcho prompts` — inspect prompts

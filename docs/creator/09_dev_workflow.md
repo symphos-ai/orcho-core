@@ -180,6 +180,10 @@ orcho verify env --env core-local --run-id <RUN_ID> --project "$ORCHO_CORE_DEV"
 orcho verify run --required          --run-id <RUN_ID> --project "$ORCHO_CORE_DEV"
 ```
 
+Here `--project` is the canonical contract owner; `--run-id` selects the
+recorded physical checkout. For isolated runs the commands fail closed if that
+retained checkout is unavailable—do not substitute the canonical cwd.
+
 You never run these gates by hand: Orcho auto-runs them before final acceptance
 in a live `Verification gates -- pre-final auto-run` block, then repeats a
 compact gate line (env/command counts plus names) in the DONE summary.
