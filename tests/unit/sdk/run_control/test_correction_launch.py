@@ -71,6 +71,36 @@ def test_launch_builds_correction_argv_and_context(tmp_path: Path, monkeypatch) 
     assert result.run.run_id == "child"
 
 
+def test_launch_uses_argv_profile_without_exporting_pipeline_env(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    runs = tmp_path / "runs"
+    _parent(runs)
+    captured: dict[str, object] = {}
+
+    class _Popen:
+        pid = 12345
+
+    def _spawn(_cmd, **kwargs):
+        captured.update(kwargs)
+        return _Popen()
+
+    monkeypatch.setenv("ORCHO_PIPELINE", "task")
+    monkeypatch.setattr("sdk.run_control.launch._spawn_detached", _spawn)
+
+    launch_correction_followup(
+        CorrectionFollowupLaunchRequest(
+            parent_run_id="parent", runs_dir=str(runs), operator_comment="Fix it.",
+        ),
+        run_id="child",
+    )
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["ORCHO_RUN_ID"] == "child"
+    assert "ORCHO_PIPELINE" not in env
+
+
 def test_launch_refuses_empty_comment_before_spawn(tmp_path: Path, monkeypatch) -> None:
     runs = tmp_path / "runs"
     _parent(runs)

@@ -188,6 +188,74 @@ def _checked_checkout(value: str, *, label: str) -> Path:
     return path.resolve()
 
 
+def _verification_identity_meta(
+    *, run_dir: Path, meta: Mapping[str, Any], project_dir: str,
+) -> Mapping[str, Any]:
+    """Resolve retained correction identity through durable parent lineage.
+
+    A correction child can be inspected before its own session has persisted
+    the reused ``worktree`` block. In that narrow state, the child already
+    records a correction follow-up relationship, so its physical subject is
+    the nearest parent metadata carrying the retained identity. Arbitrary
+    runs and mismatched projects never inherit a parent subject.
+    """
+    current_dir = run_dir
+    current_meta = meta
+    visited = {run_dir.name}
+
+    while not isinstance(current_meta.get("worktree"), Mapping):
+        if (
+            current_meta.get("profile") != "correction"
+            or current_meta.get("resume_mode") != "followup"
+        ):
+            return current_meta
+
+        parent_id = current_meta.get("parent_run_id")
+        if not isinstance(parent_id, str) or not parent_id.strip():
+            raise VerifyEnvError(
+                "correction follow-up metadata is missing parent_run_id",
+            )
+        if Path(parent_id).name != parent_id:
+            raise VerifyEnvError("correction follow-up parent_run_id is invalid")
+        if parent_id in visited:
+            raise VerifyEnvError("correction follow-up lineage contains a cycle")
+        visited.add(parent_id)
+
+        parent_dir = current_dir.parent / parent_id
+        recorded_parent_dir = current_meta.get("parent_run_dir")
+        if (
+            isinstance(recorded_parent_dir, str)
+            and recorded_parent_dir
+            and not _same_checkout(Path(recorded_parent_dir), parent_dir)
+        ):
+            raise VerifyEnvError(
+                "correction follow-up parent_run_dir conflicts with parent_run_id",
+            )
+        if not (parent_dir / "meta.json").is_file():
+            raise VerifyEnvError(
+                f"correction follow-up parent metadata is unavailable: {parent_id}",
+            )
+        try:
+            parent_meta = load_meta(parent_dir)
+        except Exception as exc:  # noqa: BLE001 — normalise SDK read failure
+            raise VerifyEnvError(
+                f"correction follow-up parent metadata is unavailable: {parent_id}",
+            ) from exc
+
+        parent_project = parent_meta.get("project")
+        if (
+            not isinstance(parent_project, str)
+            or not _same_checkout(Path(parent_project), Path(project_dir))
+        ):
+            raise VerifyEnvError(
+                "correction follow-up parent project does not match run project",
+            )
+        current_dir = parent_dir
+        current_meta = parent_meta
+
+    return current_meta
+
+
 def resolve_verification_subject(
     *,
     meta: Mapping[str, Any],
@@ -394,8 +462,11 @@ def verify_env(
             f"verification_env {env_name!r} is not declared (known: {known!r})",
         )
     env_spec = contract.verification_envs[env_name]
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
     subject_resolution = resolve_verification_subject(
-        meta=meta,
+        meta=identity_meta,
         project_dir=project_dir,
         subject_checkout=subject_checkout,
     )
@@ -453,8 +524,11 @@ def verify_list(
             f"no verification commands declared for project {project_dir!r}",
         )
 
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
     subject_resolution = resolve_verification_subject(
-        meta=meta,
+        meta=identity_meta,
         project_dir=project_dir,
     )
     ctx = placeholder_context_for(
@@ -552,12 +626,15 @@ def verify_run(
     else:
         names = _default_verify_run_names(contract, include_manual=include_manual)
 
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
     subject_resolution = resolve_verification_subject(
-        meta=meta,
+        meta=identity_meta,
         project_dir=project_dir,
         subject_checkout=subject_checkout,
     )
-    baseline_head = _baseline_head_for_meta(meta)
+    baseline_head = _baseline_head_for_meta(dict(identity_meta))
     ctx = placeholder_context_for(
         contract,
         checkout=subject_resolution.checkout,
