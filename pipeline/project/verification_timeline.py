@@ -541,6 +541,7 @@ def _run_level_projection(
             classify_required_receipts,
             delivery_gate_plan,
             effective_policy_by_command,
+            resolve_delivery_selection,
             suggested_verify_commands,
         )
 
@@ -571,9 +572,19 @@ def _run_level_projection(
         # so the residual can be classified blocking vs warning and manual/
         # operator-only commands kept out of the required residual (ADR 0090).
         policy_by_command = effective_policy_by_command(contract, plan)
+        operator_commands = {
+            item.identity.command
+            for item in resolve_delivery_selection(contract, plan).identities
+            if item.executor == "operator"
+        }
 
         def _is_manual(name: str) -> bool:
-            return policy_by_command.get(name) == "manual_only"
+            # The typed delivery selection is authoritative for executor
+            # ownership, including selected ``suggest`` identities. Keep the
+            # policy fallback for legacy raw manual-set projection.
+            return name in operator_commands or policy_by_command.get(name) in {
+                "manual_only", "manual",
+            }
 
         current_run_id = run_dir.name
 
@@ -987,7 +998,10 @@ def render_verification_gate_done_block(
     # Required commands intentionally NOT auto-run (manual / operator-only):
     # surfaced so an operator does not mistake them for missing auto work.
     if timeline.manual_only:
-        lines.append(f"  manual-only: {', '.join(timeline.manual_only)}")
+        lines.append(
+            f"  manual-only: {', '.join(timeline.manual_only)} "
+            "— operator available",
+        )
 
     # Present receipts carried from a parent run (distinct from current-run proof).
     if timeline.inherited:

@@ -38,7 +38,7 @@ from pipeline.verification_readiness import (
     build_final_acceptance_readiness,
     delivery_gate_plan,
     render_readiness_block,
-    required_delivery_commands,
+    resolve_delivery_selection,
 )
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
@@ -201,7 +201,7 @@ class TestRequiredDeliveryCommands:
         contract = _contract()
         # contract.required first, then after_phase(implement), then
         # before_delivery — deduped, deterministic.
-        assert required_delivery_commands(contract, None) == (
+        assert resolve_delivery_selection(contract, None).receipt_commands == (
             "test", "lint", "smoke",
         )
 
@@ -211,7 +211,7 @@ class TestRequiredDeliveryCommands:
             contract,
             SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
         )
-        commands = required_delivery_commands(contract, plan)
+        commands = resolve_delivery_selection(contract, plan).receipt_commands
         assert commands[0] == "test"
         assert "smoke" in commands and "lint" in commands
 
@@ -220,7 +220,7 @@ class TestRequiredDeliveryCommands:
         plan = build_scheduled_gate_plan(
             contract, SelectionContext(work_mode="governed"),
         )
-        assert "smoke" not in required_delivery_commands(contract, plan)
+        assert "smoke" not in resolve_delivery_selection(contract, plan).receipt_commands
 
     def test_blanket_schedule_entry_covers_all_declared_commands(self) -> None:
         contract = VerificationContract.from_plugin(PluginConfig(
@@ -232,7 +232,7 @@ class TestRequiredDeliveryCommands:
             },
         ))
         assert contract is not None
-        assert required_delivery_commands(contract, None) == ("a", "b")
+        assert resolve_delivery_selection(contract, None).receipt_commands == ("a", "b")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -714,9 +714,52 @@ class TestPolicyAwareReadiness:
         rendered = render_readiness_block(summary)
         assert rendered is not None
         # Visible, marked not auto-run, and never in Remaining before ready.
-        assert "audit (manual_only) — not auto-run" in rendered
+        assert "audit (manual_only) — operator available, not auto-run" in rendered
         remaining = rendered.split("Remaining before ready:", 1)[1]
         assert "audit" not in remaining
+
+    @pytest.mark.parametrize(
+        ("policy", "expected_fragment", "operator_owned"),
+        (
+            ("manual", "operator available, not auto-run", True),
+            ("suggest", "operator recommendation", False),
+        ),
+    )
+    def test_selected_operator_owned_delivery_policies_are_not_required_residuals(
+        self,
+        tmp_path: Path,
+        policy: str,
+        expected_fragment: str,
+        operator_owned: bool,
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        contract = _contract(
+            commands={"test": {"run": "pytest -q {checkout}", "env": "ci"}},
+            required=["test"],
+            gate_sets={"delivery": {"commands": ["test"]}},
+            selection=[{"always": ["delivery"]}],
+            schedule=[{
+                "before_delivery": True,
+                "policy": policy,
+                "commands": ["test"],
+            }],
+            delivery_policy="require",
+        )
+        plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="governed"))
+
+        summary = build_final_acceptance_readiness(
+            contract, run_dir, PlaceholderContext(), plan=plan,
+        )
+        rendered = render_readiness_block(summary)
+
+        assert rendered is not None
+        assert expected_fragment in rendered
+        if operator_owned:
+            assert summary.manual_only_gaps == ("test",)
+        else:
+            assert summary.required_missing == ("test",)
+        assert "missing required: test" not in rendered
 
     def test_no_blocker_block_is_byte_identical_to_legacy(
         self, tmp_path: Path,

@@ -1278,8 +1278,9 @@ class TestCorrectionRouteWiring:
     @staticmethod
     def _path_selected_contract(*, manual_e2e: bool = False) -> Any:
         """Contract whose ``cli-sdk-unit`` gate is **path-selected** (``sdk/**``),
-        not in static ``verification.required``; blanket delivery-position schedule
-        entries make it a required delivery command once the gate set is selected.
+        not in static ``verification.required``; blanket delivery-position ``warn``
+        schedule entries make it an auto-materialized delivery command once the
+        gate set is selected.
         With ``manual_e2e`` a required ``e2e`` is parked manual_only."""
         from pipeline.plugins import PluginConfig
         from pipeline.verification_contract import VerificationContract
@@ -1291,8 +1292,8 @@ class TestCorrectionRouteWiring:
         gate_sets: dict[str, Any] = {"cli-sdk": {"commands": ["cli-sdk-unit"]}}
         required = ["lint"]
         schedule: list[dict[str, Any]] = [
-            {"before_delivery": True},
-            {"after_phase": "implement"},
+            {"before_delivery": True, "policy": "warn"},
+            {"after_phase": "implement", "policy": "warn"},
         ]
         if manual_e2e:
             commands["e2e"] = {"run": "true"}

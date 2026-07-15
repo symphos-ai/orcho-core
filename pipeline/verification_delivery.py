@@ -44,8 +44,8 @@ from pipeline.verification_contract import (
 )
 from pipeline.verification_policy import (
     GapEntry,
+    consequence_by_command,
     effective_delivery_policy_by_command,
-    outcome_aware_policy_by_command,
     partition_gaps,
 )
 from pipeline.verification_readiness import (
@@ -250,7 +250,7 @@ class DeliveryVerificationAssessment:
         if not self.manual_only_gaps:
             return None
         names = ", ".join(f"{e.command} ({e.status})" for e in self.manual_only_gaps)
-        return "manual-only receipts (not auto-run, operator-run, not required): " + names
+        return "manual-only receipts (operator-available, not auto-run, not required): " + names
 
     @property
     def diagnostic_lines(self) -> tuple[str, ...]:
@@ -327,10 +327,10 @@ class DeliveryVerificationAssessment:
                 continue
             if status == "stale":
                 names = ", ".join(
-                    f"{self._stale_detail_for(e.command)} ({e.policy})" for e in entries
+                    _warning_name(self._stale_detail_for(e.command), e.policy) for e in entries
                 )
             else:
-                names = ", ".join(f"{e.command} ({e.policy})" for e in entries)
+                names = ", ".join(_warning_name(e.command, e.policy) for e in entries)
             out.append(f"{label}: {names} — {SHIPPING_ALLOWED_NOTE}")
         return out
 
@@ -459,11 +459,11 @@ def assess_delivery_verification(
         manual_set,
         boundary_policy=policy,
     )
-    policy_by_command = outcome_aware_policy_by_command(
+    consequences = consequence_by_command(
         status_by_command,
         policy_by_command,
     )
-    partition = partition_gaps(status_by_command, policy_by_command)
+    partition = partition_gaps(status_by_command, policy_by_command, consequences)
 
     # Verification-gate waivers (T2): a durable, operator-recorded
     # ``phase_handoff_waiver`` whose gate_command exactly matches a ``failed`` /
@@ -566,6 +566,12 @@ def assess_delivery_verification(
 
 
 # ── Internals ────────────────────────────────────────────────────────────────
+
+
+def _warning_name(name: str, policy: str) -> str:
+    """Render a non-blocking gap without implying automatic execution."""
+    recommendation = "; operator recommendation" if policy == "suggest" else ""
+    return f"{name} ({policy}{recommendation})"
 
 
 def _is_generated(path: str) -> bool:

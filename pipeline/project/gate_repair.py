@@ -1,10 +1,10 @@
 """gate_repair.py — Stage 4 hook+action router over the ScheduledGatePlan.
 
 Consumes the resolved :class:`~pipeline.verification_selection.ScheduledGatePlan`
-(T2) and routes failed *required* gates per hook and effective action — it never
-recomputes selection. Only ``require``-policy gates participate in routing here
-(``off`` / ``suggest`` / ``warn`` never block — they are surfaced read-only in
-the per-phase prompt blocks, not executed as gates).
+(T2) and routes selected automatic gates per hook and effective action — it
+never recomputes selection. The typed execution resolver determines ownership:
+``warn`` executes and continues with a warning, ``require`` may route its
+action, and ``manual`` / ``suggest`` remain operator-owned.
 
 Action routing (read from the plan entry's effective ``action``):
 
@@ -41,6 +41,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline.verification_execution import (
+    VerificationIdentity,
+    resolve_selected_execution,
+)
 from pipeline.verification_selection import (
     SelectionContext,
     build_scheduled_gate_plan,
@@ -90,7 +94,7 @@ def run_gate_hook(
     failure that yields a blocking disposition, returns it.
     """
     contract = _contract(run)
-    if contract is None or hook == "manual_only":
+    if contract is None:
         return GateRepairOutcome(active=False)
 
     plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
@@ -103,11 +107,53 @@ def run_gate_hook(
 
     # ``executed`` accumulates the commands routing actually ran this hook so the
     # reconciliation pass can tell apart "ran" from "planned but not run".
-    executed: set[str] = set()
+    executed: set[tuple[str, str, str]] = set()
+    existing_receipts = (
+        _delivery_receipt_statuses(run, contract)
+        if hook == "before_delivery"
+        else {}
+    )
     for entry in gates:
+        identity = _entry_identity(entry)
+        existing = existing_receipts.get(entry.command)
+        if existing is not None and existing[0].status == "present":
+            _append_gate_event(
+                run,
+                _gate_event(hook, phase, entry, decision="skipped_fresh"),
+            )
+            executed.add(identity)
+            continue
+        if existing is not None and existing[0].status == "failed":
+            # The pre-final materializer has already executed this identity on
+            # the unchanged subject. Reuse its authoritative failure for the
+            # hook consequence instead of issuing a second subprocess call.
+            classification, receipt = existing
+            executed.add(identity)
+            disposition = _route_failed_gate(
+                run,
+                profile,
+                ctx,
+                contract,
+                entry,
+                receipt,
+                classification,
+                hook=hook,
+                phase=phase,
+            )
+            if disposition is not None:
+                _reconcile_skipped_gate_events(
+                    run,
+                    contract,
+                    plan,
+                    hook=hook,
+                    phase=phase,
+                    executed=executed,
+                )
+                return disposition
+            continue
         receipt = _run_gate_command(run, contract, entry)
         classification = _classify_gate_receipt(receipt)
-        executed.add(entry.command)
+        executed.add(identity)
         _record_executed_gate_event(
             run,
             entry,
@@ -416,9 +462,9 @@ def _route_failed_gate(
     phase: str,
 ) -> GateRepairOutcome | None:
     """Route one failed required gate; ``None`` means non-blocking (warned)."""
-    if entry.policy != "require":
-        # off / suggest / warn never block — surfaced read-only, not gated here.
-        _warn_gate(run, entry, receipt, note="non-require gate failed")
+    resolved = _resolve_entry(entry)
+    if resolved.consequence == "warning":
+        _warn_gate(run, entry, receipt, note="warning consequence")
         return None
 
     action = entry.action
@@ -565,21 +611,31 @@ def _repair_loop(
 # ── gate selection (consume the plan; never recompute) ──────────────────────
 
 
-def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
-    """Required gate entries scheduled for ``hook`` (+ ``phase``), in plan order.
+def _entry_identity(entry: Any) -> tuple[str, str, str]:
+    """Stable identity key for one selected scheduled entry."""
+    return (entry.command, entry.hook, entry.phase)
 
-    Only ``require``-policy entries participate in routing — ``off`` / ``suggest``
-    / ``warn`` are non-blocking and never executed as gates here. The phase is
-    read directly off the resolved entry (Stage 4 keeps it in the gate identity),
-    so phase-scoped hooks never collapse across phases.
-    """
+
+def _resolve_entry(entry: Any):
+    """Resolve execution ownership and base consequence for one plan entry."""
+    return resolve_selected_execution(VerificationIdentity(
+        command=entry.command,
+        hook=entry.hook,
+        phase=entry.phase,
+        policy=entry.policy,
+    ))
+
+
+def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
+    """Engine-owned selected entries scheduled for ``hook`` (+ ``phase``)."""
     gates: list[Any] = []
     for entry in plan.entries:
-        if entry.hook != hook or entry.policy != "require":
+        if entry.hook != hook:
             continue
         if hook in ("before_phase", "after_phase") and entry.phase != phase:
             continue
-        gates.append(entry)
+        if _resolve_entry(entry).executor == "engine":
+            gates.append(entry)
     return gates
 
 
@@ -818,12 +874,7 @@ def _record_executed_gate_event(
     )
 
 
-def _skip_decision_for(
-    command: str,
-    *,
-    manual_set: set[str],
-    fresh_set: set[str],
-) -> str | None:
+def _skip_decision_for(entry: Any, *, fresh_set: set[str]) -> str | None:
     """Durable skip decision for a planned-but-not-executed gate, or ``None``.
 
     ``skipped_manual`` when the command is withheld as ``manual_only`` or parked
@@ -831,22 +882,11 @@ def _skip_decision_for(
     fresh present receipt already exists. A ``missing``/``stale`` required command
     yields ``None`` — that stays a run-level residual, never a hook-skip event.
     """
-    if command in manual_set:
-        return "skipped_manual"
-    if command in fresh_set:
+    if entry.command in fresh_set:
         return "skipped_fresh"
+    if _resolve_entry(entry).executor == "operator":
+        return "skipped_manual"
     return None
-
-
-def _manual_or_operator_set(contract: Any) -> set[str]:
-    """Commands withheld as manual/operator-only (read-only; never raises)."""
-    from contextlib import suppress
-
-    with suppress(Exception):
-        from sdk.verify import manual_or_operator_only_commands
-
-        return manual_or_operator_only_commands(contract)
-    return set()
 
 
 def _fresh_required_commands(run: Any, contract: Any) -> set[str]:
@@ -857,28 +897,53 @@ def _fresh_required_commands(run: Any, contract: Any) -> set[str]:
     (empty) when the run lacks an output dir or placeholder context, or whenever
     classification raises — the reconciler then records no ``skipped_fresh``.
     """
+    return {
+        command
+        for command, (classification, _receipt) in _delivery_receipt_statuses(
+            run, contract,
+        ).items()
+        if classification.status == "present"
+    }
+
+
+def _delivery_receipt_statuses(run: Any, contract: Any) -> dict[str, tuple[Any, dict]]:
+    """Classified current-run delivery receipts, keyed by command.
+
+    The before-delivery hook uses this to reconcile a pre-final execution.  A
+    failed receipt is deliberately retained alongside its classification so its
+    existing consequence can be routed without re-executing the command.
+    """
     state = getattr(run, "state", None)
     output_dir = getattr(state, "output_dir", None)
     extras = getattr(state, "extras", None)
     if output_dir is None or not isinstance(extras, dict):
-        return set()
+        return {}
     ctx = extras.get("verification_placeholders")
     if ctx is None:
-        return set()
+        return {}
     from contextlib import suppress
 
     with suppress(Exception):
+        from pipeline.evidence.verification_receipt import load_command_receipts
         from pipeline.verification_readiness import classify_required_receipts
 
-        classification = classify_required_receipts(
+        classifications = classify_required_receipts(
             contract,
             output_dir,
             ctx,
             checkout=getattr(ctx, "checkout", "") or "",
             extras=extras,
         )
-        return {c for c, cl in classification.items() if cl.status == "present"}
-    return set()
+        receipts = {
+            str(receipt.get("command", "")): receipt
+            for receipt in load_command_receipts(output_dir)
+        }
+        return {
+            command: (classification, receipts[command])
+            for command, classification in classifications.items()
+            if command in receipts
+        }
+    return {}
 
 
 def _reconcile_skipped_gate_events(
@@ -888,7 +953,7 @@ def _reconcile_skipped_gate_events(
     *,
     hook: str,
     phase: str,
-    executed: set[str],
+    executed: set[tuple[str, str, str]],
 ) -> None:
     """Append skip events for gates planned at this hook but not executed.
 
@@ -906,25 +971,21 @@ def _reconcile_skipped_gate_events(
         for entry in plan.entries
         if entry.hook == hook
         and (hook not in ("before_phase", "after_phase") or entry.phase == phase)
-        and entry.command not in executed
+        and _entry_identity(entry) not in executed
     ]
     if not pending:
         return
 
-    manual_set = _manual_or_operator_set(contract)
     fresh_set = _fresh_required_commands(run, contract)
-    seen: set[str] = set(executed)
+    seen: set[tuple[str, str, str]] = set(executed)
     for entry in pending:
-        if entry.command in seen:
+        identity = _entry_identity(entry)
+        if identity in seen:
             continue
-        decision = _skip_decision_for(
-            entry.command,
-            manual_set=manual_set,
-            fresh_set=fresh_set,
-        )
+        decision = _skip_decision_for(entry, fresh_set=fresh_set)
         if decision is None:
             continue
-        seen.add(entry.command)
+        seen.add(identity)
         _append_gate_event(run, _gate_event(hook, phase, entry, decision=decision))
 
 

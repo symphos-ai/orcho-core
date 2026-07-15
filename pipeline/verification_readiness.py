@@ -40,6 +40,11 @@ from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_execution import (
+    ResolvedExecution,
+    VerificationIdentity,
+    resolve_selected_execution,
+)
 from pipeline.verification_failure import ReceiptClassification, classify_receipt
 from pipeline.verification_receipt_index import receipt_file_path
 
@@ -48,6 +53,7 @@ __all__ = [
     "ROUTING_PLANS_EXTRAS_KEY",
     "TRANSCRIPT_NOT_PROOF_NOTE",
     "ProvenanceGateFailure",
+    "DeliverySelection",
     "ReadinessSummary",
     "ReceiptClassification",
     "apply_environment_provenance",
@@ -58,7 +64,7 @@ __all__ = [
     "effective_policy_by_command",
     "environment_provenance_gate_failures",
     "render_readiness_block",
-    "required_delivery_commands",
+    "resolve_delivery_selection",
     "required_receipt_gaps",
     "suggested_verify_commands",
     "transcript_not_proof_note",
@@ -108,6 +114,28 @@ _DELIVERY_HOOKS: tuple[tuple[str, str], ...] = (
 
 
 @dataclass(frozen=True)
+class DeliverySelection:
+    """Delivery receipts and uncollapsed scheduled identities for one epoch.
+
+    ``receipt_commands`` is deliberately command-level for receipt lookup, while
+    ``identities`` preserves every ``(command, hook, phase)`` execution identity.
+    Consumers can therefore dedupe receipt reads without losing executor or
+    consequence decisions for a command scheduled at multiple delivery hooks.
+    """
+
+    receipt_commands: tuple[str, ...] = ()
+    identities: tuple[ResolvedExecution, ...] = ()
+
+    @property
+    def executor_identities(self) -> tuple[ResolvedExecution, ...]:
+        return tuple(item for item in self.identities if item.executor == "engine")
+
+    @property
+    def consequence_identities(self) -> tuple[ResolvedExecution, ...]:
+        return tuple(item for item in self.identities if item.consequence != "none")
+
+
+@dataclass(frozen=True)
 class ReadinessSummary:
     """Typed result of :func:`build_final_acceptance_readiness`.
 
@@ -152,6 +180,11 @@ class ReadinessSummary:
     # "Remaining before ready" (ADR 0090). Default empty so a no-blocker summary
     # renders byte-identically.
     policy_by_command: tuple[tuple[str, str], ...] = ()
+    # Post-result consequence is intentionally separate from policy: a hygiene
+    # failure can be a warning while its canonical ``require`` policy remains
+    # visible for audit. Internal prompt projection only; no durable receipt or
+    # SDK shape consumes this field.
+    consequence_by_command: tuple[tuple[str, str], ...] = ()
     manual_only_gaps: tuple[str, ...] = ()
 
     @property
@@ -176,7 +209,7 @@ def delivery_gate_plan(
     """Resolve the authoritative delivery gate plan, or ``None``.
 
     Returns ``None`` when the contract declares no ``gate_sets`` / ``selection``
-    (the raw-schedule fallback in :func:`required_delivery_commands` then
+    (the raw-schedule fallback in :func:`resolve_delivery_selection` then
     applies). Otherwise, in order:
 
     1. The executable routing plan cached for the ``before_delivery`` epoch
@@ -221,20 +254,20 @@ def delivery_gate_plan(
     )
 
 
-def required_delivery_commands(
+def resolve_delivery_selection(
     contract: VerificationContract,
     plan: Any,
-) -> tuple[str, ...]:
-    """The deterministic required delivery command set, in stable order.
+) -> DeliverySelection:
+    """Resolve delivery receipt commands and each selected delivery identity.
 
-    ``contract.required`` first, then commands scheduled at the delivery
-    positions — ``after_phase(implement)`` and ``before_delivery`` — taken from
-    the resolved ``plan`` when one exists (entry order), otherwise from the raw
-    ``contract.schedule`` (an entry without explicit commands covers every
-    declared command, matching the Stage 1 projection convention). Deduped
-    preserving first occurrence.
+    ``contract.required`` remains the leading command-level receipt view.  Plan
+    entries at delivery positions are converted one-for-one into typed resolved
+    identities; the same command at multiple hooks is intentionally retained.
+    Without a plan, raw schedule commands still contribute receipt commands but
+    cannot claim an effective execution identity before selection has occurred.
     """
     ordered: list[str] = []
+    identities: list[ResolvedExecution] = []
 
     def _add(name: str) -> None:
         if name and name not in ordered:
@@ -250,15 +283,101 @@ def required_delivery_commands(
                 getattr(entry, "phase", ""),
             )
             if position in _DELIVERY_HOOKS:
-                _add(getattr(entry, "command", ""))
-        return tuple(ordered)
+                command = getattr(entry, "command", "")
+                _add(command)
+                identities.append(resolve_selected_execution(VerificationIdentity(
+                    command=command,
+                    hook=getattr(entry, "hook", ""),
+                    phase=getattr(entry, "phase", ""),
+                    policy=getattr(entry, "policy", ""),
+                )))
+        _add_implicit_required_identities(contract, identities)
+        return DeliverySelection(tuple(ordered), tuple(identities))
 
     for entry in contract.schedule:
         if (entry.hook, entry.phase) not in _DELIVERY_HOOKS:
             continue
         for name in entry.commands or tuple(sorted(contract.commands)):
             _add(name)
-    return tuple(ordered)
+            # No selected plan is available, but a raw delivery schedule still
+            # has a complete declared identity. Apply the same work-mode policy
+            # derivation the plan builder uses so execution consumers never need
+            # their own policy fallback.
+            from pipeline.verification_selection import derive_effective_policy
+
+            policy = derive_effective_policy(
+                entry.policy,
+                contract.work_mode,
+                required=name in contract.required,
+            )
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=name,
+                hook=entry.hook,
+                phase=entry.phase,
+                policy=policy,
+            )))
+    _add_implicit_required_identities(contract, identities)
+    return DeliverySelection(tuple(ordered), tuple(identities))
+
+
+def _add_implicit_required_identities(
+    contract: VerificationContract,
+    identities: list[ResolvedExecution],
+) -> None:
+    """Fill the legacy required-receipt projection with typed identities.
+
+    ``verification.required`` predates explicit scheduled selection and remains
+    an implicit delivery gate when no delivery identity represents it. A command
+    explicitly parked behind ``manual_only`` is instead represented as an
+    operator identity. This also gives a required command scheduled only at a
+    phase hook a delivery-position refresh: otherwise delivery can enforce a
+    stale receipt without any engine identity that can regenerate it.
+    """
+    represented = {item.identity.command for item in identities}
+    manual_commands = _manual_only_schedule_commands(contract)
+    for command in contract.required:
+        if command in represented:
+            continue
+        if command in manual_commands:
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=command,
+                hook="manual_only",
+                phase="",
+                policy="manual",
+            )))
+        else:
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=command,
+                hook="before_delivery",
+                phase="",
+                policy=_implicit_delivery_policy(contract),
+            )))
+
+
+def _implicit_delivery_policy(contract: VerificationContract) -> str:
+    """Boundary policy for a required command lacking a delivery identity.
+
+    The delivery module owns this projection. Import lazily because it imports
+    readiness for assessment, while this helper is only reached after both
+    modules finish initialization.
+    """
+    from pipeline.verification_delivery import resolve_delivery_policy
+
+    return resolve_delivery_policy(contract) or "warn"
+
+
+def _manual_only_schedule_commands(contract: VerificationContract) -> set[str]:
+    """Return commands explicitly parked behind the operator-only hook."""
+    commands: set[str] = set()
+    for entry in contract.schedule:
+        if entry.hook != "manual_only":
+            continue
+        commands.update(entry.commands)
+        for gate_set in entry.gate_sets:
+            declared = contract.gate_sets.get(gate_set)
+            if declared is not None:
+                commands.update(declared.commands)
+    return commands
 
 
 def effective_policy_by_command(
@@ -384,7 +503,7 @@ def command_phase_schedule(contract: VerificationContract) -> dict[str, str]:
     Built from ``contract.schedule`` entries whose hook is ``before_phase`` or
     ``after_phase`` and that name a ``phase`` (an entry with no explicit commands
     covers every declared command, matching the projection convention in
-    :func:`required_delivery_commands`). A command with no phase-bound schedule is
+    :func:`resolve_delivery_selection`). A command with no phase-bound schedule is
     absent — it gets no environment-provenance link, so gates without a phase
     schedule (``before_delivery`` / ``manual_only``) keep their existing
     semantics. Shared by the SDK projection and the live render so both derive the
@@ -516,7 +635,7 @@ def classify_required_receipts(
     """Classify each required delivery command's receipt, in required order.
 
     Returns an ordered ``command -> ReceiptClassification`` mapping over
-    :func:`required_delivery_commands`; each classification carries one of the
+    :func:`resolve_delivery_selection`; each classification carries one of the
     fixed four statuses (``present`` / ``missing`` / ``failed`` / ``stale``) plus
     an optional human ``reason`` (populated for stale) and additive
     ``source_run_id`` / ``path`` provenance. ``checkout`` is the EXPLICIT
@@ -552,7 +671,7 @@ def classify_required_receipts(
         except Exception:  # noqa: BLE001 — classification must never raise outward
             plan = None
 
-    required = required_delivery_commands(contract, plan)
+    required = resolve_delivery_selection(contract, plan).receipt_commands
     receipts = {str(r.get("command", "")): r for r in load_command_receipts(run_dir)}
     current_fingerprint, current_head = _current_checkout_identity(checkout or "")
 
@@ -644,9 +763,9 @@ def required_receipt_gaps(
         run_dir,
     )
     policy_by_command = effective_policy_by_command(contract, plan)
-    from pipeline.verification_policy import outcome_aware_policy_by_command
+    from pipeline.verification_policy import consequence_by_command
 
-    policy_by_command = outcome_aware_policy_by_command(
+    consequences = consequence_by_command(
         status_by_command,
         policy_by_command,
     )
@@ -656,7 +775,7 @@ def required_receipt_gaps(
             continue
         # Only an effective ``require`` gap is a release blocker; warn/suggest are
         # shipping-allowed and manual_only is never a gap (ADR 0090).
-        if policy_by_command.get(command) != "require":
+        if consequences.get(command) != "required_action":
             continue
         run_decl = (contract.commands.get(command) or {}).get("run", "")
         if isinstance(run_decl, (list, tuple)):
@@ -758,13 +877,9 @@ def build_final_acceptance_readiness(
     # receipt (ADR 0090). Required gaps keep their natural required-command order
     # (shared with the suggested-command hints), not a per-policy grouping.
     policy_by_command = effective_policy_by_command(contract, plan)
-    from pipeline.verification_policy import outcome_aware_policy_by_command
+    from pipeline.verification_policy import consequence_by_command
 
-    policy_by_command = outcome_aware_policy_by_command(
-        status_by_command,
-        policy_by_command,
-    )
-
+    consequences = consequence_by_command(status_by_command, policy_by_command)
     present: list[str] = []
     missing: list[str] = []
     failed: list[str] = []
@@ -776,7 +891,7 @@ def build_final_acceptance_readiness(
         if status == "present":
             present.append(command)
             continue
-        if policy_by_command.get(command) == "manual_only":
+        if policy_by_command.get(command) in ("manual_only", "manual"):
             manual.append(command)
             continue
         {"missing": missing, "failed": failed, "stale": stale}[status].append(
@@ -846,6 +961,7 @@ def build_final_acceptance_readiness(
         receipt_provenance=receipt_provenance,
         suggested_commands=suggested_commands,
         policy_by_command=tuple(policy_by_command.items()),
+        consequence_by_command=tuple(consequences.items()),
         manual_only_gaps=manual_only_gaps,
     )
 
@@ -885,15 +1001,20 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # the reviewer sees it is surfaced, not blocked. An empty section is
     # byte-identical ``"(none)"``.
     policy_map = dict(summary.policy_by_command)
-    _gap_section(lines, "Missing receipts", summary.required_missing, policy_map)
-    _gap_section(lines, "Failed receipts", summary.required_failed, policy_map)
+    consequence_map = dict(summary.consequence_by_command)
+    _gap_section(
+        lines, "Missing receipts", summary.required_missing, policy_map, consequence_map,
+    )
+    _gap_section(
+        lines, "Failed receipts", summary.required_failed, policy_map, consequence_map,
+    )
     # Stale receipts carry their reason (subject drift or a dependency HEAD
     # move naming both SHAs) so the reviewer sees *why* a receipt is stale.
     stale_items = list(summary.stale_reasons or summary.required_stale)
     lines.append("  Stale receipts:")
     if summary.required_stale:
         lines.extend(
-            f"    {_annotate_gap(item, policy_map.get(name, ''))}"
+            f"    {_annotate_gap(item, policy_map.get(name, ''), consequence_map.get(name))}"
             for name, item in zip(
                 summary.required_stale,
                 stale_items,
@@ -907,9 +1028,10 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # never a required/blocking gap. Absent — and thus byte-identical — when
     # there are no manual-only gaps.
     if summary.manual_only_gaps:
-        lines.append("  Manual-only receipts:")
+        lines.append("  Operator-available receipts:")
         lines.extend(
-            f"    {name} (manual_only) — not auto-run" for name in summary.manual_only_gaps
+            f"    {name} ({policy_map.get(name, 'manual_only')}) — operator available, not auto-run"
+            for name in summary.manual_only_gaps
         )
 
     lines.append("  Exploratory commands:")
@@ -920,11 +1042,19 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     else:
         lines.append("    (none observed)")
 
-    # Only ``require``-policy gaps block readiness (ADR 0090): a warn/suggest gap
-    # is shipping-allowed by policy and a manual-only gap is not auto-run, so
-    # neither appears under "Remaining before ready".
-    require_missing = [c for c in summary.required_missing if policy_map.get(c) == "require"]
-    require_failed = [c for c in summary.required_failed if policy_map.get(c) == "require"]
+    # Only a required-action consequence blocks readiness. This retains the
+    # declared ``require`` policy for hygiene outcomes without falsely treating
+    # them as a release blocker (ADR 0130).
+    require_missing = [
+        c for c in summary.required_missing
+        if consequence_map.get(c, "required_action" if policy_map.get(c) == "require" else "")
+        == "required_action"
+    ]
+    require_failed = [
+        c for c in summary.required_failed
+        if consequence_map.get(c, "required_action" if policy_map.get(c) == "require" else "")
+        == "required_action"
+    ]
     require_stale = [
         item
         for name, item in zip(
@@ -932,7 +1062,9 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
             stale_items,
             strict=False,
         )
-        if policy_map.get(name) == "require"
+        if consequence_map.get(
+            name, "required_action" if policy_map.get(name) == "require" else "",
+        ) == "required_action"
     ]
     remaining = (
         [f"missing required: {c}" for c in require_missing]
@@ -984,7 +1116,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
 # ── Internals ────────────────────────────────────────────────────────────────
 
 
-def _annotate_gap(text: str, policy: str) -> str:
+def _annotate_gap(text: str, policy: str, consequence: str | None = None) -> str:
     """Annotate one gap line with its effective per-gate policy (T3).
 
     ``require`` → ``"<text> (require)"`` (a blocker). ``warn`` / ``suggest`` →
@@ -992,10 +1124,13 @@ def _annotate_gap(text: str, policy: str) -> str:
     Any other non-empty policy is shown verbatim in parentheses; an empty policy
     leaves ``text`` unchanged.
     """
+    if consequence == "warning" and policy == "require":
+        return f"{text} ({policy}) — shipping allowed by warning consequence"
     if policy == "require":
         return f"{text} (require)"
     if policy in ("warn", "suggest"):
-        return f"{text} ({policy}) — shipping allowed by policy"
+        recommendation = " — operator recommendation" if policy == "suggest" else ""
+        return f"{text} ({policy}){recommendation} — shipping allowed by policy"
     if policy:
         return f"{text} ({policy})"
     return text
@@ -1006,6 +1141,7 @@ def _gap_section(
     title: str,
     names: tuple[str, ...],
     policy_map: Mapping[str, str],
+    consequence_map: Mapping[str, str],
 ) -> None:
     """Render a missing/failed gap section, annotating each name with its policy.
 
@@ -1016,7 +1152,10 @@ def _gap_section(
     if not names:
         lines.append("    (none)")
         return
-    lines.extend(f"    {_annotate_gap(name, policy_map.get(name, ''))}" for name in names)
+    lines.extend(
+        f"    {_annotate_gap(name, policy_map.get(name, ''), consequence_map.get(name))}"
+        for name in names
+    )
 
 
 def _section(lines: list[str], title: str, names: tuple[str, ...]) -> None:

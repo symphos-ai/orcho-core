@@ -18,6 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pipeline.verification_execution import (
+    VerificationIdentity,
+    resolve_selected_execution,
+)
+
 if TYPE_CHECKING:
     from pipeline.plugins import PluginConfig
 
@@ -979,10 +984,19 @@ def _gate_line(
     cmd = contract.commands.get(entry.command, {})
     run = resolve_placeholders(str(cmd.get("run", "")), ctx)
     hook_label = entry.hook + (f"({entry_phase})" if entry_phase else "")
-    return (
-        f"  [{hook_label} {entry.policy}->{entry.action}] "
-        f"{entry.command} <{entry.primary_gate_set}>: {run}"
-    )
+    resolved = resolve_selected_execution(VerificationIdentity(
+        command=entry.command,
+        hook=entry.hook,
+        phase=entry_phase,
+        policy=entry.policy,
+    ))
+    if resolved.consequence == "required_action":
+        posture = f"require; action={entry.action}"
+    elif resolved.executor == "operator":
+        posture = "operator available" if entry.policy == "manual" else "operator recommendation"
+    else:
+        posture = "engine warning; shipping allowed"
+    return f"  [{hook_label} {posture}] {entry.command} <{entry.primary_gate_set}>: {run}"
 
 
 def render_phase_gate_block(
@@ -1045,7 +1059,12 @@ def render_phase_gate_block(
     if phase == "review_changes":
         relevant = [
             (e, p) for (e, p) in annotated
-            if e.hook != "manual_only" and e.policy in ("warn", "require")
+            if resolve_selected_execution(VerificationIdentity(
+                command=e.command,
+                hook=e.hook,
+                phase=p,
+                policy=e.policy,
+            )).consequence != "none"
         ]
         if not relevant:
             return None
@@ -1064,8 +1083,8 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Delivery gates — missing, failed, or stale receipts block "
-            "delivery per the policy below:",
+            "  Require gates block on missing, failed, or stale receipts; "
+            "warnings are visible and shipping-allowed.",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)

@@ -1452,16 +1452,18 @@ class TestEnvironmentProvenanceOverlay:
         assert assessment.blocking is False
         assert assessment.required_failed == ("env-provenance",)
         assert assessment.warning_gaps[0].command == "env-provenance"
-        assert assessment.warning_gaps[0].policy == "warn"
+        # Hygiene failures soften the consequence only; the declared/effective
+        # execution policy remains canonical for audit and policy projection.
+        assert assessment.warning_gaps[0].policy == "require"
         summary = build_final_acceptance_readiness(
             contract,
             run_dir,
             _ctx(str(co)),
         )
-        assert dict(summary.policy_by_command)["env-provenance"] == "warn"
+        assert dict(summary.policy_by_command)["env-provenance"] == "require"
         rendered = render_readiness_block(summary)
         assert rendered is not None
-        assert "env-provenance (warn) — shipping allowed by policy" in rendered
+        assert "env-provenance (require) — shipping allowed by warning consequence" in rendered
         assert "Remaining before ready:" in rendered
         assert "none blocking" in rendered
         assert required_receipt_gaps(contract, run_dir, _ctx(str(co))) == []

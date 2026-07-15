@@ -6,8 +6,9 @@ policy-aware UX surfaces (readiness block, delivery banner, DONE summary). It
 answers two questions, deterministically and without side effects:
 
 1. :func:`effective_delivery_policy_by_command` — for each required delivery
-   command (the set :func:`pipeline.verification_readiness.required_delivery_commands`
-   computes), what is its *effective* delivery policy:
+   command (the receipt view from
+   :func:`pipeline.verification_readiness.resolve_delivery_selection`), what is
+   its *effective* delivery policy:
 
    * ``manual_only`` when the command is in the caller-supplied manual/operator
      set (``sdk.verify.manual_or_operator_only_commands``);
@@ -44,14 +45,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipeline.verification_contract import SCHEDULE_POLICIES, VerificationContract
-from pipeline.verification_readiness import required_delivery_commands
+from pipeline.verification_readiness import resolve_delivery_selection
 
 __all__ = [
     "MANUAL_ONLY_POLICY",
     "GapEntry",
     "GapPartition",
     "effective_delivery_policy_by_command",
-    "outcome_aware_policy_by_command",
+    "consequence_by_command",
     "partition_gaps",
 ]
 
@@ -146,7 +147,7 @@ def effective_delivery_policy_by_command(
 ) -> dict[str, str]:
     """Effective delivery policy for each required delivery command, in order.
 
-    For every command :func:`required_delivery_commands` yields:
+    For every command in the delivery selection's receipt view:
 
     * ``manual_only`` when the command is in ``manual_set`` (the raw
       manual/operator-only set from ``sdk.verify.manual_or_operator_only_commands``);
@@ -165,7 +166,7 @@ def effective_delivery_policy_by_command(
     manual = set(manual_set or ())
     plan_policy = _delivery_policy_by_command_from_plan(plan)
     result: dict[str, str] = {}
-    for command in required_delivery_commands(contract, plan):
+    for command in resolve_delivery_selection(contract, plan).receipt_commands:
         if command in manual:
             result[command] = MANUAL_ONLY_POLICY
             continue
@@ -174,32 +175,39 @@ def effective_delivery_policy_by_command(
     return result
 
 
-def outcome_aware_policy_by_command(
+def consequence_by_command(
     status_by_command: Mapping[str, Any],
     declared_policy_by_command: Mapping[str, str],
 ) -> dict[str, str]:
-    """Apply receipt-outcome policy without changing declared delivery policy.
+    """Resolve post-result consequence without changing declared policy.
 
     A typed provenance/environment failure is a hygiene warning at readiness and
-    delivery, even when its declared policy is ``require``.  ``manual_only`` is
-    authoritative and remains manual; all other outcomes, especially missing,
-    stale, and ``test_failure``, retain their declared effective policy.
+    delivery, even when its declared policy is ``require``.  This is deliberately
+    separate from execution policy: callers retain the canonical policy map for
+    rendering and audit, then use this result only for consequence routing.
     """
-    effective = dict(declared_policy_by_command)
-    for command, classification in status_by_command.items():
-        if effective.get(command) == MANUAL_ONLY_POLICY:
-            continue
+    consequences: dict[str, str] = {}
+    for command, policy in declared_policy_by_command.items():
+        if policy == "require":
+            consequence = "required_action"
+        elif policy in ("warn", "suggest"):
+            consequence = "warning"
+        else:
+            consequence = "none"
+        classification = status_by_command.get(command)
         if getattr(classification, "failure_kind", None) in {
             "provenance_failure",
             "env_failure",
         }:
-            effective[command] = "warn"
-    return effective
+            consequence = "warning"
+        consequences[command] = consequence
+    return consequences
 
 
 def partition_gaps(
     status_by_command: Mapping[str, Any],
     policy_by_command: Mapping[str, str],
+    consequence_by_command: Mapping[str, str] | None = None,
 ) -> GapPartition:
     """Split unproven-receipt gaps into blocking / warning / manual_only buckets.
 
@@ -230,11 +238,14 @@ def partition_gaps(
             continue
         policy = policy_by_command.get(command, "")
         entry = GapEntry(command=command, status=status, policy=policy)
+        consequence = (consequence_by_command or {}).get(command)
         if policy in (MANUAL_ONLY_POLICY, "manual"):
             manual_only.append(entry)
-        elif policy == "require":
+        elif consequence == "required_action" or (
+            consequence is None and policy == "require"
+        ):
             blocking.append(entry)
-        elif policy in ("warn", "suggest"):
+        elif consequence == "warning" or policy in ("warn", "suggest"):
             warning.append(entry)
     return GapPartition(
         blocking=tuple(blocking),

@@ -28,7 +28,7 @@ is threaded into classification so ``delivery_gate_plan`` reuses the cached
 (:data:`pipeline.verification_readiness.ROUTING_PLANS_EXTRAS_KEY`) rather than
 rebuilding a fresh plan from the live checkout. That is what makes path-selected
 delivery gates (for example ``cli-sdk-unit``) land in the materialized
-``required_delivery_commands`` set — so auto-run targets exactly what readiness
+delivery selection receipt view — so auto-run targets exactly what readiness
 and delivery enforce, never a narrower ``contract.required``-only subset.
 """
 
@@ -39,7 +39,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pipeline.verification_readiness import classify_required_receipts
+from pipeline.verification_readiness import (
+    classify_required_receipts,
+    delivery_gate_plan,
+    resolve_delivery_selection,
+)
 from pipeline.verification_receipt_index import VERIFICATION_PARENT_RUNS_EXTRAS_KEY
 
 if TYPE_CHECKING:
@@ -221,26 +225,58 @@ def materialize_required_receipts(
             ),
         )
 
-    # Lazy: keep sdk.verify (and its placeholder/loader chain) off this module's
-    # import path until a real materialization runs.
-    from sdk.verify import manual_or_operator_only_commands, verify_env, verify_run
+    # Materialization covers selected engine identities at every delivery
+    # position.  Receipt reads remain command-level, but execution ownership
+    # comes from the typed resolver so manual/suggest never reach sdk.verify.
+    # This includes after_phase(implement): a repair can make its earlier
+    # receipt stale before final acceptance, and the pre-final pass is the only
+    # automatic path that can refresh that delivery-enforced proof.
+    try:
+        plan = delivery_gate_plan(contract, classify_extras, checkout)
+        selection = resolve_delivery_selection(contract, plan)
+    except Exception:  # noqa: BLE001 — no resolved identity means no execution
+        selection = None
+    engine_commands: set[str] = set()
+    operator_commands: set[str] = set()
+    for resolved in getattr(selection, "identities", ()):
+        # Operator-owned identities remain visible in the receipt view whatever
+        # their hook; they are withheld as ``skipped_manual``.  Any selected
+        # engine identity in the delivery receipt view is materialized.
+        if resolved.executor == "operator":
+            operator_commands.add(resolved.identity.command)
+        elif resolved.executor == "engine":
+            engine_commands.add(resolved.identity.command)
+    # A command can have an operator-owned phase identity and an automatic
+    # before-delivery identity. Receipt materialization is command-level, so the
+    # delivery executor wins; only commands with no delivery executor are
+    # withheld as manual.
+    operator_commands.difference_update(engine_commands)
 
-    manual_set = manual_or_operator_only_commands(contract)
+    # Lazy: keep sdk.verify (and its placeholder/loader chain) off this module's
+    # import path until a real engine-owned materialization runs.
+    verify_env = verify_run = None
 
     targets: list[str] = []
     skipped_manual: list[str] = []
     skipped_fresh: list[str] = []
     for command, status in classification.items():
+        if command not in engine_commands and command not in operator_commands:
+            continue
         if status.status == "present":
             skipped_fresh.append(command)
             continue
         # ``failed`` is intentionally left out of every bucket: it is never
         # rerun in the normal path and must not be reported as fresh.
         if status.status in ("missing", "stale"):
-            if command in manual_set:
+            if command in operator_commands:
                 skipped_manual.append(command)
             else:
                 targets.append(command)
+
+    if targets:
+        from sdk.verify import verify_env as _verify_env, verify_run as _verify_run
+
+        verify_env, verify_run = _verify_env, _verify_run
 
     ran_envs: list[str] = []
     ran_commands: list[str] = []
@@ -259,6 +295,7 @@ def materialize_required_receipts(
 
     for env_name in needed_envs:
         try:
+            assert verify_env is not None
             env_result = verify_env(
                 project=project_dir,
                 env=env_name,
@@ -279,6 +316,7 @@ def materialize_required_receipts(
 
     if targets:
         try:
+            assert verify_run is not None
             run_result = verify_run(
                 project=project_dir,
                 run_id=run_id,
@@ -315,7 +353,13 @@ def materialize_required_receipts(
     residual_required = [
         command
         for command, status in post.items()
-        if status.status in ("missing", "stale")
+        if (
+            status.status in ("missing", "stale")
+            # An operator-owned delivery identity is intentionally withheld and
+            # already reported through ``skipped_manual``.  It is not an
+            # unmaterialized required receipt merely because it remains absent.
+            and command not in operator_commands
+        )
     ]
     # ``failed`` is authoritative, not the optimistic exit codes: a ran command
     # whose on-disk receipt classifies ``failed`` (non-zero exit, a failed

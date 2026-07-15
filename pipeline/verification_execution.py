@@ -28,6 +28,16 @@ class ExecutionEligibilityError(ValueError):
 
 
 @dataclass(frozen=True)
+class VerificationIdentity:
+    """One selected verification identity; command, hook, and phase never collapse."""
+
+    command: str
+    hook: ExecutionHook
+    phase: str
+    policy: ExecutionPolicy
+
+
+@dataclass(frozen=True)
 class ExecutionEligibility:
     """Executor, trigger, and base consequence for one selected identity.
 
@@ -41,6 +51,39 @@ class ExecutionEligibility:
     trigger: Trigger
     phase: str
     consequence: BaseConsequence
+
+
+@dataclass(frozen=True)
+class ResolvedExecution:
+    """A complete selected identity together with its pure execution decision."""
+
+    identity: VerificationIdentity
+    eligibility: ExecutionEligibility
+
+    @property
+    def executor(self) -> Executor | None:
+        return self.eligibility.executor
+
+    @property
+    def consequence(self) -> BaseConsequence:
+        return self.eligibility.consequence
+
+
+def resolve_selected_execution(
+    identity: VerificationIdentity,
+    *,
+    selected: bool = True,
+) -> ResolvedExecution:
+    """Attach the canonical eligibility decision to a complete identity."""
+    return ResolvedExecution(
+        identity=identity,
+        eligibility=resolve_execution_eligibility(
+            selected,
+            identity.policy,
+            identity.hook,
+            identity.phase,
+        ),
+    )
 
 
 def resolve_execution_eligibility(
