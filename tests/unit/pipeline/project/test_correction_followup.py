@@ -1226,6 +1226,7 @@ class TestCorrectionRouteWiring:
                     "env": "core-local",
                     "run_id": "child_run",
                     "workspace": str(workspace),
+                    "subject_checkout": str(project),
                 },
             ),
             (

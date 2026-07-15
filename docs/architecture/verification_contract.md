@@ -226,8 +226,10 @@ run from another declared repo.
 
 > **Stage 3 resolution (command execution).** When
 > [`orcho verify run`](#cli-orcho-verify-list--orcho-verify-run-stage-3) executes
-> a command, the subjects diverge: `{checkout}` resolves to the **run worktree**
-> (`meta['worktree']['path']`, fallback `{project}`) while `{project}` stays the
+> a command, the subjects diverge: `{checkout}` resolves to the **recorded run
+> subject**. An isolated run requires its exact readable
+> `meta['worktree']['path']`; only `meta['worktree']['isolation'] == 'off'`
+> resolves `{checkout}` to `{project}`. `{project}` stays the
 > **canonical** target repo. The contract is loaded from `{project}` but commands
 > run against `{checkout}`. See
 > [ADR 0080](../adr/0080-verification-contract-command-receipts.md).
@@ -343,7 +345,7 @@ assertions.
 > generic, key-dispatched vocabulary (import `path_equals`/`path_under`,
 > `path_exists`, `file_exists`, `command_exists`, and the single
 > `{"version": [...], "contains": ...}` form). The effective cwd defaults to
-> `{checkout}` (fallback `{project}`), so import/version subprocesses prove the
+> `{checkout}`, so import/version subprocesses prove the
 > declared checkout, not the CLI's host cwd. Execution never raises (subprocess
 > failure/timeout → `passed=false`); unknown keys are failed checks. The result
 > is written as an env-assertion receipt (see
@@ -1687,8 +1689,9 @@ absent-block receipts never become stale), and `orcho verify run` prints the
 Stage 3 ([ADR 0080](../adr/0080-verification-contract-command-receipts.md)) adds
 two subcommands alongside `orcho verify env`. Both resolve a run, confirm it
 belongs to the project, and load the contract from the canonical project; the
-declared commands then resolve against the **run worktree** (`{checkout}` =
-`meta['worktree']['path']`, fallback `{project}`).
+declared commands then resolve against the **recorded physical subject**. An
+isolated subject must be its recorded readable worktree; missing or ambiguous
+metadata fails closed rather than falling back to the canonical project.
 
 ```bash
 orcho verify list [-p PROJECT] [--run-id ID] [-w WORKSPACE]

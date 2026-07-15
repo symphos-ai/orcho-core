@@ -301,6 +301,7 @@ def materialize_required_receipts(
                 env=env_name,
                 run_id=run_id,
                 workspace=resolved_workspace,
+                subject_checkout=checkout or None,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise
             errors.append(f"verify_env[{env_name}] {type(exc).__name__}: {exc}")
@@ -322,12 +323,7 @@ def materialize_required_receipts(
                 run_id=run_id,
                 workspace=resolved_workspace,
                 commands=list(targets),
-                # Pin execution to the run's *resolved* subject checkout. Without
-                # this, verify_run re-derives the checkout from meta and, when
-                # ``meta['worktree']`` is absent (a correction follow-up's early
-                # meta, or the foreign-worktree env leak), silently runs the gate
-                # against the canonical project — stamping a receipt that proves
-                # the wrong checkout while still exiting 0.
+                # Both receipt kinds receive the same resolved physical subject.
                 subject_checkout=checkout or None,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise

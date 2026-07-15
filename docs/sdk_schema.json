@@ -3058,6 +3058,18 @@
           "default_factory": null,
           "name": "commands",
           "type": "list[dict[str, Any]]"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "subject_checkout",
+          "type": "str"
+        },
+        {
+          "default": "'canonical_non_isolated'",
+          "default_factory": null,
+          "name": "subject_source",
+          "type": "SubjectSource"
         }
       ],
       "frozen": true,
@@ -3085,6 +3097,18 @@
           "default_factory": null,
           "name": "all_passed",
           "type": "bool"
+        },
+        {
+          "default": "''",
+          "default_factory": null,
+          "name": "subject_checkout",
+          "type": "str"
+        },
+        {
+          "default": "'canonical_non_isolated'",
+          "default_factory": null,
+          "name": "subject_source",
+          "type": "SubjectSource"
         }
       ],
       "frozen": true,
@@ -5364,6 +5388,12 @@
           "default": "None",
           "kind": "KEYWORD_ONLY",
           "name": "workspace"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "subject_checkout"
         }
       ],
       "return": "VerifyEnvResult"

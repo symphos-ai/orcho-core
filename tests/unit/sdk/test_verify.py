@@ -1,10 +1,9 @@
-"""Unit tests for sdk.verify list/run subject separation (T5).
+"""Unit tests for sdk.verify's fail-closed physical-subject resolution.
 
 Pin the load-bearing invariant: the contract is loaded from the *canonical*
 project (``{project}``), but declared commands resolve and execute against the
-*run worktree* (``{checkout}``) when ``meta['worktree']['path']`` is real —
-falling back to the project dir otherwise. Git provenance comes from the
-worktree subject, with ``baseline_head`` from ``meta['worktree']['base_ref']``.
+*run worktree* (``{checkout}``) when recorded by the run. The canonical project
+is a subject only when metadata explicitly records ``isolation='off'``.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from sdk.verify import VerifyEnvError, verify_list, verify_run
+from sdk.verify import VerifyEnvError, verify_env, verify_list, verify_run
 
 # A plugin declaring commands that echo {checkout} / {project}, a python cwd
 # probe, and a required differential command. ``env`` defaults cwd to {checkout}.
@@ -108,8 +107,7 @@ def _write_meta_run(
     d = runs_dir / run_id
     d.mkdir(parents=True)
     meta: dict = {"task": "t", "status": "done", "project": str(project)}
-    if worktree is not None:
-        meta["worktree"] = worktree
+    meta["worktree"] = worktree if worktree is not None else {"isolation": "off"}
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return d
 
@@ -171,6 +169,123 @@ class TestVerifyList:
             verify_list(project=str(project), run_id="20260101_000000")
 
 
+class TestVerificationSubjectResolution:
+    def test_all_entry_points_share_recorded_worktree_and_source(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "retained"
+        worktree.mkdir()
+        _write_meta_run(
+            runs_dir, "20260101_000000", project=project,
+            worktree={"isolation": "worktree", "path": str(worktree)},
+        )
+
+        env = verify_env(project=str(project), env="ci", run_id="20260101_000000")
+        listed = verify_list(project=str(project), run_id="20260101_000000")
+        ran = verify_run(
+            project=str(project), run_id="20260101_000000", commands=["echo_co"],
+        )
+
+        assert env.subject["checkout"] == str(worktree.resolve())
+        assert env.subject["source"] == "run_metadata"
+        assert listed.subject_checkout == ran.subject_checkout == str(worktree.resolve())
+        assert listed.subject_source == ran.subject_source == "run_metadata"
+        assert ran.outcomes[0].stdout_tail.strip() == str(worktree.resolve())
+
+    @pytest.mark.parametrize("worktree", [
+        {"isolation": "worktree", "path": "/missing"},
+        {"isolation": "worktree"},
+    ])
+    def test_isolated_missing_subject_fails_before_receipts(
+        self, tmp_path: Path, runs_dir: Path, worktree: dict,
+    ) -> None:
+        from pipeline.evidence.verification_receipt import (
+            COMMAND_RECEIPTS_DIRNAME,
+            ENV_RECEIPTS_DIRNAME,
+        )
+
+        project = _write_project(tmp_path)
+        run_dir = _write_meta_run(
+            runs_dir, "20260101_000000", project=project, worktree=worktree,
+        )
+        for call in (
+            lambda: verify_env(project=str(project), env="ci", run_id="20260101_000000"),
+            lambda: verify_list(project=str(project), run_id="20260101_000000"),
+            lambda: verify_run(
+                project=str(project), run_id="20260101_000000", commands=["echo_co"],
+            ),
+        ):
+            with pytest.raises(VerifyEnvError):
+                call()
+        assert not (run_dir / ENV_RECEIPTS_DIRNAME).exists()
+        assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
+
+    def test_ambiguous_metadata_requires_noncanonical_override(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "controller-subject"
+        worktree.mkdir()
+        run_dir = _write_meta_run(
+            runs_dir, "20260101_000000", project=project, worktree=None,
+        )
+        meta_path = run_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.pop("worktree")
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+        with pytest.raises(VerifyEnvError, match="does not establish"):
+            verify_list(project=str(project), run_id="20260101_000000")
+        result = verify_env(
+            project=str(project), run_id="20260101_000000",
+            env="ci",
+            subject_checkout=str(worktree),
+        )
+        assert result.subject["checkout"] == str(worktree.resolve())
+        assert result.subject["source"] == "controller_override"
+
+    def test_conflicting_or_canonical_override_is_rejected(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "retained"
+        other = tmp_path / "other"
+        worktree.mkdir()
+        other.mkdir()
+        _write_meta_run(
+            runs_dir, "20260101_000000", project=project,
+            worktree={"isolation": "worktree", "path": str(worktree)},
+        )
+        with pytest.raises(VerifyEnvError, match="conflicts"):
+            verify_run(
+                project=str(project), run_id="20260101_000000",
+                commands=["echo_co"],
+                subject_checkout=str(other),
+            )
+
+    def test_unreadable_isolated_subject_is_rejected(
+        self, tmp_path: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "retained"
+        worktree.mkdir()
+        _write_meta_run(
+            runs_dir, "20260101_000000", project=project,
+            worktree={"isolation": "worktree", "path": str(worktree)},
+        )
+        import sdk.verify as verify_module
+
+        real = verify_module._is_readable_directory
+        monkeypatch.setattr(
+            verify_module,
+            "_is_readable_directory",
+            lambda path: False if path == worktree else real(path),
+        )
+        with pytest.raises(VerifyEnvError, match="recorded isolated checkout"):
+            verify_list(project=str(project), run_id="20260101_000000")
+
+
 class TestVerifyRun:
     def test_no_env_param(self) -> None:
         import inspect
@@ -205,7 +320,7 @@ class TestVerifyRun:
         assert Path(outcome.receipt_path).is_file()
         assert str(run_dir) in str(outcome.receipt_path)
 
-    def test_subject_checkout_override_pins_execution_when_meta_lacks_worktree(
+    def test_subject_checkout_override_pins_execution_when_metadata_is_ambiguous(
         self, tmp_path: Path, runs_dir: Path,
     ) -> None:
         """When ``meta['worktree']`` is absent, an explicit ``subject_checkout``
@@ -215,10 +330,13 @@ class TestVerifyRun:
         project = _write_project(tmp_path)
         worktree = tmp_path / "wt"
         _init_repo(worktree)
-        # Meta has NO worktree block — the correction-followup / env-leak shape.
-        _write_meta_run(
+        run_dir = _write_meta_run(
             runs_dir, "20260101_000000", project=project, worktree=None,
         )
+        meta_path = run_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta.pop("worktree")
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
         result = verify_run(
             project=str(project), run_id="20260101_000000",
@@ -231,22 +349,20 @@ class TestVerifyRun:
         assert str(project) not in outcome.stdout_tail
         assert outcome.checkout_head == _head_sha(worktree)
 
-    def test_subject_checkout_override_ignored_when_not_a_dir(
+    def test_subject_checkout_override_rejects_non_directory(
         self, tmp_path: Path, runs_dir: Path,
     ) -> None:
-        """A non-existent ``subject_checkout`` is ignored — resolution falls back
-        to the meta worktree (here the canonical project, no worktree)."""
+        """An invalid controller override never falls back to another subject."""
         project = _write_project(tmp_path)
         _write_meta_run(
             runs_dir, "20260101_000000", project=project, worktree=None,
         )
 
-        result = verify_run(
-            project=str(project), run_id="20260101_000000",
-            commands=["show_cwd"], subject_checkout=str(tmp_path / "does-not-exist"),
-        )
-
-        assert str(project) in result.outcomes[0].stdout_tail
+        with pytest.raises(VerifyEnvError, match="subject_checkout override"):
+            verify_run(
+                project=str(project), run_id="20260101_000000",
+                commands=["show_cwd"], subject_checkout=str(tmp_path / "does-not-exist"),
+            )
 
     def test_required_only_passes_baseline_and_checkout(
         self, tmp_path: Path, runs_dir: Path,
@@ -459,7 +575,7 @@ class TestVerifyRunDependencyTags:
         _init_repo(worktree)
         _write_meta_run(
             runs_dir, "20260101_000000", project=project,
-            worktree={"path": str(worktree), "base_ref": "b"},
+            worktree={"isolation": "worktree", "path": str(worktree), "base_ref": "b"},
         )
 
         result = verify_run(
@@ -480,7 +596,7 @@ class TestVerifyRunDependencyTags:
         _init_repo(worktree)
         _write_meta_run(
             runs_dir, "20260101_000000", project=project,
-            worktree={"path": str(worktree), "base_ref": "b"},
+            worktree={"isolation": "worktree", "path": str(worktree), "base_ref": "b"},
         )
 
         result = verify_run(
@@ -502,7 +618,7 @@ class TestVerifyRunDependencyTags:
         _init_repo(worktree)
         _write_meta_run(
             runs_dir, "20260101_000000", project=project,
-            worktree={"path": str(worktree), "base_ref": "b"},
+            worktree={"isolation": "worktree", "path": str(worktree), "base_ref": "b"},
         )
 
         result = verify_run(

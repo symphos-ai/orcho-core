@@ -8,9 +8,8 @@ this run look like". Unlike the live render model in
 ``state.extras``), this projection reconstructs everything it needs from the
 *durable* run directory:
 
-* the run/project/contract are re-resolved exactly as :mod:`sdk.verify` does
-  (:func:`sdk.verify._resolve_run_project_contract` + ``_checkout_dir_for_meta``
-  + ``pipeline.verification_contract.placeholder_context_for``);
+* the run/project/contract and physical subject are re-resolved exactly as
+  :mod:`sdk.verify` does;
 * per-gate status is the read-only classification of on-disk command receipts
   (:func:`pipeline.verification_readiness.classify_required_receipts`) plus the
   effective delivery policy
@@ -43,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
-from sdk.verify import _checkout_dir_for_meta, _resolve_run_project_contract
+from sdk.verify import _resolve_run_project_contract, resolve_verification_subject
 
 if TYPE_CHECKING:
     from pipeline.verification_contract import VerificationContract
@@ -332,15 +331,28 @@ def get_verification_timeline(
             autorun_events=autorun_events,
         )
 
-    return _project_with_contract(
-        run_id=run_id_value,
-        run_dir=run_dir,
-        meta=meta_resolved,
-        project_dir=project_dir,
-        contract=contract,
-        ws=ws,
-        autorun_events=autorun_events,
-    )
+    try:
+        subject = resolve_verification_subject(
+            meta=meta_resolved,
+            project_dir=project_dir,
+        )
+        return _project_with_contract(
+            run_id=run_id_value,
+            run_dir=run_dir,
+            meta=meta_resolved,
+            project_dir=project_dir,
+            checkout_dir=subject.checkout,
+            contract=contract,
+            ws=ws,
+            autorun_events=autorun_events,
+        )
+    except Exception:  # noqa: BLE001 — read-only projection degrades to empty
+        return VerificationTimelineProjection(
+            run_id=run_id_value,
+            project=project_dir,
+            has_contract=False,
+            autorun_events=autorun_events,
+        )
 
 
 def _project_with_contract(
@@ -349,6 +361,7 @@ def _project_with_contract(
     run_dir: Path,
     meta: Mapping[str, Any],
     project_dir: str,
+    checkout_dir: str,
     contract: VerificationContract,
     ws: str,
     autorun_events: tuple[AutorunEvent, ...],
@@ -366,7 +379,6 @@ def _project_with_contract(
         suggested_verify_commands,
     )
 
-    checkout_dir = _checkout_dir_for_meta(dict(meta), project_dir)
     ctx = placeholder_context_for(
         contract,
         checkout=checkout_dir,

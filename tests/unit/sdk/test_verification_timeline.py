@@ -140,7 +140,12 @@ def _write_meta_run(
 ) -> Path:
     d = runs_dir / run_id
     d.mkdir(parents=True)
-    meta: dict = {"task": "t", "status": "done", "project": str(project)}
+    meta: dict = {
+        "task": "t",
+        "status": "done",
+        "project": str(project),
+        "worktree": {"isolation": "off"},
+    }
     if extra_meta:
         meta.update(extra_meta)
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -220,6 +225,25 @@ class TestStatusEnum:
         assert gates["manual_gate"].searched_run_dirs == ()
         # manual is NOT a missing required gate.
         assert "manual_gate" not in projection.residual_missing
+
+
+def test_lost_isolated_subject_degrades_to_empty_timeline(
+    tmp_path: Path, runs_dir: Path,
+) -> None:
+    """Read-only timeline never treats canonical checkout as a lost worktree."""
+    project = _write_project(tmp_path)
+    run_dir = _write_meta_run(runs_dir, "20260101_000000", project=project)
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["worktree"] = {"isolation": "worktree", "path": str(tmp_path / "gone")}
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    projection = get_verification_timeline(
+        project=str(project), run_id="20260101_000000",
+    )
+
+    assert projection.has_contract is False
+    assert projection.gates == ()
 
     def test_failed_present_and_missing_in_aggregate_buckets(
         self, tmp_path: Path, runs_dir: Path,

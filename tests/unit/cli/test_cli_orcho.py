@@ -4164,7 +4164,7 @@ def _write_verify_project(root: Path, *, pkg: str = "proj_pkg") -> Path:
 def _write_meta_run(runs_dir: Path, run_id: str, *, project: str | None) -> Path:
     d = runs_dir / run_id
     d.mkdir(parents=True)
-    meta: dict = {"task": "t", "status": "done"}
+    meta: dict = {"task": "t", "status": "done", "worktree": {"isolation": "off"}}
     if project is not None:
         meta["project"] = project
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -4278,6 +4278,8 @@ class TestCmdVerifyEnv:
         out = capsys.readouterr().out
         assert rc == 0
         assert "PASS" in out
+        assert f"checkout: {project}" in out
+        assert "source:   canonical_non_isolated" in out
 
         receipt = run_dir / ENV_RECEIPTS_DIRNAME / "verify_env_ci.json"
         assert receipt.is_file()
@@ -4433,8 +4435,11 @@ def _write_meta_run_worktree(
     d = runs_dir / run_id
     d.mkdir(parents=True)
     meta: dict = {"task": "t", "status": "done", "project": str(project)}
-    if worktree is not None:
-        meta["worktree"] = worktree
+    meta["worktree"] = (
+        {"isolation": "off"}
+        if worktree is None
+        else {"isolation": "worktree", **worktree}
+    )
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return d
 
@@ -4515,6 +4520,8 @@ class TestCmdVerifyListRun:
         assert "$ python -c" in out
         assert "['python'" not in out
         assert "Preview only" in out
+        assert f"checkout: {worktree}" in out
+        assert "source:   run_metadata" in out
         assert "orcho verify run --required" in out
         # Nothing executed.
         assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
@@ -4540,12 +4547,34 @@ class TestCmdVerifyListRun:
         out = capsys.readouterr().out
         assert rc == 0
         assert "PASS" in out
+        assert f"checkout: {worktree}" in out
+        assert "source:   run_metadata" in out
         # Receipt landed and the command executed inside the worktree.
         receipt = run_dir / COMMAND_RECEIPTS_DIRNAME / "show_cwd.json"
         assert receipt.is_file()
         data = json.loads(receipt.read_text(encoding="utf-8"))
         assert data["cwd"] == str(worktree)
         assert data["git"]["checkout_head"] == head
+
+    def test_missing_isolated_checkout_exits_2_without_receipt(
+        self, tmp_path: Path, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_verify_run
+        from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
+
+        project = _write_verify_cmd_project(tmp_path)
+        run_dir = _write_meta_run_worktree(
+            runs_dir, "20260101_000000", project=project,
+            worktree={"path": str(tmp_path / "missing")},
+        )
+        rc = cmd_verify_run(_make_args(
+            project=str(project), run_id="20260101_000000", workspace=None,
+            names=["show_cwd"], required=False,
+        ))
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "recorded isolated checkout" in captured.err
+        assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
 
     def test_run_failing_command_exits_1(
         self, tmp_path: Path, runs_dir: Path, capsys,

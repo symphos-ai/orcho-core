@@ -1901,15 +1901,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute a verification_env's declared assertions",
         description=(
             "Resolve a run, confirm it belongs to the project, then run the "
-            "selected env's assertions from the declared checkout and persist "
+            "selected env's assertions from the run's recorded physical subject and persist "
             "an env-receipt under <run_dir>/verification_env_receipts/."
         ),
     )
     p_verify_env.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project; on mismatch nothing is written."
+            "Canonical project that owns the contract. It is matched against the "
+            "run's recorded project; --run-id selects the physical subject."
         ),
     )
     p_verify_env.add_argument(
@@ -1938,8 +1938,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify_list.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project."
+            "Canonical project that owns the contract. --run-id selects the "
+            "recorded physical subject."
         ),
     )
     p_verify_list.add_argument(
@@ -1991,8 +1991,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify_run.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project; on mismatch nothing is written."
+            "Canonical project that owns the contract. It is matched against the "
+            "run's recorded project; --run-id selects the physical subject."
         ),
     )
     p_verify_run.add_argument(
