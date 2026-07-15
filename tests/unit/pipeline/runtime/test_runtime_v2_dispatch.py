@@ -32,6 +32,7 @@ from pipeline.runtime import (
     ProfileKind,
     run_profile,
 )
+from pipeline.runtime.resume import LoopResumeCursor
 
 
 class _StubExecutor:
@@ -464,6 +465,109 @@ class TestResumeSkipsCompletedPhases:
             )
 
         assert seen == ["implement"]
+
+    def test_cursor_resumes_next_member_without_replaying_completed_prefix(
+        self,
+    ) -> None:
+        seen: list[str] = []
+        starts: list[str] = []
+        reg = PhaseRegistry()
+
+        reg.register("plan", lambda state: seen.append("plan") or state)
+
+        def validate(state: PipelineState) -> PipelineState:
+            seen.append("validate_plan")
+            state.phase_log["validate_plan"] = {"approved": True}
+            return state
+
+        reg.register("validate_plan", validate)
+        reg.register("implement", lambda state: seen.append("implement") or state)
+        profile = Profile(
+            name="small_task",
+            kind=ProfileKind.FULL_CYCLE,
+            variant="lite",
+            steps=(
+                LoopStep(
+                    steps=(
+                        PhaseStep(phase="plan"),
+                        PhaseStep(phase="validate_plan"),
+                    ),
+                    until="validate_plan.approved",
+                    max_rounds=1,
+                    round_extras_key="plan_round",
+                ),
+                PhaseStep(phase="implement"),
+            ),
+        )
+        cursor = LoopResumeCursor(
+            loop_key="plan_round",
+            loop_phases=("plan", "validate_plan"),
+            round_n=1,
+            completed_phases=("plan",),
+            next_phase="validate_plan",
+        )
+
+        run_profile(
+            profile,
+            _state(),
+            reg,
+            completed_phases={"plan"},
+            loop_resume_cursors={"plan_round": cursor},
+            on_phase_start=lambda phase, _state: starts.append(phase),
+        )
+
+        assert seen == ["validate_plan", "implement"]
+        assert starts == ["validate_plan", "implement"]
+
+    def test_cursor_rejection_reenters_complete_next_round(self) -> None:
+        seen: list[str] = []
+        reg = PhaseRegistry()
+
+        def plan(state: PipelineState) -> PipelineState:
+            seen.append(f"plan:{state.extras['plan_round']}")
+            return state
+
+        def validate(state: PipelineState) -> PipelineState:
+            round_n = state.extras["plan_round"]
+            seen.append(f"validate_plan:{round_n}")
+            state.phase_log["validate_plan"] = {"approved": round_n == 2}
+            return state
+
+        reg.register("plan", plan)
+        reg.register("validate_plan", validate)
+        profile = Profile(
+            name="feature",
+            kind=ProfileKind.FULL_CYCLE,
+            variant="advanced",
+            steps=(
+                LoopStep(
+                    steps=(
+                        PhaseStep(phase="plan"),
+                        PhaseStep(phase="validate_plan"),
+                    ),
+                    until="validate_plan.approved",
+                    max_rounds=2,
+                    round_extras_key="plan_round",
+                ),
+            ),
+        )
+        cursor = LoopResumeCursor(
+            loop_key="plan_round",
+            loop_phases=("plan", "validate_plan"),
+            round_n=1,
+            completed_phases=("plan",),
+            next_phase="validate_plan",
+        )
+
+        run_profile(
+            profile,
+            _state(),
+            reg,
+            completed_phases={"plan"},
+            loop_resume_cursors={"plan_round": cursor},
+        )
+
+        assert seen == ["validate_plan:1", "plan:2", "validate_plan:2"]
 
     def test_fully_completed_loop_is_skipped_on_resume(self) -> None:
         """When EVERY inner phase of a LoopStep is in ``completed_phases``

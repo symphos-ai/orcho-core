@@ -10,7 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.checkpoint import CheckpointStore, PipelineState, PipelineStatus
+from pipeline.checkpoint import (
+    CheckpointStore,
+    LoopCursorRecord,
+    PipelineState,
+    PipelineStatus,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -121,6 +126,60 @@ class TestSavePhase:
     def test_last_completed_phase_empty(self, store: CheckpointStore) -> None:
         state = store.load()
         assert state.last_completed_phase is None
+
+    def test_phase_and_loop_cursor_commit_together(
+        self, store: CheckpointStore,
+    ) -> None:
+        cursor = LoopCursorRecord(
+            loop_key="plan_round",
+            loop_phases=("plan", "validate_plan"),
+            round_n=1,
+            completed_phase="plan",
+            next_phase="validate_plan",
+        )
+
+        store.save_phase(
+            "plan",
+            [{"attempt": 1, "output": "plan"}],
+            loop_cursor=cursor,
+        )
+
+        assert store.get_phase_records()[0].phase == "plan"
+        assert store.get_loop_cursors() == (cursor,)
+
+    def test_legacy_cursor_migration_persists_without_phase_replay(
+        self, store: CheckpointStore,
+    ) -> None:
+        store.save_phase("plan", [{"attempt": 1, "output": "plan"}])
+        cursor = LoopCursorRecord(
+            loop_key="plan_round",
+            loop_phases=("plan", "validate_plan"),
+            round_n=1,
+            completed_phase="plan",
+            next_phase="validate_plan",
+        )
+
+        store.save_loop_cursor(cursor)
+
+        assert [record.phase for record in store.get_phase_records()] == ["plan"]
+        assert store.get_loop_cursors() == (cursor,)
+
+    def test_cursor_serialization_failure_rolls_back_phase(
+        self, store: CheckpointStore,
+    ) -> None:
+        invalid = LoopCursorRecord(
+            loop_key="plan_round",
+            loop_phases=(object(),),  # type: ignore[arg-type]
+            round_n=1,
+            completed_phase="plan",
+            next_phase="validate_plan",
+        )
+
+        with pytest.raises(TypeError):
+            store.save_phase("plan", {"output": "plan"}, loop_cursor=invalid)
+
+        assert store.get_phase_records() == ()
+        assert store.get_loop_cursors() == ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -57,7 +57,7 @@ from core.io.retry import (
 )
 from core.observability.logging import warn
 from core.observability.metrics import MetricsCollector
-from pipeline.checkpoint import CheckpointStore, PipelineStatus
+from pipeline.checkpoint import CheckpointStore, LoopCursorRecord, PipelineStatus
 from pipeline.engine import save_session
 from pipeline.plugins import PluginConfig
 from pipeline.project import provider_recovery
@@ -1244,7 +1244,35 @@ class _PipelineRun:
         if name not in self.session.get("phases", {}):
             return
         try:
-            self._ckpt.save_phase(name, self.session["phases"][name])
+            loop_cursor = None
+            loop_key = st.extras.get("_active_loop_round_key")
+            loop_phases = st.extras.get("_active_loop_phases")
+            round_n = st.extras.get(loop_key) if isinstance(loop_key, str) else None
+            if (
+                isinstance(loop_key, str)
+                and isinstance(loop_phases, tuple)
+                and all(isinstance(phase, str) for phase in loop_phases)
+                and name in loop_phases
+                and isinstance(round_n, int)
+                and round_n >= 1
+            ):
+                phase_index = loop_phases.index(name)
+                loop_cursor = LoopCursorRecord(
+                    loop_key=loop_key,
+                    loop_phases=loop_phases,
+                    round_n=round_n,
+                    completed_phase=name,
+                    next_phase=(
+                        loop_phases[phase_index + 1]
+                        if phase_index + 1 < len(loop_phases)
+                        else None
+                    ),
+                )
+            self._ckpt.save_phase(
+                name,
+                self.session["phases"][name],
+                loop_cursor=loop_cursor,
+            )
         except Exception as exc:  # pragma: no cover — defensive
             # ADR 0046 Phase C (site 17): defensive observability —
             # checkpoint save_phase failure is rare but real. Under

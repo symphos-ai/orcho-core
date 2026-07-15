@@ -61,6 +61,7 @@ from pipeline.project.resume_phase_summary import format_resume_phase_summary
 from pipeline.project.types import PresentationPolicy
 from pipeline.runtime import PipelineState
 from pipeline.runtime.handoff import HandoffOutcome, HandoffOutcomeKind
+from pipeline.runtime.resume import LoopResumeBlockedError
 from pipeline.runtime.runner import RESUME_SKIP_REASON
 
 # ── follow-up role mapping ────────────────────────────────────────────────
@@ -845,6 +846,7 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
     # a no-op for fresh dispatch. See ``run_profile``'s
     # ``completed_phases`` contract for the dispatch-side semantics.
     completed_phases: set[str] = set(resume_outcome.completed_phases)
+    loop_resume_cursors = {}
 
     try:
         if run._ckpt is not None:
@@ -865,6 +867,26 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
                     prior_completed
                     | set(resume_outcome.completed_phases)
                 )
+                if getattr(run, "checkpoint_resume", False):
+                    from pipeline.project.loop_resume import (
+                        resolve_loop_resume_from_store,
+                    )
+
+                    loop_resume = resolve_loop_resume_from_store(
+                        profile,
+                        store=run._ckpt,
+                        run_id=run.session_ts,
+                        run_dir=getattr(run, "output_dir", None),
+                        completed_phases=frozenset(completed_phases),
+                    )
+                    # Legacy runs pre-date the cursor table. Persist the pure,
+                    # validated migration before any phase dispatch so a
+                    # second interruption resumes from the same boundary.
+                    if loop_resume.migrated:
+                        run._ckpt.save_loop_cursors(loop_resume.migrated)
+                    loop_resume_cursors = loop_resume.by_loop_key
+            except LoopResumeBlockedError:
+                raise
             except Exception as exc:
                 raise RuntimeError(
                     "Cannot safely resume: checkpoint state could not be "
@@ -918,11 +940,18 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
             on_round_end=_on_round_end,
             ctx=ctx,
             completed_phases=completed_phases,
+            loop_resume_cursors=loop_resume_cursors,
             on_handoff_outcome=_on_handoff_outcome,
             # ``getattr`` keeps duck-typed run stand-ins (runtime tests) working:
             # without ``_on_phase_pre`` the pre-phase seam is simply inert.
             on_phase_pre=getattr(run, "_on_phase_pre", None),
         )
+    except LoopResumeBlockedError:
+        # Capability refusal is not a new phase failure. Preserve the original
+        # causal failure in meta/checkpoint and let the transport render the
+        # typed resume diagnostic.
+        run._dispatch_active = False
+        raise
     except Exception as exc:
         # Phase 5d-fixup: preserve legacy ``_safe_phase`` behaviour —
         # any handler exception that propagated out of dispatch must

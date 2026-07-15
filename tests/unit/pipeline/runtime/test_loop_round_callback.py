@@ -446,6 +446,10 @@ class TestV2DispatchSaveSessionPerRound:
         class _Checkpoint:
             def load(self, _run_id: str):
                 return _LoadedCheckpoint()
+            def get_phase_records(self, _run_id: str):
+                return ()
+            def get_loop_cursors(self, _run_id: str):
+                return ()
 
         class _Metrics:
             def add_round(self) -> None:
@@ -488,6 +492,99 @@ class TestV2DispatchSaveSessionPerRound:
         _dispatch_via_v2_profile(run, profile)
         assert run._dispatch_active is False
         assert run.failures == []
+
+    def test_legacy_plan_boundary_resumes_validate_without_replay(
+        self,
+        tmp_path,
+    ) -> None:
+        from agents.entities import SubTask
+        from pipeline.checkpoint import CheckpointStore
+        from pipeline.plan_artifacts import write_parsed_plan_artifact
+        from pipeline.plan_parser import ParsedPlan
+        from pipeline.project.profile_dispatch import (
+            dispatch_via_v2_profile as _dispatch_via_v2_profile,
+        )
+        from pipeline.runtime import PhaseStep as _PhaseStep, Profile
+
+        seen: list[str] = []
+        reg = PhaseRegistry()
+        reg.register("plan", lambda state: seen.append("plan") or state)
+
+        def validate(state: PipelineState) -> PipelineState:
+            seen.append("validate_plan")
+            state.phase_log["validate_plan"] = {"approved": True}
+            return state
+
+        reg.register("validate_plan", validate)
+        reg.register("implement", lambda state: seen.append("implement") or state)
+        profile = Profile(
+            name="small_task",
+            kind="custom",
+            steps=(
+                LoopStep(
+                    steps=(
+                        _PhaseStep(phase="plan"),
+                        _PhaseStep(phase="validate_plan"),
+                    ),
+                    until="validate_plan.approved",
+                    max_rounds=1,
+                    round_extras_key="plan_round",
+                ),
+                _PhaseStep(phase="implement"),
+            ),
+        )
+        checkpoint = CheckpointStore(":memory:", run_id="legacy-resume")
+        checkpoint.save_config({"profile": "small_task"})
+        checkpoint.save_phase(
+            "plan", [{"attempt": 1, "output": "durable plan"}],
+        )
+        write_parsed_plan_artifact(
+            tmp_path,
+            ParsedPlan(
+                short_summary="plan",
+                planning_context="context",
+                subtasks=(SubTask(id="t1", goal="Do it", spec="spec"),),
+                source="json",
+            ),
+            attempt=1,
+        )
+
+        class _Metrics:
+            def add_round(self) -> None:
+                pass
+
+        class _Run:
+            output_dir = tmp_path
+            session = {"phases": {}}
+            registry = reg
+            state = _state()
+            _dispatch_active = False
+            do_plan = True
+            max_rounds = 1
+            _ckpt = checkpoint
+            _provider = None
+            _session_adapters = None
+            _metrics = _Metrics()
+            session_ts = "legacy-resume"
+            hypothesis_enabled = None
+            checkpoint_resume = True
+            failures: list[tuple[Exception, str]] = []
+
+            def _on_phase_start(self, *_a, **_kw): pass
+            def _on_phase_end(self, *_a, **_kw): pass
+            def _fsm_metrics(self, *_a, **_kw): pass
+            def _fsm_checkpoint(self, *_a, **_kw): pass
+            def _record_phase_failure(self, exc, fallback_phase):
+                self.failures.append((exc, fallback_phase))
+            def finalize(self): return {"status": "done"}
+
+        run = _Run()
+        result = _dispatch_via_v2_profile(run, profile)
+
+        assert result == {"status": "done"}
+        assert seen == ["validate_plan", "implement"]
+        assert run.failures == []
+        assert checkpoint.get_loop_cursors()[0].next_phase == "validate_plan"
 
     def test_save_session_failure_isolated_from_loop(self, tmp_path, monkeypatch) -> None:
         """If save_session blows up mid-loop, the loop must complete all

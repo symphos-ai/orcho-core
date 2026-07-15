@@ -3052,6 +3052,31 @@ class TestProjectOrchestratorMain:
         captured = capsys.readouterr()
         assert "run_id 20260512_001 already exists" in captured.err
 
+    def test_loop_resume_blocked_exits_2_without_traceback(
+        self, main_env, monkeypatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        from pipeline.runtime.resume import LoopResumeBlockedError
+
+        main_env["run_pipeline"].side_effect = LoopResumeBlockedError(
+            "loop cursor conflicts with active profile"
+        )
+        self._set_argv(
+            monkeypatch,
+            "--task", "X",
+            "--project", str(main_env["project"]),
+            "--mock",
+        )
+        from pipeline.project_orchestrator import main
+
+        with pytest.raises(SystemExit) as exc:
+            main()
+
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        assert "Cannot resume from checkpoint" in captured.err
+        assert "loop cursor conflicts" in captured.err
+        assert "Traceback" not in captured.err
+
     def test_keyboard_interrupt_exits_130_with_message(
         self, main_env, monkeypatch, capsys: pytest.CaptureFixture
     ) -> None:

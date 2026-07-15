@@ -34,6 +34,7 @@ A bottom-of-file ``if __name__ == "__main__": main()`` guard makes
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import shlex
 import sys
@@ -72,13 +73,14 @@ from pipeline.project.correction_followup import (
 )
 from pipeline.project.followup_worktree import FollowupPlanContinuationError
 from pipeline.project.phase_config import build_phase_config_from_overrides
-from pipeline.project.profile_setup import _resolve_profile_name
+from pipeline.project.profile_setup import _resolve_profile_name, _resolve_v2_profile
 from pipeline.project.project_aliases import resolve_project_alias
 from pipeline.project.types import ProjectRunRequest
 from pipeline.project.workspace_picker import (
     WorkspaceProjectPickError,
     pick_project_for_fresh_run,
 )
+from pipeline.runtime.resume import LoopResumeBlockedError
 
 _PROJECT_GROUP_CHILD_MARKERS = (
     ".git",
@@ -991,6 +993,30 @@ Examples:
             parent_meta=(_resumed.meta if _resumed is not None else None),
             has_new_task=False,
         )
+        if _intent_options.can_checkpoint and _resumed is not None:
+            from pipeline.project.loop_resume import inspect_checkpoint_resume
+
+            try:
+                resume_profile = _resolve_v2_profile(
+                    profile_name=args.profile,
+                    allow_env_override=False,
+                )
+                if resume_profile is None:
+                    raise LoopResumeBlockedError(
+                        f"Profile {args.profile!r} is not available."
+                    )
+                inspect_checkpoint_resume(
+                    resume_profile,
+                    run_dir=_resume_dir,
+                    run_id=args.resume,
+                )
+            except LoopResumeBlockedError as exc:
+                _intent_options = dataclasses.replace(
+                    _intent_options,
+                    can_checkpoint=False,
+                    default_mode=_ResumeMode.FOLLOWUP,
+                    checkpoint_blocked_reason=str(exc),
+                )
         _intent = _prompt_resume_intent(
             run_id=args.resume, options=_intent_options,
             active_followup=_active_followup,
@@ -1524,6 +1550,9 @@ Examples:
             # contradictory-profile guard (rc=2 + clear message) rather than
             # letting the ValueError become a traceback.
             print_error(str(exc))
+            sys.exit(2)
+        except LoopResumeBlockedError as exc:
+            print_error(f"Cannot resume from checkpoint: {exc}")
             sys.exit(2)
         except KeyboardInterrupt:
             print("\nInterrupted")

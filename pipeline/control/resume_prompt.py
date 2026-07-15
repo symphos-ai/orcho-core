@@ -304,6 +304,14 @@ def prompt_resume_intent(
 
     # Terminal parents: only follow-up makes sense.
     if options.can_followup and not options.can_checkpoint:
+        if options.checkpoint_blocked_reason:
+            so.write(
+                _help(
+                    "  Checkpoint resume is unavailable: "
+                    f"{options.checkpoint_blocked_reason}\n",
+                    color=color,
+                )
+            )
         so.write(_important("What do you want to do?", color=color))
         so.write("\n")
         so.write(
