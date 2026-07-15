@@ -48,6 +48,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from pipeline.control.continuation import resolve_continuation_decision
 from pipeline.control.resume_context import (
     detect_active_followup_child,
     is_terminal_resume_parent,
@@ -73,7 +74,8 @@ from sdk.run_control.recovery_lineage import (
     SUBJECT_ACTIVE_CHILD_RUN,
     SUBJECT_DELIVERY_GATE,
     SUBJECT_NONE,
-    SUBJECT_PLAN_ARTIFACT,
+    SUBJECT_PLAN_ARTIFACT,  # noqa: F401 - public diagnosis vocabulary re-export
+    SUBJECT_RETAINED_CHANGE,
     SUBJECT_SOURCE_RUN_CHECKPOINT,
     SUBJECT_UNKNOWN,
     _build_recovery_lineage,
@@ -247,6 +249,27 @@ def _classify(
         )
 
     # (3) blocked_worktree — follow-up worktree continuity is blocked.
+    continuation = resolve_continuation_decision(
+        run_id=run_id, meta=meta, parent_run_dir=run_dir,
+    )
+    if continuation.continuation_subject == SUBJECT_RETAINED_CHANGE:
+        return RunDiagnosis(
+            run_id=run_id,
+            condition=(
+                CONDITION_BLOCKED_WORKTREE
+                if continuation.blocked
+                else CONDITION_CORRECTION_FOLLOWUP_REQUIRED
+            ),
+            reason=continuation.reason,
+            status=status,
+            halt_reason=halt_reason,
+            continuation_subject=SUBJECT_RETAINED_CHANGE,
+            recommended_next_action=continuation.recommended_next_action,
+            recommended_run_id=run_id if not continuation.blocked else None,
+            blocked=continuation.blocked,
+            block_message=continuation.reason if continuation.blocked else None,
+        )
+
     has_worktree, blocked, block_message, diff_source = _worktree_continuity(meta)
     if blocked:
         return RunDiagnosis(
@@ -367,8 +390,9 @@ def _delivery_branch(
 
     A correction gate whose ``fix`` was already requested (only ``halt``
     remains in ``available_actions``) is NOT a "choose a delivery decide"
-    decision: the actionable next step is a from_run_plan follow-up carrying the
-    retained diff. Every other decidable gate is a pending operator decision.
+    decision: the actionable next step is an ordinary correction follow-up in
+    the retained worktree. Every other decidable gate is a pending operator
+    decision.
     """
     available_actions = tuple(state.available_actions)
     if state.kind == "correction" and "fix" not in available_actions:
@@ -377,13 +401,13 @@ def _delivery_branch(
             condition=CONDITION_CORRECTION_FOLLOWUP_REQUIRED,
             reason=(
                 "the release was rejected and a correction was requested "
-                f"(halt_reason={halt_reason}); the next step is a from_run_plan "
-                "follow-up carrying the retained diff — a bare resume or a "
+                f"(halt_reason={halt_reason}); the next step is an ordinary "
+                "correction follow-up — a bare resume or a "
                 "repeated fix is inert"
             ),
             status=status,
             halt_reason=halt_reason,
-            continuation_subject=SUBJECT_PLAN_ARTIFACT,
+            continuation_subject=SUBJECT_RETAINED_CHANGE,
             recommended_next_action=ACTION_START_FOLLOWUP,
             available_actions=available_actions,
             delivery_gate_kind=state.kind,
@@ -419,7 +443,7 @@ def _terminal_branch(
             run_id=run_id,
             condition=CONDITION_CLOSED_BY_FOLLOWUP,
             reason=(
-                "run was superseded by a successful from_run_plan follow-up "
+                "run was superseded by a successful ordinary correction follow-up "
                 f"({superseded}); it is closed and resume is inert"
             ),
             status=status,
@@ -489,7 +513,7 @@ def _superseded_followup_child(meta: dict[str, Any]) -> str | None:
     """Child run id from a durable ``superseded_by_followup`` marker, else None.
 
     Core finalization stamps ``superseded_by_followup`` on a rejected-FA /
-    correction parent once a from_run_plan follow-up child has delivered,
+    correction parent once an ordinary correction follow-up child has delivered,
     settling the parent to ``done``. Its presence means the parent is closed.
     """
     marker = meta.get("superseded_by_followup") if isinstance(meta, dict) else None

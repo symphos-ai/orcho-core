@@ -221,6 +221,75 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "continuation_subject",
+          "type": "ContinuationSubject"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "recommended_next_action",
+          "type": "RecommendedNextAction"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "allowed_intents",
+          "type": "tuple[Literal['followup', 'exit'], ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "requires_operator_comment",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "checkpoint_resumable",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "retained_worktree",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "diff_source",
+          "type": "DiffSource | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "blocked",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.control.continuation",
+      "name": "ContinuationDecision",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "runs_dir",
           "type": "Path"
         },
@@ -2607,6 +2676,12 @@
           "type": "tuple"
         },
         {
+          "default": "None",
+          "default_factory": null,
+          "name": "continuation_decision",
+          "type": "ContinuationDecision | None"
+        },
+        {
           "default": "()",
           "default_factory": null,
           "name": "artefacts",
@@ -4773,6 +4848,32 @@
         }
       ],
       "return": "HandoffAdviceResult"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.continuation",
+      "name": "resolve_continuation_decision",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Mapping[str, Any] | None",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
+        },
+        {
+          "annotation": "Path | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "parent_run_dir"
+        }
+      ],
+      "return": "ContinuationDecision"
     },
     {
       "kind": "callable",

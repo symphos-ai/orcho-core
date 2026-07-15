@@ -1801,7 +1801,7 @@ def _apply_no_diff_final_acceptance_outcome(
     apply_no_diff_terminal(run.session, diff_path=diff_path)
 
 
-# Delivery executor outcomes that settle a from_run_plan follow-up as
+# Delivery executor outcomes that settle an ordinary correction follow-up as
 # successfully resolved (delivered or deliberately skipped). Reaching one of
 # these closes out (supersedes) a rejected-FA / correction parent — see
 # :func:`_supersede_parent_correction_after_followup`.
@@ -1976,7 +1976,7 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
 
     The cross-run analogue of :func:`_supersede_stale_rejection_residue` (which
     reconciles a single run on its own approved retry). When THIS run is a
-    ``--from-run-plan`` follow-up of a parent that dead-ended on a rejected final
+    ordinary correction follow-up of a parent that dead-ended on a rejected final
     acceptance (``final_acceptance_rejected`` / ``final_acceptance_no_diff``) or a
     marked correction (``commit_decision_fix``), AND this child actually delivered
     (``commit_delivery.status`` in ``committed`` / ``applied_uncommitted`` /
@@ -1993,20 +1993,30 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
       marker referencing this child, so the delivery gate, diagnose, and live
       status all read the parent as superseded/closed rather than active.
 
-    Idempotent and guarded: a no-op unless a valid ``from_run_plan`` parent id is
-    present (``state.extras['plan_source_run_id']``), this child's delivery
-    succeeded, and the parent is genuinely a rejected-FA / fix terminal. A re-run
+    Idempotent and guarded: a no-op unless this is a valid ordinary correction
+    child (follow-up lineage, correction profile, and correction context), this
+    child's delivery succeeded, and the parent is genuinely a rejected-FA / fix
+    terminal. A re-run
     finds the parent already settled to ``done`` (no longer a rejected/fix
     terminal) and returns without change. Best-effort: any lookup / read / write
     failure degrades to a no-op and never breaks the child's own finalization. The
     same-run approved-retry path (:func:`_supersede_stale_rejection_residue`) is
-    untouched — this only fires for a distinct ``from_run_plan`` child.
+    untouched — this only fires for a distinct correction child.
     """
     if not run.output_dir:
         return
-    extras = getattr(getattr(run, "state", None), "extras", None)
-    parent_run_id = extras.get("plan_source_run_id") if isinstance(extras, Mapping) else None
+    parent_run_id = run.session.get("parent_run_id")
     if not isinstance(parent_run_id, str) or not parent_run_id:
+        extras = getattr(getattr(run, "state", None), "extras", None)
+        if isinstance(extras, Mapping):
+            parent_run_id = extras.get("parent_run_id")
+    if not isinstance(parent_run_id, str) or not parent_run_id:
+        return
+    if (
+        run.session.get("resume_mode") != "followup"
+        or run.session.get("profile") != "correction"
+        or not (Path(run.output_dir) / "correction_context.md").is_file()
+    ):
         return
     delivery = run.session.get("commit_delivery")
     delivery_status = (
@@ -2135,7 +2145,7 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         run._run_commit_delivery(effective_diff_cwd)
         _apply_no_diff_final_acceptance_outcome(run, diff_path=diff_path)
         _apply_rejected_release_terminal_outcome(run)
-        # Cross-run reconcile: a successful from_run_plan follow-up closes out
+        # Cross-run reconcile: a successful ordinary correction follow-up closes out
         # the rejected-FA / correction parent it was launched to fix, so the
         # parent stops reading as an active correction candidate everywhere.
         _supersede_parent_correction_after_followup(run)

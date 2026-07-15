@@ -515,6 +515,24 @@ def _promote_plan_only_followup(request: ProjectRunRequest) -> ProjectRunRequest
     """
     from pipeline.project.followup_worktree import resolve_followup_plan_promotion
 
+    # A rejected/fix parent is a retained-change recovery candidate, never a
+    # plan-artifact continuation.  Keep the generic plan-only promotion below
+    # unchanged for genuine plan parents, but do not let a missing/clean
+    # correction worktree silently turn into ``from_run_plan``.
+    if request.resume_mode == "followup" and request.followup_parent_run_dir:
+        from pipeline.control.continuation import resolve_continuation_decision
+
+        parent_dir = Path(request.followup_parent_run_dir)
+        try:
+            parent_meta = json.loads((parent_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            parent_meta = None
+        decision = resolve_continuation_decision(
+            run_id=parent_dir.name, meta=parent_meta, parent_run_dir=parent_dir,
+        )
+        if decision.continuation_subject == "retained_change":
+            return request
+
     promoted = resolve_followup_plan_promotion(
         resume_mode=request.resume_mode,
         explicit_from_run_plan_parent_dir=request.from_run_plan_parent_dir,
