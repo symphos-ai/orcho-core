@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from pipeline.project.finalization import _run_plugin_worktree_teardown
+from pipeline.project.finalization import (
+    _run_plugin_worktree_teardown,
+    _teardown_worktree_for_finalization,
+)
 
 
 def _run(
@@ -88,3 +91,43 @@ def test_teardown_is_best_effort_and_never_raises(tmp_path: Path) -> None:
         worktree=worktree,
     )
     _run_plugin_worktree_teardown(run)  # swallowed, no exception
+
+
+def test_off_mode_teardown_is_not_presented_as_removed(tmp_path: Path) -> None:
+    run = SimpleNamespace(
+        worktree_context=SimpleNamespace(
+            mode="off",
+            project_dir=tmp_path,
+            path=tmp_path,
+        ),
+        session={"status": "done"},
+        plugin=SimpleNamespace(worktree_teardown=[]),
+    )
+
+    assert _teardown_worktree_for_finalization(run) is None
+
+
+def test_isolated_teardown_preserves_retained_disposition(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    retained = tmp_path / "worktree"
+    run = SimpleNamespace(
+        worktree_context=SimpleNamespace(
+            mode="per_run",
+            project_dir=tmp_path,
+            path=retained,
+        ),
+        session={"status": "done"},
+        plugin=SimpleNamespace(worktree_teardown=[]),
+    )
+    monkeypatch.setattr(
+        "pipeline.engine.worktree.teardown_worktree",
+        lambda ctx, *, retain: SimpleNamespace(
+            error=f"retained worktree at {ctx.path}",
+        ),
+    )
+
+    assert _teardown_worktree_for_finalization(run) == (
+        f"retained worktree at {retained}"
+    )

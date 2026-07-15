@@ -2095,6 +2095,23 @@ def _run_plugin_worktree_teardown(run: Any) -> None:
         pass
 
 
+def _teardown_worktree_for_finalization(run: Any) -> str | None:
+    """Tear down an actual isolated worktree and describe the disposition.
+
+    ``WorktreeContext(mode="off")`` is a real context object but represents the
+    canonical checkout, not a disposable worktree. Its teardown is therefore
+    not applicable and must not be rendered as ``removed``.
+    """
+    ctx = run.worktree_context
+    if ctx is None or getattr(ctx, "mode", None) == "off":
+        return None
+    _run_plugin_worktree_teardown(run)
+    from pipeline.engine.worktree import teardown_worktree
+
+    result = teardown_worktree(ctx, retain=True)
+    return result.error or "removed"
+
+
 def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
     """Silent structured finalization. No terminal output.
 
@@ -2290,18 +2307,10 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
             mirror_error = str(exc)
 
     # 9) Worktree teardown (ADR 0033) + ContextVar resets.
-    worktree_teardown_message: str | None = None
-    if run.worktree_context is not None:
-        # ADR 0131: plugin-declared external-resource teardown (e.g. a
-        # per-worktree docker stack) runs in the worktree cwd BEFORE the git
-        # worktree is released. The helper gates on terminal status (a run
-        # paused for a phase-handoff decision keeps its worktree + stack).
-        _run_plugin_worktree_teardown(run)
-        from pipeline.engine.worktree import teardown_worktree
-        td = teardown_worktree(run.worktree_context, retain=True)
-        # retain=True: ``td.error`` carries the "retained at <path>"
-        # note. Falsy ``td.error`` = clean removal.
-        worktree_teardown_message = td.error or "removed"
+    # ADR 0131: plugin-declared external-resource teardown runs before an
+    # isolated git worktree is released. Off-mode contexts are canonical
+    # checkouts, so cleanup/presentation is not applicable to them.
+    worktree_teardown_message = _teardown_worktree_for_finalization(run)
     if run._worktree_cvar_token is not None:
         from pipeline.engine.worktree import reset_active_worktree_checkout
         reset_active_worktree_checkout(run._worktree_cvar_token)
