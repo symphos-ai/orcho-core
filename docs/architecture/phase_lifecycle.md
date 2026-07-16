@@ -134,6 +134,13 @@ against the published list — the SDK refuses an action that isn't in
 `rejected` verdicts** (an approved pause has nothing to waive); see
 ADR 0072.
 
+An incomplete `subtask_dag` implement handoff is stricter than a rejected loop
+verdict. It publishes exactly `retry_feedback`, `continue_with_waiver`, and
+`halt`. Bare `continue` is absent because accepting incomplete implementation
+is necessarily a waiver; the explicit waiver action requires the operator's
+non-empty verdict. The resume arm rejects a stale or hand-edited bare
+`continue` decision fail-closed. See ADR 0136.
+
 ### `decide ≠ resume`
 
 The contract intentionally splits the two operations:

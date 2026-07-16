@@ -2,8 +2,8 @@
 
 The collector must surface ``delivery_status`` (from ``meta.phases.implement``)
 and the new ``decided_by`` (from ``meta.phase_handoff_waiver``) without breaking
-the existing ``decided_at`` read, and keep ``continue`` vs
-``continue_with_waiver`` distinguishable via ``action``.
+the existing ``decided_at`` read. Operator and automatic waivers remain
+distinguishable through ``decided_by``.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def test_auto_waiver_surfaces_delivery_status_and_decided_by(tmp_path: Path) -> 
     assert delivery["action"] == "continue_with_waiver"
 
 
-def test_operator_continue_is_distinguishable_via_action(tmp_path: Path) -> None:
+def test_operator_waiver_surfaces_explicit_action(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     runs.mkdir()
     _seed_run(runs, "20260604_110000_bbbbbb", meta={
@@ -80,13 +80,13 @@ def test_operator_continue_is_distinguishable_via_action(tmp_path: Path) -> None
                 "delivery_status": "waived",
                 "delivery_waived": True,
                 "waiver_id": "implement:implement_handoff:1",
-                "action": "continue",  # bare continue, not continue_with_waiver
+                "action": "continue_with_waiver",
             },
         },
         "phase_handoff_waiver": {
             "handoff_id": "implement:implement_handoff:1",
             "phase": "implement",
-            "waiver_text": "Operator continued without explicit waiver feedback",
+            "waiver_text": "Operator accepted the incomplete subtask explicitly",
             "decided_at": "2026-06-04T11:00:00+00:00",
             "decided_by": "operator",
         },
@@ -96,7 +96,7 @@ def test_operator_continue_is_distinguishable_via_action(tmp_path: Path) -> None
     waiver = next(e for e in errors if e.get("kind") == "phase_handoff_waiver")
     assert waiver["decided_by"] == "operator"
     delivery = next(e for e in errors if e.get("kind") == "implement_delivery")
-    assert delivery["action"] == "continue"  # distinguishes from waiver
+    assert delivery["action"] == "continue_with_waiver"
 
 
 def test_clean_delivery_emits_no_implement_delivery_breadcrumb(tmp_path: Path) -> None:

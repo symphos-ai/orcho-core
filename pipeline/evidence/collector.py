@@ -804,10 +804,9 @@ def _build_errors(
     # ``delivery_status`` (clean | repaired | waived | incomplete) plus the
     # waiver fields and WHICH subtasks blocked delivery. Surface a distinct
     # breadcrumb for any non-clean delivery so a post-mortem sees how implement
-    # closed (``action`` distinguishes a bare ``continue`` from
-    # ``continue_with_waiver``) and exactly which subtasks were accepted —
-    # including missing-receipt ids, which have no ``subtask.receipt`` event of
-    # their own and would otherwise be invisible in evidence.
+    # closed and exactly which subtasks were accepted — including missing-receipt
+    # ids, which have no ``subtask.receipt`` event of their own and would
+    # otherwise be invisible in evidence.
     implement_attempts = _phase_attempts((meta.get("phases") or {}).get("implement"))
     if implement_attempts:
         impl = implement_attempts[-1]

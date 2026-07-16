@@ -61,9 +61,8 @@ IMPLEMENT_HANDOFF_ROUND_KEY = "implement_handoff"
 #: Applier-set provenance recorded on an auto-waiver (§2/§4).
 AUTO_WAIVER_DECIDED_BY = "auto:on_exhausted"
 
-#: Full action set offered on an implement-handoff pause (§1).
+#: Explicit action set offered on an incomplete implement handoff.
 _IMPLEMENT_HANDOFF_ACTIONS: tuple[str, ...] = (
-    PhaseHandoffAction.CONTINUE.value,
     PhaseHandoffAction.RETRY_FEEDBACK.value,
     PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
     PhaseHandoffAction.HALT.value,
