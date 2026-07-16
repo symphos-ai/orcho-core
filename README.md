@@ -40,7 +40,9 @@ Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
 Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
 Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
-Zero project-specific code — all project context comes through `plugin.py`.
+No engine fork is required for project-specific context. Orcho can run in
+generic mode; add an optional `plugin.py` when the project needs explicit
+architecture, file hints, prompts, or verification policy.
 
 ---
 
