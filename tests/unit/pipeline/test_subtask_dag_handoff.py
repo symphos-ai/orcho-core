@@ -2,8 +2,8 @@
 
 Exercises every branch of the implement substance-repair handoff handler with
 a fake ``repair_pass`` (no agents): successful repair → ``repaired``;
-exhaustion → ``PhaseHandoffRequested`` pause with the full action set; eligible
-auto-waiver → in-process synthetic decision via the T9 API (no public
+exhaustion → ``PhaseHandoffRequested`` pause with the explicit action set;
+eligible auto-waiver → in-process synthetic decision via the T9 API (no public
 ``phase_handoff_decide``); ineligible flag → pause; retry-mode forcing a pass.
 """
 from __future__ import annotations
@@ -161,9 +161,11 @@ def test_exhaustion_emits_full_signal(tmp_path: Path) -> None:
     assert sig.trigger == "incomplete"
     assert sig.verdict == "INCOMPLETE"
     assert sig.approved is False
-    assert set(sig.available_actions) == {
-        "continue", "retry_feedback", "continue_with_waiver", "halt",
-    }
+    assert sig.available_actions == (
+        "retry_feedback",
+        "continue_with_waiver",
+        "halt",
+    )
     assert sig.artifacts["incomplete_subtasks"] == ["b"]
     assert sig.artifacts["attestation_incomplete"] == {"b": "missing attestation"}
     assert sig.artifacts["findings"] == ["finding-1"]

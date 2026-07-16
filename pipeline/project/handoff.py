@@ -894,28 +894,7 @@ def apply_review_repair_handoff_retry(
     )
 
 
-def _synthesize_continue_waiver_text(findings: Any, note: str | None) -> str:
-    """Synthesize a waiver rationale for a bare ``continue`` on implement (§4d).
-
-    ``apply_waiver_to_state`` requires a non-empty rationale, but a bare
-    ``continue`` carries no operator verdict. Build one from the active
-    findings (the incomplete subtasks the operator chose to accept) and append
-    any operator ``note``.
-    """
-    if isinstance(findings, list) and findings:
-        findings_str = ", ".join(str(f) for f in findings)
-    else:
-        findings_str = "(no findings recorded)"
-    text = (
-        "Operator continued without explicit waiver feedback; accepted "
-        f"incomplete implement delivery: {findings_str}"
-    )
-    if note and note.strip():
-        text = f"{text}\n{note.strip()}"
-    return text
-
-
-def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
+def _mark_implement_waived(run: Any, handoff_id: str) -> None:
     """Rewrite the persisted implement delivery record incomplete → waived.
 
     On an accept resume the implement phase is skipped (it is in
@@ -923,11 +902,9 @@ def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
     paused run still reads ``delivery_status='incomplete'``. Rewrite it in
     place so evidence / status surfaces report the waived outcome.
 
-    ``action`` (``continue`` for a bare accept, ``continue_with_waiver`` for an
-    explicit operator waiver) is stamped onto the entry too: the implement
-    handler that would normally persist it via ``BuildAdapter`` does not re-run
-    on resume, so without this the evidence breadcrumb cannot tell a bare
-    continue from a waiver (see ``pipeline/evidence/collector.py``).
+    The explicit ``continue_with_waiver`` action is stamped onto the entry too:
+    the implement handler that would normally persist it via ``BuildAdapter``
+    does not re-run on resume.
     """
     phases = run.session.get("phases")
     if not isinstance(phases, dict):
@@ -938,7 +915,7 @@ def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
     impl["delivery_status"] = "waived"
     impl["delivery_waived"] = True
     impl["waiver_id"] = handoff_id
-    impl["action"] = action
+    impl["action"] = PhaseHandoffAction.CONTINUE_WITH_WAIVER.value
 
 
 def _build_retry_prior_context(
@@ -1149,15 +1126,16 @@ def _apply_implement_handoff_resume(
 ) -> PhaseHandoffResumeOutcome:
     """Resume arm for an implement-phase handoff (ADR 0073).
 
-    ACCEPT (``continue`` / ``continue_with_waiver``): implement is a bare step,
-    so there is no loop to strip — mark it completed, apply a waiver via the T9
-    API and sync it to the session directly (implement is skipped on resume, so
-    ``_on_phase_end`` will not fire the phase-end sync), and rewrite the
-    persisted implement ``delivery_status`` to ``waived``. A bare ``continue``
-    synthesizes its waiver text from the active findings and records
-    ``action='continue'``; ``continue_with_waiver`` uses the operator verdict
-    and records ``action='continue_with_waiver'``. Both set
-    ``decided_by='operator'`` and land ``delivery_status='waived'``.
+    ACCEPT (``continue_with_waiver``): implement is a bare step, so there is no
+    loop to strip — mark it completed, apply the explicit operator waiver via
+    the T9 API and sync it to the session directly (implement is skipped on
+    resume, so ``_on_phase_end`` will not fire the phase-end sync), and rewrite
+    the persisted implement ``delivery_status`` to ``waived``.
+
+    Bare ``continue`` is not a valid action for incomplete implementation. It
+    cannot truthfully accept incomplete delivery without being a waiver, so the
+    producer does not publish it and this resume arm rejects a hand-edited or
+    stale decision artifact fail-closed.
 
     ``retry_feedback``: seed ``state.extras['implement_retry']`` with the
     incomplete ids + feedback so the re-dispatched implement re-runs ONLY those
@@ -1179,29 +1157,27 @@ def _apply_implement_handoff_resume(
     if not isinstance(critique, str):
         critique = ""
 
-    if action in ("continue", "continue_with_waiver"):
-        if action == "continue_with_waiver":
-            if not (isinstance(feedback, str) and feedback.strip()):
-                raise RuntimeError(
-                    f"Cannot resume run: continue_with_waiver decision for "
-                    f"{handoff_id!r} is missing the operator verdict "
-                    "(feedback). The waiver must record why the incomplete "
-                    "delivery is accepted."
-                )
-            waiver_text = feedback
-            resume_action = PhaseHandoffAction.CONTINUE_WITH_WAIVER.value
-            override_feedback: str | None = feedback
-        else:
-            # §4(d): bare continue — synthesize a rationale from findings.
-            waiver_text = _synthesize_continue_waiver_text(findings, note)
-            resume_action = PhaseHandoffAction.CONTINUE.value
-            override_feedback = None
+    if action == "continue":
+        raise RuntimeError(
+            f"Cannot resume incomplete implement handoff {handoff_id!r} with "
+            "bare continue. Use continue_with_waiver with a non-empty operator "
+            "verdict, retry_feedback, or halt."
+        )
+
+    if action == "continue_with_waiver":
+        if not (isinstance(feedback, str) and feedback.strip()):
+            raise RuntimeError(
+                f"Cannot resume run: continue_with_waiver decision for "
+                f"{handoff_id!r} is missing the operator verdict "
+                "(feedback). The waiver must record why the incomplete "
+                "delivery is accepted."
+            )
 
         apply_waiver_to_state(
             run.state,
             handoff_id=handoff_id,
             phase="implement",
-            waiver_text=waiver_text,
+            waiver_text=feedback,
             decided_by="operator",
             note=note,
             decided_at=decided_at,
@@ -1211,12 +1187,12 @@ def _apply_implement_handoff_resume(
         # implement is skipped on resume (it is in completed_phases) → the
         # phase-end sync never fires; mirror the waiver to the session here.
         sync_waiver_to_session(run)
-        _mark_implement_waived(run, handoff_id, resume_action)
+        _mark_implement_waived(run, handoff_id)
 
         run.state.extras["phase_handoff_override"] = build_phase_handoff_override(
             handoff_id=handoff_id,
-            action=HandoffAction(resume_action),
-            feedback=override_feedback,
+            action=HandoffAction.CONTINUE_WITH_WAIVER,
+            feedback=feedback,
             note=note,
             decided_at=decided_at,
         )

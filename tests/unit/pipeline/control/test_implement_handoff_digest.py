@@ -9,7 +9,7 @@ from pipeline.control.implement_handoff_digest import (
     render_implement_incomplete_digest,
 )
 
-_ACTIONS = ("continue", "retry_feedback", "continue_with_waiver", "halt")
+_ACTIONS = ("retry_feedback", "continue_with_waiver", "halt")
 
 
 class TestClassifier:
@@ -57,7 +57,7 @@ class TestClassifier:
             "missing_subtask_receipts": [],
         }
         digest = classify_implement_incomplete(
-            artifacts, "", ("continue", "retry_feedback", "halt"),
+            artifacts, "", ("retry_feedback", "halt"),
         )
         assert digest.is_verification_exception is True
         assert digest.recommended_action == "retry_feedback"
