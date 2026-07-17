@@ -189,6 +189,32 @@ class TestCaptureProvenance:
         assert rec["dirty"] is False
         assert rec["changed_files_count"] == 0
 
+    def test_rename_provenance_counts_both_identities_and_matches_reader(
+        self, tmp_path: Path,
+    ) -> None:
+        """A renamed dependency is two scope identities, not one display path."""
+        from pipeline.verification_readiness import _current_checkout_identity
+
+        dep = tmp_path / "dep"
+        _init_repo(dep)
+        (dep / "README.md").rename(dep / "renamed.md")
+        subprocess.run(["git", "add", "-A"], cwd=dep, check=True)
+        ctx = _ctx({"d": str(dep)})
+
+        records = capture_dependency_provenance(
+            ctx, argv=["echo"], eff_cwd="", python="", env_overrides={},
+        )
+        rec = records[0]
+        expected_fingerprint = "0d9610d6771424f4"
+
+        assert rec["dirty"] is True
+        assert rec["changed_files_count"] == 2
+        assert rec["changed_files_fingerprint"] == expected_fingerprint
+        assert changed_files_fingerprint(str(dep)) == expected_fingerprint
+        assert _current_checkout_identity(str(dep)) == (
+            expected_fingerprint, _head_sha(dep),
+        )
+
     def test_records_sorted_by_name(self, tmp_path: Path) -> None:
         a = tmp_path / "a"
         b = tmp_path / "b"
