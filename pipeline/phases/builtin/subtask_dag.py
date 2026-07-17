@@ -854,6 +854,18 @@ def _run_subtask_dag_implement(
         for r in receipts
         if r.get("state") == "incomplete"
     }
+    unmet_done_criteria = tuple(
+        {
+            "subtask_id": receipt["subtask_id"],
+            "index": criterion.get("index"),
+            "criterion": criterion.get("criterion", ""),
+            "evidence": criterion.get("evidence", ""),
+        }
+        for receipt in receipts
+        if receipt.get("state") == "incomplete"
+        for criterion in receipt.get("criteria_report", ())
+        if criterion.get("met") is False
+    )
     delivery_clean = not missing_ids and not not_done
 
     entry: dict[str, Any] = {
@@ -936,6 +948,7 @@ def _run_subtask_dag_implement(
                 done_context=done_context,
                 repair_pass=_repair_pass,
                 last_output=entry["output"],
+                unmet_done_criteria=unmet_done_criteria,
             )
             entry["delivery_status"] = outcome.delivery_status
             if outcome.delivery_status != "incomplete":

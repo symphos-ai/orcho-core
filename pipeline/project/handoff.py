@@ -467,6 +467,22 @@ def apply_phase_handoff_pause(run: Any) -> None:
     # structurally unreachable too — no other handoff.py site needs
     # gating.
     if getattr(run, "_presentation", PresentationPolicy.TERMINAL) is PresentationPolicy.TERMINAL:
+        if (
+            getattr(run, "no_interactive", False)
+            and signal.phase == "implement"
+            and signal.trigger == "incomplete"
+        ):
+            from pipeline.control.implement_handoff_digest import (
+                classify_implement_incomplete,
+                render_implement_incomplete_digest,
+            )
+
+            digest = classify_implement_incomplete(
+                signal.artifacts,
+                signal.last_output,
+                signal.available_actions,
+            )
+            print(render_implement_incomplete_digest(digest))
         label = render_round_label(
             phase=signal.phase,
             round=signal.round,

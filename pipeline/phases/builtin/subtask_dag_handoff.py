@@ -219,6 +219,7 @@ def _build_handoff_signal(
     attestation_incomplete: Mapping[str, str],
     findings: Any,
     last_output: str,
+    unmet_done_criteria: tuple[Mapping[str, Any], ...],
 ) -> PhaseHandoffRequested:
     """Build the §1 non-loop PhaseHandoffRequested for an exhausted run."""
     round_n = _next_implement_handoff_round(state)
@@ -238,6 +239,7 @@ def _build_handoff_signal(
             "incomplete_subtasks": list(still_incomplete_ids),
             "attestation_incomplete": dict(attestation_incomplete),
             "missing_subtask_receipts": list(missing_ids),
+            "unmet_done_criteria": [dict(item) for item in unmet_done_criteria],
         },
         last_output=last_output,
     )
@@ -255,6 +257,7 @@ def handle_subtask_dag_handoff(
     done_context: Mapping[str, PriorContext],
     repair_pass: RepairPass,
     last_output: str = "",
+    unmet_done_criteria: tuple[Mapping[str, Any], ...] = (),
 ) -> SubtaskDagHandoffOutcome:
     """Resolve an incomplete ``subtask_dag`` delivery per the implement policy.
 
@@ -328,7 +331,7 @@ def handle_subtask_dag_handoff(
     # Ineligible (halt, or auto_waiver without the opt-in) → pause for operator.
     signal = _build_handoff_signal(
         state, policy, still, missing_ids, attestation_incomplete, findings,
-        last_output,
+        last_output, unmet_done_criteria,
     )
     state.phase_handoff_request = signal
     return SubtaskDagHandoffOutcome(
