@@ -52,6 +52,7 @@ class ProfileSetup:
     from_run_plan_stripped: tuple[str, ...]
     plan_source: str
     cross_handoff_text: str
+    cross_declared_files: tuple[str, ...]
     change_handoff: str
     do_plan: bool
     do_build: bool
@@ -172,7 +173,7 @@ def setup_profile(
             _session_split_overrides,
         )
 
-    cross_handoff_text = _resolve_cross_handoff(
+    cross_handoff = _resolve_cross_handoff(
         profile=v2_profile,
         plan_source=plan_source,
         handoff_path=handoff_path,
@@ -189,7 +190,8 @@ def setup_profile(
         from_run_plan_loaded=from_run_plan_loaded,
         from_run_plan_stripped=from_run_plan_stripped,
         plan_source=plan_source,
-        cross_handoff_text=cross_handoff_text,
+        cross_handoff_text=cross_handoff.text,
+        cross_declared_files=cross_handoff.declared_files,
         change_handoff=change_handoff,
         do_plan=do_plan,
         do_build=do_build,
@@ -365,14 +367,22 @@ _VALID_PLAN_SOURCES = frozenset({"local", "cross", "none", "run"})
 _HANDOFF_REQUIRED_PHASES = frozenset({"implement", "repair_changes"})
 
 
+@dataclasses.dataclass(frozen=True)
+class CrossHandoffResolution:
+    """Typed outputs loaded once from a canonical cross handoff JSON file."""
+
+    text: str = ""
+    declared_files: tuple[str, ...] = ()
+
+
 def _resolve_cross_handoff(
     *,
     profile,
     plan_source: str,
     handoff_path: str | None,
-) -> str:
+) -> CrossHandoffResolution:
     """Validate ``plan_source`` / ``handoff_path`` against the projected
-    profile and return the handoff body to inject into ``state.extras``.
+    profile and return independently typed handoff inputs for state setup.
 
     Rules:
       * ``plan_source`` must be one of ``local`` / ``cross`` / ``none``.
@@ -382,9 +392,10 @@ def _resolve_cross_handoff(
       * ``handoff_path`` points at the canonical ``implementation_handoff
         .json`` (ADR 0050). The body the runtime consumes is *rendered
         from the typed object*, not read from a hand-authored markdown
-        blob, so a stray source path cannot leak into the prompt. Returns
-        the rendered body when present, empty string otherwise. Phase
-        handlers consume it via ``state.extras["cross_handoff"]``.
+        blob, so a stray source path cannot leak into the prompt. The canonical
+        JSON is loaded once: its rendered body reaches
+        ``state.extras["cross_handoff"]`` and its control-only declared-files
+        tuple reaches the declared-write-scope resolver.
     """
     if plan_source not in _VALID_PLAN_SOURCES:
         raise ValueError(
@@ -392,13 +403,13 @@ def _resolve_cross_handoff(
             f"got {plan_source!r}"
         )
     if plan_source != "cross":
-        return ""
+        return CrossHandoffResolution()
 
     needs_handoff = bool(
         _profile_phase_names(profile) & _HANDOFF_REQUIRED_PHASES
     )
     if not needs_handoff:
-        return ""
+        return CrossHandoffResolution()
 
     if not handoff_path:
         raise ValueError(
@@ -412,7 +423,10 @@ def _resolve_cross_handoff(
         )
     from pipeline.cross_project.handoff import load_handoff, render_handoff_markdown
     handoff = load_handoff(p)
-    return render_handoff_markdown(handoff)
+    return CrossHandoffResolution(
+        text=render_handoff_markdown(handoff),
+        declared_files=handoff.declared_files,
+    )
 
 
 def _resolve_change_handoff(profile) -> str:
@@ -440,6 +454,7 @@ def _resolve_change_handoff(profile) -> str:
 
 __all__ = [
     "ProfileSetup",
+    "CrossHandoffResolution",
     "setup_profile",
     "_raise_unresolved_profile",
     "_resolve_profile_name",

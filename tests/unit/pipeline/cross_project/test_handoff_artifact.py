@@ -34,6 +34,7 @@ def _handoff(**overrides) -> Handoff:
         cross_validation_summary="Looks good.",
         cross_validation_verdict={"verdict": "APPROVED"},
         project_subtask="Wire the endpoint",
+        declared_files=("a.py", "tests/test_a.py"),
         sibling_aliases=("web",),
     )
     base.update(overrides)
@@ -60,6 +61,33 @@ def test_write_handoff_json_is_round_trippable(tmp_path: Path) -> None:
     json_path = write_handoff(h, alias_dir)
     loaded = load_handoff(json_path)
     assert loaded == h
+
+
+def test_declared_files_are_canonical_json_but_not_markdown(tmp_path: Path) -> None:
+    alias_dir = tmp_path / "api"
+    alias_dir.mkdir()
+    json_path = write_handoff(_handoff(), alias_dir)
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["declared_files"] == ["a.py", "tests/test_a.py"]
+    assert load_handoff(json_path).declared_files == ("a.py", "tests/test_a.py")
+    markdown = (alias_dir / "implementation_handoff.md").read_text(encoding="utf-8")
+    assert "tests/test_a.py" not in markdown
+
+
+@pytest.mark.parametrize("declared_files", ["a.py", ["a.py", 3]])
+def test_load_rejects_invalid_declared_files(tmp_path: Path, declared_files) -> None:
+    p = tmp_path / "implementation_handoff.json"
+    payload = {
+        "parent_run_id": "r", "profile": "advanced", "alias": "api",
+        "project_path": "/s", "approved_cross_plan_path": "/c",
+        "full_cross_plan_path": "/c", "full_cross_plan_markdown": "x",
+        "cross_validation_summary": "ok", "cross_validation_verdict": {},
+        "project_subtask": "do", "declared_files": declared_files,
+        "sibling_aliases": [],
+    }
+    p.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="declared_files"):
+        load_handoff(p)
 
 
 def test_markdown_is_rendered_from_typed_object(tmp_path: Path) -> None:
@@ -133,7 +161,7 @@ def test_load_defaults_missing_structured_slices(tmp_path: Path) -> None:
         "project_path": "/s", "approved_cross_plan_path": "/c",
         "full_cross_plan_path": "/c", "full_cross_plan_markdown": "x",
         "cross_validation_summary": "ok", "cross_validation_verdict": {},
-        "project_subtask": "do", "sibling_aliases": [],
+        "project_subtask": "do", "declared_files": [], "sibling_aliases": [],
     }
     p.write_text(json.dumps(payload), encoding="utf-8")
     loaded = load_handoff(p)
@@ -204,7 +232,7 @@ def test_load_rejects_unknown_field(tmp_path: Path) -> None:
         "project_path": "/s", "approved_cross_plan_path": "/c",
         "full_cross_plan_path": "/c", "full_cross_plan_markdown": "x",
         "cross_validation_summary": "ok", "cross_validation_verdict": {},
-        "project_subtask": "do", "sibling_aliases": [],
+        "project_subtask": "do", "declared_files": [], "sibling_aliases": [],
         "surprise_field": "boom",
     }
     p.write_text(json.dumps(payload), encoding="utf-8")
@@ -227,7 +255,7 @@ def test_load_defaults_missing_sibling_aliases(tmp_path: Path) -> None:
         "project_path": "/s", "approved_cross_plan_path": "/c",
         "full_cross_plan_path": "/c", "full_cross_plan_markdown": "x",
         "cross_validation_summary": "ok", "cross_validation_verdict": {},
-        "project_subtask": "do",
+        "project_subtask": "do", "declared_files": [],
     }
     p.write_text(json.dumps(payload), encoding="utf-8")
     loaded = load_handoff(p)

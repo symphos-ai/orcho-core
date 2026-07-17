@@ -14,6 +14,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from pipeline.cross_project.plan_parser import parse_cross_plan
 from pipeline.cross_project.task_plan import (
     CrossTaskPlan,
@@ -50,7 +52,7 @@ def _multi_alias_plan_json() -> str:
                     "goal": "accept the email field",
                     "spec": "api implement spec",
                     "depends_on": [],
-                    "files": ["[api]/users.py"],
+                    "files": ["[api]/a.py", "[api]/tests/test_a.py"],
                     "produces": "persisted user row",
                     "consumes": "web form submission",
                 },
@@ -101,7 +103,7 @@ def test_unit_fields_mapped_from_normalized_data() -> None:
     assert api.goal == "accept the email field"
     assert api.spec == "api implement spec"
     assert api.depends_on == ()
-    assert api.files == ("[api]/users.py",)
+    assert api.files == ("[api]/a.py", "[api]/tests/test_a.py")
     assert api.produces == "persisted user row"
     assert api.consumes == "web form submission"
 
@@ -207,6 +209,69 @@ def test_run_project_dispatch_consumes_typed_task_plan(tmp_path, monkeypatch) ->
     assert handoff["interface_contract"] == "POST /api/users {name, email}"
     assert handoff["implementation_order"] == "land api schema\nwire web form"
     assert handoff["project_subtask"] == "api implement spec"
+    assert handoff["declared_files"] == ["a.py", "tests/test_a.py"]
+    assert "[api]" not in json.dumps(handoff["declared_files"])
+
+
+@pytest.mark.parametrize(
+    "sibling_entry",
+    ("[web]/steal.py", "[web] steal.py", "[web]steal2.py"),
+)
+def test_dispatch_rejects_sibling_alias_before_handoff_or_child(
+    tmp_path, monkeypatch, sibling_entry,
+) -> None:
+    """A unit cannot smuggle a sibling's write declaration into a child handoff."""
+    from pipeline.cross_project import project_dispatch
+
+    api_dir = tmp_path / "api"
+    web_dir = tmp_path / "web"
+    api_dir.mkdir()
+    web_dir.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    plan = CrossTaskPlan(
+        short_summary="",
+        interface_contract="",
+        implementation_order=(),
+        units=(
+            CrossTaskUnit("api", "api", "", "api spec", (), (sibling_entry,), "", ""),
+            CrossTaskUnit("web", "web", "", "web spec", (), ("web.py",), "", ""),
+        ),
+    )
+    invoked: list = []
+    monkeypatch.setattr(
+        project_dispatch, "run_project_pipeline", lambda request: invoked.append(request),
+    )
+    ctx = project_dispatch.ProjectDispatchContext(
+        task="full cross task", projects={"api": api_dir, "web": web_dir},
+        task_plan=plan, resume_from=None, dry_run=False, max_rounds=2,
+        code_model="stub", phase_config=None, child_profile=object(),
+        requested_profile_name="advanced", has_global_plan=True,
+        provider=MagicMock(), hypothesis_enabled=False,
+        followup_session_seeds_per_alias=None, run_dir=run_dir, output_dir=False,
+        plan_output="fallback", plan_review_dict=None, cross_ckpt={"sub_status": {}},
+        session={"phases": {"projects": {}}}, cross_phase_usage={},
+        ports=MagicMock(), terminal=False,
+    )
+    with pytest.raises(ValueError, match="sibling alias.*web") as exc_info:
+        project_dispatch.run_project_dispatch(ctx)
+    assert sibling_entry in str(exc_info.value)
+    assert invoked == []
+    assert not (run_dir / "api" / "implementation_handoff.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    (
+        ("[api]/a.py", "a.py"),
+        ("[api] a.py", "a.py"),
+        ("[api]a.py", "a.py"),
+    ),
+)
+def test_normalize_unit_declared_files_strips_current_alias_tag(entry, expected) -> None:
+    from pipeline.cross_project.project_dispatch import _normalize_unit_declared_files
+
+    assert _normalize_unit_declared_files("api", (entry,)) == (expected,)
 
 
 def test_single_alias_plan_with_empty_interface_contract() -> None:

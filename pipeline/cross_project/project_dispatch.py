@@ -32,6 +32,7 @@ success / warn rendering — the driver itself does not reach back into
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -59,6 +60,40 @@ from pipeline.project_orchestrator import SessionMode
 #: import via :data:`core.io.ansi.C.BLUE` so the palette stays single-
 #: sourced.
 _SUB_PIPELINE_BANNER_COLOR = C.BLUE
+
+_LEADING_BRACKET_ALIAS_RE = re.compile(r"^\s*\[([^\]]+)\](.*)$")
+
+
+def _normalize_unit_declared_files(alias: str, files: Any) -> tuple[str, ...]:
+    """Make one cross-task unit's file entries relative to its child alias.
+
+    A leading ``[alias]`` tag is a cross-plan spelling and becomes a
+    child-relative path in the handoff, regardless of whether its path uses a
+    slash, whitespace, or no separator. An explicit sibling alias is a
+    boundary violation and fails before any handoff or child run is created.
+    """
+    normalized: list[str] = []
+    for entry in files or ():
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"cross task unit for alias {alias!r} has non-string file entry "
+                f"{entry!r}"
+            )
+        match = _LEADING_BRACKET_ALIAS_RE.match(entry)
+        if match is None:
+            normalized.append(entry)
+            continue
+        declared_alias, remainder = match.groups()
+        if declared_alias != alias:
+            raise ValueError(
+                f"cross task unit for alias {alias!r} declares sibling alias "
+                f"{declared_alias!r} in file entry {entry!r}"
+            )
+        relative_path = remainder.lstrip()
+        if relative_path.startswith("/"):
+            relative_path = relative_path[1:]
+        normalized.append(relative_path)
+    return tuple(normalized)
 
 
 @dataclass(slots=True, frozen=True)
@@ -296,6 +331,9 @@ def _dispatch_one_alias(
     """Single per-alias iteration. Returns one of the two module sentinels."""
     unit = (units_by_alias or {}).get(alias)
     project_task = (unit.spec if unit else "") or ctx.task
+    declared_files = _normalize_unit_declared_files(
+        alias, getattr(unit, "files", ()) if unit else (),
+    )
 
     # Resume skip: alias finished previously → pass.
     # Failed mid-flight / paused on child handoff → forward
@@ -376,6 +414,7 @@ def _dispatch_one_alias(
             cross_validation_summary=cross_summary,
             cross_validation_verdict=dict(ctx.plan_review_dict or {}),
             project_subtask=project_task,
+            declared_files=declared_files,
             sibling_aliases=siblings,
             interface_contract=interface_contract,
             implementation_order=implementation_order,

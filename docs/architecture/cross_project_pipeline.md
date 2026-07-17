@@ -187,7 +187,13 @@ prepend that body (read from `state.extras["cross_handoff"]`) before the
 existing plan contract via the pure builders' `handoff_contract`
 parameter. The handoff requirement is keyed on phase presence: required
 when the projected profile contains `implement` or `repair_changes`;
-review-only profiles run without one. v1 handoffs carry
+review-only profiles run without one. Handoffs additionally carry a
+control-only `declared_files` JSON array: dispatch alias-normalizes
+`[current]/path` to `path` and rejects sibling aliases before writing the
+artifact or launching a child. The child hydrates that tuple into its
+engine-owned declared-write scope, together with plugin allowances; it is
+never rendered into handoff markdown, agent instructions, captain data, or an
+MCP wire field. v1 handoffs carry
 `full_cross_plan_markdown`, `project_subtask`, `cross_validation_summary`,
 and `sibling_aliases`; the source `project_path` is retained in the JSON
 for audit only and is never rendered into the runtime body — the

@@ -21,11 +21,9 @@ The split mirrors the neighbouring scope modules:
 ``notices`` / ``risks`` / ``blockers`` projections and ``has_blocker``), and the
 neutral per-file signal record :class:`FileScopeSignals`.
 
-**(B) Pure derivation.** :func:`derive_in_plan_patterns` folds the durable plan
-scope (``ParsedPlan.owned_files`` / ``allowed_modifications`` at plan and subtask
-level) plus the project-level ``PluginConfig.allowed_modifications`` into a glob
-pattern set, reusing the ``"glob — reason"`` path-extraction convention and the
-``_path_is_declared`` matching semantics from ``companion_scope``.
+**(B) Pure derivation.** :func:`derive_in_plan_patterns` is a compatibility
+projection over :mod:`pipeline.engine.declared_write_scope`, which owns durable
+scope normalisation, provenance, and matching semantics.
 
 **(C) Pure signal building.** :func:`categorize_file` maps a path to a stable
 category; :func:`build_scope_expansion_signals` assembles one
@@ -46,12 +44,16 @@ green gate for its own category is downgraded to at least ``risk``.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from pipeline.engine.declared_write_scope import (
+    path_matches_declared_scope,
+    resolve_declared_write_scope,
+)
 
 # ── category constants ───────────────────────────────────────────────────────
 
@@ -266,43 +268,6 @@ class ScopeExpansionAssessment:
 # ── (B) pure derivation of the in-plan pattern set ───────────────────────────
 
 
-# Strip a leading ``[subtask-id]`` / ``[alias]`` tag (possibly repeated) so the
-# bare glob surfaces, e.g. ``[T2] tests/x/** — reason`` → ``tests/x/** — reason``.
-_LEADING_TAG_RE = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
-# Split a ``glob — reason`` entry on a surrounded dash (em/en/hyphen). The
-# surrounding whitespace keeps in-path hyphens (``package-lock.json``) intact.
-_REASON_SPLIT_RE = re.compile(r"\s+[—–-]\s+")
-
-
-def _extract_glob(entry: Any) -> str:
-    """Extract the bare glob from a plan-scope / ``glob — reason`` entry (pure)."""
-    if not isinstance(entry, str):
-        return ""
-    text = _LEADING_TAG_RE.sub("", entry).strip()
-    if not text:
-        return ""
-    text = _REASON_SPLIT_RE.split(text, maxsplit=1)[0].strip()
-    # A glob never contains whitespace; keep only the first token defensively.
-    return text.split()[0] if text else ""
-
-
-def _plan_scope_entries(plan: Any) -> tuple[str, ...]:
-    """All durable plan-scope reference strings: plan- and subtask-level (pure)."""
-    refs: list[str] = []
-
-    def _extend(obj: Any) -> None:
-        for attr in ("owned_files", "allowed_modifications"):
-            for value in getattr(obj, attr, None) or ():
-                if isinstance(value, str) and value:
-                    refs.append(value)
-
-    if plan is not None:
-        _extend(plan)
-        for subtask in getattr(plan, "subtasks", None) or ():
-            _extend(subtask)
-    return tuple(refs)
-
-
 def derive_in_plan_patterns(
     plan: Any,
     project_allowed_modifications: Sequence[str] | None = None,
@@ -313,36 +278,15 @@ def derive_in_plan_patterns(
     subtask) with the project-level ``PluginConfig.allowed_modifications`` list,
     extracting the bare glob from each ``"glob — reason"`` entry. Pure — no I/O.
     """
-    patterns: set[str] = set()
-    for entry in _plan_scope_entries(plan):
-        glob = _extract_glob(entry)
-        if glob:
-            patterns.add(glob)
-    for entry in project_allowed_modifications or ():
-        glob = _extract_glob(entry)
-        if glob:
-            patterns.add(glob)
-    return tuple(sorted(patterns))
+    return resolve_declared_write_scope(
+        plan,
+        project_allowed_modifications,
+    ).patterns
 
 
 def _path_matches(rel: str, patterns: Sequence[str]) -> bool:
-    """True when ``rel`` matches any declared glob (``_path_is_declared`` semantics).
-
-    Supports an exact file, a ``**`` / ``*`` wildcard, and a directory-prefix
-    declaration (``a/b`` or ``a/b/**`` covers nested files). Pure string match.
-    """
-    for raw in patterns:
-        pat = str(raw).strip().rstrip("/")
-        if not pat:
-            continue
-        if pat in ("**", "*"):
-            return True
-        if fnmatch.fnmatch(rel, pat):
-            return True
-        base = pat.rstrip("*").rstrip("/")
-        if base and (rel == base or rel.startswith(base + "/")):
-            return True
-    return False
+    """Compatibility-local name for the canonical declared-scope matcher."""
+    return path_matches_declared_scope(rel, patterns)
 
 
 # ── (C) pure categorisation + signal building ────────────────────────────────
