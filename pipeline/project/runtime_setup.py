@@ -35,6 +35,7 @@ from pipeline.project.profile_dispatch import (
     apply_followup_session_seeds as _apply_followup_session_seeds,
     resolve_phase_models as _resolve_phase_models,
 )
+from pipeline.skills.types import SkillTrustPolicy
 
 if TYPE_CHECKING:
     from agents.runtimes._strategy import AgentProvider
@@ -68,6 +69,7 @@ def setup_runtime(
     provider: AgentProvider | None,
     model: str,
     runtime_override: dict[str, str] | None = None,
+    skill_trust: SkillTrustPolicy | None = None,
 ) -> RuntimeSetup:
     """Resolve provider, per-phase models, phase config, and agent registry.
 
@@ -104,7 +106,16 @@ def setup_runtime(
         review_model=review_model,
         runtime_override=runtime_override,
     )
-    agent_registry = _agent_registry_from_provider(_provider, phase_config)
+    from pipeline.skills import (
+        configure_phase_agent_skill_scope,
+    )
+    effective_skill_trust = skill_trust or SkillTrustPolicy()
+    configure_phase_agent_skill_scope(phase_config, effective_skill_trust)
+    agent_registry = _agent_registry_from_provider(
+        _provider,
+        phase_config,
+        skill_trust=effective_skill_trust,
+    )
 
     return RuntimeSetup(
         provider=_provider,
@@ -383,6 +394,8 @@ def _synthesize_phase_config(
 def _agent_registry_from_provider(
     provider: object,
     phase_config: PhaseAgentConfig,
+    *,
+    skill_trust: SkillTrustPolicy | None = None,
 ):
     """Build the subtask runtime registry from the active provider.
 
@@ -392,6 +405,9 @@ def _agent_registry_from_provider(
     discovery path.
     """
     from agents.registry import AgentRegistry
+    from pipeline.skills import configure_agent_skill_scope
+
+    effective_skill_trust = skill_trust or SkillTrustPolicy()
 
     app = config.AppConfig.load()
     runtime_names = {
@@ -417,8 +433,9 @@ def _agent_registry_from_provider(
     for runtime in sorted(runtime_names):
         registry.register(
             runtime,
-            lambda model, effort=None, _runtime=runtime: provider.resolve(
-                _runtime, model, effort=effort,
+            lambda model, effort=None, _runtime=runtime: configure_agent_skill_scope(
+                provider.resolve(_runtime, model, effort=effort),
+                effective_skill_trust,
             ),
         )
     return registry

@@ -234,6 +234,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         provider=request.provider,
         model=request.model,
         runtime_override=runtime_override,
+        skill_trust=plugin.skill_trust,
     )
 
     # Read-only Stage 1 verification-contract projection. Validate ONCE,

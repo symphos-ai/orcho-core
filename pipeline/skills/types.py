@@ -93,11 +93,11 @@ class SkillBinding:
 class SkillTrustPolicy:
     """Per-source trust gate for skill loading (autonomous-run security).
 
-    Defaults: package + user + workspace skills load by default
-    (reasonably trusted: author signs entry_points packages, user controls
-    own home dir). Project and compat sources are OFF by default —
-    cloned untrusted projects can ship malicious SKILL.md instructing
-    the agent to leak data, exfil credentials, etc.
+    Defaults: workspace skills load by default. Package and user skills are
+    global scope and require explicit opt-in so unrelated installed skill
+    catalogues do not consume every run's planning/runtime context. Project and
+    compat sources are also OFF by default because cloned untrusted projects
+    can ship malicious SKILL.md instructions.
 
     Opt-in via:
       * CLI flag ``--trust-project-skills``
@@ -105,8 +105,8 @@ class SkillTrustPolicy:
         ``_config/config.local.json``
       * ENV ``ORCHO_TRUST_PROJECT_SKILLS=1``
     """
-    trust_packages: bool = True
-    trust_user: bool = True
+    trust_packages: bool = False
+    trust_user: bool = False
     trust_workspace: bool = True
     trust_project: bool = False
     trust_compat_claude: bool = False
