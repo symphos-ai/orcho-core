@@ -18,7 +18,12 @@ def _profile(name: str, *phases: str) -> Profile:
     return Profile(name=name, kind=ProfileKind.CUSTOM, steps=steps)
 
 
-def _write_handoff_json(alias_dir: Path, *, subtask: str = "Do the thing") -> Path:
+def _write_handoff_json(
+    alias_dir: Path,
+    *,
+    subtask: str = "Do the thing",
+    full_plan: str = "# Cross-Project Plan\n\nDetails.\n",
+) -> Path:
     """ADR 0050: the child resolves the canonical JSON handoff and
     renders the body from it. Build a valid one for the read tests."""
     alias_dir.mkdir(parents=True, exist_ok=True)
@@ -29,10 +34,11 @@ def _write_handoff_json(alias_dir: Path, *, subtask: str = "Do the thing") -> Pa
         project_path=str(alias_dir / "source_checkout"),
         approved_cross_plan_path=str(alias_dir / "cross_plan.md"),
         full_cross_plan_path=str(alias_dir / "cross_plan.md"),
-        full_cross_plan_markdown="# Cross-Project Plan\n\nDetails.\n",
+        full_cross_plan_markdown=full_plan,
         cross_validation_summary="Looks good.",
         cross_validation_verdict={"verdict": "APPROVED"},
         project_subtask=subtask,
+        declared_files=("a.py", "tests/test_a.py"),
         sibling_aliases=("web",),
     )
     return write_handoff(handoff, alias_dir)
@@ -45,10 +51,10 @@ class TestResolveCrossHandoff:
         prof = _profile("p", "implement")
         assert _resolve_cross_handoff(
             profile=prof, plan_source="local", handoff_path=None,
-        ) == ""
+        ).text == ""
         assert _resolve_cross_handoff(
             profile=prof, plan_source="local", handoff_path=str(tmp_path / "x.md"),
-        ) == ""
+        ).text == ""
 
     def test_invalid_plan_source_raises(self) -> None:
         prof = _profile("p", "implement")
@@ -77,7 +83,7 @@ class TestResolveCrossHandoff:
         prof = _profile("p", "review_changes", "final_acceptance")
         assert _resolve_cross_handoff(
             profile=prof, plan_source="cross", handoff_path=None,
-        ) == ""
+        ).text == ""
 
     def test_cross_with_implement_missing_file_raises(self, tmp_path: Path) -> None:
         prof = _profile("p", "implement")
@@ -99,12 +105,12 @@ class TestResolveCrossHandoff:
     def test_cross_with_implement_reads_handoff(self, tmp_path: Path) -> None:
         json_path = _write_handoff_json(tmp_path / "api", subtask="Wire the endpoint")
         prof = _profile("p", "implement")
-        text = _resolve_cross_handoff(
+        resolution = _resolve_cross_handoff(
             profile=prof, plan_source="cross", handoff_path=str(json_path),
         )
         # Body is rendered from the typed object, not the raw file text.
-        assert "Wire the endpoint" in text
-        assert "## Full cross plan" in text
+        assert "Wire the endpoint" in resolution.text
+        assert "## Full cross plan" in resolution.text
 
     def test_cross_handoff_body_omits_source_project_path(self, tmp_path: Path) -> None:
         """ADR 0050 scope (4): the rendered runtime body must never carry
@@ -115,7 +121,7 @@ class TestResolveCrossHandoff:
         prof = _profile("p", "implement")
         text = _resolve_cross_handoff(
             profile=prof, plan_source="cross", handoff_path=str(json_path),
-        )
+        ).text
         assert str(alias_dir / "source_checkout") not in text
 
     def test_cross_handoff_json_is_source_of_truth_not_markdown(
@@ -131,6 +137,21 @@ class TestResolveCrossHandoff:
         prof = _profile("p", "implement")
         text = _resolve_cross_handoff(
             profile=prof, plan_source="cross", handoff_path=str(json_path),
-        )
+        ).text
         assert "Canonical subtask" in text
         assert "GARBAGE AUDIT TEXT" not in text
+
+    def test_cross_handoff_declared_files_ignore_prompt_prose(self, tmp_path: Path) -> None:
+        prof = _profile("p", "implement")
+        first = _resolve_cross_handoff(
+            profile=prof,
+            plan_source="cross",
+            handoff_path=str(_write_handoff_json(tmp_path / "one", subtask="one", full_plan="one")),
+        )
+        cold = _resolve_cross_handoff(
+            profile=prof,
+            plan_source="cross",
+            handoff_path=str(_write_handoff_json(tmp_path / "two", subtask="two", full_plan="two")),
+        )
+        assert first.declared_files == cold.declared_files == ("a.py", "tests/test_a.py")
+        assert first.text != cold.text

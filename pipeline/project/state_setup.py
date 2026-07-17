@@ -49,6 +49,10 @@ from agents.registry import PhaseAgentConfig
 from core.context import build_repo_map
 from core.infra import config
 from core.observability.logging import success
+from pipeline.engine.declared_write_scope import (
+    DECLARED_WRITE_SCOPE_EXTRAS_KEY,
+    resolve_declared_write_scope,
+)
 from pipeline.plugins import PluginConfig
 from pipeline.project.resume_artifacts import bootstrap_resume_artifacts
 from pipeline.project.types import PresentationPolicy
@@ -119,6 +123,9 @@ class StateInputs:
     # ran in a prior process, so its durable artifact must be recoverable.
     resume_completed_phases: frozenset[str] = frozenset()
     resume_requested: bool = False
+    # Typed control field loaded from the canonical cross handoff JSON, never
+    # inferred from its rendered prompt text.
+    cross_declared_files: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -317,6 +324,22 @@ def build_pipeline_state(inputs: StateInputs) -> StateSetup:
         inputs.output_dir,
         completed_phases=inputs.resume_completed_phases,
     )
+
+    # Ownership is resolved only from durable typed inputs after every source
+    # of a mono ParsedPlan has had a chance to hydrate. Cross children never
+    # receive a ParsedPlan: their explicit handoff tuple is sufficient even
+    # when empty, and is deliberately independent of prompt prose. A fresh
+    # mono run without a plan does not stamp a misleading plugin-only scope.
+    if inputs.plan_source == "cross":
+        state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY] = resolve_declared_write_scope(
+            plugin_allowed_modifications=inputs.plugin.allowed_modifications,
+            cross_unit_files=inputs.cross_declared_files,
+        )
+    elif state.parsed_plan is not None:
+        state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY] = resolve_declared_write_scope(
+            state.parsed_plan,
+            plugin_allowed_modifications=inputs.plugin.allowed_modifications,
+        )
 
     return StateSetup(state=state, codemap=codemap)
 
