@@ -318,10 +318,8 @@ class TestLoadPlugin:
         project.mkdir(parents=True)
         _write_skill(workspace / ".agents" / "skills", "workspace-skill")
 
-        # Isolate the user-level layer (``~/.agents/skills``) so real skills
-        # installed in the developer's home do not leak into the exact-set
-        # assertion below.
-        (tmp_path / "home").mkdir()
+        home = tmp_path / "home"
+        _write_skill(home / ".agents" / "skills", "unrelated-user-skill")
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         monkeypatch.setenv("ORCHO_WORKSPACE", str(workspace))
         with patch("importlib.metadata.entry_points", return_value=[]):
@@ -344,10 +342,8 @@ class TestLoadPlugin:
             encoding="utf-8",
         )
 
-        # Isolate the user-level layer (``~/.agents/skills``) so real skills
-        # installed in the developer's home do not leak into the exact-set
-        # assertion below.
-        (tmp_path / "home").mkdir()
+        home = tmp_path / "home"
+        _write_skill(home / ".agents" / "skills", "unrelated-user-skill")
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         monkeypatch.setenv("ORCHO_WORKSPACE", str(workspace))
         with patch("importlib.metadata.entry_points", return_value=[]):

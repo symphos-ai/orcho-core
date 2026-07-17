@@ -73,7 +73,9 @@ R9 model — Agent Skills open standard.
 - `ResourceManifestEntry(relative_path, size_bytes, mtime_ns)`
 - `SkillTrustPolicy(trust_packages, trust_user, trust_workspace,
    trust_project, trust_compat_claude, trust_compat_forge)`
-  - Project + compat skills OFF by default (autonomous-run security)
+  - Workspace skills are ON by default
+  - Project + compat skills require explicit trust
+  - Global user + package catalogues require explicit opt-in
 
 ## Artifacts (`pipeline/artifacts/types.py`)
 

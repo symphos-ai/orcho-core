@@ -22,10 +22,10 @@ Trust policy
 ============
 
 The :class:`SkillTrustPolicy` gates which sources are allowed to load.
-Defaults: package + user + workspace skills load (reasonably trusted —
-package authors sign their wheels, the user controls their home dir).
-Project + compat sources are OFF by default to defend autonomous runs
-against malicious SKILL.md from cloned untrusted projects.
+Defaults: only workspace skills load. Package and user sources are global
+catalogues and require explicit opt-in so unrelated skills do not tax every
+run's context. Project + compat sources are OFF by default to defend autonomous
+runs against malicious SKILL.md from cloned untrusted projects.
 
 Untrusted sources are silently skipped (with a one-line diagnostic).
 ``include_untrusted=True`` overrides for ``orcho skills list --all``-

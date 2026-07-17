@@ -27,6 +27,10 @@ from pipeline.skills.migrate import (
     MigratedSkill,
     migrate_legacy_skills,
 )
+from pipeline.skills.runtime_scope import (
+    configure_agent_skill_scope,
+    configure_phase_agent_skill_scope,
+)
 from pipeline.skills.types import (
     ResourceManifestEntry,
     SkillBinding,
@@ -45,6 +49,8 @@ __all__ = [
     "SkillParseError",
     "SkillResourceBinding",
     "SkillTrustPolicy",
+    "configure_agent_skill_scope",
+    "configure_phase_agent_skill_scope",
     "discover_skills",
     "discover_skills_in_root",
     "load_skill_package",
