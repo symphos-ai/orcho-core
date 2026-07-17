@@ -22,6 +22,7 @@ from agents.command_guard import ORCHO_GUARDRAIL_BLOCKED
 from agents.entities import SubTask
 from agents.registry import AgentRegistry
 from core.infra.paths import CONFIG_DIR as _CONFIG_DIR
+from pipeline.engine.declared_write_scope import DECLARED_WRITE_SCOPE_EXTRAS_KEY
 from pipeline.lifecycle import default_lifecycle_context
 from pipeline.phases.builtin import (
     default_registry,
@@ -488,6 +489,47 @@ class TestRegistration:
 # ── Plan ──────────────────────────────────────────────────────────────────────
 
 class TestPlanHandler:
+    def test_success_materializes_declared_write_scope_with_plugin_allowance(self) -> None:
+        payload = json.dumps({
+            "short_summary": "scope",
+            "planning_context": "scope",
+            "owned_files": ["src/owned.py"],
+            "allowed_modifications": ["plan.lock — generated"],
+            "tasks": [{
+                "id": "t1", "goal": "scope", "spec": "scope",
+                "files": ["src/task.py"],
+                "owned_files": ["src/task_owned.py"],
+                "allowed_modifications": ["task.lock — generated"],
+                "done_criteria": ["done"],
+            }],
+        })
+        state = _state(
+            plugin=PluginConfig(allowed_modifications=["plugin.lock — generated"]),
+            phase_config=_StubPhaseConfig(plan_agent=_FakeArchitect(payload)),
+        )
+
+        default_registry().get("plan")(state)
+
+        scope = state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY]
+        assert scope.patterns == (
+            "plan.lock", "plugin.lock", "src/owned.py", "src/task_owned.py",
+            "task.lock",
+        )
+
+    def test_successful_replan_replaces_stale_declared_write_scope(self) -> None:
+        payload = json.dumps({
+            "short_summary": "fresh", "planning_context": "fresh",
+            "owned_files": ["fresh.py"],
+            "tasks": [{"id": "fresh", "goal": "fresh"}],
+        })
+        state = _state(phase_config=_StubPhaseConfig(plan_agent=_FakeArchitect(payload)))
+        state.extras.update({"plan_round": 2, "declared_write_scope": "stale"})
+        state.last_critique = "replace the old plan"
+
+        default_registry().get("plan")(state)
+
+        scope = state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY]
+        assert scope.patterns == ("fresh.py",)
     def test_captures_markdown_into_state(self) -> None:
         state = _state()
         new = default_registry().get("plan")(state)

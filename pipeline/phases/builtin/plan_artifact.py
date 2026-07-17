@@ -142,6 +142,26 @@ def _render_and_store_plan_artifact(
     plan_md = render_plan_markdown(parsed_plan)
     state.plan_markdown = plan_md
 
+    # This is the one successful plan/replan materialization seam.  The
+    # immutable scope is deliberately refreshed here instead of reconstructed
+    # later from a markdown or JSON projection, so final acceptance judges the
+    # latest successfully parsed plan (including plugin companion allowances).
+    # It deliberately precedes the optional artifact write: direct handler
+    # consumers and dry artifact-less runs still materialize the same typed
+    # plan, while a failed write continues to fail the phase normally.
+    from pipeline.engine.declared_write_scope import (
+        DECLARED_WRITE_SCOPE_EXTRAS_KEY,
+        resolve_declared_write_scope,
+    )
+
+    plugin_allowed = getattr(
+        getattr(state, "plugin", None), "allowed_modifications", (),
+    )
+    state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY] = resolve_declared_write_scope(
+        parsed_plan,
+        plugin_allowed_modifications=plugin_allowed,
+    )
+
     if state.dry_run or state.output_dir is None:
         return plan_md
 

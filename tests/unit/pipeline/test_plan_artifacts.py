@@ -285,6 +285,27 @@ class TestWriteParsedPlanArtifact:
         # Same content in both files for the latest attempt.
         assert attempt_path.read_text() == latest.read_text()
 
+    def test_artifact_round_trip_preserves_subtask_owned_files(
+        self, tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / "20260522_120001"
+        run_dir.mkdir()
+        plan = ParsedPlan(
+            short_summary="Preserve scope ownership.",
+            planning_context="ctx",
+            subtasks=(SubTask(
+                id="t1", goal="Write the owned file",
+                owned_files=("src/owned.py",),
+            ),),
+            source="json",
+        )
+
+        write_parsed_plan_artifact(run_dir, plan, attempt=1)
+
+        assert load_parsed_plan_artifact(run_dir).subtasks[0].owned_files == (
+            "src/owned.py",
+        )
+
     def test_second_attempt_keeps_first_attempt_artifact(self, tmp_path: Path) -> None:
         run_dir = tmp_path / "20260522_130000"
         run_dir.mkdir()

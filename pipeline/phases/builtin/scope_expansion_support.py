@@ -13,10 +13,11 @@ responsibility (durable-artefact gathering for scope expansion) gets a focused
 home, and ``review_support`` keeps only the thin facade aliases the handler and
 tests import.
 
-Every durable source degrades softly: a missing git repo, unreadable plan
-artefact, or absent receipt collapses to the conservative signal (``verified``
-False, ``has_explanation`` False, …) so a gap never silently upgrades an
-out-of-plan file toward ``notice``, and a failure never breaks delivery.
+Every durable source degrades softly: a missing git repo or absent receipt
+collapses to the conservative signal (``verified`` False, ``has_explanation``
+False, …) so a gap never silently upgrades an out-of-plan file toward
+``notice``, and a failure never breaks delivery. A malformed successful Git
+porcelain response is instead surfaced as a contract violation.
 """
 
 from __future__ import annotations
@@ -27,7 +28,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from core.io.git_helpers import _run_git, git_changed_files
+from core.io.git_helpers import (
+    GitStatusParseError,
+    _run_git,
+    git_changed_file_records,
+)
+from pipeline.engine.declared_write_scope import (
+    DECLARED_WRITE_SCOPE_EXTRAS_KEY,
+    DeclaredWriteScope,
+    resolve_declared_write_scope,
+)
 from pipeline.engine.scope_expansion import (
     CATEGORY_BUILD,
     CATEGORY_FIXTURE,
@@ -41,7 +51,6 @@ from pipeline.engine.scope_expansion import (
     build_scope_expansion_assessment,
     build_scope_expansion_signals,
     categorize_file,
-    derive_in_plan_patterns,
     render_scope_expansion_lines,
 )
 from pipeline.phases.builtin.lifecycle import _agent_project_dir
@@ -223,25 +232,40 @@ def _sdk_flags_by_file(
     return flags
 
 
-def _in_plan_patterns(
-    state: PipelineState, output_dir: Path | None,
-) -> tuple[str, ...]:
-    """Glob patterns the durable plan + project allowed-modifications declare.
+def _declared_write_scope(state: PipelineState) -> DeclaredWriteScope:
+    """Return the canonical scope, retaining typed plugin allowances plan-less.
 
-    ``output_dir=None`` skips the durable-artifact load and derives from the
-    in-memory plan only — the handoff-artifact enrichment path, where a missing
-    run dir must not fail the pause.
+    A missing scope still fails closed for plan ownership.  Plugin allowances
+    are an independent typed project declaration, however, and plan-less
+    profiles have no materialization seam that would otherwise stamp them.
     """
-    from pipeline.plan_artifacts import load_parsed_plan_artifact
+    scope = state.extras.get(DECLARED_WRITE_SCOPE_EXTRAS_KEY)
+    if isinstance(scope, DeclaredWriteScope):
+        return scope
+    plugin_allowed = getattr(getattr(state, "plugin", None), "allowed_modifications", ())
+    return resolve_declared_write_scope(plugin_allowed_modifications=plugin_allowed)
 
-    plan: Any = getattr(state, "parsed_plan", None)
-    if output_dir is not None:
-        try:
-            plan = load_parsed_plan_artifact(Path(output_dir))
-        except Exception:  # noqa: BLE001 — fall back to the in-memory plan
-            plan = getattr(state, "parsed_plan", None)
-    project_allowed = getattr(getattr(state, "plugin", None), "allowed_modifications", None)
-    return derive_in_plan_patterns(plan, project_allowed or ())
+
+def _scope_identities(
+    state: PipelineState, cwd: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Collect all exact status identities and their unmatched subset.
+
+    A rename/copy intentionally contributes both source and destination.  The
+    insertion-ordered map gives deterministic de-duplication without
+    reducing untracked nested paths to their parent directory.  The full set
+    is retained as classifier context so an in-plan companion can supply
+    paired alignment to an unmatched public-wire change.
+    """
+    scope = _declared_write_scope(state)
+    identities: dict[str, None] = {}
+    for record in git_changed_file_records(cwd):
+        for path in record.scope_identities:
+            if path:
+                identities.setdefault(path, None)
+    all_identities = tuple(identities)
+    unmatched = tuple(path for path in all_identities if not scope.matches(path))
+    return all_identities, unmatched
 
 
 def _explained_files(state: PipelineState, changed: list[str]) -> set[str]:
@@ -303,7 +327,10 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
     Empty (no items) under dry-run, without a verification contract or run dir,
     when an operator waiver is active, or when the working tree has no
     out-of-plan change — so the prompt and verdict stay byte-identical for an
-    ordinary in-scope diff and for the pre-feature waiver path. Never raises.
+    ordinary in-scope diff and for the pre-feature waiver path.
+
+    Raises :class:`GitStatusParseError` when a successful git invocation emits
+    malformed porcelain; invocation failures remain a soft empty observation.
     """
     if getattr(state, "dry_run", False):
         return ScopeExpansionAssessment()
@@ -321,7 +348,12 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
 
     cwd = _agent_project_dir(state)
     try:
-        changed = [f for f in git_changed_files(cwd) if f]
+        changed_file_set, changed = _scope_identities(state, cwd)
+    except GitStatusParseError:
+        # A successful git invocation with malformed porcelain is not a clean
+        # observation; surface its contract violation instead of silently
+        # suppressing a potentially out-of-plan tree.
+        raise
     except Exception:  # noqa: BLE001
         changed = []
     if not changed:
@@ -331,8 +363,11 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
     gate_status = _gate_status_by_category(state, contract, Path(output_dir))
     signals = build_scope_expansion_signals(
         changed_files=changed,
-        changed_file_set=changed,
-        in_plan_patterns=_in_plan_patterns(state, Path(output_dir)),
+        changed_file_set=changed_file_set,
+        # ``changed`` is already filtered through the single canonical scope.
+        # Do not make the pure builder independently reload or reinterpret a
+        # plan; it receives only unmatched identities.
+        in_plan_patterns=(),
         diff_stats_by_file=_diff_stats_by_file(diffs),
         gate_status_by_category=gate_status,
         explained_files=_explained_files(state, changed),
@@ -550,10 +585,7 @@ def raise_scope_expansion_handoff(
     # every consumer (TTY digest, MCP payload, advice) can show the full
     # scope delta — offending paths alone forced the operator to dig through
     # the reviewer transcript to learn what the plan scope even was.
-    output_dir = getattr(state, "output_dir", None)
-    in_plan = _in_plan_patterns(
-        state, Path(output_dir) if output_dir is not None else None,
-    )
+    in_plan = _declared_write_scope(state).patterns
     signal = build_scope_expansion_handoff_signal(
         trigger=SCOPE_EXPANSION_OUT_OF_PLAN_TRIGGER,
         artifacts={
