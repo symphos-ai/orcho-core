@@ -44,6 +44,7 @@ __all__ = [
 # ``action`` field).
 _CONTINUE_WITH_WAIVER = "continue_with_waiver"
 _RETRY_FEEDBACK = "retry_feedback"
+_HALT = "halt"
 
 #: Conservative, case-insensitive substrings that mark an incomplete delivery as
 #: a *verification exception* — the gate did not close because of baseline /
@@ -58,6 +59,21 @@ BASELINE_EXCEPTION_MARKERS: tuple[str, ...] = (
     "unrelated to this diff",
     "baseline-identical",
     "baseline also red",
+)
+
+_ENVIRONMENT_BLOCKER_MARKERS: tuple[str, ...] = (
+    "environment",
+    "окружен",
+    "container",
+    "контейнер",
+    "docker",
+    "postgres",
+    "database",
+    "port ",
+    "порт ",
+    "fixture",
+    "minio",
+    "vendor/bin",
 )
 
 _RULE = "─" * 60
@@ -83,8 +99,11 @@ class ImplementIncompleteDigest:
 
     incomplete_subtasks: tuple[str, ...]
     unmet_criteria: tuple[tuple[str, str], ...]
+    unmet_evidence: tuple[tuple[str, int, str, str], ...]
     missing_receipts: tuple[str, ...]
+    repaired_gates: tuple[str, ...]
     is_verification_exception: bool
+    is_environment_blocker: bool
     recommended_action: str
 
 
@@ -105,6 +124,48 @@ def _unmet_criteria(attestation_incomplete: object) -> tuple[tuple[str, str], ..
     )
 
 
+def _unmet_evidence(value: object) -> tuple[tuple[str, int, str, str], ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    items: list[tuple[str, int, str, str]] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            continue
+        index = raw.get("index")
+        if not isinstance(index, int):
+            continue
+        items.append((
+            str(raw.get("subtask_id") or ""),
+            index,
+            str(raw.get("criterion") or ""),
+            str(raw.get("evidence") or ""),
+        ))
+    return tuple(items)
+
+
+def _repaired_gates(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Mapping) or value.get("status") != "passed":
+        return ()
+    return _as_str_tuple(value.get("commands"))
+
+
+def _is_environment_blocker(
+    unmet_evidence: tuple[tuple[str, int, str, str], ...],
+) -> bool:
+    evidence_text = " ".join(
+        evidence for _sid, _index, _criterion, evidence in unmet_evidence
+    ).lower()
+    criterion_fallback = " ".join(
+        criterion
+        for _sid, _index, criterion, evidence in unmet_evidence
+        if not evidence.strip()
+    ).lower()
+    text = f"{evidence_text} {criterion_fallback}".strip()
+    return bool(text) and any(
+        marker in text for marker in _ENVIRONMENT_BLOCKER_MARKERS
+    )
+
+
 def _has_baseline_marker(text: str) -> bool:
     lowered = text.lower()
     return any(marker in lowered for marker in BASELINE_EXCEPTION_MARKERS)
@@ -121,7 +182,10 @@ def _detect_verification_exception(
 
 
 def _recommend_action(
-    *, is_verification_exception: bool, available: Sequence[str],
+    *,
+    is_verification_exception: bool,
+    is_environment_blocker: bool,
+    available: Sequence[str],
 ) -> str:
     """Pick the next action, never naming one outside ``available``.
 
@@ -133,6 +197,8 @@ def _recommend_action(
     available_set = set(available)
     if is_verification_exception and _CONTINUE_WITH_WAIVER in available_set:
         return _CONTINUE_WITH_WAIVER
+    if is_environment_blocker and _HALT in available_set:
+        return _HALT
     if _RETRY_FEEDBACK in available_set:
         return _RETRY_FEEDBACK
     return ""
@@ -152,19 +218,26 @@ def classify_implement_incomplete(
     """
     incomplete_subtasks = _as_str_tuple(artifacts.get("incomplete_subtasks"))
     unmet_criteria = _unmet_criteria(artifacts.get("attestation_incomplete"))
+    unmet_evidence = _unmet_evidence(artifacts.get("unmet_done_criteria"))
     missing_receipts = _as_str_tuple(artifacts.get("missing_subtask_receipts"))
+    repaired_gates = _repaired_gates(artifacts.get("post_phase_gate_repair"))
     is_verification_exception = _detect_verification_exception(
         unmet_criteria, last_output,
     )
+    is_environment_blocker = _is_environment_blocker(unmet_evidence)
     recommended_action = _recommend_action(
         is_verification_exception=is_verification_exception,
+        is_environment_blocker=is_environment_blocker,
         available=available_actions,
     )
     return ImplementIncompleteDigest(
         incomplete_subtasks=incomplete_subtasks,
         unmet_criteria=unmet_criteria,
+        unmet_evidence=unmet_evidence,
         missing_receipts=missing_receipts,
+        repaired_gates=repaired_gates,
         is_verification_exception=is_verification_exception,
+        is_environment_blocker=is_environment_blocker,
         recommended_action=recommended_action,
     )
 
@@ -179,6 +252,12 @@ def _recommendation_line(digest: ImplementIncompleteDigest, *, color: bool | Non
         action_color = C.GREEN
     elif digest.recommended_action == _RETRY_FEEDBACK:
         hint = "send feedback and retry the incomplete implementation subtasks"
+        action_color = C.YELLOW
+    elif digest.recommended_action == _HALT:
+        hint = (
+            "repair the verification environment first; another implementation "
+            "retry cannot repair the environment"
+        )
         action_color = C.YELLOW
     else:  # pragma: no cover — no recommendable action published
         return f"  {paint('Recommended', C.CYAN, color=color)}: (no action available)"
@@ -197,6 +276,14 @@ def render_implement_incomplete_digest(
     as a string; the caller owns the ``print``.
     """
     lines = [f"┌─ {paint('Why paused', C.BOLD, color=color)} {_RULE[:48]}"]
+    if digest.repaired_gates:
+        lines.append(
+            f"  {paint('Gate repair passed', C.GREEN, color=color)}: "
+            + ", ".join(digest.repaired_gates)
+        )
+        lines.append(
+            f"  {paint('Separate blocker remains', C.YELLOW, color=color)}"
+        )
     if digest.incomplete_subtasks:
         lines.append(
             f"  {paint('Subtask', C.CYAN, color=color)}: "
@@ -207,6 +294,21 @@ def render_implement_incomplete_digest(
         lines.append(
             f"  {paint('Missing', C.CYAN, color=color)}: {sid} — {preview}"
         )
+    for sid, index, criterion, evidence in digest.unmet_evidence:
+        criterion_preview = sanitize_feedback_preview(
+            criterion, max_len=_REASON_MAX_LEN,
+        )
+        evidence_preview = sanitize_feedback_preview(
+            evidence, max_len=_REASON_MAX_LEN,
+        )
+        lines.append(
+            f"  {paint('Criterion', C.CYAN, color=color)}: "
+            f"{sid} #{index} — {criterion_preview}"
+        )
+        if evidence_preview:
+            lines.append(
+                f"  {paint('Evidence', C.CYAN, color=color)}: {evidence_preview}"
+            )
     if digest.missing_receipts:
         lines.append(
             f"  {paint('Missing receipts', C.CYAN, color=color)}: "
@@ -226,6 +328,12 @@ def render_implement_incomplete_digest(
                 "(verification exception, not unfinished work)",
                 C.YELLOW, color=color,
             )
+        )
+    elif digest.is_environment_blocker:
+        lines.append(
+            f"  {paint('Cause', C.YELLOW, color=color)}: "
+            "verification environment blocked; implementation repair is not "
+            "the corrective action"
         )
     lines.append(_recommendation_line(digest, color=color))
     lines.append(f"└{_RULE}")

@@ -401,6 +401,9 @@ def evaluate_post_phase_gates(run: Any, phase: str) -> None:
     """``on_phase_end``: the after_phase(phase) gate (implement is critical)."""
     if not _gate_active(run):
         return
+    previous_signal = run.state.phase_handoff_request
+    from pipeline.project.verification_ledger_runtime import live_delta
+    before = len(live_delta(run))
     run._in_gate_hook = True
     try:
         run_gate_hook(
@@ -412,6 +415,16 @@ def evaluate_post_phase_gates(run: Any, phase: str) -> None:
         )
     finally:
         run._in_gate_hook = False
+    if phase == "implement":
+        from pipeline.project.pending_handoff_reconciliation import (
+            reconcile_pending_handoff_after_gates,
+        )
+
+        reconcile_pending_handoff_after_gates(
+            run.state,
+            previous_signal=previous_signal,
+            gate_events=live_delta(run)[before:],
+        )
 
 
 def _gate_active(run: Any) -> bool:

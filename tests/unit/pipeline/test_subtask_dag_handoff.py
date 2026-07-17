@@ -149,6 +149,14 @@ def test_exhaustion_emits_full_signal(tmp_path: Path) -> None:
         done_context={},
         repair_pass=repair_pass,
         last_output="build log",
+        unmet_done_criteria=(
+            {
+                "subtask_id": "b",
+                "index": 2,
+                "criterion": "Functional test passes.",
+                "evidence": "PostgreSQL port 5433 is already allocated.",
+            },
+        ),
     )
     assert out.paused is True
     assert out.delivery_status == "incomplete"
@@ -168,6 +176,14 @@ def test_exhaustion_emits_full_signal(tmp_path: Path) -> None:
     )
     assert sig.artifacts["incomplete_subtasks"] == ["b"]
     assert sig.artifacts["attestation_incomplete"] == {"b": "missing attestation"}
+    assert sig.artifacts["unmet_done_criteria"] == [
+        {
+            "subtask_id": "b",
+            "index": 2,
+            "criterion": "Functional test passes.",
+            "evidence": "PostgreSQL port 5433 is already allocated.",
+        },
+    ]
     assert sig.artifacts["findings"] == ["finding-1"]
     # No decision artifact: the public decide path was not taken.
     assert not _decisions_dir(tmp_path).exists()
