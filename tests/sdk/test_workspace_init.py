@@ -291,6 +291,123 @@ def test_init_attaches_detected_runtimes(tmp_path: Path, monkeypatch) -> None:
     assert isinstance(by_command["gemini"], DetectedRuntime)
 
 
+# ─── Runtime availability & switch ──────────────────────────────────────────
+
+
+def _which_only(*installed: str):
+    return lambda cmd: f"/usr/bin/{cmd}" if cmd in installed else None
+
+
+def test_init_records_missing_runtimes(tmp_path: Path, monkeypatch) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(tmp_path / "g")
+
+    assert "codex" in r.missing_runtimes
+    assert "claude" not in r.missing_runtimes
+    assert r.runtime_override is None
+    # Without an override the written config keeps the seeded runtimes.
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    assert any(
+        spec.get("runtime") == "codex" for spec in data["phases"].values()
+    )
+
+
+def test_runtime_override_remaps_fresh_config(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(tmp_path / "g", runtime_override="claude")
+
+    assert r.runtime_override == "claude"
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    phases = data["phases"]
+    # Every phase now points at an installed runtime…
+    assert all(spec["runtime"] == "claude" for spec in phases.values())
+    # …and a switched phase borrows the model of a phase that was
+    # already configured for the override runtime (models are
+    # runtime-specific — keeping the old one would be invalid).
+    assert phases["validate_plan"]["model"] == phases["plan"]["model"]
+
+
+def test_runtime_override_noop_when_nothing_missing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", lambda cmd: "/x/" + cmd)
+
+    r = init_workspace(tmp_path / "g", runtime_override="claude")
+
+    assert r.missing_runtimes == ()
+    assert r.runtime_override is None
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    assert any(
+        spec.get("runtime") == "codex" for spec in data["phases"].values()
+    )
+
+
+def test_runtime_override_updates_existing_config(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    root = tmp_path / "g"
+    existing = root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        json.dumps({
+            "phases": {
+                "plan": {"runtime": "codex", "model": "gpt-x"},
+                "implement": {"runtime": "claude", "model": "claude-y"},
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(root, runtime_override="claude")
+
+    assert r.runtime_override == "claude"
+    data = json.loads(existing.read_text(encoding="utf-8"))
+    assert data["phases"]["plan"]["runtime"] == "claude"
+    # Donor model comes from a phase already on the override runtime.
+    assert data["phases"]["plan"]["model"] == "claude-y"
+    # Untouched phase keeps its spec verbatim.
+    assert data["phases"]["implement"] == {
+        "runtime": "claude", "model": "claude-y",
+    }
+
+
+def test_planned_phase_runtimes_merges_workspace_layer(
+    tmp_path: Path,
+) -> None:
+    from sdk.workspace import planned_phase_runtimes
+
+    root = tmp_path / "g"
+    planned_before = planned_phase_runtimes(root)
+    assert planned_before  # seeded from package defaults
+    existing = root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        json.dumps({"phases": {"plan": {"runtime": "gemini"}}}),
+        encoding="utf-8",
+    )
+
+    planned = planned_phase_runtimes(root)
+
+    assert planned["plan"] == "gemini"
+    # Other phases still come from the seed layers.
+    for phase, runtime in planned_before.items():
+        if phase != "plan":
+            assert planned[phase] == runtime
+
+
 # ─── Idempotency ────────────────────────────────────────────────────────────
 
 

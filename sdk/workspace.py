@@ -49,7 +49,12 @@ from pathlib import Path
 from typing import Final
 
 from sdk.errors import WorkspaceInitError
-from sdk.runtimes import DetectedRuntime, detect_cli_runtimes
+from sdk.runtimes import (
+    DetectedRuntime,
+    assess_runtime_availability,
+    detect_cli_runtimes,
+    runtime_installed,
+)
 from sdk.workspace_scaffold import scaffold_workspace_extensions
 
 # ─── Constants ──────────────────────────────────────────────────────────────
@@ -153,6 +158,11 @@ class WorkspaceInitResult:
     user can paste into any ``.mcp.json``. ``mcp_config_path`` /
     ``mcp_config_action`` are set only when the caller asked the
     function to write to a file.
+
+    ``missing_runtimes`` — configured per-phase runtime ids whose CLI
+    executable was not found on PATH at init time (pre-switch view).
+    ``runtime_override`` echoes the runtime the workspace config was
+    switched to, or ``None`` when no switch was requested/needed.
     """
 
     group_root: str
@@ -174,6 +184,8 @@ class WorkspaceInitResult:
     undetected_count: int = 0
     interactive: bool = False
     extension_points: tuple[str, ...] = ()
+    missing_runtimes: tuple[str, ...] = ()
+    runtime_override: str | None = None
 
 
 # ─── Public entry point ─────────────────────────────────────────────────────
@@ -192,16 +204,29 @@ def init_workspace(
     undetected_count: int = 0,
     interactive: bool = False,
     no_scaffold: bool = False,
+    runtime_override: str | None = None,
 ) -> WorkspaceInitResult:
     """Initialise an Orcho workspace under ``project_group_root``.
 
     See module docstring for full semantics. Raises
     :class:`sdk.errors.WorkspaceInitError` on refused targets or
     config conflicts.
+
+    ``runtime_override`` switches every configured phase whose runtime
+    executable is not on PATH over to the given (installed) runtime in
+    the workspace-local config — both when the file is first created
+    and when it already exists.
     """
     group_root = _coerce_group_root(project_group_root, dry_run=dry_run)
     _refuse_unsafe_root(group_root)
     _refuse_repo_root(group_root, force=force)
+
+    # Pre-switch availability view — recorded on the result so callers
+    # can render "runtime X missing" / "switched to Y" without probing
+    # PATH again.
+    availability = assess_runtime_availability(
+        planned_phase_runtimes(group_root).values()
+    )
 
     workspace_dir = group_root / _WORKSPACE_SUBDIR
     runspace_dir = workspace_dir / _RUNSPACE_SUBDIR
@@ -257,6 +282,7 @@ def init_workspace(
         detected_projects=detected,
         extra_projects=list(extra_projects),
         dry_run=dry_run,
+        runtime_override=runtime_override,
     )
     if config_action == "created":
         created.append(local_config_file)
@@ -311,6 +337,12 @@ def init_workspace(
         undetected_count=undetected_count,
         interactive=interactive,
         extension_points=extension_points,
+        missing_runtimes=availability.missing_runtimes,
+        runtime_override=(
+            runtime_override
+            if runtime_override and availability.missing_runtimes
+            else None
+        ),
     )
 
 
@@ -523,27 +555,134 @@ def _write_workspace_local_config(
     detected_projects: list[DetectedProject],
     extra_projects: list[ExtraProject] | None = None,
     dry_run: bool,
+    runtime_override: str | None = None,
 ) -> str:
     """Return ``created`` / ``exists`` / ``updated`` / ``blocked``."""
     if path.is_file():
-        return _merge_project_aliases(
+        action = _merge_project_aliases(
             path,
             detected_projects,
             extra_projects=extra_projects or [],
             dry_run=dry_run,
         )
+        if runtime_override and _override_runtimes_in_file(
+            path, runtime_override, dry_run=dry_run,
+        ):
+            action = "updated"
+        return action
     if path.exists():
         return "blocked"
+    data = _workspace_local_config_template(detected_projects, extra_projects)
+    if runtime_override:
+        _apply_runtime_override(data.get("phases", {}), runtime_override)
     if not dry_run:
         path.write_text(
-            json.dumps(
-                _workspace_local_config_template(detected_projects, extra_projects),
-                indent=2,
-                ensure_ascii=False,
-            ) + "\n",
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
     return "created"
+
+
+def _apply_runtime_override(
+    phases: dict[str, dict], override: str,
+) -> tuple[str, ...]:
+    """Point phases whose runtime executable is missing at ``override``.
+
+    Mutates ``phases`` in place and returns the names of the phases
+    that changed. The model is runtime-specific, so a switched phase
+    borrows the model of a phase already configured for ``override``;
+    with no donor the model is left empty and the runtime falls back
+    to its own default model.
+    """
+    donor_model = next(
+        (
+            spec.get("model", "")
+            for spec in phases.values()
+            if spec.get("runtime") == override and spec.get("model")
+        ),
+        "",
+    )
+    changed: list[str] = []
+    for phase, spec in phases.items():
+        if not isinstance(spec, dict):
+            continue
+        runtime = str(spec.get("runtime", "claude"))
+        if runtime == override or runtime_installed(runtime):
+            continue
+        spec["runtime"] = override
+        spec["model"] = donor_model
+        changed.append(phase)
+    return tuple(changed)
+
+
+def _override_runtimes_in_file(
+    path: Path, override: str, *, dry_run: bool,
+) -> bool:
+    """Apply :func:`_apply_runtime_override` to an existing config file.
+
+    The file may carry only a partial ``phases`` overlay (or none), so
+    the switch is computed against the *effective* phase map — seed
+    layers plus the file itself — and the changed phases are written
+    back as explicit entries. Returns True when anything changed.
+    """
+    from core.infra import config as core_config
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    effective = _workspace_local_config_seed()
+    core_config._merge_local_layer(effective, data)
+    phases = effective.get("phases", {})
+    changed = _apply_runtime_override(phases, override)
+    if not changed:
+        return False
+
+    file_phases = data.get("phases")
+    if not isinstance(file_phases, dict):
+        file_phases = {}
+        data["phases"] = file_phases
+    for phase in changed:
+        file_phases[phase] = phases[phase]
+    if not dry_run:
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return True
+
+
+def planned_phase_runtimes(project_group_root: Path | str) -> dict[str, str]:
+    """Per-phase runtime ids the workspace under ``project_group_root`` uses.
+
+    Combines the config seed (package defaults plus package/user local
+    layers) with the workspace-local config file when it already
+    exists — i.e. the effective post-init map for both a fresh and a
+    repeat ``init``. Pure read; never touches the filesystem beyond
+    reading config files.
+    """
+    from core.infra import config as core_config
+
+    seed = _workspace_local_config_seed()
+    local_file = (
+        Path(project_group_root).expanduser()
+        / _WORKSPACE_SUBDIR / _ORCHO_CONFIG_DIR / _LOCAL_CONFIG_FILE
+    )
+    if local_file.is_file():
+        try:
+            local = json.loads(local_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            local = None
+        if isinstance(local, dict):
+            core_config._merge_local_layer(seed, local)
+    return {
+        phase: str(spec.get("runtime", "claude"))
+        for phase, spec in seed.get("phases", {}).items()
+        if isinstance(spec, dict)
+    }
 
 
 def _merge_project_aliases(
@@ -814,5 +953,6 @@ __all__ = [
     "WorkspaceInitResult",
     "discover_undetected_candidates",
     "init_workspace",
+    "planned_phase_runtimes",
     "preflight_workspace_target",
 ]

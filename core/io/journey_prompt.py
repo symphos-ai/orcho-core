@@ -13,6 +13,8 @@ here so existing callers (``commit_delivery``, ``pre_run_dirty``,
 """
 from __future__ import annotations
 
+from typing import TextIO
+
 from core.io.ansi import (
     C,
     is_color_active,
@@ -61,8 +63,36 @@ def divider(*, color: bool) -> str:
     return grey(line, color=color)
 
 
+def ask_yn(
+    prompt: str,
+    *,
+    default_yes: bool,
+    stdin: TextIO,
+    stdout: TextIO,
+    color: bool,
+) -> bool | None:
+    """Ask a yes/no question.  Returns None on EOF / Ctrl-C (abort)."""
+    hint = "[Y/n]" if default_yes else "[y/N]"
+    full_prompt = bold(f"{prompt} {hint} ", color=color)
+    stdout.write(full_prompt)
+    stdout.flush()
+    try:
+        line = stdin.readline()
+    except KeyboardInterrupt:
+        stdout.write("\n")
+        return None
+    if not line:
+        stdout.write("\n")
+        return None
+    choice = line.strip().lower()
+    if not choice:
+        return default_yes
+    return choice in ("y", "yes")
+
+
 __all__ = [
     # Domain helpers
+    "ask_yn",
     "bold",
     "cyan_bold",
     "default_chip",
