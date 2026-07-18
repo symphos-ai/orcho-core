@@ -258,26 +258,18 @@ class ScopeExpansionSanction(StrEnum):
     baked into the classifier.
 
     - ``AUTO_CONTINUE`` — record the expansion, re-setup, and continue without
-      a pause; surfaced as a ``notice``. The ``fast``-mode default for any
-      benign status, the ``pro``-mode default for ``notice``, and the disarmed
-      outcome whenever an operator ``continue_with_waiver`` is active.
+      a pause. The ``fast``-mode outcome for every scope classification.
     - ``AUTO_ALERT`` — continue, but raise an operator-visible alert. The
-      ``pro``-mode outcome for a benign ``risk``.
+      ``pro``-mode outcome for every scope classification.
     - ``HANDOFF`` — route through the phase-handoff lifecycle (ADR 0038) for
-      operator sanction rather than silently rejecting. The ``pro``-mode
-      outcome for a benign ``blocker`` and the ``governed``-mode outcome for
-      any participant-add / scope expansion.
-    - ``HALT_WAIVER`` — the genuine-safety contract: default halt with an
-      operator waiver as the escape hatch. Chosen for a genuine-safety class
-      (``security`` / ``persistence`` / ``destructive_delete``) in *every*
-      mode; never an un-waivable dead-end.
+      operator sanction rather than silently rejecting. The ``governed``-mode
+      outcome for every participant-add / scope expansion.
 
     Pure data: no I/O, no runtime/state imports.
     """
     AUTO_CONTINUE = "auto_continue"
     AUTO_ALERT = "auto_alert"
     HANDOFF = "handoff"
-    HALT_WAIVER = "halt_waiver"
 
 
 class CommitDecisionAction(StrEnum):

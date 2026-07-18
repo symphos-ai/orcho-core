@@ -42,10 +42,8 @@ from pipeline.engine.scope_expansion import (
     CATEGORY_BUILD,
     CATEGORY_FIXTURE,
     CATEGORY_IMPORT_WIRING,
-    CATEGORY_PERSISTENCE,
     CATEGORY_PUBLIC_WIRE,
     CATEGORY_SCHEMA,
-    CATEGORY_SECURITY,
     ScopeExpansionAssessment,
     ScopeExpansionItem,
     build_scope_expansion_assessment,
@@ -387,57 +385,6 @@ def scope_expansion_text(state: PipelineState) -> str:
     return render_scope_expansion_text(scope_expansion_assessment(state))
 
 
-def _is_russian(language: str | None) -> bool:
-    return bool(language and str(language).strip().lower().startswith("rus"))
-
-
-def _scope_gap_dict(item: Any, *, language: str | None) -> dict[str, str]:
-    evidence = "; ".join(item.evidence) or "no supporting evidence"
-    if _is_russian(language):
-        return {
-            "risk": (
-                f"Out-of-plan {item.category} файл '{item.path}' — "
-                "scope-expansion blocker."
-            ),
-            "missing_evidence": f"Сигналы scope-expansion: {evidence}.",
-            "required_check": (
-                f"Обоснуй парным alignment/тестом или откати out-of-plan "
-                f"изменение {item.path}."
-            ),
-        }
-    return {
-        "risk": (
-            f"Out-of-plan {item.category} change '{item.path}' is a "
-            "scope-expansion blocker."
-        ),
-        "missing_evidence": f"Scope-expansion signals: {evidence}.",
-        "required_check": (
-            f"Justify with paired alignment/tests or revert the out-of-plan "
-            f"change to {item.path}."
-        ),
-    }
-
-
-# Genuine-safety classes (ADR 0112 §5): the only ones whose sanction stays hard
-# (default halt + waiver) in every mode. ``security`` / ``persistence`` are
-# categories; ``destructive_delete`` surfaces as a per-file evidence token.
-_GENUINE_SAFETY_CATEGORIES = frozenset({CATEGORY_SECURITY, CATEGORY_PERSISTENCE})
-_DESTRUCTIVE_DELETE_EVIDENCE = "destructive-delete"
-
-
-def _item_is_genuine_safety(item: ScopeExpansionItem) -> bool:
-    """True for a genuine-safety item (security / persistence / destructive delete).
-
-    Derived from the classifier's durable fact only — the category and the
-    pure-fact evidence tokens — so the classifier is not re-run or re-coupled to
-    a verdict here.
-    """
-    return (
-        item.category in _GENUINE_SAFETY_CATEGORIES
-        or _DESTRUCTIVE_DELETE_EVIDENCE in item.evidence
-    )
-
-
 @dataclass(frozen=True)
 class ScopeExpansionSanctionRouting:
     """Mode-projected routing of a scope-expansion assessment (ADR 0112 §5).
@@ -446,36 +393,27 @@ class ScopeExpansionSanctionRouting:
     under the run's ``OperatingMode``, computed via the T1 projection
     :func:`pipeline.runtime.scope_expansion_sanction.decide`:
 
-    - ``halt_items`` — sanction ``HALT_WAIVER`` (a genuine-safety class with no
-      active waiver). These are the **only** items that emit a release gap and
-      force a REJECTED verdict, in every mode.
-    - ``handoff_items`` — sanction ``HANDOFF`` (a ``pro`` blocker or any
-      ``governed`` expansion). These do **not** force REJECTED; they mark the
-      need for a phase-handoff (the lifecycle wiring is a later increment).
-    - ``alert_items`` — sanction ``AUTO_ALERT`` (a ``pro`` risk): continue with
-      an operator-visible alert, no release gap.
+    - ``handoff_items`` — sanction ``HANDOFF`` (a ``governed`` expansion).
+      They do not force REJECTED; they request the delivery decision.
+    - ``alert_items`` — sanction ``AUTO_ALERT`` (a ``pro`` expansion): continue
+      with an operator-visible disclosure, no release gap.
 
     ``AUTO_CONTINUE`` items carry no route entry (record → continue).
     """
 
     operating_mode: OperatingMode
-    halt_items: tuple[ScopeExpansionItem, ...] = ()
     handoff_items: tuple[ScopeExpansionItem, ...] = ()
     alert_items: tuple[ScopeExpansionItem, ...] = ()
 
     @property
     def forces_rejected(self) -> bool:
-        """True iff a genuine-safety halt forces a REJECTED verdict."""
-        return bool(self.halt_items)
+        """Scope expansion never forces a release verdict by itself."""
+        return False
 
     @property
     def needs_phase_handoff(self) -> bool:
         """True iff at least one item routes through phase-handoff (T3)."""
         return bool(self.handoff_items)
-
-    def release_gaps(self, *, language: str | None = None) -> list[dict[str, str]]:
-        """Release-gap dicts (``required_receipt_gaps`` shape) for halt items only."""
-        return [_scope_gap_dict(item, language=language) for item in self.halt_items]
 
     def to_dict(self) -> dict[str, Any]:
         """Durable, JSON-safe view of the routing decision."""
@@ -483,7 +421,6 @@ class ScopeExpansionSanctionRouting:
             "operating_mode": self.operating_mode.value,
             "forces_rejected": self.forces_rejected,
             "needs_phase_handoff": self.needs_phase_handoff,
-            "halt_paths": [item.path for item in self.halt_items],
             "handoff_paths": [item.path for item in self.handoff_items],
             "alert_paths": [item.path for item in self.alert_items],
         }
@@ -499,32 +436,26 @@ def route_scope_expansion_sanction(
 
     Replaces the old unconditional ``blockers → release gaps`` coupling (the
     "prison rule"): the route now depends on the run's ``OperatingMode``,
-    whether the item is a genuine-safety class, and whether an operator
-    ``continue_with_waiver`` is active. Pure routing — the classifier is left
-    untouched; only :func:`pipeline.runtime.scope_expansion_sanction.decide`
-    decides the route per item.
+    and whether an operator ``continue_with_waiver`` is active. Pure routing —
+    the classifier is left untouched; only
+    :func:`pipeline.runtime.scope_expansion_sanction.decide` decides the route.
     """
-    halt: list[ScopeExpansionItem] = []
     handoff: list[ScopeExpansionItem] = []
     alerts: list[ScopeExpansionItem] = []
     for item in assessment.items:
         disposition = _decide_sanction(
             status=item.status.value,
-            category_is_genuine_safety=_item_is_genuine_safety(item),
             operating_mode=operating_mode,
             has_active_waiver=has_active_waiver,
         )
         sanction = disposition.sanction
-        if sanction is ScopeExpansionSanction.HALT_WAIVER:
-            halt.append(item)
-        elif sanction is ScopeExpansionSanction.HANDOFF:
+        if sanction is ScopeExpansionSanction.HANDOFF:
             handoff.append(item)
         elif sanction is ScopeExpansionSanction.AUTO_ALERT:
             alerts.append(item)
         # AUTO_CONTINUE: record → continue, no route entry.
     return ScopeExpansionSanctionRouting(
         operating_mode=operating_mode,
-        halt_items=tuple(halt),
         handoff_items=tuple(handoff),
         alert_items=tuple(alerts),
     )
@@ -564,9 +495,8 @@ def raise_scope_expansion_handoff(
     rc=4 — the same ADR 0038 lifecycle the loop-driven handoffs ride.
 
     No-op (returns ``None``) when there is no handoff need, or when a pause is
-    already pending — genuine-safety HALT items reject via the release-gap path,
-    and an earlier request (e.g. the implement substance-repair handoff) is never
-    clobbered. Idempotent across resume: the final_acceptance phase is recorded
+    already pending, and an earlier request (e.g. the implement substance-repair
+    handoff) is never clobbered. Idempotent across resume: the final_acceptance phase is recorded
     completed before the runner breaks, so a resumed ``continue`` short-circuits
     the completed phase rather than re-raising the same handoff.
     """
