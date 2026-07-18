@@ -428,15 +428,15 @@ class TestScopeExpansionFacade:
 
 
 class TestScopeExpansionHandler:
-    @pytest.mark.parametrize("mode", ["fast", "pro", "governed"])
-    def test_genuine_safety_halts_in_every_mode(
-        self, tmp_path: Path, mode: str,
+    @pytest.mark.parametrize(
+        ("mode", "expect_handoff"),
+        [("fast", False), ("pro", False), ("governed", True)],
+    )
+    def test_safety_category_routes_by_mode_without_forced_rejection(
+        self, tmp_path: Path, mode: str, expect_handoff: bool,
     ) -> None:
-        # ADR 0112 §5: a genuine-safety class (here persistence) is HALT_WAIVER in
-        # EVERY mode, including fast — it forces REJECTED and is never silently
-        # auto-sanctioned. All required receipts present → the required-receipt
-        # backstop is inert, so the REJECTED verdict is purely the genuine-safety
-        # scope-expansion halt.
+        # The classifier keeps persistence as a blocker fact, but the selected
+        # operating mode alone decides the disposition.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "storage/cache.py", "y = 2\n")
@@ -447,37 +447,36 @@ class TestScopeExpansionHandler:
 
         entry = _run(state).phase_log["final_acceptance"]
 
-        assert entry["approved"] is False
-        assert entry["verdict"] == "REJECTED"
-        assert entry["ship_ready"] is False
-        assert any(
-            "storage/cache.py" in str(g.get("risk", ""))
-            for g in entry["verification_gaps"]
-        )
+        assert entry["approved"] is True
+        assert entry["verdict"] == "APPROVED"
+        assert entry["ship_ready"] is True
         # canonical durable evidence on the single source-of-truth path.
         scope = entry["scope_expansion"]
         assert scope["has_blocker"] is True
         assert scope["counts"]["blocker"] == 1
         assert scope["items"][0]["status"] == "scope_expansion_blocker"
-        # the mode-projected sanction is recorded and forces rejection.
+        # The mode-projected sanction is recorded without forcing rejection.
         sanction = entry["scope_expansion_sanction"]
         assert sanction["operating_mode"] == mode
-        assert sanction["forces_rejected"] is True
-        assert "storage/cache.py" in sanction["halt_paths"]
+        assert sanction["forces_rejected"] is False
+        assert sanction["needs_phase_handoff"] is expect_handoff
+        if mode == "pro":
+            assert sanction["alert_paths"] == ["storage/cache.py"]
+        if expect_handoff:
+            assert sanction["handoff_paths"] == ["storage/cache.py"]
         # scope evidence reached the reviewer prompt too.
         assert "Scope expansion blocker:" in state.phase_config.final_acceptance_agent.captured
 
     @pytest.mark.parametrize(
         ("mode", "expect_handoff"),
-        [("fast", False), ("pro", True), ("governed", True)],
+        [("fast", False), ("pro", False), ("governed", True)],
     )
     def test_benign_blocker_routes_by_mode_not_rejected(
         self, tmp_path: Path, mode: str, expect_handoff: bool,
     ) -> None:
         # A benign (non-genuine-safety) blocker — an unaligned public-wire change —
-        # must NOT hard-REJECT: fast auto-continues, pro/governed route through a
-        # phase-handoff (recorded), but the verdict stays the reviewer's APPROVED
-        # in every mode (no silent reject).
+        # must NOT hard-REJECT: fast continues, pro alerts, governed routes
+        # through a phase-handoff; the verdict stays the reviewer's APPROVED.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "sdk/new_wire.py", "X = 1\n")
@@ -563,8 +562,8 @@ class TestScopeExpansionHandler:
     ) -> None:
         # R1 + ADR 0112 §5: an active continue_with_waiver fully disarms the
         # scope-expansion gate in EVERY mode (fast/pro/governed). Even with a
-        # genuine-safety out-of-plan file that would otherwise HALT_WAIVER, the
-        # prompt/readiness must carry no scope-expansion block and no durable
+        # out-of-plan file, the prompt/readiness must carry no scope-expansion
+        # block and no durable
         # evidence may be written — byte-identical to pre-feature waiver
         # behaviour. The waiver is the single operator escape hatch.
         repo = tmp_path / "repo"
@@ -593,9 +592,7 @@ class TestScopeExpansionHandler:
 
 
 class TestScopeExpansionDogfood:
-    """The two dogfood forms that the old fixed blocker→REJECTED coupling
-    hard-rejected must now continue (or route to handoff) under fast/pro,
-    never a silent hard reject."""
+    """The old fixed blocker→REJECTED coupling must not recur under fast/pro."""
 
     @pytest.mark.parametrize("mode", ["fast", "pro"])
     def test_benign_sdk_init_export_not_hard_reject(
@@ -624,7 +621,7 @@ class TestScopeExpansionDogfood:
     ) -> None:
         # Form 2: a large companion diff (>= LARGE_DIFF_LINES) on a non
         # genuine-safety file (run_projection.py → "other") is a benign blocker;
-        # under fast/pro it continues / routes to handoff, never a hard REJECT.
+        # under fast/pro it continues, never a hard REJECT.
         repo = tmp_path / "repo"
         _init_repo(repo)
         big = "".join(f"row_{i} = {i}\n" for i in range(260))
@@ -691,11 +688,11 @@ class TestScopeExpansionHandoffEndToEnd:
     paused run: the handler is the seam that raises the signal.
     """
 
-    @pytest.mark.parametrize("mode", ["pro", "governed"])
+    @pytest.mark.parametrize("mode", ["governed"])
     def test_handler_raises_out_of_plan_handoff_request(
         self, tmp_path: Path, mode: str,
     ) -> None:
-        # A benign blocker under pro/governed: the handler must set
+        # A scope expansion under governed: the handler must set
         # state.phase_handoff_request with the out_of_plan trigger so the runner
         # breaks and the orchestrator pauses (not just record needs_phase_handoff).
         repo = tmp_path / "repo"
@@ -744,11 +741,11 @@ class TestScopeExpansionHandoffEndToEnd:
 
         assert out.phase_handoff_request is None
 
-    def test_genuine_safety_rejects_without_raising_handoff(
+    def test_governed_safety_category_raises_handoff_without_rejection(
         self, tmp_path: Path,
     ) -> None:
-        # A genuine-safety class halts via the release-gap (REJECTED) path; it
-        # must NOT also open a phase-handoff pause (no handoff item, only halt).
+        # A safety-category fact stays visible, but governed alone makes the
+        # delivery decision blocking through the handoff lifecycle.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "storage/cache.py", "y = 2\n")
@@ -759,8 +756,8 @@ class TestScopeExpansionHandoffEndToEnd:
 
         out = _run(state)
 
-        assert out.phase_log["final_acceptance"]["verdict"] == "REJECTED"
-        assert out.phase_handoff_request is None
+        assert out.phase_log["final_acceptance"]["verdict"] == "APPROVED"
+        assert out.phase_handoff_request is not None
 
     def test_end_to_end_pause_persists_meta_and_accepts_decide_advice(
         self, tmp_path: Path,
@@ -772,13 +769,13 @@ class TestScopeExpansionHandoffEndToEnd:
             request_handoff_advice,
         )
 
-        # 1) REAL handler raises the pause for a pro benign blocker.
+        # 1) REAL handler raises the pause for a governed scope expansion.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "sdk/new_wire.py", "X = 1\n")
         state = _state(
             tmp_path, repo=repo, present=("test", "lint", "schema"),
-            operating_mode="pro",
+            operating_mode="governed",
         )
         out = _run(state)
         assert out.phase_handoff_request is not None
