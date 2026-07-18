@@ -127,6 +127,15 @@ def test_session_shape_normalizer_masks_prompt_size_estimates() -> None:
     assert normalized["context_pressure"]["context_window_tokens"] == "<TOKEN_COUNT>"
 
 
+def test_session_shape_normalizer_masks_explicit_base_temp_path(tmp_path: Path) -> None:
+    normalized = normalize_session(
+        {"artifact_path": str(tmp_path / "runs" / "session.json")},
+        tmp_root=str(tmp_path),
+    )
+
+    assert normalized["artifact_path"] == "<TMP>"
+
+
 def _setup_project(tmp_path: Path) -> tuple[Path, Path]:
     from tests.conftest import init_git_repo
 
@@ -209,7 +218,9 @@ class TestSessionShapeSnapshots:
             profile_name="task",
             max_rounds=1,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("task_mode", normalized)
 
     def test_full_mode_shape_pinned(self, tmp_path: Path) -> None:
@@ -222,7 +233,9 @@ class TestSessionShapeSnapshots:
             profile_name="feature",
             max_rounds=1,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("full_mode_single_round", normalized)
 
     def test_review_mode_shape_pinned(self, tmp_path: Path) -> None:
@@ -236,7 +249,9 @@ class TestSessionShapeSnapshots:
             profile_name="delivery_audit",
             max_rounds=0,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("review_mode", normalized)
 
 
