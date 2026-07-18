@@ -1777,6 +1777,28 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             out.append(
                 f"    {paint('(none on PATH — see the setup blocks below)', C.GREY)}"
             )
+        missing_runtimes = getattr(result, "missing_runtimes", ())
+        runtime_override = getattr(result, "runtime_override", None)
+        if runtime_override:
+            switched = ", ".join(f"'{name}'" for name in missing_runtimes)
+            note = (
+                f"phases configured for {switched} were switched to "
+                f"'{runtime_override}' in the workspace config."
+            )
+            out.append(
+                f"    {paint('Note:', C.GREEN)} {paint(note, C.GREY)}"
+            )
+        elif missing_runtimes:
+            names = ", ".join(f"'{name}'" for name in missing_runtimes)
+            warning = (
+                f"configured runtime(s) {names} not found on PATH — install "
+                "them, or re-run `orcho workspace init` interactively to "
+                "switch the workspace config to an installed runtime."
+            )
+            out.append(
+                f"    {paint('Warning:', C.YELLOW, C.BOLD)} "
+                f"{paint(warning, C.YELLOW)}"
+            )
         out.append("")
 
     if result.warnings:

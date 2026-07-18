@@ -3220,6 +3220,18 @@
           "default_factory": null,
           "name": "extension_points",
           "type": "tuple[str, ...]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "missing_runtimes",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "runtime_override",
+          "type": "str | None"
         }
       ],
       "frozen": true,
@@ -4064,6 +4076,12 @@
           "default": "False",
           "kind": "KEYWORD_ONLY",
           "name": "no_scaffold"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runtime_override"
         }
       ],
       "return": "WorkspaceInitResult"

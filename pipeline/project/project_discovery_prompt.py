@@ -19,39 +19,12 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
-from core.io.journey_prompt import bold, green_bold, grey, is_color_active
+from core.io.journey_prompt import ask_yn, bold, green_bold, grey, is_color_active
 from sdk.workspace import ExtraProject, UndetectedCandidate
 
 
 def _is_tty(stream: TextIO) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
-
-
-def _ask_yn(
-    prompt: str,
-    *,
-    default_yes: bool,
-    stdin: TextIO,
-    stdout: TextIO,
-    color: bool,
-) -> bool | None:
-    """Ask a yes/no question.  Returns None on EOF / Ctrl-C (abort)."""
-    hint = "[Y/n]" if default_yes else "[y/N]"
-    full_prompt = bold(f"{prompt} {hint} ", color=color)
-    stdout.write(full_prompt)
-    stdout.flush()
-    try:
-        line = stdin.readline()
-    except KeyboardInterrupt:
-        stdout.write("\n")
-        return None
-    if not line:
-        stdout.write("\n")
-        return None
-    choice = line.strip().lower()
-    if not choice:
-        return default_yes
-    return choice in ("y", "yes")
 
 
 def _pick_git_dir(
@@ -146,7 +119,7 @@ def prompt_for_extra_projects(
             + "\n"
         )
 
-        register = _ask_yn(
+        register = ask_yn(
             f"  Treat '{candidate.name}' as a workspace project?",
             default_yes=False,
             stdin=si,
@@ -159,7 +132,7 @@ def prompt_for_extra_projects(
         nested = candidate.nested_git_dirs
         if len(nested) == 0:
             # No git anywhere — offer git init.
-            do_init = _ask_yn(
+            do_init = ask_yn(
                 "  No git repo found inside. Create a local git repo here?",
                 default_yes=True,
                 stdin=si,
@@ -196,7 +169,7 @@ def prompt_for_extra_projects(
 
         elif len(nested) == 1:
             git_dir = nested[0]
-            use_it = _ask_yn(
+            use_it = ask_yn(
                 f"  Found nested git repo at '{git_dir}'. Use it as git root?",
                 default_yes=True,
                 stdin=si,

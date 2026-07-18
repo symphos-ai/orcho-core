@@ -825,6 +825,7 @@ def _emit_delivery_setup_hints(result, project_group_root: str) -> None:
 
 def cmd_workspace_init(args: argparse.Namespace) -> int:
     """Bootstrap an Orcho workspace under a project-group directory."""
+    from cli._workspace_runtime_gate import workspace_runtime_gate
     from sdk.workspace import (
         discover_undetected_candidates,
         preflight_workspace_target,
@@ -839,8 +840,17 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
     # Phase 0 (read-only): reject invalid targets (filesystem root, $HOME,
     # single repo-root) BEFORE any interactive discovery/prompt, so we never
     # mutate a child (e.g. `git init`) on a target we would ultimately refuse.
+    # Then gate on CLI runtime availability: zero installed runtimes stops
+    # the init (unless --force / --dry-run); a partial gap offers a switch
+    # of the workspace config to an installed runtime.
     try:
         preflight_workspace_target(project_group_root, force=force)
+        gate = workspace_runtime_gate(
+            project_group_root,
+            no_interactive=no_interactive,
+            dry_run=dry_run,
+            force=force,
+        )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
@@ -871,6 +881,7 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
             undetected_count=len(candidates) - len(extra_projects),
             interactive=interactive,
             no_scaffold=no_scaffold,
+            runtime_override=gate.runtime_override,
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)

@@ -2242,6 +2242,17 @@ class TestWorkspaceInitParser:
 
 
 class TestCmdWorkspaceInit:
+    @pytest.fixture(autouse=True)
+    def _runtimes_on_path(self, monkeypatch):
+        """Pin runtime detection so results don't depend on the host PATH."""
+        monkeypatch.setattr(
+            "sdk.runtimes.shutil.which",
+            lambda cmd: (
+                f"/usr/bin/{cmd}" if cmd in ("codex", "claude", "gemini")
+                else None
+            ),
+        )
+
     def test_real_run_creates_layout_and_prints_summary(
         self, tmp_path: Path, capsys,
     ) -> None:
@@ -2339,7 +2350,179 @@ class TestCmdWorkspaceInit:
         assert "individual project repo" in err
 
 
+class TestWorkspaceInitRuntimeGate:
+    """`workspace init` scans runtimes before writing anything (R: gate)."""
+
+    @staticmethod
+    def _which(*installed: str):
+        return lambda cmd: (
+            f"/usr/bin/{cmd}" if cmd in installed else None
+        )
+
+    def test_zero_runtimes_stops_with_install_recommendation(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no CLI agent runtime found on PATH" in err
+        assert "codex" in err and "claude" in err and "gemini" in err
+        assert not (root / "workspace-orchestrator").exists(), \
+            "a refused init must not scaffold anything"
+
+    def test_zero_runtimes_force_scaffolds_anyway(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=True,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        assert (root / "workspace-orchestrator" / "runspace" / "runs").is_dir()
+        out = capsys.readouterr().out
+        assert "not found on PATH" in out  # formatter warning survives
+
+    def test_zero_runtimes_dry_run_previews_with_warning(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=False,
+            dry_run=True,
+        ))
+
+        assert rc == 0
+        assert not root.exists()
+        assert "not found on PATH" in capsys.readouterr().out
+
+    def test_partial_gap_non_interactive_warns_and_keeps_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "not found on PATH" in out
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert any(
+            spec.get("runtime") == "codex"
+            for spec in config["phases"].values()
+        ), "config must not be switched without consent"
+
+    def test_partial_gap_interactive_yes_switches_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import io
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        fake_stdin = io.StringIO("y\n")
+        fake_stdin.isatty = lambda: True  # type: ignore[method-assign]
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=False,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "switched to 'claude'" in out
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert all(
+            spec["runtime"] == "claude"
+            for spec in config["phases"].values()
+        )
+
+    def test_partial_gap_interactive_no_keeps_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import io
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        fake_stdin = io.StringIO("n\n")
+        fake_stdin.isatty = lambda: True  # type: ignore[method-assign]
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=False,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert any(
+            spec.get("runtime") == "codex"
+            for spec in config["phases"].values()
+        )
+
+
 class TestWorkspaceInitNoInteractive:
+    @pytest.fixture(autouse=True)
+    def _runtimes_on_path(self, monkeypatch):
+        """Pin runtime detection so results don't depend on the host PATH."""
+        monkeypatch.setattr(
+            "sdk.runtimes.shutil.which",
+            lambda cmd: (
+                f"/usr/bin/{cmd}" if cmd in ("codex", "claude", "gemini")
+                else None
+            ),
+        )
+
     def test_no_interactive_flag_parsed(self) -> None:
         from cli.orcho import build_parser
         parser = build_parser()

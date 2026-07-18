@@ -32,26 +32,26 @@ run_workspace_init() {
   #   5. bare Python source fallback.
   local orcho_bin="${ORCHO_DEMO_ORCHO_BIN:-}"
   if [[ -n "$orcho_bin" ]]; then
-    "$orcho_bin" workspace init "$demo_root" >/dev/null
+    "$orcho_bin" workspace init "$demo_root" --force >/dev/null
     return
   fi
 
   local py_bin="${ORCHO_DEMO_CORE_PYTHON:-}"
   if [[ -n "$py_bin" ]]; then
     PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
-      "$py_bin" -m cli.orcho workspace init "$demo_root" >/dev/null
+      "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
     return
   fi
 
   py_bin="$core_dir/.venv/bin/python"
   if [[ -x "$py_bin" ]]; then
     PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
-      "$py_bin" -m cli.orcho workspace init "$demo_root" >/dev/null
+      "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
     return
   fi
 
   if command -v orcho >/dev/null 2>&1; then
-    orcho workspace init "$demo_root" >/dev/null
+    orcho workspace init "$demo_root" --force >/dev/null
     return
   fi
 
@@ -61,7 +61,7 @@ run_workspace_init() {
     py_bin="python"
   fi
   PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
-    "$py_bin" -m cli.orcho workspace init "$demo_root" >/dev/null
+    "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
 }
 
 init_project_git() {
