@@ -5,9 +5,8 @@ Covers the ADR 0112 §5 sanction matrix exposed by
 
 - the per-mode routing table ``fast`` / ``pro`` / ``governed`` ×
   ``notice`` / ``risk`` / ``blocker`` for a benign change (sanction + alert),
-- genuine-safety → ``HALT_WAIVER`` in every mode (never auto-sanctioned),
+- the selected operating mode alone controls the disposition,
 - an active ``continue_with_waiver`` → ``AUTO_CONTINUE`` in every mode,
-  including over a genuine-safety class (the single operator escape hatch),
 - the knob being a *policy/projection* carrier whose outcome is computed by
   ``decide`` (it can express the whole matrix), not a baked outcome enum,
 - the exhaustive import-time projection-table guard over ``OperatingMode``,
@@ -45,14 +44,14 @@ from pipeline.runtime.scope_expansion_sanction import (
 _MATRIX: dict[
     tuple[str, str], tuple[ScopeExpansionSanction, bool]
 ] = {
-    # fast: auto-sanction any benign status; surfaced as notice; no pause.
+    # fast: auto-sanction any status; no pause.
     ("fast", STATUS_NOTICE): (ScopeExpansionSanction.AUTO_CONTINUE, False),
     ("fast", STATUS_RISK): (ScopeExpansionSanction.AUTO_CONTINUE, False),
     ("fast", STATUS_BLOCKER): (ScopeExpansionSanction.AUTO_CONTINUE, False),
-    # pro: notice auto; risk auto + alert; blocker → phase-handoff.
-    ("pro", STATUS_NOTICE): (ScopeExpansionSanction.AUTO_CONTINUE, False),
+    # pro: every scope expansion continues with an alert.
+    ("pro", STATUS_NOTICE): (ScopeExpansionSanction.AUTO_ALERT, True),
     ("pro", STATUS_RISK): (ScopeExpansionSanction.AUTO_ALERT, True),
-    ("pro", STATUS_BLOCKER): (ScopeExpansionSanction.HANDOFF, True),
+    ("pro", STATUS_BLOCKER): (ScopeExpansionSanction.AUTO_ALERT, True),
     # governed: any participant-add / scope expansion → handoff + alert.
     ("governed", STATUS_NOTICE): (ScopeExpansionSanction.HANDOFF, True),
     ("governed", STATUS_RISK): (ScopeExpansionSanction.HANDOFF, True),
@@ -65,7 +64,6 @@ def test_decide_matrix_benign(mode_value: str, status: str) -> None:
     expected_sanction, expected_alert = _MATRIX[(mode_value, status)]
     result = decide(
         status=status,
-        category_is_genuine_safety=False,
         operating_mode=OperatingMode(mode_value),
         has_active_waiver=False,
     )
@@ -80,38 +78,15 @@ def test_decide_accepts_engine_status_enum_member() -> None:
     # not only the bare value string, and routes it identically.
     via_enum = decide(
         status=ScopeExpansionStatus.BLOCKER,
-        category_is_genuine_safety=False,
         operating_mode=OperatingMode.PRO,
         has_active_waiver=False,
     )
     via_str = decide(
         status=STATUS_BLOCKER,
-        category_is_genuine_safety=False,
         operating_mode=OperatingMode.PRO,
         has_active_waiver=False,
     )
-    assert via_enum.sanction is via_str.sanction is ScopeExpansionSanction.HANDOFF
-
-
-# ── Genuine-safety stays hard in every mode ──────────────────────────────────
-
-
-@pytest.mark.parametrize("mode_value", ["fast", "pro", "governed"])
-@pytest.mark.parametrize("status", [STATUS_NOTICE, STATUS_RISK, STATUS_BLOCKER])
-def test_genuine_safety_is_halt_waiver_in_every_mode(
-    mode_value: str, status: str
-) -> None:
-    # security / persistence / destructive_delete → default halt + waiver, with
-    # an alert, regardless of mode and regardless of the benign status. Never
-    # silently auto-sanctioned, not even under fast.
-    result = decide(
-        status=status,
-        category_is_genuine_safety=True,
-        operating_mode=OperatingMode(mode_value),
-        has_active_waiver=False,
-    )
-    assert result.sanction is ScopeExpansionSanction.HALT_WAIVER
-    assert result.alert is True
+    assert via_enum.sanction is via_str.sanction is ScopeExpansionSanction.AUTO_ALERT
 
 
 # ── continue_with_waiver disarms the gate in every mode ──────────────────────
@@ -119,16 +94,12 @@ def test_genuine_safety_is_halt_waiver_in_every_mode(
 
 @pytest.mark.parametrize("mode_value", ["fast", "pro", "governed"])
 @pytest.mark.parametrize("status", [STATUS_NOTICE, STATUS_RISK, STATUS_BLOCKER])
-@pytest.mark.parametrize("genuine_safety", [False, True])
 def test_active_waiver_auto_continues_in_every_mode(
-    mode_value: str, status: str, genuine_safety: bool
+    mode_value: str, status: str,
 ) -> None:
-    # The single operator escape hatch (ADR 0072/0073): an active
-    # continue_with_waiver fully disarms the gate everywhere, even over a
-    # genuine-safety class and even in governed.
+    # The single operator escape hatch fully disarms the gate everywhere.
     result = decide(
         status=status,
-        category_is_genuine_safety=genuine_safety,
         operating_mode=OperatingMode(mode_value),
         has_active_waiver=True,
     )
@@ -152,32 +123,16 @@ def test_knob_is_a_policy_carrier_not_an_outcome_enum() -> None:
         assert policy.operating_mode is mode
 
     pro = project_scope_expansion_sanction(OperatingMode.PRO)
-    # One carrier, three distinct outcomes depending on the input signals →
-    # it is a policy, not a single stored verdict.
+    # One carrier makes one explicit mode decision for every classifier fact.
     outcomes = {
         decide(
             status=status,
-            category_is_genuine_safety=False,
             operating_mode=pro.operating_mode,
             has_active_waiver=False,
         ).sanction
         for status in (STATUS_NOTICE, STATUS_RISK, STATUS_BLOCKER)
     }
-    assert outcomes == {
-        ScopeExpansionSanction.AUTO_CONTINUE,
-        ScopeExpansionSanction.AUTO_ALERT,
-        ScopeExpansionSanction.HANDOFF,
-    }
-    # And the same carrier still yields HALT_WAIVER for a genuine-safety class.
-    assert (
-        decide(
-            status=STATUS_NOTICE,
-            category_is_genuine_safety=True,
-            operating_mode=pro.operating_mode,
-            has_active_waiver=False,
-        ).sanction
-        is ScopeExpansionSanction.HALT_WAIVER
-    )
+    assert outcomes == {ScopeExpansionSanction.AUTO_ALERT}
 
 
 def test_projection_is_pure_and_idempotent() -> None:
@@ -226,7 +181,6 @@ def test_decide_rejects_non_operating_mode() -> None:
     with pytest.raises(TypeError):
         decide(
             status=STATUS_NOTICE,
-            category_is_genuine_safety=False,
             operating_mode="fast",  # type: ignore[arg-type]
             has_active_waiver=False,
         )
@@ -236,23 +190,18 @@ def test_decide_rejects_unknown_status() -> None:
     with pytest.raises(ValueError):
         decide(
             status="scope_expansion_unknown",
-            category_is_genuine_safety=False,
             operating_mode=OperatingMode.PRO,
             has_active_waiver=False,
         )
 
 
-@pytest.mark.parametrize("bad_field", ["category_is_genuine_safety", "has_active_waiver"])
-def test_decide_rejects_non_bool_flags(bad_field: str) -> None:
-    kwargs = dict(
-        status=STATUS_NOTICE,
-        category_is_genuine_safety=False,
-        operating_mode=OperatingMode.PRO,
-        has_active_waiver=False,
-    )
-    kwargs[bad_field] = "yes"  # type: ignore[assignment]
+def test_decide_rejects_non_bool_waiver() -> None:
     with pytest.raises(TypeError):
-        decide(**kwargs)  # type: ignore[arg-type]
+        decide(
+            status=STATUS_NOTICE,
+            operating_mode=OperatingMode.PRO,
+            has_active_waiver="yes",  # type: ignore[arg-type]
+        )
 
 
 # ── Engine-decoupled module (no wrong-direction import) ──────────────────────
@@ -326,7 +275,6 @@ assert ses.project_scope_expansion_sanction(OperatingMode.FAST).operating_mode \
     is OperatingMode.FAST
 assert ses.decide(
     status=ses.STATUS_BLOCKER,
-    category_is_genuine_safety=False,
     operating_mode=OperatingMode.GOVERNED,
     has_active_waiver=False,
 ).sanction.value == "handoff"
