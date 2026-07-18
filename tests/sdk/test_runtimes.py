@@ -111,6 +111,23 @@ def test_assess_fallback_prefers_claude_over_catalogue_order(monkeypatch) -> Non
     assert result.fallback_runtime == "claude"
 
 
+def test_assess_fallback_uses_first_installed_outside_preference(
+    monkeypatch,
+) -> None:
+    """A future catalogue entry outside the preference list still wins
+    as fallback when it is the only installed runtime."""
+    monkeypatch.setattr(
+        runtimes.shutil, "which",
+        lambda cmd: "/usr/bin/gemini" if cmd == "gemini" else None,
+    )
+    monkeypatch.setattr(runtimes, "_FALLBACK_PREFERENCE", ("claude", "codex"))
+
+    result = assess_runtime_availability(["claude"])
+
+    assert result.installed_runtimes == ("gemini",)
+    assert result.fallback_runtime == "gemini"
+
+
 def test_assess_unknown_runtime_probed_by_own_name(monkeypatch) -> None:
     monkeypatch.setattr(
         runtimes.shutil, "which",

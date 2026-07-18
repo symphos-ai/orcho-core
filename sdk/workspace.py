@@ -598,7 +598,9 @@ def _apply_runtime_override(
         (
             spec.get("model", "")
             for spec in phases.values()
-            if spec.get("runtime") == override and spec.get("model")
+            if isinstance(spec, dict)
+            and spec.get("runtime") == override
+            and spec.get("model")
         ),
         "",
     )
