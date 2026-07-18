@@ -23,8 +23,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from pipeline.plugins import PluginConfig
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Attach routing markers from the test path.
 
@@ -312,29 +310,3 @@ def mock_codex_bin(monkeypatch) -> None:
 def mock_gemini_bin(monkeypatch) -> None:
     from core.infra import config
     monkeypatch.setattr(config, "get_gemini_bin", lambda: "/fake/gemini")
-
-
-# ── Post-session cleanup ───────────────────────────────────────────────────────
-
-def pytest_sessionfinish(session, exitstatus) -> None:
-    """Remove stale pytest temp dirs after each test session.
-
-    Keeps the 2 most recent pytest-N dirs (current + previous) so failed runs
-    are still inspectable. Silently skips if the temp dir doesn't exist.
-    """
-    import re
-    import shutil
-
-    tmp_root = Path(tempfile.gettempdir()) / f"pytest-of-{Path.home().name}"
-    if not tmp_root.exists():
-        return
-
-    # Collect all numbered dirs: pytest-N, sort by N
-    numbered = sorted(
-        (d for d in tmp_root.iterdir()
-         if d.is_dir() and re.fullmatch(r"pytest-\d+", d.name)),
-        key=lambda d: int(d.name.split("-")[1]),
-    )
-    # Keep the 2 newest, silently remove the rest
-    for d in numbered[:-2]:
-        shutil.rmtree(d, ignore_errors=True)
