@@ -106,6 +106,34 @@ implemented by this foundation.
 
 ## Typed receipt outcomes and hygiene handoff
 
+## Verification subject identity (ADR 0140, I4-R1)
+
+Command receipts now use schema **v3**. Their only authoritative freshness
+proof is the top-level `subject` union:
+
+```json
+{"status":"available","identity":{"version":1,"object_format":"sha1","tree_oid":"…","observed_head_oid":"…","baseline_oid":null}}
+```
+
+or `{"status":"unavailable","reason":"…"}`. `tree_oid` is a temporary
+index snapshot of the complete Git-visible checkout: tracked edits, additions,
+deletions, renames, modes, symlink targets, and non-ignored untracked content.
+Ignored untracked content is excluded. Capture never changes the real index,
+refs, HEAD, or working tree.
+
+`object_format` and `tree_oid` identify content. `observed_head_oid` and
+`baseline_oid` are provenance: direct freshness additionally requires the same
+observed HEAD, while baseline is not content equality. An unavailable or
+malformed subject is `unverifiable`, never `present`; old v2 receipts remain
+readable but cannot prove freshness. Each effective (`depends_on: true`)
+dependency carries the same subject union. A dirty submodule must have its own
+usable capture; its unchanged superproject gitlink is not proof.
+
+The compact evidence v1 and MCP projections deliberately omit both `subject`
+and `unverifiable`; they do not inspect Git themselves. R1 does **not** permit
+exact-commit or apply carry-over after a changed HEAD. That delivery-transition
+continuity is R2 work, and terminal/DONE projection is R3 work.
+
 ADR 0130 retains the receipt status vocabulary (`present`, `missing`, `failed`,
 `stale`) while adding `failure_kind`: no receipt is `missing`; a nonzero exit is
 `test_failure`; no exit code/execution detail is `env_failure`; and an exit-0

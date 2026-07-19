@@ -304,7 +304,7 @@ class DeliveryVerificationAssessment:
         # require gaps — hard blockers, worded exactly as the legacy banner.
         bm = [e.command for e in self.blocking_gaps if e.status == "missing"]
         bf = [e.command for e in self.blocking_gaps if e.status == "failed"]
-        bs = [self._stale_detail_for(e.command) for e in self.blocking_gaps if e.status == "stale"]
+        bs = [self._stale_detail_for(e.command) for e in self.blocking_gaps if e.status in {"stale", "unverifiable"}]
         if bm:
             out.append("missing required receipts: " + ", ".join(bm))
         if bf:
@@ -321,6 +321,7 @@ class DeliveryVerificationAssessment:
             ("missing", "missing receipts"),
             ("failed", "failed receipts"),
             ("stale", "stale receipts"),
+            ("unverifiable", "unverifiable receipts"),
         ):
             entries = [e for e in self.warning_gaps if e.status == status]
             if not entries:
@@ -503,7 +504,7 @@ def assess_delivery_verification(
     required_gaps = (*blocking_gaps, *partition.warning)
     missing = tuple(e.command for e in required_gaps if e.status == "missing")
     failed = tuple(e.command for e in required_gaps if e.status == "failed")
-    stale = tuple(e.command for e in required_gaps if e.status == "stale")
+    stale = tuple(e.command for e in required_gaps if e.status in {"stale", "unverifiable"})
     stale_details = tuple(
         f"{c} ({status_by_command[c].reason})"
         if getattr(status_by_command.get(c), "reason", "")

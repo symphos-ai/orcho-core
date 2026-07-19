@@ -1,6 +1,7 @@
 """Unit tests for pipeline/verification_contract.py (read-only Stage 1)."""
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,10 @@ from pipeline.verification_readiness import (
     build_final_acceptance_readiness,
     classify_required_receipts,
     required_receipt_gaps,
+)
+from pipeline.verification_subject import (
+    VerificationSubjectAvailable,
+    capture_verification_subject,
 )
 
 
@@ -805,7 +810,12 @@ def _manual_prov_contract() -> VerificationContract:
     return contract
 
 
-def _write_passing_command_receipt(run_dir: Path, command: str) -> None:
+def _write_passing_command_receipt(
+    run_dir: Path,
+    command: str,
+    *,
+    subject: dict[str, object] | None = None,
+) -> None:
     rdir = run_dir / "verification_command_receipts"
     rdir.mkdir(parents=True, exist_ok=True)
     (rdir / f"{command}.json").write_text(
@@ -821,10 +831,38 @@ def _write_passing_command_receipt(run_dir: Path, command: str) -> None:
                 "baseline_head": None,
                 "changed_files_fingerprint": None,
             },
+            "schema_version": 3,
+            "subject": subject or {"status": "unavailable", "reason": "identity_unavailable"},
             "dependencies": [],
         }),
         encoding="utf-8",
     )
+
+
+def _fresh_subject_payload(checkout: Path) -> dict[str, object]:
+    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "orcho@example.test"], cwd=checkout, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Orcho Test"], cwd=checkout, check=True,
+    )
+    (checkout / "payload.txt").write_text("initial\n", encoding="utf-8")
+    subprocess.run(["git", "add", "payload.txt"], cwd=checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=checkout, check=True)
+    captured = capture_verification_subject(checkout)
+    assert isinstance(captured, VerificationSubjectAvailable)
+    identity = captured.identity
+    return {
+        "status": "available",
+        "identity": {
+            "version": identity.version,
+            "object_format": identity.object_format,
+            "tree_oid": identity.tree_oid,
+            "observed_head_oid": identity.observed_head_oid,
+            "baseline_oid": identity.baseline_oid,
+        },
+    }
 
 
 def _write_failed_phase_receipt(run_dir: Path) -> Path:
@@ -917,19 +955,23 @@ class TestEnvironmentProvenanceOverlay:
     ) -> None:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
         contract = _prov_contract()
-        _write_passing_command_receipt(run_dir, "env-provenance")
+        _write_passing_command_receipt(
+            run_dir, "env-provenance", subject=_fresh_subject_payload(checkout),
+        )
         # No phase receipt at all -> no provenance failure -> no downgrade.
 
         base = classify_required_receipts(
-            contract, run_dir, PlaceholderContext(checkout=str(tmp_path)),
-            checkout=str(tmp_path),
+            contract, run_dir, PlaceholderContext(checkout=str(checkout)),
+            checkout=str(checkout),
         )
         overlaid = apply_environment_provenance(base, contract, run_dir)
 
         assert overlaid["env-provenance"].status == "present"
         summary = build_final_acceptance_readiness(
-            contract, run_dir, PlaceholderContext(checkout=str(tmp_path)),
+            contract, run_dir, PlaceholderContext(checkout=str(checkout)),
         )
         assert summary.required_failed == ()
 

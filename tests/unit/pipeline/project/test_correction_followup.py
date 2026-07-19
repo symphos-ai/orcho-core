@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -1118,12 +1119,8 @@ class TestCorrectionRouteWiring:
 
         if presentation is None:
             presentation = PresentationPolicy.SILENT
-        import json
         from types import SimpleNamespace
 
-        from pipeline.evidence.verification_receipt import (
-            COMMAND_RECEIPTS_DIRNAME,
-        )
         from pipeline.project.run import _PipelineRun
         from pipeline.verification_contract import placeholder_context_for
 
@@ -1137,27 +1134,22 @@ class TestCorrectionRouteWiring:
             )
 
         def _write_receipt(command: str) -> Path:
-            rdir = run_dir / COMMAND_RECEIPTS_DIRNAME
-            rdir.mkdir(parents=True, exist_ok=True)
-            path = rdir / f"{command}.json"
-            path.write_text(
-                json.dumps({
-                    "kind": "verification_command",
+            from pipeline.evidence.verification_receipt import write_command_receipt
+            from pipeline.verification_subject import capture_verification_subject
+
+            return write_command_receipt(
+                output_dir=run_dir,
+                result={
                     "command": command,
                     "env": "core-local",
                     "exit_code": 0,
                     "assertions": [],
                     "detail": "",
-                    "git": {
-                        "checkout_head": None,
-                        "baseline_head": None,
-                        "changed_files_fingerprint": None,
-                    },
+                    "git": {},
+                    "subject": capture_verification_subject(project),
                     "dependencies": [],
-                }),
-                encoding="utf-8",
+                },
             )
-            return path
 
         def _verify_run(**kwargs):
             calls.append(("run", kwargs))
@@ -1181,6 +1173,12 @@ class TestCorrectionRouteWiring:
         run_dir.mkdir(parents=True)
         project = tmp_path / "project"
         project.mkdir()
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=project, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=project, check=True)
+        subprocess.run(["git", "add", "base.txt"], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=project, check=True)
         triage = {"kind": "gate_rerun", "summary": "stale blockers"}
         st = self._state(triage)
         st.extras["verification_contract"] = contract

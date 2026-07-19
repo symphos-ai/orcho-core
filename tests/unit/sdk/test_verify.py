@@ -512,7 +512,7 @@ class TestVerifyRun:
         outcome = result.outcomes[0]
         assert outcome.parity == "differential"
         assert outcome.checkout_head == _head_sha(worktree)
-        assert outcome.baseline_head == "base-sha-xyz"
+        assert outcome.baseline_head is None
         assert result.all_passed is True
 
     def test_default_run_excludes_manual_and_operator_only_commands(

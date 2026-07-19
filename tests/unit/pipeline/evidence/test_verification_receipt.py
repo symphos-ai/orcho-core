@@ -725,18 +725,12 @@ class TestCommandReceiptWriter:
         path = write_command_receipt(output_dir=run_dir, result=result)
         data = json.loads(path.read_text(encoding="utf-8"))
 
-        assert data["schema_version"] == 2
-        assert data["dependencies"] == [
-            {
-                "name": "shared",
-                "path": "/abs/shared",
-                "head": "depsha111",
-                "dirty": True,
-                "changed_files_count": 3,
-                "changed_files_fingerprint": "abcd1234abcd1234",
-                "depends_on": True,
-            },
-        ]
+        assert data["schema_version"] == 3
+        assert data["dependencies"] == [{
+            "name": "shared", "path": "/abs/shared", "head": "depsha111",
+            "dirty": True, "depends_on": True,
+            "subject": {"status": "unavailable", "reason": "identity_unavailable"},
+        }]
 
     def test_dependency_none_fields_preserved(self, tmp_path) -> None:
         # A non-git dependency degrades to head=None with None dirty fields; the
@@ -763,8 +757,7 @@ class TestCommandReceiptWriter:
 
         assert dep["head"] is None
         assert dep["dirty"] is None
-        assert dep["changed_files_count"] is None
-        assert dep["changed_files_fingerprint"] is None
+        assert dep["subject"]["status"] == "unavailable"
         assert dep["depends_on"] is False
 
     def test_garbage_dependencies_degrade_to_empty_list(self, tmp_path) -> None:
@@ -803,7 +796,7 @@ class TestCommandReceiptWriter:
 
         assert len(deps) == 1
         assert deps[0]["name"] == "shared"
-        assert deps[0]["changed_files_count"] is None
+        assert deps[0]["subject"]["status"] == "unavailable"
         assert deps[0]["depends_on"] is True
 
     def test_absent_dependencies_key_degrades_to_empty_list(self, tmp_path) -> None:

@@ -9,7 +9,7 @@ so interpreter / effective-cwd / process-env resolution stays single-sourced.
 Load-bearing subject separation (F1): the subprocess runs in ``eff_cwd`` — the
 declared env ``cwd`` (which may be ``{project}``, a dependency dir, or a
 subdirectory) — and that path is the *only* thing recorded as ``receipt.cwd``.
-Git provenance (``git.checkout_head`` / ``git.changed_files_fingerprint``) is
+Git provenance (the typed ``subject`` and diagnostic ``git.checkout_head``) is
 taken from ``ctx.checkout`` (the run worktree, the verification *subject*),
 NEVER from ``eff_cwd``. Mixing the two would let a differential receipt attribute
 a baseline diff to the wrong tree.
@@ -27,20 +27,20 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.io.git_helpers import git_head
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
     resolve_placeholders,
 )
-from pipeline.verification_dependencies import (
-    capture_dependency_provenance,
-    changed_files_fingerprint,
-)
+from pipeline.verification_dependencies import capture_dependency_provenance
 from pipeline.verification_env import (
     map_python_token,
     resolve_env_runtime,
     run_env_assertions,
+)
+from pipeline.verification_subject import (
+    VerificationSubjectAvailable,
+    capture_verification_subject,
 )
 
 # Command wall-clock budget. A hung command degrades to a failed receipt
@@ -70,8 +70,8 @@ def run_command(
     Returns a flat dict (NOT written to disk here): ``kind``, ``command``,
     ``env``, ``cwd`` (= eff_cwd), ``placeholders`` (checkout/project), ``argv``,
     ``env_overrides``, ``assertions``, ``exit_code``, ``duration_s``,
-    ``stdout_tail`` / ``stderr_tail``, ``log_path``, ``parity``, ``git``
-    (``checkout_head`` / ``baseline_head`` / ``changed_files_fingerprint`` — all
+    ``stdout_tail`` / ``stderr_tail``, ``log_path``, ``parity``, typed
+    ``subject``, diagnostic ``git`` (``checkout_head`` / ``baseline_head`` —
     relative to ``ctx.checkout``), and ``dependencies`` (a sibling of ``git``:
     per-declared-dependency cross-repo provenance — ``git`` stays the subject's
     own differential lens, ``dependencies`` records the depended-on repos). Never
@@ -97,13 +97,14 @@ def run_command(
 
     # F1 — git provenance is always taken from the run worktree (ctx.checkout),
     # the verification subject, never from eff_cwd.
-    subject_checkout = ctx.checkout or ""
-    checkout_head = git_head(subject_checkout) if subject_checkout else None
-    fingerprint = (
-        changed_files_fingerprint(subject_checkout)
-        if checkout_head is not None
-        else None
-    )
+    subject = capture_verification_subject(Path(ctx.checkout), baseline_ref=baseline_head) if ctx.checkout else None
+    identity = subject.identity if isinstance(subject, VerificationSubjectAvailable) else None
+    # A missing historical baseline makes the durable subject unavailable, but
+    # must not erase the existing diagnostic checkout HEAD from CommandOutcome.
+    diagnostic_identity = identity
+    if diagnostic_identity is None and ctx.checkout:
+        diagnostic = capture_verification_subject(Path(ctx.checkout))
+        diagnostic_identity = diagnostic.identity if isinstance(diagnostic, VerificationSubjectAvailable) else None
 
     dependencies = capture_dependency_provenance(
         ctx,
@@ -130,10 +131,13 @@ def run_command(
         "parity": parity,
         "detail": detail,
         "git": {
-            "checkout_head": checkout_head,
-            "baseline_head": baseline_head,
-            "changed_files_fingerprint": fingerprint,
+            "checkout_head": diagnostic_identity.observed_head_oid if diagnostic_identity else None,
+            # This is diagnostic provenance only; the typed subject remains
+            # the sole freshness proof and may be unavailable for this
+            # baseline even when the caller supplied one.
+            "baseline_head": identity.baseline_oid if identity else None,
         },
+        "subject": subject,
         "dependencies": dependencies,
     }
 

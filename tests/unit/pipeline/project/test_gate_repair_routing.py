@@ -11,10 +11,12 @@ from types import SimpleNamespace
 
 from pipeline.plugins import PluginConfig
 from pipeline.project import gate_repair
+from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_failure import classify_receipt
 
 
 def _contract(**verification) -> VerificationContract:
@@ -67,11 +69,17 @@ def _receipt(
     detail: str = "",
 ) -> dict:
     return {
+        "schema_version": 3,
         "exit_code": exit_code,
         "stdout_tail": "out",
         "stderr_tail": "err",
         "assertions": assertions or [],
         "detail": detail,
+        "subject": {"status": "available", "identity": {
+            "version": 1, "object_format": "sha1", "tree_oid": "a" * 40,
+            "observed_head_oid": "b" * 40, "baseline_oid": None,
+        }},
+        "dependencies": [],
     }
 
 
@@ -132,6 +140,16 @@ def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
         return queue.pop(0) if queue else results[-1]
 
     monkeypatch.setattr(gate_repair, "_run_gate_command", fake_gate)
+    # These routing tests isolate scheduling and repair behavior.  Their
+    # in-memory receipts carry an explicit v3 subject, and this seam supplies
+    # the same current subject a real checkout capture would produce.
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(
+            receipt, current_subject=subject_identity(receipt.get("subject")),
+        ),
+    )
     return calls
 
 
@@ -163,6 +181,26 @@ def test_passing_gate_closes_without_repair(monkeypatch) -> None:
     assert outcome.active and outcome.passed
     assert calls["repair"] == 0
     assert run.state.phase_handoff_request is None
+
+
+def test_unverifiable_gate_handoffs_without_repair_rounds(monkeypatch) -> None:
+    """Unavailable identity is fail-closed but cannot be repaired by an agent."""
+    contract = _contract()
+    run = _run(contract)
+    calls = _patch_gate_results(monkeypatch, [_receipt(0)])
+    _patch_repair(monkeypatch, calls)
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(receipt, current_subject=None),
+    )
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.active and outcome.paused
+    assert outcome.rounds == 0
+    assert calls["repair"] == 0
+    assert run.state.phase_handoff_request is not None
 
 
 def test_failed_gate_enters_repair_without_review(monkeypatch) -> None:

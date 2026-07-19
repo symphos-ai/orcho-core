@@ -66,7 +66,7 @@ _DELIVERY_HOOKS: tuple[tuple[str, str], ...] = (
 )
 
 # Receipt statuses that constitute an unproven gap (everything but ``present``).
-_GAP_STATUSES: frozenset[str] = frozenset({"missing", "failed", "stale"})
+_GAP_STATUSES: frozenset[str] = frozenset({"missing", "failed", "stale", "unverifiable"})
 
 
 @dataclass(frozen=True)

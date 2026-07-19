@@ -13,10 +13,12 @@ from types import SimpleNamespace
 
 from pipeline.plugins import PluginConfig
 from pipeline.project import gate_repair
+from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_failure import classify_receipt
 
 
 def _contract(
@@ -72,7 +74,14 @@ def _run(contract, *, max_rounds: int = 2) -> SimpleNamespace:
 
 
 def _receipt(exit_code) -> dict:
-    return {"exit_code": exit_code, "stdout_tail": "out", "stderr_tail": "err"}
+    return {
+        "schema_version": 3, "exit_code": exit_code, "stdout_tail": "out", "stderr_tail": "err",
+        "assertions": [], "detail": "", "dependencies": [],
+        "subject": {"status": "available", "identity": {
+            "version": 1, "object_format": "sha1", "tree_oid": "a" * 40,
+            "observed_head_oid": "b" * 40, "baseline_oid": None,
+        }},
+    }
 
 
 def _patch_gate(monkeypatch, results: list[dict]) -> dict:
@@ -84,6 +93,13 @@ def _patch_gate(monkeypatch, results: list[dict]) -> dict:
         return queue.pop(0) if queue else results[-1]
 
     monkeypatch.setattr(gate_repair, "_run_gate_command", fake_gate)
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(
+            receipt, current_subject=subject_identity(receipt.get("subject")),
+        ),
+    )
     return calls
 
 
@@ -700,6 +716,13 @@ class TestRealDispatchWiring:
         receipts = iter([_receipt(1), _receipt(0)])
         monkeypatch.setattr(gate_repair, "_run_gate_command",
                             lambda *a, **k: next(receipts))
+        monkeypatch.setattr(
+            gate_repair,
+            "_classify_gate_receipt",
+            lambda receipt, _ctx: classify_receipt(
+                receipt, current_subject=subject_identity(receipt.get("subject")),
+            ),
+        )
 
         run_profile(
             profile, state, reg, ctx=ctx,
