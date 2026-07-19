@@ -212,7 +212,7 @@ class TestDependencyStaleInPrompt:
         _repo(checkout)
         run_dir = _write_missing_receipt_run(tmp_path)
         _dep_receipt(run_dir, checkout, dep, old, depends_on=True)
-        new = _dep_new_commit(dep)
+        _dep_new_commit(dep)
 
         ctx = PlaceholderContext(
             checkout=str(checkout), dependencies={"shared": str(dep)},

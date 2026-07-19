@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from pipeline.evidence.verification_receipt import command_receipt_passed
 from pipeline.verification_failure import classify_receipt
 from pipeline.verification_subject import VerificationSubjectIdentity
-from pipeline.evidence.verification_receipt import command_receipt_passed
 
 
 def _subject(tree: str = "a", head: str = "b") -> dict:

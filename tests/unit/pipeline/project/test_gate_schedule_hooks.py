@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.plugins import PluginConfig
 from pipeline.project import gate_repair
-from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,

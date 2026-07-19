@@ -4,9 +4,9 @@ import json
 import subprocess
 from pathlib import Path
 
+from pipeline.evidence.verification_receipt import write_command_receipt
 from pipeline.verification_contract import PlaceholderContext, VerificationContract
 from pipeline.verification_readiness import classify_required_receipts
-from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
     ReceiptSource,
@@ -14,7 +14,7 @@ from pipeline.verification_receipt_index import (
     parent_sources_from_extras,
     receipt_file_path,
 )
-from pipeline.evidence.verification_receipt import write_command_receipt
+from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
 
 
 def _repo(path: Path) -> None:
