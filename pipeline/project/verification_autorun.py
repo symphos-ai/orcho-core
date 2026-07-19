@@ -267,7 +267,7 @@ def materialize_required_receipts(
             continue
         # ``failed`` is intentionally left out of every bucket: it is never
         # rerun in the normal path and must not be reported as fresh.
-        if status.status in ("missing", "stale"):
+        if status.status in ("missing", "stale", "unverifiable"):
             if command in operator_commands:
                 skipped_manual.append(command)
             else:
@@ -350,7 +350,7 @@ def materialize_required_receipts(
         command
         for command, status in post.items()
         if (
-            status.status in ("missing", "stale")
+            status.status in ("missing", "stale", "unverifiable")
             # An operator-owned delivery identity is intentionally withheld and
             # already reported through ``skipped_manual``.  It is not an
             # unmaterialized required receipt merely because it remains absent.

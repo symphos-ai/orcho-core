@@ -18,9 +18,8 @@ would hide a path-selected gate that became delivery-relevant afterwards.
 
 Receipt reads go only through the tolerant loaders in
 :mod:`pipeline.evidence.verification_receipt`; git / IO failures degrade, never
-raise. Stale classification reuses the exact fingerprint helper the receipt
-writer used (:func:`pipeline.verification_dependencies.changed_files_fingerprint`),
-so a valid receipt is never falsely stale due to hash drift.
+raise. Freshness uses typed verification-subject comparison, so unavailable
+identity remains an explicit, fail-closed ``unverifiable`` status.
 """
 
 from __future__ import annotations
@@ -673,17 +672,17 @@ def classify_required_receipts(
 
     required = resolve_delivery_selection(contract, plan).receipt_commands
     receipts = {str(r.get("command", "")): r for r in load_command_receipts(run_dir)}
-    current_fingerprint, current_head = _current_checkout_identity(checkout or "")
+    current_subject = _current_checkout_identity(checkout or "")
 
     # readiness -> dependencies is an allowed import direction (the low-level
     # module never imports back); lazy to keep the pure module's top level free
     # of the dependency capture layer, mirroring the fingerprint import below.
-    from pipeline.verification_dependencies import current_dependency_heads
+    from pipeline.verification_dependencies import current_dependency_subjects
 
     try:
-        dependency_heads = current_dependency_heads(ctx)
+        dependency_subjects = current_dependency_subjects(ctx)
     except Exception:  # noqa: BLE001 — classification must never raise outward
-        dependency_heads = {}
+        dependency_subjects = {}
 
     # readiness -> receipt_index is an allowed direction (the index never imports
     # back); lazy to keep the no-parent path free of any extra work.
@@ -710,9 +709,8 @@ def classify_required_receipts(
             current_receipt=receipts.get(command),
             current_source=current_source,
             parent_candidates=parent_candidates.get(command, ()),
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
     return status_by_command
 
@@ -894,10 +892,10 @@ def build_final_acceptance_readiness(
         if policy_by_command.get(command) in ("manual_only", "manual"):
             manual.append(command)
             continue
-        {"missing": missing, "failed": failed, "stale": stale}[status].append(
+        {"missing": missing, "failed": failed, "stale": stale, "unverifiable": stale}[status].append(
             command,
         )
-        if status == "stale":
+        if status in {"stale", "unverifiable"}:
             stale_reasons.append(
                 f"{command}: {classification.reason or 'stale'}",
             )
@@ -1173,9 +1171,8 @@ def _select_classification(
     current_receipt: Mapping[str, Any] | None,
     current_source: Any,
     parent_candidates: Any,
-    current_fingerprint: str | None,
-    current_head: str | None,
-    dependency_heads: Mapping[str, str | None],
+    current_subject: Any,
+    dependency_subjects: Mapping[str, Any],
 ) -> ReceiptClassification:
     """Pick the authoritative classification for ``command`` across runs (ADR 0089).
 
@@ -1213,9 +1210,8 @@ def _select_classification(
     current_cls = (
         classify_receipt(
             current_receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         if current_receipt is not None
         else None
@@ -1236,7 +1232,7 @@ def _select_classification(
     if (
         current_cls is not None
         and current_cls.status == "failed"
-        and _failed_blocks_inheritance(current_receipt, current_fingerprint)
+        and _failed_blocks_inheritance(current_receipt, current_subject)
     ):
         return _with_provenance(
             current_cls,
@@ -1259,9 +1255,8 @@ def _select_classification(
     for candidate in eligible:
         candidate_cls = _classify_parent_candidate(
             candidate.receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         if candidate_cls.status == "present":
             return _with_provenance(
@@ -1281,9 +1276,8 @@ def _select_classification(
         first = eligible[0]
         first_cls = _classify_parent_candidate(
             first.receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         return _with_provenance(first_cls, first.source_run_id, first.path)
 
@@ -1306,95 +1300,68 @@ def _with_provenance(
 
 def _failed_blocks_inheritance(
     receipt: Mapping[str, Any] | None,
-    current_fingerprint: str | None,
+    current_subject: Any,
 ) -> bool:
-    """True when a failed current receipt must block parent inheritance.
+    """True unless a failed receipt is proved to cover different content.
 
-    Blocks when the receipt's recorded changed-files fingerprint matches the
-    current subject fingerprint, OR either side's fingerprint is unrecorded
-    (``None``) — an undated failure is treated as same-diff, never masked. Only a
-    failure recorded against a *different* fingerprint lets a valid parent take
-    over.
+    A current execution failure is never masked by a parent pass when either
+    subject is unavailable or malformed.  Only a direct, usable comparison
+    which proves the subjects stale permits parent inheritance.
     """
     if receipt is None:
         return False
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    if receipt_fingerprint is None or current_fingerprint is None:
-        return True
-    return receipt_fingerprint == current_fingerprint
+    from pipeline.evidence.verification_receipt import subject_identity
+    from pipeline.verification_subject import (
+        VerificationSubjectComparisonVerdict,
+        compare_verification_subjects,
+    )
+
+    comparison = compare_verification_subjects(
+        subject_identity(receipt.get("subject")),
+        current_subject,
+    )
+    return comparison.verdict is not VerificationSubjectComparisonVerdict.STALE
 
 
 def _classify_parent_candidate(
     receipt: Mapping[str, Any] | None,
     *,
-    current_fingerprint: str | None,
-    current_head: str | None,
-    dependency_heads: Mapping[str, str | None],
+    current_subject: Any,
+    dependency_subjects: Mapping[str, Any],
 ) -> ReceiptClassification:
     """Classify a PARENT-run candidate under the stricter inheritance rule.
 
-    A parent receipt may be inherited as ``present`` ONLY when it provably
-    verified *this* diff: its recorded ``git.changed_files_fingerprint`` AND the
-    current subject fingerprint must both be known and equal. The base
-    :func:`_classify_receipt` (the unchanged current-run semantics) treats an
-    *unrecorded* fingerprint — on either side — as "staleness not asserted" and
-    returns ``present``; for inheritance that is not enough proof, so an
-    otherwise-present parent whose fingerprint cannot be matched against the
-    current checkout is reported ``stale`` with a fingerprint reason rather than
-    silently inherited. This keeps the "never falsely green" invariant: a parent
-    pass that does not demonstrably cover the current diff never satisfies
+    A parent receipt may be inherited as ``present`` only when its usable
+    subject and effective dependency subjects directly match the current
+    checkout.  This keeps the "never falsely green" invariant: a parent pass
+    that does not demonstrably cover the current subject never satisfies
     delivery readiness. Non-``present`` base classifications (failed / stale /
     missing) pass through unchanged.
     """
     classification = classify_receipt(
         receipt,
-        current_fingerprint=current_fingerprint,
-        current_head=current_head,
-        dependency_heads=dependency_heads,
+        current_subject=current_subject,
+        dependency_subjects=dependency_subjects,
     )
     if classification.status != "present" or receipt is None:
         return classification
 
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    if current_fingerprint is None or receipt_fingerprint is None:
-        return replace(
-            classification,
-            status="stale",
-            failure_kind="stale",
-            reason=(
-                "parent receipt changed-files fingerprint unverifiable against current checkout"
-            ),
-        )
-    if receipt_fingerprint != current_fingerprint:
-        # Defensive: _classify_receipt already returns stale for a recorded
-        # mismatch, so this is unreachable in practice; kept for symmetry.
-        return replace(
-            classification,
-            status="stale",
-            failure_kind="stale",
-            reason="checkout changed-files fingerprint moved",
-        )
     return classification
 
 
-def _current_checkout_identity(checkout: str) -> tuple[str | None, str | None]:
-    """Recompute the subject checkout's (fingerprint, head); degrade to None."""
+def _current_checkout_identity(checkout: str) -> Any:
+    """Capture the current checkout subject; unavailable stays fail-closed."""
     if not checkout:
-        return None, None
+        return None
     try:
-        from core.io.git_helpers import git_head
-        from pipeline.verification_dependencies import changed_files_fingerprint
-
-        head = git_head(checkout)
-        if head is None:
-            return None, None
-        return changed_files_fingerprint(checkout), head
+        from pipeline.verification_subject import (
+            VerificationSubjectAvailable,
+            capture_verification_subject,
+        )
+        captured = capture_verification_subject(Path(checkout))
+        return captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
     except Exception:  # noqa: BLE001 — readiness must never raise outward
-        return None, None
+        return None
 
 
 def _gate_status_lines(

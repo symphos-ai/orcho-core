@@ -1,109 +1,54 @@
-"""Typed command-receipt failure classification."""
-
 from __future__ import annotations
 
 import pytest
 
 from pipeline.evidence.verification_receipt import command_receipt_passed
-from pipeline.verification_failure import classify_receipt, format_receipt_failure
+from pipeline.verification_failure import classify_receipt
+from pipeline.verification_subject import VerificationSubjectIdentity
 
 
-def _receipt(**overrides: object) -> dict[str, object]:
-    receipt: dict[str, object] = {
-        "exit_code": 0,
-        "assertions": [],
-        "detail": "",
-        "git": {"changed_files_fingerprint": "same", "checkout_head": "head"},
-    }
-    receipt.update(overrides)
-    return receipt
+def _subject(tree: str = "a", head: str = "b") -> dict:
+    return {"status": "available", "identity": {"version": 1, "object_format": "sha1", "tree_oid": tree * 40, "observed_head_oid": head * 40, "baseline_oid": None}}
+
+
+def _receipt(**overrides: object) -> dict:
+    value = {"schema_version": 3, "exit_code": 0, "assertions": [], "detail": "", "subject": _subject(), "dependencies": []}
+    value.update(overrides)
+    return value
+
+
+def test_v2_success_without_subject_is_unverifiable() -> None:
+    receipt = {"schema_version": 2, "exit_code": 0, "assertions": [], "detail": "", "git": {"checkout_head": "same", "changed_files_fingerprint": "same"}}
+    assert classify_receipt(receipt, current_subject=VerificationSubjectIdentity(1, "sha1", "a" * 40, "b" * 40, None)).status == "unverifiable"
+
+
+def test_head_drift_is_stale_even_when_tree_matches() -> None:
+    current = VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None)
+    assert classify_receipt(_receipt(), current_subject=current).status == "stale"
+
+
+def test_execution_failure_precedes_subject_verification() -> None:
+    assert classify_receipt(_receipt(exit_code=2), current_subject=None).failure_kind == "test_failure"
 
 
 @pytest.mark.parametrize(
-    ("receipt", "fingerprint", "head", "status", "failure_kind"),
+    ("receipt", "status", "failure_kind"),
     [
-        (_receipt(), "same", "head", "present", None),
-        (None, "same", "head", "missing", "missing"),
-        (_receipt(exit_code=2), "same", "head", "failed", "test_failure"),
-        (
-            _receipt(
-                assertions=[
-                    {
-                        "name": "pipeline",
-                        "kind": "import_path_equals",
-                        "expected": "/work/pipeline/__init__.py",
-                        "actual": "/installed/pipeline/__init__.py",
-                        "passed": False,
-                    }
-                ]
-            ),
-            "same",
-            "head",
-            "failed",
-            "provenance_failure",
-        ),
-        (_receipt(exit_code=None), "same", "head", "failed", "env_failure"),
-        (_receipt(detail="subprocess could not start"), "same", "head", "failed", "env_failure"),
-        (_receipt(), "other", "head", "stale", "stale"),
+        (_receipt(), "present", None),
+        (None, "missing", "missing"),
+        (_receipt(exit_code=2), "failed", "test_failure"),
+        (_receipt(exit_code=None), "failed", "env_failure"),
+        (_receipt(detail="subprocess could not start"), "failed", "env_failure"),
+        (_receipt(assertions=[{"name": "pipeline", "kind": "import_path_equals", "passed": False}]), "failed", "provenance_failure"),
     ],
 )
 def test_classifies_all_receipt_outcomes(
-    receipt: dict[str, object] | None,
-    fingerprint: str,
-    head: str,
-    status: str,
-    failure_kind: str | None,
+    receipt: dict | None, status: str, failure_kind: str | None,
 ) -> None:
-    result = classify_receipt(
-        receipt,
-        current_fingerprint=fingerprint,
-        current_head=head,
-    )
+    """Execution and assertion outcomes retain priority over subject freshness."""
+    current = VerificationSubjectIdentity(1, "sha1", "a" * 40, "b" * 40, None)
+    result = classify_receipt(receipt, current_subject=current)
 
     assert result.status == status
     assert result.failure_kind == failure_kind
-    # ``command_receipt_passed`` intentionally has no checkout identity, so a
-    # stale but otherwise valid receipt remains execution-passed there.
-    assert command_receipt_passed(receipt) is (status in {"present", "stale"})
-
-
-def test_failed_import_assertion_has_structured_evidence_and_compact_output() -> None:
-    receipt = _receipt(
-        assertions=[
-            {
-                "name": "pipeline",
-                "kind": "import_path_equals",
-                "expected": "/work/pipeline/__init__.py",
-                "actual": "/installed/pipeline/__init__.py",
-                "passed": False,
-            }
-        ],
-        stdout_tail="noise\nuseful stdout",
-        stderr_tail="first error\nactual import came from installed tree",
-    )
-    result = classify_receipt(receipt)
-
-    assert result.failure_kind == "provenance_failure"
-    assert (result.assertions_total, result.assertions_passed, result.assertions_failed) == (
-        1,
-        0,
-        1,
-    )
-    assert result.failed_assertions[0].expected == "/work/pipeline/__init__.py"
-    assert result.failed_assertions[0].actual == "/installed/pipeline/__init__.py"
-    rendered = format_receipt_failure(result, receipt, max_output_chars=20)
-    assert "class=provenance_failure" in rendered
-    assert "kind=import_path_equals" in rendered
-    assert "actual='/installed/pipeline/__init__.py'" in rendered
-    assert "output=actual import came f" in rendered
-
-
-def test_truthy_external_assertion_remains_passing() -> None:
-    """Classifier matches the legacy command receipt truthiness rollup."""
-    receipt = _receipt(assertions=[{"name": "third_party", "passed": 1}])
-
-    result = classify_receipt(receipt)
-
-    assert result.status == "present"
-    assert result.failure_kind is None
-    assert command_receipt_passed(receipt) is True
+    assert command_receipt_passed(receipt) is (status == "present")

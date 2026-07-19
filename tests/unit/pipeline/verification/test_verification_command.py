@@ -141,7 +141,7 @@ class TestGitProvenance:
         receipt = run_command("noop", contract.commands["noop"], contract, ctx)
 
         assert receipt["git"]["checkout_head"] == _head_sha(checkout)
-        assert receipt["git"]["changed_files_fingerprint"] is not None
+        assert receipt["subject"].identity.tree_oid is not None
 
     def test_git_fields_none_outside_repo(self, tmp_path: Path) -> None:
         checkout = tmp_path / "not_a_repo"
@@ -152,7 +152,7 @@ class TestGitProvenance:
         receipt = run_command("noop", contract.commands["noop"], contract, ctx)
 
         assert receipt["git"]["checkout_head"] is None
-        assert receipt["git"]["changed_files_fingerprint"] is None
+        assert receipt["subject"].reason == "git_repository_unavailable"
 
     def test_required_differential_has_checkout_and_baseline(
         self, tmp_path: Path,
@@ -208,8 +208,8 @@ class TestDependencyProvenance:
         assert rec["head"] == _head_sha(dep)
         assert rec["depends_on"] is True
         assert rec["dirty"] is True
-        assert rec["changed_files_count"] == 1
-        assert rec["changed_files_fingerprint"] is not None
+        assert rec["subject"].identity.tree_oid is not None
+        assert rec["subject"].identity.observed_head_oid == _head_sha(dep)
 
     def test_declared_but_unreferenced_dependency_is_not_depended_on(
         self, tmp_path: Path,
@@ -271,6 +271,6 @@ class TestGitProvenanceCwd:
         assert str(project) in receipt["stdout_tail"]
         # ...but git provenance is taken from the run worktree (ctx.checkout).
         assert receipt["git"]["checkout_head"] == _head_sha(checkout)
-        assert receipt["git"]["changed_files_fingerprint"] is not None
+        assert receipt["subject"].identity.tree_oid is not None
         assert receipt["placeholders"]["checkout"] == str(checkout)
         assert receipt["placeholders"]["project"] == str(project)

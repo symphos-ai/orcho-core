@@ -7,11 +7,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pipeline.evidence.verification_receipt import subject_identity
+from pipeline.verification_subject import (
+    VerificationSubjectAvailable,
+    VerificationSubjectIdentity,
+    compare_verification_subjects,
+)
+
 FailureKind = Literal[
     "test_failure",
     "provenance_failure",
     "env_failure",
     "stale",
+    "unverifiable",
     "missing",
 ]
 
@@ -44,7 +52,7 @@ class ReceiptClassification:
     vocabulary.
     """
 
-    status: Literal["present", "missing", "failed", "stale"]
+    status: Literal["present", "missing", "failed", "stale", "unverifiable"]
     failure_kind: FailureKind | None = None
     reason: str = ""
     source_run_id: str = ""
@@ -89,9 +97,8 @@ def _assertion_failure_kind(failed: tuple[FailedAssertion, ...]) -> FailureKind:
 def classify_receipt(
     receipt: Mapping[str, Any] | None,
     *,
-    current_fingerprint: str | None = None,
-    current_head: str | None = None,
-    dependency_heads: Mapping[str, str | None] | None = None,
+    current_subject: VerificationSubjectIdentity | VerificationSubjectAvailable | None = None,
+    dependency_subjects: Mapping[str, VerificationSubjectIdentity | VerificationSubjectAvailable | None] | None = None,
 ) -> ReceiptClassification:
     """Classify a receipt before checking freshness.
 
@@ -127,29 +134,34 @@ def classify_receipt(
             "failed", "env_failure", "command execution detail reported", **evidence
         )
 
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    receipt_head = git.get("checkout_head")
-    if (
-        current_fingerprint is not None
-        and receipt_fingerprint is not None
-        and receipt_fingerprint != current_fingerprint
-    ):
-        return ReceiptClassification(
-            "stale", "stale", "checkout changed-files fingerprint moved", **evidence
+    recorded_subject = _recorded_identity(receipt.get("subject"))
+    current_identity = _identity(current_subject)
+    comparison = compare_verification_subjects(recorded_subject, current_identity)
+    if comparison.verdict.value == "unverifiable":
+        return ReceiptClassification("unverifiable", "unverifiable", comparison.reason, **evidence)
+    if comparison.verdict.value == "stale":
+        return ReceiptClassification("stale", "stale", comparison.reason, **evidence)
+    dependencies = receipt.get("dependencies")
+    for entry in dependencies if isinstance(dependencies, list) else []:
+        if not isinstance(entry, Mapping) or not entry.get("depends_on"):
+            continue
+        name = str(entry.get("name") or "")
+        dep_comparison = compare_verification_subjects(
+            _recorded_identity(entry.get("subject")), _identity((dependency_subjects or {}).get(name)),
         )
-    if current_head is not None and receipt_head is not None and receipt_head != current_head:
-        return ReceiptClassification(
-            "stale", "stale", f"checkout HEAD moved {receipt_head} -> {current_head}", **evidence
-        )
-
-    from pipeline.verification_dependencies import dependency_stale_reason
-
-    dep_reason = dependency_stale_reason(receipt, dependency_heads or {})
-    if dep_reason:
-        return ReceiptClassification("stale", "stale", dep_reason, **evidence)
+        if dep_comparison.verdict.value == "unverifiable":
+            return ReceiptClassification("unverifiable", "unverifiable", f"dependency {name}: {dep_comparison.reason}", **evidence)
+        if dep_comparison.verdict.value == "stale":
+            return ReceiptClassification("stale", "stale", f"dependency {name}: {dep_comparison.reason}", **evidence)
     return ReceiptClassification("present", None, **evidence)
+
+
+def _identity(value: VerificationSubjectIdentity | VerificationSubjectAvailable | None) -> VerificationSubjectIdentity | None:
+    return value.identity if isinstance(value, VerificationSubjectAvailable) else value
+
+
+def _recorded_identity(value: Any) -> VerificationSubjectIdentity | None:
+    return _identity(value) if isinstance(value, (VerificationSubjectIdentity, VerificationSubjectAvailable)) else subject_identity(value)
 
 
 def _last_meaningful_line(receipt: Mapping[str, Any]) -> str:

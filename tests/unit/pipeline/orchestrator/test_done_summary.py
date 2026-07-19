@@ -2090,6 +2090,11 @@ def _write_stale_receipt(run_dir: Path, command: str) -> None:
                 "baseline_head": None,
                 "changed_files_fingerprint": None,
             },
+            "schema_version": 3,
+            "subject": {"status": "available", "identity": {
+                "version": 1, "object_format": "sha1", "tree_oid": "0" * 40,
+                "observed_head_oid": "0" * 40, "baseline_oid": None,
+            }},
             "dependencies": [],
         }),
         encoding="utf-8",

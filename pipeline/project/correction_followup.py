@@ -352,17 +352,13 @@ def _receipts_fingerprint(run_dir: Path) -> frozenset[tuple[Any, ...]] | None:
             if not isinstance(data, Mapping):
                 out.add(("", _stable_json(data)))
                 continue
-            git = data.get("git")
-            git = git if isinstance(git, Mapping) else {}
             out.add((
                 str(data.get("command")),
                 command_receipt_passed(data),
                 data.get("exit_code"),
                 _stable_json(data.get("assertions")),
                 str(data.get("detail") or ""),
-                str(git.get("changed_files_fingerprint")),
-                str(git.get("checkout_head")),
-                str(git.get("baseline_head")),
+                _stable_json(data.get("subject")),
                 _stable_json(data.get("dependencies")),
             ))
         return frozenset(out)

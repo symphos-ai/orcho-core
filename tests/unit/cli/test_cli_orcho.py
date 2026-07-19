@@ -4801,7 +4801,9 @@ class TestCmdVerifyListRun:
         assert rc == 0
         assert "parity=differential" in out
         assert head in out
-        assert "base-xyz" in out
+        # The diagnostic baseline is the resolved identity OID; an unresolved
+        # historical ref is intentionally represented as ``None``.
+        assert "base-xyz" not in out
 
     def test_run_unknown_command_exits_2_without_write(
         self, tmp_path: Path, runs_dir: Path, capsys,

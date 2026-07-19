@@ -154,7 +154,7 @@ def run_gate_hook(
                 return disposition
             continue
         receipt = _run_gate_command(run, contract, entry)
-        classification = _classify_gate_receipt(receipt)
+        classification = _classify_gate_receipt(receipt, _placeholders(run))
         executed.add(identity)
         _record_executed_gate_event(
             run,
@@ -583,7 +583,7 @@ def _repair_loop(
             return GateRepairOutcome(active=True, halted=True, rounds=round_n)
 
         receipt = _run_gate_command(run, contract, entry)
-        classification = _classify_gate_receipt(receipt)
+        classification = _classify_gate_receipt(receipt, _placeholders(run))
         # Append-only: a repair-round recheck is a real execution of the official
         # gate command on this hook, so its executed_pass/executed_fail must land
         # in the durable trail too (the recheck pass is what flips the outcome).
@@ -788,30 +788,48 @@ def _persist_gate_receipt(run: Any, receipt: dict) -> None:
         write_command_receipt(output_dir=output_dir, result=receipt)
 
 
-def _classify_gate_receipt(receipt: dict) -> Any:
+def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
     """Classify one gate receipt once for routing, critique, and handoff."""
+    from pipeline.verification_dependencies import current_dependency_subjects
     from pipeline.verification_failure import classify_receipt
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        capture_verification_subject,
+    )
 
-    return classify_receipt(receipt)
+    checkout = str(getattr(ctx, "checkout", "") or "")
+    captured = capture_verification_subject(Path(checkout)) if checkout else None
+    current_subject = captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
+    return classify_receipt(
+        receipt,
+        current_subject=current_subject,
+        dependency_subjects=current_dependency_subjects(ctx),
+    )
 
 
 def _is_hygiene_failure(classification: Any) -> bool:
     return getattr(classification, "failure_kind", None) in {
         "provenance_failure",
         "env_failure",
+        # A repair agent cannot establish a missing or unavailable Git subject
+        # identity.  Keep this fail-closed, but route it to the same operator
+        # handoff path as other execution-environment failures rather than
+        # spending repair-loop rounds on an external precondition.
+        "unverifiable",
     }
 
 
 def _passed(receipt: dict) -> bool:
     """Authoritative pass rollup for a scheduled gate's receipt.
 
-    Delegates to :func:`pipeline.evidence.verification_receipt.command_receipt_passed`
-    so ``executed_pass`` / ``executed_fail`` are stamped on the same rollup
-    readiness and delivery enforce: exit 0 AND every assertion passed AND an empty
-    ``detail``. An exit-0 receipt with a failed assertion or a non-empty detail is
-    ``executed_fail``, never a false-green ``executed_pass``.
+    This is an execution rollup, not a freshness decision: freshness is checked
+    through :func:`_classify_gate_receipt` at the routing boundaries.  It keeps
+    the historic execution-event meaning: exit 0, passing assertions, and no
+    detail.
     """
-    return _classify_gate_receipt(receipt).status == "present"
+    from pipeline.evidence.verification_receipt import command_receipt_passed
+
+    return command_receipt_passed(receipt)
 
 
 # ── gate-event recorder (append-only, observational) ─────────────────────────

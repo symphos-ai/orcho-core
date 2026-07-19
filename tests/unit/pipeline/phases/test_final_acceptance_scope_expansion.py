@@ -45,6 +45,7 @@ from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
 
 # ── git + contract + state harness ───────────────────────────────────────────
 
@@ -111,6 +112,8 @@ def _contract() -> VerificationContract:
 
 
 def _passing_receipt(command: str, argv: list[str], checkout: str) -> dict[str, Any]:
+    captured = capture_verification_subject(Path(checkout))
+    assert isinstance(captured, VerificationSubjectAvailable)
     return {
         "kind": "verification_command",
         "command": command,
@@ -127,6 +130,7 @@ def _passing_receipt(command: str, argv: list[str], checkout: str) -> dict[str, 
         "log_path": None,
         "parity": "absolute",
         "detail": "",
+        "subject": captured,
         "git": {
             "checkout_head": None,
             "baseline_head": None,

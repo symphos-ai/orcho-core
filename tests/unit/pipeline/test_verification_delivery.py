@@ -114,6 +114,8 @@ def _dep_record(
     *,
     depends_on: bool = True,
 ) -> dict:
+    from pipeline.verification_subject import capture_verification_subject
+
     return {
         "name": name,
         "path": str(path),
@@ -122,6 +124,7 @@ def _dep_record(
         "changed_files_count": 0,
         "changed_files_fingerprint": "e",
         "depends_on": depends_on,
+        "subject": capture_verification_subject(path),
     }
 
 
@@ -161,6 +164,28 @@ def _receipt(
     checkout_head: str | None = None,
     dependencies: list | None = None,
 ) -> None:
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        VerificationSubjectIdentity,
+        capture_verification_subject,
+    )
+
+    candidate = run_dir.parent / "checkout"
+    captured = capture_verification_subject(candidate) if candidate.is_dir() else None
+    subject = captured if isinstance(captured, VerificationSubjectAvailable) else None
+    if subject is not None and fingerprint is not None and fingerprint != changed_files_fingerprint(str(candidate)):
+        identity = subject.identity
+        tree_oid = "0" * len(identity.tree_oid)
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(
+            identity.version, identity.object_format, tree_oid,
+            identity.observed_head_oid, identity.baseline_oid,
+        ))
+    if subject is not None and checkout_head is not None and checkout_head != subject.identity.observed_head_oid:
+        identity = subject.identity
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(
+            identity.version, identity.object_format, identity.tree_oid,
+            checkout_head, identity.baseline_oid,
+        ))
     write_command_receipt(
         output_dir=run_dir,
         result={
@@ -179,6 +204,7 @@ def _receipt(
                 "baseline_head": None,
                 "changed_files_fingerprint": fingerprint,
             },
+            "subject": subject,
             "dependencies": dependencies or [],
         },
     )
@@ -603,12 +629,11 @@ class TestAssessReceiptClassification:
         assert assessment.required_stale == ()
         assert not assessment.blocking
 
-    def test_degrade_to_present_without_checkout_identity(
+    def test_checkout_identity_unavailable_is_stale(
         self,
         tmp_path: Path,
     ) -> None:
-        # diff_cwd is not a git repo → no head/fingerprint → staleness is not
-        # asserted; a valid-looking receipt degrades to present.
+        # A non-repository checkout cannot establish a usable current subject.
         not_a_repo = tmp_path / "plain"
         not_a_repo.mkdir()
         run_dir = tmp_path / "run"
@@ -622,7 +647,7 @@ class TestAssessReceiptClassification:
             not_a_repo,
         )
         assert assessment is not None
-        assert assessment.required_stale == ()
+        assert assessment.required_stale == ("test",)
         assert assessment.required_missing == ()
         assert assessment.required_failed == ()
 
@@ -661,7 +686,7 @@ class TestAssessDependencyStale:
             co,
             _dep_record("shared", dep, old, depends_on=True),
         )
-        new = _dep_new_commit(dep)
+        _dep_new_commit(dep)
 
         assessment = assess_delivery_verification(
             _contract(delivery_policy="require"),
@@ -674,13 +699,13 @@ class TestAssessDependencyStale:
         assert assessment is not None
         # Audit-facing names unchanged.
         assert assessment.required_stale == ("test",)
-        # The reason rides in stale_details / lines, naming dep + both SHAs.
-        assert assessment.stale_details == (f"test (dependency shared HEAD moved {old} -> {new})",)
+        assert assessment.stale_details == (
+            "test (dependency shared: observed_head_changed)",
+        )
         stale_line = next(
             line for line in assessment.lines if line.startswith("stale required receipts")
         )
-        assert "dependency shared HEAD moved" in stale_line
-        assert old in stale_line and new in stale_line
+        assert "dependency shared: observed_head_changed" in stale_line
         assert assessment.blocking
 
     def test_depends_on_false_is_not_stale(self, tmp_path: Path) -> None:
@@ -708,7 +733,7 @@ class TestAssessDependencyStale:
         assert assessment.required_stale == ()
         assert assessment.required_missing == ()
 
-    def test_ctx_none_does_not_assert_dependency_stale(
+    def test_ctx_none_makes_effective_dependency_unverifiable(
         self,
         tmp_path: Path,
     ) -> None:
@@ -724,7 +749,7 @@ class TestAssessDependencyStale:
         )
         _dep_new_commit(dep)
 
-        # No ctx → no declared-dependency heads → dependency staleness silent.
+        # No ctx means the current effective dependency subject is unavailable.
         assessment = assess_delivery_verification(
             _contract(delivery_policy="require"),
             run_dir,
@@ -734,7 +759,7 @@ class TestAssessDependencyStale:
         )
 
         assert assessment is not None
-        assert assessment.required_stale == ()
+        assert assessment.required_stale == ("test",)
 
     def test_receipt_without_dependencies_block_is_not_stale(
         self,
@@ -764,7 +789,7 @@ class TestAssessDependencyStale:
         assert assessment is not None
         assert assessment.required_stale == ()
 
-    def test_dependency_not_git_does_not_assert_stale(
+    def test_dependency_not_git_is_unverifiable(
         self,
         tmp_path: Path,
     ) -> None:
@@ -788,7 +813,7 @@ class TestAssessDependencyStale:
         )
 
         assert assessment is not None
-        assert assessment.required_stale == ()
+        assert assessment.required_stale == ("test",)
 
 
 @pytest.mark.git_worktree
@@ -1063,7 +1088,7 @@ class TestIncidentParentContinuity:
             extras=extras,
         )
         assert summary.required_stale == ("test",)
-        assert any("fingerprint" in r for r in summary.stale_reasons)
+        assert any("worktree_tree_changed" in r for r in summary.stale_reasons)
 
         assessment = assess_delivery_verification(
             contract,
@@ -1074,7 +1099,7 @@ class TestIncidentParentContinuity:
         )
         assert assessment is not None
         assert assessment.required_stale == ("test",)
-        assert any("fingerprint" in d for d in assessment.stale_details)
+        assert any("worktree_tree_changed" in d for d in assessment.stale_details)
         assert assessment.required_missing == ()
 
     def test_no_receipts_anywhere_yields_dirs_and_hints(

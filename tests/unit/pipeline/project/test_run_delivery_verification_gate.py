@@ -556,6 +556,8 @@ def _parent_receipt(
     head: str,
     exit_code: int = 0,
 ) -> None:
+    from pipeline.verification_subject import capture_verification_subject
+
     write_command_receipt(
         output_dir=run_dir,
         result={
@@ -574,6 +576,7 @@ def _parent_receipt(
                 "baseline_head": None,
                 "changed_files_fingerprint": fingerprint,
             },
+            "subject": capture_verification_subject(run_dir.parent / "checkout"),
             "dependencies": [],
         },
     )

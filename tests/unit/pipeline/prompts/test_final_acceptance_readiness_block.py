@@ -133,6 +133,21 @@ def _receipt(
     checkout_head: str | None = None,
     dependencies: list | None = None,
 ) -> None:
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        VerificationSubjectIdentity,
+        capture_verification_subject,
+    )
+    candidate = run_dir.parent / "checkout"
+    captured = capture_verification_subject(candidate) if candidate.is_dir() else None
+    subject = captured if isinstance(captured, VerificationSubjectAvailable) else None
+    if subject is not None and fingerprint is not None and fingerprint != changed_files_fingerprint(str(candidate)):
+        identity = subject.identity
+        tree = "0" * len(identity.tree_oid) if identity.tree_oid != "0" * len(identity.tree_oid) else "1" * len(identity.tree_oid)
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(identity.version, identity.object_format, tree, identity.observed_head_oid, identity.baseline_oid))
+    if subject is not None and checkout_head is not None and checkout_head != subject.identity.observed_head_oid:
+        identity = subject.identity
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(identity.version, identity.object_format, identity.tree_oid, checkout_head, identity.baseline_oid))
     write_command_receipt(output_dir=run_dir, result={
         "command": command,
         "env": "ci",
@@ -149,6 +164,7 @@ def _receipt(
             "baseline_head": None,
             "changed_files_fingerprint": fingerprint,
         },
+        "subject": subject,
         "dependencies": dependencies or [],
     })
 
@@ -180,6 +196,8 @@ def _dep_record(
     name: str, path: Path, head: str, *, depends_on: bool = True,
     dirty: bool = False,
 ) -> dict:
+    from pipeline.verification_subject import capture_verification_subject
+
     return {
         "name": name,
         "path": str(path),
@@ -188,6 +206,7 @@ def _dep_record(
         "changed_files_count": 1 if dirty else 0,
         "changed_files_fingerprint": "f" if dirty else "e",
         "depends_on": depends_on,
+        "subject": capture_verification_subject(path),
     }
 
 
@@ -300,7 +319,7 @@ class TestClassification:
         )
         assert set(summary.required_failed) == {"test", "lint"}
 
-    def test_no_checkout_degrades_to_present_not_stale(
+    def test_no_checkout_is_unverifiable(
         self, tmp_path: Path,
     ) -> None:
         run_dir = tmp_path / "run"
@@ -311,8 +330,7 @@ class TestClassification:
         summary = build_final_acceptance_readiness(
             contract, run_dir, PlaceholderContext(checkout=""),
         )
-        assert summary.required_present == ("test",)
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,12 +341,13 @@ class TestClassification:
 @pytest.mark.git_worktree
 class TestDependencyStaleClassification:
     """A depended-on dependency's HEAD move marks the receipt stale with a
-    reason; the four negatives never do. Subject identity is left unset
-    (checkout="") so these tests isolate the dependency dimension."""
+    reason. Each receipt has a usable checkout subject so these tests isolate
+    the dependency dimension."""
 
     def test_dependency_head_move_marks_stale_with_reason(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -337,29 +356,25 @@ class TestDependencyStaleClassification:
             run_dir, "test",
             dependencies=[_dep_record("shared", dep, old, depends_on=True)],
         )
-        new = _dep_new_commit(dep)  # HEAD moves AFTER the receipt is written
+        _dep_new_commit(dep)  # HEAD moves AFTER the receipt is written
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
             PlaceholderContext(
-                checkout="", dependencies={"shared": str(dep)},
+                checkout=str(co), dependencies={"shared": str(dep)},
             ),
         )
 
         assert summary.required_stale == ("test",)
         assert summary.stale_reasons == (
-            f"test: dependency shared HEAD moved {old} -> {new}",
+            "test: dependency shared: observed_head_changed",
         )
         rendered = render_readiness_block(summary)
         assert rendered is not None
-        assert "dependency shared HEAD moved" in rendered
-        assert old in rendered and new in rendered
-        assert (
-            f"stale required: test: dependency shared HEAD moved {old} -> {new}"
-            in rendered
-        )
+        assert "dependency shared: observed_head_changed" in rendered
 
     def test_depends_on_false_is_not_stale(self, tmp_path: Path) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -372,7 +387,7 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present
@@ -381,6 +396,7 @@ class TestDependencyStaleClassification:
     def test_receipt_without_dependencies_block_is_not_stale(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -390,15 +406,16 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present
         assert not summary.required_stale
 
-    def test_dependency_path_not_git_does_not_assert_stale(
+    def test_dependency_path_not_git_is_unverifiable(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         plain = tmp_path / "plain"
         plain.mkdir()  # not a git repo → current HEAD unavailable
         run_dir = tmp_path / "run"
@@ -412,13 +429,16 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(plain)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(plain)}),
         )
 
-        assert "test" in summary.required_present
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
+        assert summary.stale_reasons == (
+            "test: dependency shared: usable_subject_identity_unavailable",
+        )
 
-    def test_dirty_only_dependency_is_not_stale(self, tmp_path: Path) -> None:
+    def test_dirty_only_dependency_is_stale(self, tmp_path: Path) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -432,15 +452,18 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
-        assert "test" in summary.required_present
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
+        assert summary.stale_reasons == (
+            "test: dependency shared: worktree_tree_changed",
+        )
 
     def test_present_receipt_surfaces_tested_dependency_commit(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -453,7 +476,7 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present

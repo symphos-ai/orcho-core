@@ -41,6 +41,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline.verification_subject import (
+    VerificationSubjectAvailable,
+    VerificationSubjectIdentity,
+    VerificationSubjectUnavailable,
+    is_usable_verification_subject,
+)
+
 __all__ = [
     "COMMAND_RECEIPTS_DIRNAME",
     "COMMAND_RECEIPT_SCHEMA_VERSION",
@@ -87,7 +94,7 @@ VERIFICATION_COMMAND_KIND = "verification_command"
 # changed_files_fingerprint/depends_on). This is a run-local durable artifact
 # only; it does NOT enter the evidence v1 bundle / MCP wire (the digest in
 # summarize_command_receipts deliberately omits it).
-COMMAND_RECEIPT_SCHEMA_VERSION = 2
+COMMAND_RECEIPT_SCHEMA_VERSION = 3
 
 
 def _python_identity() -> str:
@@ -458,26 +465,45 @@ def _normalize_dependencies(value: Any) -> list[dict[str, Any]]:
         if not isinstance(entry, Mapping):
             continue
         head = entry.get("head")
-        fingerprint = entry.get("changed_files_fingerprint")
         dirty = entry.get("dirty")
-        try:
-            count = int(entry.get("changed_files_count"))
-        except (TypeError, ValueError):
-            count = None
         out.append(
             {
                 "name": str(entry.get("name", "")),
                 "path": str(entry.get("path", "")),
                 "head": str(head) if head is not None else None,
                 "dirty": bool(dirty) if dirty is not None else None,
-                "changed_files_count": count,
-                "changed_files_fingerprint": (
-                    str(fingerprint) if fingerprint is not None else None
-                ),
                 "depends_on": bool(entry.get("depends_on", False)),
+                "subject": _normalize_subject(entry.get("subject")),
             }
         )
     return out
+
+
+def _normalize_subject(value: Any) -> dict[str, Any]:
+    """Serialize a typed capture outcome at the durable receipt boundary."""
+    if isinstance(value, VerificationSubjectAvailable):
+        value = value.identity
+    if isinstance(value, VerificationSubjectIdentity) and is_usable_verification_subject(value):
+        return {"status": "available", "identity": {
+            "version": value.version, "object_format": value.object_format,
+            "tree_oid": value.tree_oid, "observed_head_oid": value.observed_head_oid,
+            "baseline_oid": value.baseline_oid,
+        }}
+    reason = value.reason if isinstance(value, VerificationSubjectUnavailable) else "identity_unavailable"
+    return {"status": "unavailable", "reason": str(reason)}
+
+
+def subject_identity(value: Any) -> VerificationSubjectIdentity | None:
+    """Tolerantly parse a serialized available subject; malformed is unusable."""
+    raw = value.get("identity") if isinstance(value, Mapping) and value.get("status") == "available" else None
+    if not isinstance(raw, Mapping):
+        return None
+    identity = VerificationSubjectIdentity(
+        version=raw.get("version"), object_format=raw.get("object_format"),
+        tree_oid=raw.get("tree_oid"), observed_head_oid=raw.get("observed_head_oid"),
+        baseline_oid=raw.get("baseline_oid"),
+    )
+    return identity if is_usable_verification_subject(identity) else None
 
 
 def _sanitize_filename_stem(value: str) -> str:
@@ -720,7 +746,6 @@ def write_command_receipt(
     git = {
         "checkout_head": git_raw.get("checkout_head"),
         "baseline_head": git_raw.get("baseline_head"),
-        "changed_files_fingerprint": git_raw.get("changed_files_fingerprint"),
     }
 
     log_path = result.get("log_path")
@@ -743,6 +768,7 @@ def write_command_receipt(
         "parity": str(result.get("parity", "absolute")),
         "detail": str(result.get("detail", "")),
         "git": git,
+        "subject": _normalize_subject(result.get("subject")),
         "dependencies": _normalize_dependencies(result.get("dependencies")),
     }
 
@@ -779,15 +805,18 @@ def load_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:
 
 
 def command_receipt_passed(receipt: Mapping[str, Any] | None) -> bool:
-    """Authoritative pass rollup for one command receipt.
+    """Return the execution pass rollup for one command receipt.
 
-    A receipt passes exactly when the typed classifier returns ``present`` with
-    no staleness context. This keeps receipt recording and readiness aligned for
-    every execution, assertion, and environment failure variant.
+    This is deliberately not a freshness verdict.  It reports a command whose
+    execution and assertions passed even if its identity is ``unverifiable``;
+    callers that need freshness must use :func:`classify_receipt` with current
+    subject and dependency identities.  This preserves execution-event and
+    evidence-summary semantics without allowing unavailable proof to satisfy a
+    readiness or routing decision.
     """
     from pipeline.verification_failure import classify_receipt
 
-    return classify_receipt(receipt).status == "present"
+    return classify_receipt(receipt).status in {"present", "unverifiable"}
 
 
 def summarize_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:

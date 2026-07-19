@@ -122,9 +122,45 @@ def _write_receipt(
     fingerprint: str | None = None,
     detail: str = "",
     assertions: list[dict[str, Any]] | None = None,
+    checkout: Path | None = None,
 ) -> Path:
     """Write one on-disk command-receipt with exactly the fields classification
     reads (``exit_code`` / ``assertions`` / ``detail`` / ``git`` provenance)."""
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        VerificationSubjectIdentity,
+        capture_verification_subject,
+    )
+
+    candidates = [checkout] if checkout is not None else []
+    candidates.append(run_dir.parent / "checkout")
+    if len(run_dir.parents) > 3:
+        candidates.append(run_dir.parents[3] / "proj")
+    candidate = next((path for path in candidates if path.is_dir()), None)
+    captured = capture_verification_subject(candidate) if candidate else None
+    subject = captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
+    if subject is not None and checkout_head is not None and checkout_head != subject.observed_head_oid:
+        identity = subject
+        subject = VerificationSubjectIdentity(
+            identity.version, identity.object_format, identity.tree_oid,
+            checkout_head, identity.baseline_oid,
+        )
+
+    serialized_subject: dict[str, Any]
+    if subject is None:
+        serialized_subject = {"status": "unavailable", "reason": "identity_unavailable"}
+    else:
+        serialized_subject = {
+            "status": "available",
+            "identity": {
+                "version": subject.version,
+                "object_format": subject.object_format,
+                "tree_oid": subject.tree_oid,
+                "observed_head_oid": subject.observed_head_oid,
+                "baseline_oid": subject.baseline_oid,
+            },
+        }
+
     rdir = run_dir / COMMAND_RECEIPTS_DIRNAME
     rdir.mkdir(parents=True, exist_ok=True)
     receipt = {
@@ -139,6 +175,7 @@ def _write_receipt(
             "baseline_head": None,
             "changed_files_fingerprint": fingerprint,
         },
+        "subject": serialized_subject,
         "dependencies": [],
     }
     path = rdir / f"{command}.json"
@@ -210,6 +247,7 @@ class _Recorder:
                     env=kwargs.get("env", "ci"),
                     assertions=self.assertions.get(name),
                     detail=self.details.get(name, ""),
+                    checkout=Path(kwargs["subject_checkout"]),
                 )
             outcomes.append(SimpleNamespace(
                 command=name, exit_code=code, receipt_path=receipt_path,
@@ -236,7 +274,7 @@ def _ctx(contract: VerificationContract, *, checkout: Path, project: Path,
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Return ``(project, workspace, run_dir)`` with the standard run layout."""
     project = tmp_path / "proj"
-    project.mkdir()
+    _init_repo(project)
     workspace = tmp_path / "ws"
     run_dir = workspace / "runspace" / "runs" / "rid"
     run_dir.mkdir(parents=True)
@@ -341,7 +379,10 @@ def test_stale_required_is_rerun_exactly_once(
     head = _init_repo(checkout)
     assert head  # sanity
     contract = _contract(["lint"])
-    _write_receipt(run_dir, "lint", exit_code=0, checkout_head="0" * 40)
+    _write_receipt(
+        run_dir, "lint", exit_code=0, checkout_head="0" * 40,
+        checkout=checkout,
+    )
     ctx = _ctx(contract, checkout=checkout, project=project,
                workspace=workspace, run_dir=run_dir)
     rec = _Recorder(run_dir).install(monkeypatch)
@@ -1611,6 +1652,29 @@ def _execution_events(run: Any) -> tuple[Any, ...]:
     return tuple(event for event in _ledger_events(run) if event.kind != "selection")
 
 
+def _gate_receipt(run: Any, exit_code: int) -> dict[str, Any]:
+    """Minimal fresh schema-v3 receipt returned by mocked gate execution."""
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        capture_verification_subject,
+    )
+
+    ctx = run.state.extras["verification_placeholders"]
+    captured = capture_verification_subject(Path(ctx.checkout))
+    assert isinstance(captured, VerificationSubjectAvailable)
+    identity = captured.identity
+    return {
+        "exit_code": exit_code,
+        "subject": {"status": "available", "identity": {
+            "version": identity.version,
+            "object_format": identity.object_format,
+            "tree_oid": identity.tree_oid,
+            "observed_head_oid": identity.observed_head_oid,
+            "baseline_oid": identity.baseline_oid,
+        }},
+    }
+
+
 def test_recorder_executed_pass_without_changing_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1621,7 +1685,7 @@ def test_recorder_executed_pass_without_changing_outcome(
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)
     run = _gate_run(contract, ctx, run_dir)
-    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *a, **k: {"exit_code": 0})
+    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda run, *a, **k: _gate_receipt(run, 0))
 
     outcome = gate_repair.run_gate_hook(
         run, object(), object(), hook="after_phase", phase="implement",
@@ -1647,7 +1711,7 @@ def test_recorder_executed_fail_non_blocking(
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)
     run = _gate_run(contract, ctx, run_dir)
-    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *a, **k: {"exit_code": 1})
+    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda run, *a, **k: _gate_receipt(run, 1))
 
     outcome = gate_repair.run_gate_hook(
         run, object(), object(), hook="after_phase", phase="implement",
@@ -1677,7 +1741,7 @@ def test_phase_warn_executes_once_and_continues_after_failure(
     def _failed(*_args: Any, **_kwargs: Any) -> dict[str, int]:
         nonlocal calls
         calls += 1
-        return {"exit_code": 1}
+        return _gate_receipt(_args[0], 1)
 
     monkeypatch.setattr(gate_repair, "_run_gate_command", _failed)
     outcome = gate_repair.run_gate_hook(
@@ -1825,7 +1889,7 @@ def test_on_resume_uses_typed_execution_ownership(
     def _failed(*_args: Any, **_kwargs: Any) -> dict[str, int]:
         nonlocal calls
         calls += 1
-        return {"exit_code": 1}
+        return _gate_receipt(_args[0], 1)
 
     monkeypatch.setattr(gate_repair, "_run_gate_command", _failed)
     outcome = gate_repair.run_gate_hook(run, object(), object(), hook="on_resume")
@@ -1858,7 +1922,7 @@ def test_recorder_repair_loop_records_fail_then_pass_recheck(
     codes = iter([1, 0])
     monkeypatch.setattr(
         gate_repair, "_run_gate_command",
-        lambda *a, **k: {"exit_code": next(codes)},
+        lambda run, *a, **k: _gate_receipt(run, next(codes)),
     )
     # A real repair flow: a repair_changes step exists and the dispatch is a
     # no-op (it only needs to "happen" so the recheck runs).
