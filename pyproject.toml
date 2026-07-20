@@ -55,7 +55,7 @@ dev = [
 # nested classes and unusual signatures. Kept optional so the package keeps
 # importing on a bare stdlib install.
 codemap = [
-    "tree-sitter>=0.22",
+    "tree-sitter>=0.26.0",
     "tree-sitter-python>=0.21",
     "tree-sitter-c-sharp>=0.21",
     "tree-sitter-php>=0.22",
