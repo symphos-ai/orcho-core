@@ -828,6 +828,8 @@ def test_evidence_summary_reports_rejected_release_correction_request() -> None:
         "Evidence",
         "  Tasks: 4 planned · 4 completed · 0 failed · 0 incomplete",
         "  Release: rejected -> correction requested",
+        "  Release blockers: 1",
+        "    - R1: untitled",
         "  Review findings: 1 | (P1=1) | phases: final_acceptance=1"
         " | resolved: 0 (none) | active: 1 (P1=1)",
         "  Run findings: 2",
@@ -837,10 +839,10 @@ def test_evidence_summary_reports_rejected_release_correction_request() -> None:
     )
 
 
-def test_evidence_summary_reports_done_rejected_release_delivery_blocked() -> None:
+def test_evidence_summary_does_not_claim_unknown_delivery_was_blocked() -> None:
     # A terminal ``done`` run whose release was REJECTED but which carries no
-    # operator commit-decision halt: the Release line must spell out that the
-    # delivery was blocked, never read as a bare ambiguous "rejected".
+    # canonical delivery record has an unknown delivery disposition. It must
+    # remain a rejected release, but cannot claim delivery was blocked.
     summary = _render_evidence_summary({
         "status": "done",
         "phases": {
@@ -855,7 +857,8 @@ def test_evidence_summary_reports_done_rejected_release_delivery_blocked() -> No
         },
     })
 
-    assert "  Release: rejected -> delivery blocked" in summary
+    assert "  Release: rejected" in summary
+    assert not any("delivery blocked" in line for line in summary)
     # The correction-request phrasing belongs only to the commit_decision_fix
     # halt path and must NOT appear for a plain done+rejected run.
     assert "  Release: rejected -> correction requested" not in summary

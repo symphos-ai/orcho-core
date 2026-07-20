@@ -32,6 +32,7 @@ from pipeline.project.finalization import (
     FinalizationResult,
     finalize_project_run,
 )
+from pipeline.project.terminal_delivery import TerminalDeliveryDisposition
 
 
 class _FakeState:
@@ -124,6 +125,7 @@ class TestFinalizeProjectRunSilent:
         assert result.mirrored_artifacts == []
         assert result.mirror_error is None
         assert result.worktree_teardown_message is None
+        assert result.terminal_delivery.disposition is TerminalDeliveryDisposition.UNKNOWN
 
     def test_session_status_mutated_in_place(
         self,

@@ -69,6 +69,12 @@ from pipeline.project.correction_route_display import (
     format_correction_route_summary,
 )
 from pipeline.project.handoff_advice_evidence import collect_handoff_advice
+from pipeline.project.terminal_delivery import (
+    TerminalDeliveryDisposition,
+    TerminalDeliveryOutcome,
+    project_terminal_delivery,
+    render_delivery_destination_lines,
+)
 from pipeline.run_state.release_verdict import (
     is_approved,
     is_rejected,
@@ -483,7 +489,10 @@ def _approved_with_only_verification_warnings(
 
 
 def _release_outcome_line(
-    session: Mapping[str, Any], phases: Mapping[str, Any],
+    session: Mapping[str, Any],
+    phases: Mapping[str, Any],
+    *,
+    terminal_delivery: TerminalDeliveryOutcome | None = None,
 ) -> str | None:
     outcome = _release_outcome_token(phases)
     if outcome == "none":
@@ -501,15 +510,36 @@ def _release_outcome_line(
             action = " -> halted by operator"
         elif session.get("status") == "halted":
             action = " -> halted"
-        else:
-            # Terminal ``done`` with a rejected release and no operator
-            # commit-decision halt: the run finished but delivery never
-            # happened. Make the blocked delivery explicit so the line does
-            # not read as a bare, ambiguous "rejected".
+        elif (
+            (terminal_delivery or project_terminal_delivery(session)).disposition
+            is TerminalDeliveryDisposition.NOT_DELIVERED
+        ):
+            # Delivery wording is driven solely by the durable delivery
+            # disposition.  An override remains a rejected release, but must
+            # never be described as blocked delivery.
             action = " -> delivery blocked"
         return f"  Release: rejected{action}"
 
     return None
+
+
+def _release_blocker_lines(phases: Mapping[str, Any]) -> tuple[str, ...]:
+    """Render the latest authoritative release blockers for terminal evidence."""
+    _phase, record = _release_record(phases)
+    blockers = record.get("release_blockers")
+    if not isinstance(blockers, list) or not blockers:
+        return ()
+
+    lines = [f"  Release blockers: {len(blockers)}"]
+    for blocker in blockers:
+        if not isinstance(blocker, Mapping):
+            continue
+        identifier = str(blocker.get("id") or "?")
+        title = str(blocker.get("title") or blocker.get("detail") or "untitled")
+        why = str(blocker.get("why_blocks_release") or "").strip()
+        detail = f" — {why}" if why else ""
+        lines.append(f"    - {identifier}: {title}{detail}")
+    return tuple(lines)
 
 
 def _correction_kind(phases: Mapping[str, Any]) -> str:
@@ -907,6 +937,8 @@ def _scope_expansion_summary_lines(phases: Mapping[str, Any]) -> tuple[str, ...]
 def _render_evidence_summary(
     session: Mapping[str, Any],
     metrics: Mapping[str, Any] | None = None,
+    *,
+    terminal_delivery: TerminalDeliveryOutcome | None = None,
 ) -> tuple[str, ...]:
     """Return compact end-of-run evidence summary lines.
 
@@ -953,9 +985,14 @@ def _render_evidence_summary(
     correction_line = _correction_outcome_line(phases)
     if correction_line:
         lines.append(correction_line)
-    release_line = _release_outcome_line(session, phases)
+    release_line = _release_outcome_line(
+        session,
+        phases,
+        terminal_delivery=terminal_delivery,
+    )
     if release_line:
         lines.append(release_line)
+    lines.extend(_release_blocker_lines(phases))
     lines.extend(_non_convergence_lines(session))
 
     if review.total:
@@ -1019,67 +1056,6 @@ def _render_evidence_summary(
     lines.extend(_scope_expansion_summary_lines(phases))
 
     return tuple(lines)
-
-
-_DELIVERY_NOT_DELIVERED_STATUSES: frozenset[str] = frozenset(
-    {
-        "halted",
-        "target_dirty",
-        "commit_failed",
-        "apply_failed",
-        "verification_blocked",
-    },
-)
-
-
-def _render_delivery_destination_lines(
-    session: Mapping[str, Any],
-) -> tuple[str, ...]:
-    """Return the compact ``Delivery: ...`` destination line for the DONE tail.
-
-    Read-only projection of the terminal ``commit_delivery`` audit record
-    (``CommitDeliveryDecision.to_dict()``). One scannable line names where the
-    diff landed. The wording shares the ADR 0119/0121 vocabulary with
-    ``_render_published_branch`` and ``core.io.summary_lines.delivery_line``
-    ('pushed delivery branch', 'PR', 'project checkout'). No terminal record —
-    or a non-terminal / unrecognised status — renders nothing so the tail stays
-    byte-identical when there is nothing to report. This never duplicates the
-    mid-run delivery block.
-    """
-    record = session.get("commit_delivery")
-    if not isinstance(record, Mapping):
-        return ()
-    status = str(record.get("status") or "")
-    if not status:
-        return ()
-    if status == "committed":
-        branch = str(record.get("delivery_branch") or "")
-        sha = str(record.get("commit_sha") or "")
-        pr_url = str(record.get("pr_url") or "")
-        if branch and not sha:
-            # Published / pushed delivery branch — the checkout was never touched.
-            if pr_url:
-                return (f"Delivery: pushed {branch} → PR {pr_url}",)
-            return (
-                f"Delivery: pushed {branch} → branch ready — "
-                "open a PR / push manually",
-            )
-        if sha and not branch:
-            return (f"Delivery: committed {sha[:7]} to project checkout",)
-        if sha and branch:
-            # A named / protect_default in-place commit lands on a delivery
-            # branch checked out in the project checkout.
-            if pr_url:
-                return (f"Delivery: committed {sha[:7]} onto {branch} → PR {pr_url}",)
-            return (f"Delivery: committed {sha[:7]} onto {branch}",)
-        return ("Delivery: committed to project checkout",)
-    if status == "applied_uncommitted":
-        return ("Delivery: applied to project checkout (uncommitted)",)
-    if status == "skipped":
-        return ("Delivery: skipped — diff retained",)
-    if status in _DELIVERY_NOT_DELIVERED_STATUSES:
-        return (f"Delivery: not delivered ({status})",)
-    return ()
 
 
 def _finding_totals(phases: Mapping[str, Any]) -> tuple[int, int]:
@@ -1565,6 +1541,13 @@ class FinalizationResult:
     # carries no terminal delivery record. Defaulted so existing construction
     # sites and tests are unaffected.
     delivery_summary_lines: tuple[str, ...] = ()
+    # Computed once from post-reconcile durable facts; terminal presentation
+    # consumes this without re-running delivery policy.
+    terminal_delivery: TerminalDeliveryOutcome = field(
+        default_factory=lambda: TerminalDeliveryOutcome(
+            TerminalDeliveryDisposition.UNKNOWN,
+        ),
+    )
 
 
 # ── companion delivery caveat (T2) ────────────────────────────────────────
@@ -2173,6 +2156,10 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         # parent stops reading as an active correction candidate everywhere.
         _supersede_parent_correction_after_followup(run)
 
+    # Pure projection after delivery and rejected-release reconciliation.  The
+    # terminal wrapper must consume this result rather than re-read session.
+    terminal_delivery = project_terminal_delivery(run.session)
+
     # 3) DONE-banner log entry (file + event; no stdout). Mirrors the
     # legacy ``banner("DONE", ...)`` event-side: writes a "DONE
     # START" line to progress.log and emits phase.start("DONE").
@@ -2383,7 +2370,11 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         no_change_outcome=run.session.get("no_change_outcome")
         if isinstance(run.session.get("no_change_outcome"), Mapping)
         else None,
-        evidence_summary_lines=_render_evidence_summary(run.session, metrics_dict),
+        evidence_summary_lines=_render_evidence_summary(
+            run.session,
+            metrics_dict,
+            terminal_delivery=terminal_delivery,
+        ),
         roi_summary_line=_render_roi_summary(
             run.session,
             metrics_dict,
@@ -2430,7 +2421,8 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         ),
         # Compact 'Delivery: ...' destination line, read from the terminal
         # ``commit_delivery`` audit record; empty when the run carries none.
-        delivery_summary_lines=_render_delivery_destination_lines(run.session),
+        delivery_summary_lines=render_delivery_destination_lines(run.session),
+        terminal_delivery=terminal_delivery,
     )
 
 
@@ -2485,17 +2477,32 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
         # seen here are delivery-driven or quality-gate halts.
         label, header_color = _halt_banner(result.halt_reason)
         print(render_phase_header("HALTED", label, color=header_color))
-    elif result.release_outcome == "rejected":
-        # The run reached a terminal non-halted ``done`` status, but the
-        # release gate REJECTED the delivery (correction requested / blocked).
-        # A green "Pipeline complete" would read as a successful delivery —
-        # render an honest amber banner instead. The phase chips below still
-        # carry the genuine per-phase outcomes (final_acceptance=reject is a
-        # release outcome, not a phase failure); only the headline changes.
-        # approved/pending/none never enter here and keep the green header.
+    elif (
+        result.terminal_delivery.disposition
+        is TerminalDeliveryDisposition.DELIVERED_BY_OPERATOR_OVERRIDE
+    ):
+        print(render_phase_header(
+            "DELIVERED BY OPERATOR OVERRIDE",
+            "Release rejected; delivery was explicitly completed by operator override",
+            color=C.YELLOW,
+        ))
+    elif (
+        result.release_outcome == "rejected"
+        and result.terminal_delivery.disposition
+        is TerminalDeliveryDisposition.NOT_DELIVERED
+    ):
         print(render_phase_header(
             "DELIVERY BLOCKED",
             "Release rejected — pipeline ran, delivery did not happen",
+            color=C.YELLOW,
+        ))
+    elif result.release_outcome == "rejected":
+        # A rejected release is never green.  ``UNKNOWN`` deliberately does
+        # not claim delivery did not happen; a delivered record without the
+        # corroborating override marker is likewise not a clean success.
+        print(render_phase_header(
+            "DELIVERY BLOCKED",
+            "Release rejected — delivery disposition requires attention",
             color=C.YELLOW,
         ))
     elif result.companion_caveat is not None:
