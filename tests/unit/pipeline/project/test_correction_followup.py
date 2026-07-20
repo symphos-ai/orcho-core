@@ -1612,6 +1612,18 @@ class TestSkippedPhaseGateSuppression:
         from pipeline.project.run import _PipelineRun
 
         calls = self._record_gate_hooks(monkeypatch)
+        # This test owns only correction-route gate suppression.  The final
+        # phase now also freezes and materializes the delivery epoch; isolate
+        # that independent lifecycle seam so the intentionally minimal
+        # gate-active stub does not need a complete verification contract.
+        monkeypatch.setattr(
+            "pipeline.project.verification_autorun.select_before_delivery_epoch",
+            lambda _run: None,
+        )
+        monkeypatch.setattr(
+            "pipeline.project.run._auto_run_required_receipts_live",
+            lambda *args, **kwargs: None,
+        )
         st = self._state()
         st.phase_log["correction_triage"] = {
             "kind": "gate_rerun", "summary": "stale blockers",

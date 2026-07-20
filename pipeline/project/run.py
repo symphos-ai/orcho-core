@@ -247,6 +247,7 @@ def _auto_run_required_receipts_live(
     *,
     reason: str,
     hook_label: str,
+    delivery_plan: Any | None = None,
 ) -> None:
     """Materialize required receipts and render the official live block.
 
@@ -257,7 +258,12 @@ def _auto_run_required_receipts_live(
     """
     from pipeline.project.verification_autorun import auto_run_required_receipts
 
-    autorun_result = auto_run_required_receipts(run, phase, reason=reason)
+    if delivery_plan is None:
+        autorun_result = auto_run_required_receipts(run, phase, reason=reason)
+    else:
+        autorun_result = auto_run_required_receipts(
+            run, phase, reason=reason, delivery_plan=delivery_plan,
+        )
     if getattr(run, "_presentation", None) is PresentationPolicy.TERMINAL:
         from pipeline.project.verification_timeline import render_gate_live_block
 
@@ -926,11 +932,17 @@ class _PipelineRun:
         # fresh evidence from disk. Side-effect-free under dry-run / no-contract;
         # all logic (guards, context, evidence) lives in the autorun module.
         if name in FINAL_PHASES:
+            # Freeze delivery selection against the repaired run worktree before
+            # the materializer invokes sdk.verify.
+            from pipeline.project.verification_autorun import select_before_delivery_epoch
+
+            delivery_plan = select_before_delivery_epoch(self)
             _auto_run_required_receipts_live(
                 self,
                 name,
                 reason="pre-final_acceptance required-receipt materialization",
                 hook_label="pre-final auto-run",
+                delivery_plan=delivery_plan,
             )
 
         # ADR 0112 §3: isolated-source provenance preflight. Before ``implement``

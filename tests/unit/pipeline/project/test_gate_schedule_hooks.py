@@ -461,7 +461,7 @@ class TestRoutingPlanLifecycle:
         run = _run(self._path_gate_contract())
         changed = {"paths": ()}
         monkeypatch.setattr(
-            gate_repair, "_selection_context",
+            "pipeline.project.verification_selection_context.selection_context_for_run",
             lambda run, contract: SelectionContext(
                 work_mode="governed", touched_paths=changed["paths"],
             ),

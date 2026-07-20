@@ -411,8 +411,10 @@ materializes the run's missing/stale required receipts so the model reviewer
 never has to leak shell work to the operator (ADR 0094). In `_on_phase_pre`
 (below), after the correction-route skip check and **before** `before_phase` /
 `before_delivery` gates evaluate, when `name in FINAL_PHASES` the orchestrator
-calls `auto_run_required_receipts(self, name, reason=…)`. That thin adapter runs
-the shared `materialize_required_receipts` executor — auto-running only `missing`
+first resolves and durably records the authoritative `before_delivery:` epoch
+from the current run worktree, then calls `auto_run_required_receipts` with that
+exact plan. Only after the selection trail is written may the shared
+`materialize_required_receipts` executor run — auto-running only `missing`
 / `stale` required commands and, per [ADR 0141](../adr/0141-subject-aware-refresh-of-failed-verification-receipts.md),
 a failed official current-run receipt only when usable typed subjects prove it
 `STALE` against the current checkout. A same, legacy, malformed, unavailable,
@@ -421,7 +423,10 @@ reporting still leaves a command failure `failed`. It skips `present` (fresh) an
 never auto-runs `manual_only` hooks / operator-owned commands (those stay an
 explicit operator escape-hatch). The materializer has one command pass, with no
 retry loop. It is a strict no-op under dry-run, no contract, or empty `required`.
-The auto-run records durable evidence: an append-only
+Later `before_delivery` hooks replay that recorded epoch rather than recomputing
+path selection, and reuse its fresh receipt rather than running a second
+subprocess. Correction pre-review materialization intentionally does not create a
+delivery epoch. The auto-run records durable evidence: an append-only
 `state.extras['verification_autorun']` list plus a per-phase mirror at
 `session['phase_log'][<phase>]['verification_autorun']`. The `before_delivery`
 gate, the Stage 5 readiness render, and the Stage 6 delivery gate then read the

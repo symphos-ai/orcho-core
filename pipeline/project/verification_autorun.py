@@ -477,8 +477,30 @@ def _record_autorun_evidence(run: Any, phase: str, result: ReceiptAutoRunResult)
                 phase_entry["verification_autorun"] = evidence
 
 
+def select_before_delivery_epoch(run: Any) -> Any | None:
+    """Durably select the pre-final delivery epoch before receipt execution.
+
+    The mono-project final-phase seam is its sole caller.  Correction
+    pre-review materialization deliberately does not freeze delivery scope.
+    """
+    state = getattr(run, "state", None)
+    if getattr(state, "dry_run", False):
+        return None
+    extras = getattr(state, "extras", {}) or {}
+    contract = extras.get("verification_contract")
+    if contract is None:
+        return None
+    from pipeline.project.verification_ledger_runtime import select_epoch
+    from pipeline.project.verification_selection_context import selection_context_for_run
+
+    return select_epoch(
+        run, contract, epoch="before_delivery:",
+        context=selection_context_for_run(run, contract),
+    )
+
+
 def auto_run_required_receipts(
-    run: Any, phase: str, *, reason: str,
+    run: Any, phase: str, *, reason: str, delivery_plan: Any | None = None,
 ) -> ReceiptAutoRunResult:
     """Materialise the run's required receipts before a final phase, and record
     durable evidence.
@@ -545,32 +567,22 @@ def auto_run_required_receipts(
         dry_run=False,
         reason=reason,
     )
-    # Pre-final materialization is a concrete execution seam. Associate each
-    # attempt with the actual before-delivery identity instead of treating a
-    # command-level receipt as proof that every scheduled identity executed.
+    # The final-phase caller selected ``delivery_plan`` durably before invoking
+    # sdk.verify. Correction pre-review passes no plan and cannot create a
+    # premature delivery epoch.
     from pipeline.project.verification_ledger_runtime import (
         record_execution,
         record_reuse,
-        select_epoch,
     )
-    from pipeline.verification_selection import selection_context_from_extras
-
-    plan = select_epoch(
-        run,
-        contract,
-        epoch="before_delivery:",
-        context=selection_context_from_extras(extras, contract),
-    )
-    by_command = {
-        entry.command: entry
-        for entry in plan.entries
-        if entry.hook == "before_delivery"
-    }
+    by_command: dict[str, tuple[Any, ...]] = {}
+    for entry in getattr(delivery_plan, "entries", ()):
+        by_command.setdefault(entry.command, ())
+        by_command[entry.command] += (entry,)
     for command in result.ran_commands:
-        if entry := by_command.get(command):
+        for entry in by_command.get(command, ()):
             record_execution(run, entry, passed=command not in result.failed)
     for command in result.skipped_fresh:
-        if entry := by_command.get(command):
+        for entry in by_command.get(command, ()):
             record_reuse(run, entry, fresh=True)
     _record_autorun_evidence(run, phase, result)
     return result

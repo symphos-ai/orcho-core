@@ -43,6 +43,7 @@ from pipeline.project.verification_autorun import (
     ReceiptAutoRunResult,
     auto_run_required_receipts,
     materialize_required_receipts,
+    select_before_delivery_epoch,
 )
 from pipeline.project.verification_timeline import (
     VerificationGateEvent,
@@ -1139,6 +1140,28 @@ def _path_selected_contract(
     return contract
 
 
+def _prefinal_path_contract() -> VerificationContract:
+    """CLI path gate plus operator-owned delivery identities."""
+    contract = VerificationContract.from_plugin(PluginConfig(verification={
+        "commands": {
+            "cli-sdk-unit": {"run": "true"},
+            "manual": {"run": "true"},
+            "suggest": {"run": "true"},
+        },
+        "required": ["manual", "suggest"],
+        "gate_sets": {"cli": {"commands": ["cli-sdk-unit"]}},
+        "selection": [{"paths": ["tests/unit/cli/**"], "include": ["cli"]}],
+        "schedule": [
+            {"after_phase": "implement", "gate_sets": ["cli"], "policy": "require"},
+            {"before_delivery": True, "gate_sets": ["cli"], "policy": "require"},
+            {"before_delivery": True, "commands": ["manual"], "policy": "manual"},
+            {"before_delivery": True, "commands": ["suggest"], "policy": "suggest"},
+        ],
+    }))
+    assert contract is not None
+    return contract
+
+
 def _cached_before_delivery_extras(
     contract: VerificationContract, touched: list[str],
 ) -> dict[str, Any]:
@@ -1158,6 +1181,142 @@ def _cached_before_delivery_extras(
         ),
     )
     return {ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": plan}}
+
+
+def test_prefinal_epoch_precedes_verify_and_reuses_exact_path_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair-time CLI paths are frozen before materialization, not afterwards."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _prefinal_path_contract()
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    run.state.output_dir = run_dir
+    # The implement epoch sees no CLI change; repair makes it visible only at
+    # the final boundary. An advisory preview must not influence that boundary.
+    paths = {"value": ()}
+    monkeypatch.setattr("core.io.git_helpers.git_changed_files", lambda _cwd: paths["value"])
+    from pipeline.project.verification_ledger_runtime import select_epoch
+    from pipeline.verification_selection import SelectionContext
+
+    implement_plan = select_epoch(
+        run, contract, epoch="after_phase:implement", context=SelectionContext(),
+    )
+    assert "cli-sdk-unit" not in [entry.command for entry in implement_plan.entries]
+    run.state.extras["verification_gate_prompt_preview"] = object()
+    paths["value"] = ("tests/unit/cli/test_gate.py",)
+    plan = select_before_delivery_epoch(run)
+    assert [entry.command for entry in plan.entries if entry.hook == "before_delivery"] == [
+        "cli-sdk-unit", "manual", "suggest",
+    ]
+
+    recorder = _Recorder(run_dir).install(monkeypatch)
+    original_verify_run = recorder.verify_run
+
+    def verify_after_selection(**kwargs: Any) -> Any:
+        ledger = load_ledger(run_dir)
+        assert any(
+            event.kind == "selection" and event.reason == "before_delivery:"
+            for event in ledger.trail
+        )
+        return original_verify_run(**kwargs)
+
+    monkeypatch.setattr("sdk.verify.verify_run", verify_after_selection)
+    monkeypatch.setattr(
+        "pipeline.verification_selection.build_scheduled_gate_plan",
+        lambda *_: pytest.fail("materializer rebuilt the selected delivery plan"),
+    )
+    result = auto_run_required_receipts(
+        run, "final_acceptance", reason="pre-final", delivery_plan=plan,
+    )
+
+    assert result.ran_commands == ("cli-sdk-unit",)
+    assert recorder.run_calls[0]["commands"] == ["cli-sdk-unit"]
+    assert result.skipped_manual == ("manual", "suggest")
+    from pipeline.verification_readiness import build_final_acceptance_readiness
+
+    readiness = build_final_acceptance_readiness(
+        contract, run_dir, ctx, extras=run.state.extras,
+    )
+    assert "cli-sdk-unit" not in readiness.required_missing
+    assert "cli-sdk-unit" not in readiness.required_failed
+
+    from pipeline.project import gate_repair
+
+    monkeypatch.setattr(
+        gate_repair, "_run_gate_command",
+        lambda *_args, **_kwargs: pytest.fail("before_delivery reran materialized command"),
+    )
+    outcome = gate_repair.run_gate_hook(run, object(), object(), hook="before_delivery")
+    assert outcome == gate_repair.GateRepairOutcome(active=True, passed=True)
+    assert len(recorder.run_calls) == 1
+    assert len([
+        event for event in load_ledger(run_dir).trail
+        if event.kind == "selection" and event.reason == "before_delivery:"
+    ]) == 3
+
+
+def test_resume_materializes_recorded_phase_delivery_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed pre-final pass retains phase-only durable delivery scope."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _prefinal_path_contract()
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    first = _stub_run(project, run_dir, contract, ctx)
+    first.state.output_dir = run_dir
+    from pipeline.project.verification_ledger_runtime import select_epoch
+    from pipeline.verification_selection import SelectionContext
+
+    select_epoch(
+        first, contract, epoch="after_phase:implement",
+        context=SelectionContext(touched_paths=("tests/unit/cli/test_orcho.py",)),
+    )
+    select_epoch(first, contract, epoch="before_delivery:", context=SelectionContext())
+
+    resumed = _stub_run(project, run_dir, contract, ctx)
+    resumed.state.output_dir = run_dir
+    resumed.checkpoint_resume = True
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.build_scheduled_gate_plan",
+        lambda *_: pytest.fail("resume rebuilt a recorded delivery plan"),
+    )
+    plan = select_before_delivery_epoch(resumed)
+    assert [(entry.command, entry.hook, entry.phase) for entry in plan.entries] == [
+        ("cli-sdk-unit", "after_phase", "implement"),
+        ("manual", "before_delivery", ""),
+        ("suggest", "before_delivery", ""),
+    ]
+
+    recorder = _Recorder(run_dir).install(monkeypatch)
+    result = auto_run_required_receipts(
+        resumed, "final_acceptance", reason="pre-final", delivery_plan=plan,
+    )
+
+    assert result.ran_commands == ("cli-sdk-unit",)
+    assert recorder.run_calls[0]["commands"] == ["cli-sdk-unit"]
+    assert any(
+        event.identity == ("cli-sdk-unit", "after_phase", "implement")
+        and event.kind == "execution"
+        for event in load_ledger(run_dir).trail
+    )
+
+
+def test_correction_autorun_does_not_create_delivery_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _prefinal_path_contract()
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    run.state.output_dir = run_dir
+    _Recorder(run_dir).install(monkeypatch)
+
+    auto_run_required_receipts(
+        run, "review_changes", reason="pre-review correction required-receipt materialization",
+    )
+
+    assert not run_dir.joinpath("scheduled_gate_ledger.json").exists()
 
 
 def test_cached_delivery_plan_targets_path_selected_gate_clean_checkout(
@@ -1666,6 +1825,10 @@ def test_correction_review_materializes_receipts_before_review(
     monkeypatch.setattr(
         "pipeline.project.gate_repair.evaluate_pre_phase_gates",
         lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "pipeline.project.verification_autorun.select_before_delivery_epoch",
+        lambda *_args: pytest.fail("correction pre-review froze delivery epoch"),
     )
     # Pin the full live block: ``summary`` (the default) collapses it to a
     # one-line presenter card. monkeypatch auto-restores the mode.
