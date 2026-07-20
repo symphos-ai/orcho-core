@@ -54,6 +54,11 @@ from pipeline.verification_dependencies import changed_files_fingerprint
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
 )
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 _INCIDENT_PARENT_RUN_ID = "20260612_213530"
 _INCIDENT_CHILD_RUN_ID = "20260612_225347"

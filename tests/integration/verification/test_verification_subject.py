@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from pipeline.verification_subject import (
     VerificationSubjectAvailable,
     VerificationSubjectComparisonVerdict,
@@ -11,6 +13,8 @@ from pipeline.verification_subject import (
     capture_verification_subject,
     compare_verification_subjects,
 )
+
+pytestmark = [pytest.mark.e2e, pytest.mark.git_worktree]
 
 
 def _git(path: Path, *args: str) -> str:

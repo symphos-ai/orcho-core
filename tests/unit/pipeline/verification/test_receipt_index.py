@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+
+import pytest
 
 from pipeline.evidence.verification_receipt import write_command_receipt
 from pipeline.verification_contract import PlaceholderContext, VerificationContract
@@ -15,16 +16,17 @@ from pipeline.verification_receipt_index import (
     receipt_file_path,
 )
 from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
+from tests.fixtures.verification_subject import (
+    FakeVerificationSubjectCapture,
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 
 def _repo(path: Path) -> None:
     path.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "x@test"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "x"], cwd=path, check=True)
     (path / "f").write_text("x", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=path, check=True)
 
 
 def _contract() -> VerificationContract:
@@ -97,7 +99,10 @@ class TestSources:
         assert receipt_file_path(tmp_path, "test") == str(written)
 
 
-def test_parent_receipt_inherits_only_for_equal_usable_subject(tmp_path: Path) -> None:
+def test_parent_receipt_inherits_only_for_equal_usable_subject(
+    tmp_path: Path,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
+) -> None:
     checkout, child, parent = tmp_path / "co", tmp_path / "child", tmp_path / "parent"
     _repo(checkout)
     child.mkdir()
@@ -108,7 +113,10 @@ def test_parent_receipt_inherits_only_for_equal_usable_subject(tmp_path: Path) -
     cls = classify_required_receipts(_contract(), child, PlaceholderContext(checkout=str(checkout)), checkout=str(checkout), parent_runs=[("parent", str(parent))])["test"]
     assert cls.status == "present"
     assert cls.source_run_id == "parent"
-    subprocess.run(["git", "commit", "--allow-empty", "-qm", "new"], cwd=checkout, check=True)
+    fake_verification_subject_capture.set_identity(
+        checkout,
+        observed_head_oid="3" * 40,
+    )
     stale = classify_required_receipts(_contract(), child, PlaceholderContext(checkout=str(checkout)), checkout=str(checkout), parent_runs=[("parent", str(parent))])["test"]
     assert stale.status == "stale"
 
@@ -126,14 +134,20 @@ def test_current_same_subject_failure_blocks_parent_pass(tmp_path: Path) -> None
     assert cls.status == "failed"
 
 
-def test_failed_receipt_for_stale_subject_yields_to_current_parent_pass(tmp_path: Path) -> None:
+def test_failed_receipt_for_stale_subject_yields_to_current_parent_pass(
+    tmp_path: Path,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
+) -> None:
     checkout, child, parent = tmp_path / "co", tmp_path / "child", tmp_path / "parent"
     _repo(checkout)
     child.mkdir()
     parent.mkdir()
     old_capture = capture_verification_subject(checkout)
     assert isinstance(old_capture, VerificationSubjectAvailable)
-    subprocess.run(["git", "commit", "--allow-empty", "-qm", "new"], cwd=checkout, check=True)
+    fake_verification_subject_capture.set_identity(
+        checkout,
+        observed_head_oid="3" * 40,
+    )
     current_capture = capture_verification_subject(checkout)
     assert isinstance(current_capture, VerificationSubjectAvailable)
     _write(child, old_capture.identity, exit_code=1)

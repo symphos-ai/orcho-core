@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from pipeline.evidence.verification_receipt import write_command_receipt
 from pipeline.phases.builtin import default_registry
 from pipeline.phases.builtin.review_support import _required_receipt_backstop
@@ -27,6 +29,11 @@ from pipeline.verification_contract import (
 )
 from pipeline.verification_readiness import required_receipt_gaps
 from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 
 def _init_repo(path: Path) -> None:
