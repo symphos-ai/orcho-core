@@ -33,6 +33,11 @@ from pipeline.project.finalization import (
     _halt_banner,
     finalize_with_terminal_output,
 )
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 
 def _fix_halt_session(**phases: Any) -> dict[str, Any]:

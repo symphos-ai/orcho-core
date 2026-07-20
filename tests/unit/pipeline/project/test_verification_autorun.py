@@ -56,7 +56,6 @@ from pipeline.verification_contract import (
     VerificationContract,
     placeholder_context_for,
 )
-from pipeline.verification_dependencies import changed_files_fingerprint
 from pipeline.verification_ledger_store import load_ledger
 from pipeline.verification_readiness import (
     ROUTING_PLANS_EXTRAS_KEY,
@@ -67,6 +66,14 @@ from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
     receipt_file_path,
 )
+from pipeline.verification_subject import VerificationSubjectAvailable
+from tests.fixtures.verification_subject import (
+    DEFAULT_VERIFICATION_SUBJECT,
+    FakeVerificationSubjectCapture,
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 # ── contract + receipt fixtures ───────────────────────────────────────────
 
@@ -297,7 +304,7 @@ def _ctx(contract: VerificationContract, *, checkout: Path, project: Path,
 def _layout(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Return ``(project, workspace, run_dir)`` with the standard run layout."""
     project = tmp_path / "proj"
-    _init_repo(project)
+    project.mkdir()
     workspace = tmp_path / "ws"
     run_dir = workspace / "runspace" / "runs" / "rid"
     run_dir.mkdir(parents=True)
@@ -556,41 +563,29 @@ def test_failed_autorun_is_recorded_failed_not_green(
     assert after["lint"].status == "failed"
 
 
-def test_failed_current_receipt_refreshes_once_after_real_git_subject_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_failed_current_receipt_refreshes_once_after_typed_subject_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
 ) -> None:
-    """Changing dirty content, not paths or HEAD, refreshes one failed receipt."""
+    """A tree change with a stable HEAD refreshes one failed receipt."""
     project, workspace, run_dir = _layout(tmp_path)
     checkout = tmp_path / "checkout"
-    head = _init_repo(checkout)
-    tracked = checkout / "README.md"
-    tracked.write_text("A\n", encoding="utf-8")
+    checkout.mkdir()
     contract = _contract(["lint"])
     ctx = _ctx(contract, checkout=checkout, project=project,
                workspace=workspace, run_dir=run_dir)
     _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
 
-    from pipeline.verification_subject import (
-        VerificationSubjectAvailable,
-        capture_verification_subject,
-    )
-    subject_a = capture_verification_subject(checkout)
+    subject_a = fake_verification_subject_capture(checkout)
     assert isinstance(subject_a, VerificationSubjectAvailable)
-    touched_a = subprocess.run(
-        ["git", "diff", "--name-only"], cwd=checkout,
-        capture_output=True, text=True, check=True,
-    ).stdout.splitlines()
-
-    tracked.write_text("B\n", encoding="utf-8")
-    subject_b = capture_verification_subject(checkout)
-    assert isinstance(subject_b, VerificationSubjectAvailable)
-    touched_b = subprocess.run(
-        ["git", "diff", "--name-only"], cwd=checkout,
-        capture_output=True, text=True, check=True,
-    ).stdout.splitlines()
-    assert touched_a == touched_b == ["README.md"]
-    assert subject_a.identity.tree_oid != subject_b.identity.tree_oid
-    assert subject_b.identity.observed_head_oid == head
+    subject_b = fake_verification_subject_capture.set_identity(
+        checkout,
+        tree_oid="3" * 40,
+        observed_head_oid=subject_a.identity.observed_head_oid,
+    )
+    assert subject_a.identity.tree_oid != subject_b.tree_oid
+    assert subject_a.identity.observed_head_oid == subject_b.observed_head_oid
 
     rec = _Recorder(run_dir, production_writer=True).install(monkeypatch)
     result = materialize_required_receipts(
@@ -603,7 +598,7 @@ def test_failed_current_receipt_refreshes_once_after_real_git_subject_drift(
     assert len(rec.run_calls) == 1
     written = json.loads(Path(receipt_file_path(run_dir, "lint")).read_text())
     assert written["schema_version"] == 3
-    assert written["subject"]["identity"]["tree_oid"] == subject_b.identity.tree_oid
+    assert written["subject"]["identity"]["tree_oid"] == subject_b.tree_oid
     assert classify_required_receipts(
         contract, run_dir, ctx, checkout=str(checkout),
     )["lint"].status == "present"
@@ -634,18 +629,18 @@ def test_failed_current_receipt_with_same_subject_is_not_refreshed(
 
 
 def test_inherited_parent_pass_does_not_hide_stale_failed_current_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
 ) -> None:
     project, workspace, run_dir = _layout(tmp_path)
     checkout = tmp_path / "checkout"
-    _init_repo(checkout)
-    tracked = checkout / "README.md"
-    tracked.write_text("A\n", encoding="utf-8")
+    checkout.mkdir()
     contract = _contract(["lint"])
     ctx = _ctx(contract, checkout=checkout, project=project,
                workspace=workspace, run_dir=run_dir)
     _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
-    tracked.write_text("B\n", encoding="utf-8")
+    fake_verification_subject_capture.set_identity(checkout, tree_oid="3" * 40)
     parent_dir = tmp_path / "parent"
     _write_receipt(parent_dir, "lint", exit_code=0, checkout=checkout)
     extras = {VERIFICATION_PARENT_RUNS_EXTRAS_KEY: (("parent", str(parent_dir)),)}
@@ -2647,11 +2642,12 @@ def test_done_render_without_policy_map_omits_classification_lines() -> None:
 def _failing_residual_run(
     tmp_path: Path,
 ) -> tuple[Any, Any, Path, Path]:
-    """A git-backed run where lint is failed, unit missing, smoke stale."""
+    """A typed-subject run where lint is failed, unit missing, smoke stale."""
     project, workspace, run_dir = _layout(tmp_path)
     checkout = tmp_path / "checkout"
-    head = _init_repo(checkout)
-    fingerprint = changed_files_fingerprint(str(checkout))
+    checkout.mkdir()
+    head = DEFAULT_VERIFICATION_SUBJECT.observed_head_oid
+    fingerprint = "f" * 64
     contract = _contract(["lint", "unit", "smoke"])
     ctx = _ctx(contract, checkout=checkout, project=project,
                workspace=workspace, run_dir=run_dir)
@@ -2715,8 +2711,9 @@ def test_timeline_inherited_parent_receipt_distinct_from_current(
     line with its parent run id + path, distinct from current-run proof."""
     project, workspace, run_dir = _layout(tmp_path)
     checkout = tmp_path / "checkout"
-    head = _init_repo(checkout)
-    fingerprint = changed_files_fingerprint(str(checkout))
+    checkout.mkdir()
+    head = DEFAULT_VERIFICATION_SUBJECT.observed_head_oid
+    fingerprint = "f" * 64
     parent_run = tmp_path / "parent_run_20260612"
     parent_run.mkdir()
     # Child has NO receipt; the parent carries a valid same-diff present one.
@@ -2748,8 +2745,9 @@ def test_timeline_no_parent_present_receipt_has_no_inherited_line(
     stays byte-identical (the line is absent, not empty)."""
     project, workspace, run_dir = _layout(tmp_path)
     checkout = tmp_path / "checkout"
-    head = _init_repo(checkout)
-    fingerprint = changed_files_fingerprint(str(checkout))
+    checkout.mkdir()
+    head = DEFAULT_VERIFICATION_SUBJECT.observed_head_oid
+    fingerprint = "f" * 64
     _write_receipt(run_dir, "test", exit_code=0,
                    checkout_head=head, fingerprint=fingerprint)
     contract = _contract(["test"])

@@ -46,6 +46,11 @@ from pipeline.verification_contract import (
     VerificationContract,
 )
 from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 # ── git + contract + state harness ───────────────────────────────────────────
 
