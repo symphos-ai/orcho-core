@@ -153,7 +153,7 @@ def test_low_confidence_stops(tmp_path, patch_advisor):
         budget_remaining=1,
     )
     assert out.outcome == "stop"
-    assert out.reason == "advice_confidence_low"
+    assert out.reason == "low_confidence_ambiguity"
 
 
 def test_halt_stops(tmp_path, patch_advisor):

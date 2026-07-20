@@ -15,12 +15,14 @@ from types import SimpleNamespace
 
 from agents.entities import SubTask
 from pipeline.plan_parser import ParsedPlan
-from pipeline.project.handoff_advice import HandoffAdvice, classify_advice_safety
+from pipeline.project.handoff_advice import HandoffAdvice
 from pipeline.project.handoff_advice_artifact import build_provenance_note
+from pipeline.project.handoff_advice_assessment import assess_advice
+from pipeline.project.handoff_advice_contract import AdviceContractSnapshot
+from pipeline.project.handoff_advice_intent import AdviceIntent, ProposedOperation
 from pipeline.project.handoff_advice_policy import (
     HandoffAdvicePolicy,
     build_scope,
-    evaluate_ci_gates,
     findings_fingerprint,
     is_destructive_recommendation,
     resolve_handoff_advice_policy,
@@ -46,6 +48,7 @@ def _advice(
         risks=risks,
         expected_files=expected_files,
         operator_note=operator_note,
+        intent=AdviceIntent(proposed_operations=(ProposedOperation("repair", "finding", {}),)),
     )
 
 
@@ -55,9 +58,9 @@ def _finding(fid: str, severity: str, title: str = "t") -> dict[str, str]:
 
 def _gate(advice: HandoffAdvice, *, findings=(), scope=frozenset(),
           budget_remaining=1, repeated=False):
-    safety = classify_advice_safety(advice, findings)
-    return evaluate_ci_gates(
-        advice, safety, findings, scope, budget_remaining, repeated,
+    return assess_advice(
+        advice, AdviceContractSnapshot("", "", True), findings=findings,
+        scope=scope, budget_remaining=budget_remaining, repeated=repeated,
     )
 
 
@@ -193,7 +196,7 @@ def test_gate_continue_stops_needs_operator():
 def test_gate_low_confidence_stops():
     decision = _gate(_advice(confidence="low"))
     assert decision.proceed is False
-    assert decision.reason == "advice_confidence_low"
+    assert decision.reason == "low_confidence_ambiguity"
     assert decision.stop_state == "needs_operator"
 
 

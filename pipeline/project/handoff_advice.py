@@ -30,8 +30,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from core.infra.paths import PROMPTS_DIR
-
 # Durable artifact + provenance live in a focused leaf module; re-exported here
 # so the advisor module stays the stable public facade for them.
 from pipeline.project.handoff_advice_artifact import (
@@ -39,6 +37,13 @@ from pipeline.project.handoff_advice_artifact import (
     load_advice_artifact,
     write_advice_artifact,
 )
+from pipeline.project.handoff_advice_contract import (
+    AdviceContractSnapshot,
+    build_advice_contract_snapshot,
+    build_advice_prompt as _render_advice_prompt,
+    build_advice_turn as _make_advice_turn,
+)
+from pipeline.project.handoff_advice_intent import AdviceIntent, parse_advice_intent
 
 if TYPE_CHECKING:
     from pipeline.runtime.handoff import PhaseHandoffRequested
@@ -94,7 +99,10 @@ _RESPONSE_CONTRACT = (
     'the corrective feedback the retry round should act on; otherwise empty>",\n'
     '  "risks": ["<concrete risks of the recommended path>"],\n'
     '  "expected_files": ["<files a retry would most likely touch>"],\n'
-    '  "operator_note": "<optional short note to the operator>"\n'
+    '  "operator_note": "<optional short note to the operator>",\n'
+    '  "proposed_operations": [{"kind": "repair | preserve | revert | remove | waive | stop", "target": "<structured target>"}],\n'
+    '  "contract_effects": [{"invariant_id": "<published invariant id>", '
+    '"effect": "preserve | advance | violate | unknown"}]\n'
     "}\n"
     "Do not act on your own recommendation. An operator reviews it first."
 )
@@ -119,6 +127,7 @@ class AdviceContext:
     loop_max_rounds: int = 1
     correction_context: str = ""
     response_language: str = ""
+    contract_snapshot: AdviceContractSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,20 +148,7 @@ class HandoffAdvice:
     operator_note: str = ""
     parse_warnings: tuple[str, ...] = ()
     raw_output: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class AdviceSafety:
-    """Safety classification: ``auto_apply_ok`` only for non-low-confidence
-    ``retry_feedback``; ``needs_confirmation`` flags low confidence;
-    ``blocked_reason`` set for any non-retry recommendation; ``waiver_blocked``
-    records a render-only waiver, flagged when blocking-severity findings exist.
-    """
-
-    auto_apply_ok: bool
-    needs_confirmation: bool
-    blocked_reason: str = ""
-    waiver_blocked: bool = False
+    intent: AdviceIntent = field(default_factory=AdviceIntent)
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +343,7 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
         str(artifacts.get("correction_context") or "").strip(),
         _FINDING_BODY_CHAR_LIMIT,
     )
+    contract_snapshot = build_advice_contract_snapshot(run, signal)
     return AdviceContext(
         run_id=str(getattr(run, "session_ts", "") or ""),
         handoff_id=str(getattr(signal, "handoff_id", "") or ""),
@@ -369,112 +366,16 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
             last_output,
             correction_context,
         ),
-    )
-
-
-def _advice_task_body() -> str:
-    """Load the user-editable advisor procedure part."""
-    path = PROMPTS_DIR / "tasks" / "handoff_advice.md"
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-def _render_context_block(ctx: AdviceContext) -> str:
-    """Render the compact recorded-context section embedded in the prompt."""
-    lines: list[str] = [
-        "# Recorded handoff context",
-        "",
-        f"- phase: {ctx.phase}",
-        f"- trigger: {ctx.trigger}",
-        f"- verdict: {ctx.verdict}",
-        f"- round: {ctx.prior_retry_round}/{ctx.loop_max_rounds}",
-    ]
-    if ctx.task_title:
-        lines.append(f"- task: {ctx.task_title}")
-    if ctx.available_actions:
-        lines.append(f"- available actions: {', '.join(ctx.available_actions)}")
-    if ctx.last_phase_summary:
-        lines += ["", "## Reviewer summary", ctx.last_phase_summary]
-    if ctx.findings:
-        lines += ["", "## Findings"]
-        for f in ctx.findings:
-            head = " ".join(
-                p for p in (f.get("severity"), f.get("id"), f.get("title")) if p
-            ).strip()
-            lines.append(f"- {head or '(finding)'}")
-            if f.get("required_fix"):
-                lines.append(f"    required_fix: {f['required_fix']}")
-            if f.get("body"):
-                lines.append(f"    {f['body']}")
-    if ctx.last_output:
-        lines += ["", "## Last output", ctx.last_output]
-    if ctx.correction_context:
-        lines += ["", "## Correction context", ctx.correction_context]
-    if ctx.diff_summary:
-        lines += ["", "## Working tree (git status --short)", ctx.diff_summary]
-    return "\n".join(lines)
-
-
-def _render_language_policy(ctx: AdviceContext) -> str:
-    """Render the natural-language policy for advisor JSON string values."""
-    if not ctx.response_language:
-        return ""
-    return "\n".join(
-        (
-            "# Response language",
-            (
-                "Write human-readable JSON string values "
-                f"(`rationale`, `retry_feedback`, `risks`, `operator_note`) "
-                f"in {ctx.response_language}."
-            ),
-            (
-                "JSON keys, protocol enum values, file paths, identifiers, command "
-                "names, and code symbols stay in their original language."
-            ),
-        )
+        contract_snapshot=contract_snapshot,
     )
 
 
 def build_advice_prompt(ctx: AdviceContext) -> str:
-    """Compose the read-only advisor prompt (marker, task, context, contract)."""
-    sections = [_ADVICE_MARKER]
-    body = _advice_task_body()
-    if body:
-        sections.append(body)
-    sections.append(_render_context_block(ctx))
-    language_policy = _render_language_policy(ctx)
-    if language_policy:
-        sections.append(language_policy)
-    sections.append(_RESPONSE_CONTRACT)
-    return "\n\n".join(sections)
+    return _render_advice_prompt(ctx, marker=_ADVICE_MARKER, response_contract=_RESPONSE_CONTRACT)
 
 
 def _build_advice_turn(ctx: AdviceContext):
-    """Per-turn prompt turn for the advisor call (embeds per-handoff findings)."""
-    from pipeline.prompts.composer import assemble_cache_first_segments
-    from pipeline.prompts.types import (
-        PromptCacheScope,
-        PromptLayer,
-        PromptPart,
-        PromptStability,
-    )
-
-    return assemble_cache_first_segments(
-        (
-            PromptPart(
-                kind="task",
-                name="handoff_advice",
-                source="builtin",
-                body=build_advice_prompt(ctx),
-                layer=PromptLayer.TURN,
-                stability=PromptStability.TURN,
-                cache_scope=PromptCacheScope.NONE,
-                volatile_reason="handoff advice embeds per-handoff findings",
-            ),
-        )
-    )
+    return _make_advice_turn(ctx, marker=_ADVICE_MARKER, response_contract=_RESPONSE_CONTRACT)
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -582,8 +483,7 @@ def parse_advice(raw: str) -> HandoffAdvice:
     warnings: list[str] = []
     action = str(data.get("recommended_action") or "").strip().lower()
     if action not in _VALID_ACTIONS:
-        warnings.append(f"unsupported recommended_action {action!r} normalized to 'halt'")
-        action = "halt"
+        warnings.append(f"unsupported recommended_action {action!r}")
     confidence = str(data.get("confidence") or "").strip().lower()
     if confidence not in _VALID_CONFIDENCE:
         warnings.append(f"unsupported confidence {confidence!r} normalized to 'low'")
@@ -592,8 +492,7 @@ def parse_advice(raw: str) -> HandoffAdvice:
     retry_feedback = str(data.get("retry_feedback") or "").strip()
     operator_note = str(data.get("operator_note") or "").strip()
     if action == "retry_feedback" and not retry_feedback:
-        warnings.append("retry_feedback recommendation carried no feedback; downgraded to 'halt'")
-        action = "halt"
+        warnings.append("retry_feedback recommendation carried no feedback")
     return HandoffAdvice(
         recommended_action=action,  # type: ignore[arg-type]
         confidence=confidence,  # type: ignore[arg-type]
@@ -604,6 +503,7 @@ def parse_advice(raw: str) -> HandoffAdvice:
         operator_note=operator_note,
         parse_warnings=tuple(warnings),
         raw_output=raw,
+        intent=parse_advice_intent(data),
     )
 
 
@@ -628,48 +528,6 @@ def _has_blocking_severity(findings: Any) -> bool:
     return False
 
 
-def classify_advice_safety(
-    advice: HandoffAdvice,
-    findings: Any = (),
-) -> AdviceSafety:
-    """Classify whether a recommendation may be auto-applied: ``auto_apply_ok``
-    only for ``retry_feedback`` at non-``low`` confidence (the only durable
-    action this path generates); any ``low`` sets ``needs_confirmation``;
-    non-retry recommendations set ``blocked_reason``; ``continue_with_waiver`` is
-    ALWAYS render-only (``waiver_blocked``) — never auto-applied.
-    """
-    confidence_low = advice.confidence == "low"
-    action = advice.recommended_action
-    if action == "continue_with_waiver":
-        return AdviceSafety(
-            auto_apply_ok=False,
-            needs_confirmation=confidence_low,
-            blocked_reason=(
-                "continue_with_waiver is advisory only; a waiver is never "
-                "applied automatically from the advice path"
-            ),
-            waiver_blocked=True,
-        )
-    if action != "retry_feedback":
-        return AdviceSafety(
-            auto_apply_ok=False,
-            needs_confirmation=confidence_low,
-            blocked_reason=(
-                f"{action!r} is not an auto-appliable advisory action; only "
-                "retry_feedback generates a durable decision"
-            ),
-            waiver_blocked=_has_blocking_severity(findings),
-        )
-    return AdviceSafety(
-        auto_apply_ok=not confidence_low,
-        needs_confirmation=confidence_low,
-        blocked_reason=""
-        if not confidence_low
-        else ("low-confidence retry_feedback requires explicit operator confirmation"),
-        waiver_blocked=_has_blocking_severity(findings),
-    )
-
-
 def invoke_advisor(
     run: Any,
     ctx: AdviceContext,
@@ -691,8 +549,8 @@ def invoke_advisor(
     from pipeline.phases.builtin.session_invoke import _session_aware_invoke
 
     cwd = str(getattr(run, "git_cwd", "") or "")
-    prompt = build_advice_prompt(ctx)
     turn = _build_advice_turn(ctx)
+    prompt = turn.text
     start = time.perf_counter()
     raw = _session_aware_invoke(
         agent,
@@ -756,14 +614,12 @@ def _capture_advice_usage(
 
 __all__ = [
     "AdviceContext",
-    "AdviceSafety",
     "AdvisorResult",
     "HandoffAdvice",
     "advice_actions_available",
     "build_advice_context",
     "build_advice_prompt",
     "build_provenance_note",
-    "classify_advice_safety",
     "invoke_advisor",
     "load_advice_artifact",
     "parse_advice",

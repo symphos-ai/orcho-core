@@ -473,9 +473,6 @@ def _classify_signal(
     *,
     advice_round: int | None,
     rounds: list[dict[str, Any]],
-    has_later_advice: bool,
-    downstream_approved: bool,
-    non_advice_override: bool,
 ) -> tuple[str, bool | None, bool]:
     """Classify an applied retry on the review/repair loop (text-only rounds).
 
@@ -501,8 +498,6 @@ def _classify_signal(
       advice resolving it.
     * ``unknown`` otherwise (e.g. the run ended paused before any verdict).
     """
-    if has_later_advice:
-        return "repeated", False, True
     post_advice = [r for r in rounds if _round_after(r, advice_round)]
     if post_advice:
         # The retry's own review is the NEAREST following round, not any later
@@ -511,8 +506,6 @@ def _classify_signal(
         if _round_approved(nearest):
             return "resolved", True, False
         return "repeated", False, True
-    if downstream_approved and not non_advice_override:
-        return "resolved", True, False
     return "unknown", None, False
 
 
@@ -555,10 +548,7 @@ def _build_call(
     phases_meta: Mapping[str, Any],
     phase_attempts_by_name: dict[str, list[dict[str, Any]]],
     advice_index_in_phase: int,
-    has_later_advice: bool,
-    run_status: str,
     active_handoff: Mapping[str, Any],
-    override_phases: set[str],
 ) -> dict[str, Any]:
     """Build one evidence call record from an advice artifact (+ optional decision)."""
     advice = payload.get("advice")
@@ -630,9 +620,6 @@ def _build_call(
         outcome, resolved, repeated = _classify_signal(
             advice_round=_handoff_round(handoff_id),
             rounds=_rounds(phases_meta),
-            has_later_advice=has_later_advice,
-            downstream_approved=_downstream_approved(phases_meta, run_status),
-            non_advice_override=phase in override_phases,
         )
 
     call: dict[str, Any] = {
@@ -758,19 +745,9 @@ def collect_handoff_advice(
         name: _phase_attempts(phases_meta.get(name))
         for name in (_STRUCTURED_FINDING_PHASES | _REVIEW_LOOP_PHASES)
     }
-    run_status = str(meta.get("status") or "") if isinstance(meta, Mapping) else ""
     active_handoff = _active_handoff(meta)
-    override_phases = _non_advice_override_phases(run_dir, meta)
 
     decisions_by_advice = _load_decisions_by_advice(run_dir)
-
-    # Per-phase total advice counts, so a call can tell whether a LATER advice
-    # call exists for the same phase (the review-loop ``repeated`` signal).
-    phase_total: dict[str, int] = {}
-    for _relpath, payload in advice_artifacts:
-        phase_total[str(payload.get("phase") or "")] = (
-            phase_total.get(str(payload.get("phase") or ""), 0) + 1
-        )
 
     calls: list[dict[str, Any]] = []
     advice_seen_per_phase: dict[str, int] = {}
@@ -786,10 +763,7 @@ def collect_handoff_advice(
                 phases_meta=phases_meta,
                 phase_attempts_by_name=phase_attempts_by_name,
                 advice_index_in_phase=idx,
-                has_later_advice=idx < phase_total.get(phase, 0) - 1,
-                run_status=run_status,
                 active_handoff=active_handoff,
-                override_phases=override_phases,
             )
         )
 

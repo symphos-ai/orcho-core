@@ -59,6 +59,13 @@ class HandoffAdviceSafety:
 
 
 @dataclass(frozen=True, slots=True)
+class HandoffAdviceConflict:
+    """Typed projection of an assessment conflict or ambiguity detail."""
+
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class HandoffAdviceResult:
     """Typed advisory recommendation for a paused phase handoff.
 
@@ -82,6 +89,8 @@ class HandoffAdviceResult:
     operator_note: str
     parse_warnings: tuple[str, ...]
     safety: HandoffAdviceSafety
+    disposition: str
+    conflicts: tuple[HandoffAdviceConflict, ...]
     advice_artifact: str
     provenance_note: str
     usage: dict[str, Any] = field(default_factory=dict)
@@ -162,11 +171,11 @@ def request_handoff_advice(
         advice_actions_available,
         build_advice_context,
         build_provenance_note,
-        classify_advice_safety,
         hygiene_gate_advice,
         invoke_advisor,
         write_advice_artifact,
     )
+    from pipeline.project.handoff_advice_assessment import assess_advice
 
     if not advice_actions_available(signal):
         raise InvalidPhaseHandoffState(
@@ -192,7 +201,7 @@ def request_handoff_advice(
         result = invoke_advisor(run, ctx, agent=agent)
         advice = result.advice
         usage = dict(result.usage or {})
-    safety = classify_advice_safety(advice, ctx.findings)
+    assessment = assess_advice(advice, ctx.contract_snapshot, findings=ctx.findings)
 
     # Unparseable advisor output is handled like the existing dispatch / CI
     # paths: no durable advice artifact is written and nothing is auto-applied.
@@ -208,6 +217,7 @@ def request_handoff_advice(
             advice,
             ctx,
             usage=usage,
+            assessment=assessment,
         )
         provenance_note = build_provenance_note(relpath)
 
@@ -224,11 +234,13 @@ def request_handoff_advice(
         operator_note=advice.operator_note,
         parse_warnings=tuple(advice.parse_warnings),
         safety=HandoffAdviceSafety(
-            auto_apply_ok=safety.auto_apply_ok,
-            needs_confirmation=safety.needs_confirmation,
-            blocked_reason=safety.blocked_reason,
-            waiver_blocked=safety.waiver_blocked,
+            auto_apply_ok=assessment.auto_apply_ok,
+            needs_confirmation=assessment.disposition == "operator_review_required",
+            blocked_reason=assessment.blocked_reason,
+            waiver_blocked=assessment.blocked_reason == "waiver",
         ),
+        disposition=assessment.disposition,
+        conflicts=tuple(HandoffAdviceConflict(detail=item) for item in assessment.conflict_details),
         advice_artifact=relpath,
         provenance_note=provenance_note,
         usage=usage,
@@ -343,6 +355,14 @@ def _rebuild_readonly_run(
             from_run_plan_stripped=(),
         )
     )
+    try:
+        from pipeline.plan_artifacts import load_parsed_plan_artifact
+
+        state_setup.state.parsed_plan = load_parsed_plan_artifact(run_dir)
+    except Exception:
+        # An absent durable plan remains an explicit no-plan assessment, not an
+        # inferred markdown reconstruction.
+        pass
 
     return SimpleNamespace(
         state=state_setup.state,
@@ -355,5 +375,6 @@ def _rebuild_readonly_run(
 __all__ = [
     "HandoffAdviceResult",
     "HandoffAdviceSafety",
+    "HandoffAdviceConflict",
     "request_handoff_advice",
 ]

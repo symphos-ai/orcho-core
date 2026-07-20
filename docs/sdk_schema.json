@@ -1094,6 +1094,21 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "detail",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.handoff_advice",
+      "name": "HandoffAdviceConflict",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "calls",
           "type": "tuple[HandoffAdviceCall, ...]"
         },
@@ -1183,6 +1198,18 @@
           "default_factory": null,
           "name": "safety",
           "type": "HandoffAdviceSafety"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "disposition",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "conflicts",
+          "type": "tuple[HandoffAdviceConflict, ...]"
         },
         {
           "default": null,

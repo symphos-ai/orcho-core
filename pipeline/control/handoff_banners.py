@@ -87,6 +87,8 @@ def render_advice_summary(
     risks: Sequence[str] = (),
     expected_files: Sequence[str] = (),
     operator_note: str = "",
+    disposition: str = "",
+    conflict_details: Sequence[str] = (),
     color: bool | None = None,
 ) -> str:
     """Render a compact one-block summary of an advisor recommendation.
@@ -112,6 +114,10 @@ def render_advice_summary(
             retry_feedback_preview, max_len=_ADVICE_SUMMARY_MAX_LEN,
         ),
     ]
+    if disposition:
+        lines.append(f"  {paint('disposition', C.CYAN, color=color)} : {disposition}")
+    if conflict_details:
+        lines.append(f"  {paint('conflicts', C.YELLOW, color=color)}   : " + sanitize_feedback_preview("; ".join(conflict_details), max_len=_ADVICE_SUMMARY_MAX_LEN))
     if risks:
         lines.append(
             f"  {paint('risks', C.YELLOW, color=color)}       : "

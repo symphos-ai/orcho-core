@@ -16,8 +16,8 @@ surface:
   ``state.parsed_plan`` (plan + subtask ``owned_files``/``allowed_modifications``).
 * :func:`is_destructive_recommendation` — an auditable classifier over an
   explicit marker list, mirroring ``_has_blocking_severity``'s safe default.
-* :func:`evaluate_ci_gates` — the single ``proceed | stop(reason, state)``
-  decision combining every gate.
+* :func:`policy_block_reason` — exact policy facts consumed by the authoritative
+  contract-aware assessment.
 * :func:`findings_fingerprint` — the id/severity/title fingerprint used to
   detect a repeated identical finding across an agent retry.
 
@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from pipeline.project.handoff_advice import _has_blocking_severity
 
 if TYPE_CHECKING:
-    from pipeline.project.handoff_advice import AdviceSafety, HandoffAdvice
+    from pipeline.project.handoff_advice import HandoffAdvice
 
 #: Explicit, auditable destructive markers searched (case-insensitive) across an
 #: advice's free-text fields. Kept as a module constant so the gate stays
@@ -64,15 +64,6 @@ _DESTRUCTIVE_MARKERS: tuple[str, ...] = (
     "destroy",
 )
 
-#: Stop ``state`` values surfaced to the orchestrator. ``needs_operator`` parks
-#: the handoff for a human; ``halt`` flows to HALTED finalization;
-#: ``budget_exhausted`` / ``repeated_finding`` are compact bounded-loop stops.
-_STATE_NEEDS_OPERATOR = "needs_operator"
-_STATE_HALT = "halt"
-_STATE_BUDGET_EXHAUSTED = "budget_exhausted"
-_STATE_REPEATED_FINDING = "repeated_finding"
-
-
 @dataclass(frozen=True, slots=True)
 class HandoffAdvicePolicy:
     """Immutable CI handoff-advice policy.
@@ -93,23 +84,6 @@ class HandoffAdvicePolicy:
         "repeated_p1",
         "advice_confidence_low",
     )
-
-
-@dataclass(frozen=True, slots=True)
-class CiGateDecision:
-    """Outcome of :func:`evaluate_ci_gates`.
-
-    ``proceed`` True authorises a single CI ``retry_feedback`` round; otherwise
-    ``reason`` names the gate that fired and ``stop_state`` is one of
-    ``needs_operator`` / ``halt`` / ``budget_exhausted`` / ``repeated_finding``.
-    ``scope_unchecked`` flags the unlimited-scope (no parsed_plan) proceed so the
-    integration can record an audit note.
-    """
-
-    proceed: bool
-    reason: str = ""
-    stop_state: str = ""
-    scope_unchecked: bool = False
 
 
 def resolve_handoff_advice_policy(run_or_flag: Any) -> HandoffAdvicePolicy:
@@ -201,51 +175,40 @@ def _expected_files_in_scope(
     )
 
 
-def evaluate_ci_gates(
+def policy_block_reason(
     advice: HandoffAdvice,
-    safety: AdviceSafety,
+    *,
     findings: Any,
     scope: frozenset[str],
     budget_remaining: int,
     repeated: bool,
-) -> CiGateDecision:
-    """Combine every CI gate into one ``proceed | stop(reason, state)`` decision.
-
-    Proceeds ONLY when the recommendation is ``retry_feedback`` at non-``low``
-    confidence, budget remains, it is not a waiver, the finding is not a repeated
-    blocking finding, no destructive marker is recognised, and the expected files
-    stay within ``scope``. Gate order: waiver → halt → other non-retry →
-    low-confidence → budget → repeated → destructive → scope (destructive before
-    scope per spec). An empty ``scope`` proceeds with ``scope_unchecked=True``.
-    """
+) -> tuple[str, bool]:
+    """Return policy facts only; assessment owns the authoritative verdict."""
     action = advice.recommended_action
     if action == "continue_with_waiver":
-        return CiGateDecision(False, "waiver", _STATE_NEEDS_OPERATOR)
+        return "waiver", False
     if action == "halt":
-        return CiGateDecision(False, "halt", _STATE_HALT)
+        return "halt", False
     if action != "retry_feedback":
-        return CiGateDecision(False, action or "unknown_action", _STATE_NEEDS_OPERATOR)
-    if safety.needs_confirmation or advice.confidence == "low":
-        return CiGateDecision(False, "advice_confidence_low", _STATE_NEEDS_OPERATOR)
+        return action or "unknown_action", False
     if budget_remaining <= 0:
-        return CiGateDecision(False, "budget_exhausted", _STATE_BUDGET_EXHAUSTED)
+        return "budget_exhausted", False
     if repeated and _has_blocking_severity(findings):
-        return CiGateDecision(False, "repeated_finding", _STATE_REPEATED_FINDING)
+        return "repeated_finding", False
     if is_destructive_recommendation(advice):
-        return CiGateDecision(False, "destructive_action", _STATE_NEEDS_OPERATOR)
+        return "destructive_action", False
     if not scope:
-        return CiGateDecision(True, scope_unchecked=True)
+        return "", True
     if not _expected_files_in_scope(advice.expected_files, scope):
-        return CiGateDecision(False, "out_of_scope", _STATE_NEEDS_OPERATOR)
-    return CiGateDecision(True)
+        return "out_of_scope", False
+    return "", False
 
 
 __all__ = [
-    "CiGateDecision",
     "HandoffAdvicePolicy",
     "build_scope",
-    "evaluate_ci_gates",
     "findings_fingerprint",
     "is_destructive_recommendation",
+    "policy_block_reason",
     "resolve_handoff_advice_policy",
 ]

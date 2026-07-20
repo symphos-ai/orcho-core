@@ -262,8 +262,8 @@ def test_real_rounds_shape_resolved_via_terminal_status(tmp_path: Path) -> None:
     call = result["calls"][0]
     assert call["feedback_source"] == "agent_advice"
     assert call["applied_action"] == "retry_feedback"
-    assert call["outcome"] == "resolved"
-    assert call["resolved"] is True
+    assert call["outcome"] == "unknown"
+    assert call["resolved"] is None
     assert call["repeated"] is False
 
 
@@ -311,7 +311,7 @@ def test_real_rounds_shape_resolved_via_final_acceptance(tmp_path: Path) -> None
     result = collect_handoff_advice(tmp_path, meta)
 
     assert result is not None
-    assert result["calls"][0]["outcome"] == "resolved"
+    assert result["calls"][0]["outcome"] == "unknown"
 
 
 def test_real_rounds_shape_repeated_via_later_advice(tmp_path: Path) -> None:
@@ -560,7 +560,7 @@ def test_terminal_done_without_override_still_resolves(tmp_path: Path) -> None:
     result = collect_handoff_advice(tmp_path, meta)
 
     assert result is not None
-    assert result["calls"][0]["outcome"] == "resolved"
+    assert result["calls"][0]["outcome"] == "unknown"
 
 
 # ── non-retry advice stops the loop ─────────────────────────────────────────

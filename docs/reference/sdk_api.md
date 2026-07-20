@@ -53,6 +53,17 @@ call time.
 
 ## Modules
 
+### `sdk.handoff_advice`
+
+`request_handoff_advice(...) -> HandoffAdviceResult` is read-only apart from its
+additive advice artifact. It hydrates durable `parsed_plan.json`, exposes the
+assessment `disposition` and typed conflict details, and derives legacy safety
+projections from that one assessment. Unsafe conflict/ambiguity still require
+the canonical manual `phase_handoff_decide` path; no new action is introduced.
+
+This MCP-visible schema change requires a coordinated `orcho-mcp` companion
+before promotion. That companion is intentionally outside this checkout.
+
 ### `sdk.runs`
 
 ```python
