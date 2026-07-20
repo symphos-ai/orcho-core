@@ -27,7 +27,6 @@ its own retained protocol buffer.
 
 import contextlib
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -35,10 +34,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agents.pty_diagnostics import (
-    is_pty_exhaustion,
-    render_pty_exhaustion_diagnostic,
-)
+from agents.owned_child import OwnedChildHandle, OwnedChildRegistry, OwnedChildState
+from agents.pty_diagnostics import is_pty_exhaustion, render_pty_exhaustion_diagnostic
 from agents.stream_transport import select_transport
 
 if TYPE_CHECKING:
@@ -159,83 +156,11 @@ def _spawn_with_sandbox(
     return proc, masker, prepared.env_stripped_count, launcher
 
 
-def _kill_subprocess_tree(
-    proc: subprocess.Popen, *, group_owned: bool,
-) -> None:
-    """Kill the agent subprocess plus any descendants it spawned.
-
-    When the sandbox launcher placed the child in its own process
-    group (``setpgrp()`` in ``preexec_fn`` on Unix), a plain
-    ``proc.kill()`` only terminates the leader — grandchildren keep
-    running. ADR 0034 commits to killing the whole subtree, so we
-    SIGKILL the group instead. ``proc.kill()`` is used as a fallback
-    when ``group_owned`` is False (NullLauncher / pre-L1 callers).
-
-    The ``group_owned`` flag is **declarative** — the launcher
-    requested ``setpgrp`` in ``preexec_fn``, but the preexec swallows
-    ``OSError`` so the spawn never fails on that primitive. If
-    ``setpgrp`` actually failed, the child inherits the parent's
-    process group. Sending SIGKILL to *that* group would tear down
-    the orcho parent. Before issuing ``killpg``, we runtime-check
-    that the child's effective pgid is distinct from ours and fall
-    back to ``proc.kill()`` when they match — losing grandchild
-    cleanup is a smaller failure than orchestrator suicide.
-
-    On Windows the Job Object's ``KILL_ON_JOB_CLOSE`` flag handles
-    descendant cleanup at the kernel level when the handle drops;
-    ``proc.kill()`` here is a parallel safety net.
-    """
-    if not group_owned:
-        with contextlib.suppress(OSError):
-            proc.kill()
-        return
-
-    try:
-        child_pgid = os.getpgid(proc.pid)
-    except OSError:
-        # Race: child already exited and was reaped. Nothing to do.
-        return
-
-    if child_pgid == os.getpgrp():
-        # setpgrp failed inside preexec_fn (rare — EPERM in exotic
-        # contexts). The child is in our own process group, so a
-        # killpg here would SIGKILL orcho itself. Fall back to a
-        # single-PID kill; grandchildren survive but the orchestrator
-        # stays alive.
-        with contextlib.suppress(OSError):
-            proc.kill()
-        return
-
-    try:
-        os.killpg(child_pgid, signal.SIGKILL)
-    except OSError:
-        # killpg can fail if the group is gone already (after natural
-        # exit). proc.kill is idempotent and safe in that case.
-        with contextlib.suppress(OSError):
-            proc.kill()
-
-
-def _own_child_pgid(proc: subprocess.Popen, *, group_owned: bool) -> int | None:
-    """Return the run's OWN child process group id, or ``None``.
-
-    Only meaningful when the launcher placed the child in its own group
-    (``group_owned``). Returns ``None`` when not group-owned or when the child
-    already exited — the carrier records ``process_group=None`` rather than
-    guessing. This never inspects any process other than our own child.
-    """
-    if not group_owned:
-        return None
-    try:
-        return os.getpgid(proc.pid)
-    except OSError:
-        return None
-
-
 def _escalate_idle_stall(
     *,
-    proc: subprocess.Popen,
+    owner: OwnedChildRegistry,
+    child_handle: OwnedChildHandle,
     monitor: "object",
-    group_owned: bool,
     elapsed_s: float,
     idle_timeout: int,
     log_fh,
@@ -245,7 +170,7 @@ def _escalate_idle_stall(
 
     The single auto-kill trigger. Builds the bounded terminal carrier scoped to
     our OWN child process group (no ``pgrep`` / no by-name matching), kills the
-    child subtree via :func:`_kill_subprocess_tree`, reaps it, then raises
+    child subtree through the owned registry, reaps it, then raises
     :class:`agents.stall_protocol.AgentCommandStalledError`. Never writes the
     run session. Always raises — it never returns normally.
 
@@ -261,11 +186,10 @@ def _escalate_idle_stall(
 
     stalled = monitor.idle_stall(  # type: ignore[attr-defined]
         elapsed_s=elapsed_s,
-        process_group=_own_child_pgid(proc, group_owned=group_owned),
+        process_group=owner.process_group(child_handle),
     )
-    _kill_subprocess_tree(proc, group_owned=group_owned)
-    with contextlib.suppress(Exception):
-        proc.wait()
+    owner.cancel(child_handle)
+    owner.wait(child_handle, timeout=None)
     reason = f"[IDLE TIMEOUT after {idle_timeout}s without output]"
     if log_fh:
         with contextlib.suppress(Exception):
@@ -288,6 +212,8 @@ def _stream_run(
     sandbox_policy: "SandboxPolicy | None" = None,
     stall_sink: "StallDiagnosticSink | None" = None,
     stall_phase: str = "",
+    owned_child_owner: OwnedChildRegistry | None = None,
+    agent_call_id: str | None = None,
 ) -> tuple[str, int, str, float]:
     """
     Run *cmd* via a PTY so the child sees a real terminal and flushes
@@ -457,13 +383,6 @@ def _stream_run(
         proc, masker, env_stripped, sandbox_launcher = _spawn_with_sandbox(
             cmd, cwd, transport.popen_stdio(), sandbox_policy,
         )
-        # Hold the launcher in this local for the duration of the
-        # streamed process. On Windows the launcher owns the Job
-        # Object handle; releasing it before ``proc.wait()`` returns
-        # would close the job and (per
-        # ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``) kill the assigned
-        # child mid-flight. On Unix this reference is harmless.
-        _sandbox_launcher_alive = sandbox_launcher  # noqa: F841 — keep alive
         masker_ref[0] = masker
         # Process-group ownership: the Unix env backend wraps the
         # child in its own pgrp via ``setpgrp`` in ``preexec_fn``.
@@ -473,6 +392,16 @@ def _stream_run(
             sandbox_policy is not None
             and sandbox_policy.isolation_active
             and sys.platform != "win32"
+        )
+        # Registry-only ownership pins the launcher (and its Windows Job
+        # Object) until terminal settlement. A local registry keeps bare
+        # callers' historical tuple contract intact.
+        owner = owned_child_owner or OwnedChildRegistry()
+        child_handle = owner.register(
+            proc,
+            group_owned=_group_owned,
+            launcher=sandbox_launcher,
+            start_identity=agent_call_id,
         )
         if log_fh and sandbox_policy is not None and sandbox_policy.isolation_active:
             log_fh.write(
@@ -501,7 +430,7 @@ def _stream_run(
                 on_line(line)
             except StreamAbort as exc:
                 termination_reason = f"[ABORTED by stream guard: {exc}]"
-                _kill_subprocess_tree(proc, group_owned=_group_owned)
+                owner.cancel(child_handle)
                 return False
             except Exception:
                 # Parser failure must never kill the streaming loop. Errors
@@ -550,7 +479,7 @@ def _stream_run(
                 remaining = deadline - now
                 if remaining <= 0:
                     termination_reason = f"[TIMEOUT after {timeout}s]"
-                    _kill_subprocess_tree(proc, group_owned=_group_owned)
+                    owner.cancel(child_handle)
                     if log_fh:
                         log_fh.write(f"\n{termination_reason}\n")
                         log_fh.flush()
@@ -564,7 +493,7 @@ def _stream_run(
             chunk = transport.read(wait_for)
             if chunk is None:
                 # No output within the wait window — the child may still be busy.
-                if proc.poll() is not None:
+                if owner.poll(child_handle).state is OwnedChildState.EXITED:
                     # Child exited; the final drain below collects any bytes the
                     # transport still holds (notably the Windows reader thread's
                     # last chunks landing just after exit) before we stop.
@@ -582,15 +511,15 @@ def _stream_run(
                         # process group (no pgrep / no by-name matching), emit
                         # the terminal event, scoped-kill, reap, then escalate.
                         _escalate_idle_stall(
-                            proc=proc,
+                            owner=owner,
+                            child_handle=child_handle,
                             monitor=stall_monitor,
-                            group_owned=_group_owned,
                             elapsed_s=time.monotonic() - _t0,
                             idle_timeout=idle_timeout,
                             log_fh=log_fh,
                             echo=_echo_stdout,
                         )
-                    _kill_subprocess_tree(proc, group_owned=_group_owned)
+                    owner.cancel(child_handle)
                     if log_fh:
                         log_fh.write(f"\n{termination_reason}\n")
                         log_fh.flush()
@@ -608,7 +537,7 @@ def _stream_run(
                 abort_requested = True
                 break
         if abort_requested:
-            proc.wait()
+            owner.wait(child_handle, timeout=None)
 
         if not abort_requested:
             # Post-exit drain: we may have broken out on ``proc.poll()`` before
@@ -634,8 +563,8 @@ def _stream_run(
             _echo_agent_line(tail)
             _handle_line_callback(tail)
 
-        proc.wait()
-        returncode = proc.returncode
+        observation = owner.wait(child_handle, timeout=None)
+        returncode = observation.exit_code if observation.exit_code is not None else -1
         stderr_raw = (
             proc.stderr.read().decode("utf-8", errors="replace")
             if proc.stderr else ""

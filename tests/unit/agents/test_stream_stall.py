@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import agents.stream as stream
+from agents.owned_child import OwnedChildRegistry, OwnedChildState
 from agents.stall_protocol import (
     AgentCommandStalledError,
     EventStallDiagnosticSink,
@@ -83,6 +84,38 @@ def test_inspect_line_ignores_safe_and_foreign_argv() -> None:
     assert sink.recorded == []
 
 
+def test_owned_handle_observation_bypasses_text_guard_and_stall_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Popen ownership is structured state, never a synthetic command line."""
+    class _ExitedProc:
+        pid = 8181
+
+        def poll(self) -> int:
+            return 23
+
+        def wait(self, *, timeout: float | None) -> int:
+            return 23
+
+    def _text_guard_must_not_run(*_args, **_kwargs):
+        raise AssertionError("owned handle observation reached text guard")
+
+    monkeypatch.setattr(
+        "agents.stream_stall.blocked_unsafe_process_polling",
+        _text_guard_must_not_run,
+    )
+    run_dir = tmp_path / "run"
+    _events.init_event_store(run_dir)
+    try:
+        owner = OwnedChildRegistry()
+        handle = owner.register(_ExitedProc())  # type: ignore[arg-type]
+        assert owner.poll(handle).state is OwnedChildState.EXITED
+        assert owner.wait(handle, timeout=0).exit_code == 23
+        assert _events.read_all(run_dir) == []
+    finally:
+        _events.init_event_store(None)
+
+
 def test_idle_stall_silent_vs_inactivity_classification() -> None:
     sink = _SpySink()
     mon = StreamStallMonitor(phase="implement", sink=sink, command_preview="claude --x")
@@ -109,12 +142,12 @@ def test_stream_run_unsafe_poll_writes_through_without_kill(tmp_path: Path) -> N
     AgentCommandStalledError, no kill."""
     run_dir = tmp_path / "run"
     _events.init_event_store(run_dir)
-    kills: list[bool] = []
-    orig_kill = stream._kill_subprocess_tree
+    cancels: list[bool] = []
 
-    def _spy_kill(proc, *, group_owned):
-        kills.append(group_owned)
-        return orig_kill(proc, group_owned=group_owned)
+    class _SpyOwner(OwnedChildRegistry):
+        def cancel(self, handle):
+            cancels.append(True)
+            return super().cancel(handle)
 
     sink = _SpySink()
     code = (
@@ -134,17 +167,16 @@ def test_stream_run_unsafe_poll_writes_through_without_kill(tmp_path: Path) -> N
             seen_sentinel_before_record.append(bool(sink.recorded))
 
     try:
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr(stream, "_kill_subprocess_tree", _spy_kill)
-            _stdout, rc, _stderr, _dur = _stream_run(
-                [sys.executable, "-c", code],
-                on_line=_on_line,
-                stall_sink=sink,
-                stall_phase="implement",
-            )
+        _stdout, rc, _stderr, _dur = _stream_run(
+            [sys.executable, "-c", code],
+            on_line=_on_line,
+            stall_sink=sink,
+            stall_phase="implement",
+            owned_child_owner=_SpyOwner(),
+        )
         # Ran to completion: no kill, normal exit.
         assert rc == 0
-        assert kills == []
+        assert cancels == []
         # Write-through happened during the stream, at detection.
         assert len(sink.recorded) == 1
         assert sink.recorded[0].reason == StallReason.UNSAFE_PROCESS_POLLING
@@ -202,29 +234,28 @@ def test_stream_run_unsafe_poll_default_sink_emits_non_terminal(tmp_path: Path) 
 def test_stream_run_idle_timeout_escalates_to_stalled_error(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _events.init_event_store(run_dir)
-    kills: list[bool] = []
-    orig_kill = stream._kill_subprocess_tree
+    cancels: list[bool] = []
 
-    def _spy_kill(proc, *, group_owned):
-        kills.append(group_owned)
-        return orig_kill(proc, group_owned=group_owned)
+    class _SpyOwner(OwnedChildRegistry):
+        def cancel(self, handle):
+            cancels.append(True)
+            return super().cancel(handle)
 
     try:
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr(stream, "_kill_subprocess_tree", _spy_kill)
-            with pytest.raises(AgentCommandStalledError) as excinfo:
-                _stream_run(
-                    [sys.executable, "-c", "import time; time.sleep(5)"],
-                    idle_timeout=1,
-                    stall_sink=_SpySink(),
-                    stall_phase="implement",
-                )
+        with pytest.raises(AgentCommandStalledError) as excinfo:
+            _stream_run(
+                [sys.executable, "-c", "import time; time.sleep(5)"],
+                idle_timeout=1,
+                stall_sink=_SpySink(),
+                stall_phase="implement",
+                owned_child_owner=_SpyOwner(),
+            )
         stalled = excinfo.value.stalled
         # No output was produced → silent child.
         assert stalled.reason == StallReason.SILENT_CHILD_COMMAND
         assert stalled.phase == "implement"
-        # The ONLY kill went through the scoped helper (no pgrep/pkill anywhere).
-        assert kills == [False]  # no sandbox here → single-PID own-child kill
+        # The ONLY cancel went through the scoped registry (no pgrep/pkill).
+        assert cancels == [True]
         # F2: the stream does NOT emit the terminal event — that is the single
         # authoritative job of the pipeline failure handler once the raised
         # AgentCommandStalledError propagates up. The carrier rides on the raise.
@@ -364,7 +395,7 @@ def test_runtime_invoke_propagates_terminal_stalled_error(
 def test_no_process_control_mechanism_in_stream_stall_source() -> None:
     """Guard the invariant: the monitor performs NO process control — no
     spawning, no signalling, no pgrep/pkill matching. Detection is text-only;
-    the scoped kill lives in stream.py's ``_kill_subprocess_tree``."""
+    the scoped cancel lives in the owned-child registry."""
     src = Path(stream.__file__).with_name("stream_stall.py").read_text()
     for mechanism in (
         "import subprocess", "os.system", "Popen", "os.kill",

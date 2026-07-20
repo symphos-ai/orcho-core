@@ -165,12 +165,15 @@ class TestKillpgGuardWhenSetpgrpFailed:
     def test_killpg_skipped_when_child_pgid_matches_parent(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from agents import stream as stream_mod
+        from agents.owned_child import OwnedChildRegistry
 
         kill_calls: list[str] = []
 
         class _FakeProc:
             pid = 12345
+
+            def poll(self) -> None:
+                return None
 
             def kill(self) -> None:
                 kill_calls.append("proc.kill")
@@ -178,14 +181,16 @@ class TestKillpgGuardWhenSetpgrpFailed:
         # Both ``getpgid(child)`` and ``getpgrp()`` return the same
         # value — modelling the world where setpgrp inside preexec
         # quietly failed.
-        monkeypatch.setattr(stream_mod.os, "getpgid", lambda _pid: 42)
-        monkeypatch.setattr(stream_mod.os, "getpgrp", lambda: 42)
+        monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 42)
+        monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 42)
 
         def _killpg_should_not_run(_pgid: int, _sig: int) -> None:
             kill_calls.append("killpg")
-        monkeypatch.setattr(stream_mod.os, "killpg", _killpg_should_not_run)
+        monkeypatch.setattr("agents.owned_child.os.killpg", _killpg_should_not_run)
 
-        stream_mod._kill_subprocess_tree(_FakeProc(), group_owned=True)
+        proc = _FakeProc()
+        registry = OwnedChildRegistry()
+        registry.cancel(registry.register(proc, group_owned=True))
 
         assert kill_calls == ["proc.kill"], (
             "killpg ran despite the child sharing the parent's process "
@@ -195,25 +200,30 @@ class TestKillpgGuardWhenSetpgrpFailed:
     def test_killpg_runs_when_child_has_its_own_group(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from agents import stream as stream_mod
+        from agents.owned_child import OwnedChildRegistry
 
         kill_calls: list[str] = []
 
         class _FakeProc:
             pid = 12345
 
+            def poll(self) -> None:
+                return None
+
             def kill(self) -> None:
                 kill_calls.append("proc.kill")
 
         # Distinct values — setpgrp succeeded, killpg is safe.
-        monkeypatch.setattr(stream_mod.os, "getpgid", lambda _pid: 99)
-        monkeypatch.setattr(stream_mod.os, "getpgrp", lambda: 42)
+        monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 99)
+        monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 42)
 
         def _fake_killpg(_pgid: int, _sig: int) -> None:
             kill_calls.append("killpg")
-        monkeypatch.setattr(stream_mod.os, "killpg", _fake_killpg)
+        monkeypatch.setattr("agents.owned_child.os.killpg", _fake_killpg)
 
-        stream_mod._kill_subprocess_tree(_FakeProc(), group_owned=True)
+        proc = _FakeProc()
+        registry = OwnedChildRegistry()
+        registry.cancel(registry.register(proc, group_owned=True))
 
         assert kill_calls == ["killpg"]
 

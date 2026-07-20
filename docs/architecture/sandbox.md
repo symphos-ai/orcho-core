@@ -179,6 +179,20 @@ The agent and its grandchildren die when orcho dies.
   is automatic and stronger than the Unix equivalent (kernel-
   enforced on parent handle close, no signal race).
 
+The stream records this lifecycle in a private, in-memory registry keyed to
+the exact directly spawned `Popen`. Its safe handle can report `running`,
+`exited(exit_code)`, or `unavailable`; terminal settlement is memoized and the
+launcher stays retained through it. Retry is permitted only after `exited` (or
+when no prior child exists), while `running` and `unavailable` fail closed.
+
+This is a direct-child ownership boundary, not per-grandchild visibility. A
+confirmed child process group is the widest cancellation boundary; Orcho does
+not scan the host or infer ownership of nested provider tools by command name.
+The handle and its observations are never persisted to run state or evidence.
+Free-text `pgrep`/`pkill` remains a separate non-terminal guardrail diagnostic;
+typed handle poll/wait does not enter that text-classification path. See
+[ADR 0143](../adr/0143-provider-owned-child-lifecycle.md).
+
 ### Output token masking
 
 A regex-based masker rewrites known secret shapes before they
