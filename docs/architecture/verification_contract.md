@@ -1165,10 +1165,14 @@ gates enforce.) Explicitly **not** auto-run:
   stays manual.
 - **fresh / present** — left untouched, recorded in `skipped_fresh`, never
   executed (incl. an inherited valid parent receipt, Stage 8).
-- **failed** — never re-run in the normal path; a fresh same-diff failure stays
-  failed (the [ADR 0090](../adr/0090-require-gate-no-silent-green.md) "never
-  falsely green" invariant). A failure produced *by* the auto-run is persisted as
-  a failed receipt and reported in `result.failed`.
+- **failed** — remains authoritative for its recorded subject. The sole narrow
+  exception is a failed **current-run** official receipt whose usable recorded
+  typed subject is proved `STALE` against the usable current checkout subject;
+  that selected engine-owned command may join this one target pass ([ADR
+  0141](../adr/0141-subject-aware-refresh-of-failed-verification-receipts.md)).
+  Same, legacy, malformed, unavailable, absent, or inherited subjects never
+  qualify. A failure produced by the pass remains `failed` and is reported in
+  `result.failed`; execution-first receipt reporting does not change.
 - **dry-run / no contract / empty resolved delivery-required set** — strict no-op
   (`attempted=False`, nothing executes). The empty-set check fires *after* the
   delivery plan resolves, so an empty static `verification.required` with a

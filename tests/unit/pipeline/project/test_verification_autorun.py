@@ -164,6 +164,7 @@ def _write_receipt(
     rdir = run_dir / COMMAND_RECEIPTS_DIRNAME
     rdir.mkdir(parents=True, exist_ok=True)
     receipt = {
+        "schema_version": 3,
         "kind": "verification_command",
         "command": command,
         "env": env,
@@ -216,6 +217,7 @@ class _Recorder:
         env_all_passed: bool = True,
         assertions: dict[str, list[dict[str, Any]]] | None = None,
         details: dict[str, str] | None = None,
+        production_writer: bool = False,
     ) -> None:
         self.run_dir = run_dir
         self.exit_codes = exit_codes or {}
@@ -226,6 +228,7 @@ class _Recorder:
         # surface as failed even though ``verify_run`` reports exit 0.
         self.assertions = assertions or {}
         self.details = details or {}
+        self.production_writer = production_writer
         self.env_calls: list[dict[str, Any]] = []
         self.run_calls: list[dict[str, Any]] = []
 
@@ -242,13 +245,32 @@ class _Recorder:
             code = self.exit_codes.get(name, 0)
             receipt_path = None
             if self.write:
-                receipt_path = _write_receipt(
-                    self.run_dir, name, exit_code=code,
-                    env=kwargs.get("env", "ci"),
-                    assertions=self.assertions.get(name),
-                    detail=self.details.get(name, ""),
-                    checkout=Path(kwargs["subject_checkout"]),
-                )
+                if self.production_writer:
+                    from pipeline.evidence.verification_receipt import write_command_receipt
+                    from pipeline.verification_subject import capture_verification_subject
+
+                    checkout = Path(kwargs["subject_checkout"])
+                    receipt_path = write_command_receipt(
+                        output_dir=self.run_dir,
+                        result={
+                            "command": name, "env": "ci", "cwd": str(checkout),
+                            "placeholders": {"checkout": str(checkout), "project": kwargs["project"]},
+                            "argv": ["true"], "env_overrides": {},
+                            "assertions": self.assertions.get(name, []), "exit_code": code,
+                            "duration_s": 0.0, "stdout_tail": "", "stderr_tail": "",
+                            "log_path": None, "parity": "absolute",
+                            "detail": self.details.get(name, ""), "git": {},
+                            "subject": capture_verification_subject(checkout), "dependencies": [],
+                        },
+                    )
+                else:
+                    receipt_path = _write_receipt(
+                        self.run_dir, name, exit_code=code,
+                        env=kwargs.get("env", "ci"),
+                        assertions=self.assertions.get(name),
+                        detail=self.details.get(name, ""),
+                        checkout=Path(kwargs["subject_checkout"]),
+                    )
             outcomes.append(SimpleNamespace(
                 command=name, exit_code=code, receipt_path=receipt_path,
             ))
@@ -531,6 +553,180 @@ def test_failed_autorun_is_recorded_failed_not_green(
         contract, run_dir, ctx, checkout=str(project),
     )
     assert after["lint"].status == "failed"
+
+
+def test_failed_current_receipt_refreshes_once_after_real_git_subject_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing dirty content, not paths or HEAD, refreshes one failed receipt."""
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    head = _init_repo(checkout)
+    tracked = checkout / "README.md"
+    tracked.write_text("A\n", encoding="utf-8")
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
+
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        capture_verification_subject,
+    )
+    subject_a = capture_verification_subject(checkout)
+    assert isinstance(subject_a, VerificationSubjectAvailable)
+    touched_a = subprocess.run(
+        ["git", "diff", "--name-only"], cwd=checkout,
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+
+    tracked.write_text("B\n", encoding="utf-8")
+    subject_b = capture_verification_subject(checkout)
+    assert isinstance(subject_b, VerificationSubjectAvailable)
+    touched_b = subprocess.run(
+        ["git", "diff", "--name-only"], cwd=checkout,
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert touched_a == touched_b == ["README.md"]
+    assert subject_a.identity.tree_oid != subject_b.identity.tree_oid
+    assert subject_b.identity.observed_head_oid == head
+
+    rec = _Recorder(run_dir, production_writer=True).install(monkeypatch)
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert len(rec.run_calls) == 1
+    written = json.loads(Path(receipt_file_path(run_dir, "lint")).read_text())
+    assert written["schema_version"] == 3
+    assert written["subject"]["identity"]["tree_oid"] == subject_b.identity.tree_oid
+    assert classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(checkout),
+    )["lint"].status == "present"
+
+
+def test_failed_current_receipt_with_same_subject_is_not_refreshed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert rec.run_calls == []
+    assert classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(checkout),
+    )["lint"].status == "failed"
+
+
+def test_inherited_parent_pass_does_not_hide_stale_failed_current_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    tracked = checkout / "README.md"
+    tracked.write_text("A\n", encoding="utf-8")
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
+    tracked.write_text("B\n", encoding="utf-8")
+    parent_dir = tmp_path / "parent"
+    _write_receipt(parent_dir, "lint", exit_code=0, checkout=checkout)
+    extras = {VERIFICATION_PARENT_RUNS_EXTRAS_KEY: (("parent", str(parent_dir)),)}
+    assert classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(checkout), extras=extras,
+    )["lint"].status == "present"
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), extras=extras, reason="pre-final",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert len(rec.run_calls) == 1
+
+
+@pytest.mark.parametrize("subject", [
+    {"status": "unavailable", "reason": "nope"},
+    {"status": "available", "identity": {}},
+    None,
+])
+def test_failed_receipt_without_usable_typed_subject_is_not_refreshed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subject: dict[str, Any] | None,
+) -> None:
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    path = _write_receipt(run_dir, "lint", exit_code=1, checkout=checkout)
+    raw = json.loads(path.read_text())
+    if subject is None:
+        raw.pop("subject")
+        raw["schema_version"] = 2  # historical receipt with no typed subject
+    else:
+        raw["subject"] = subject
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert rec.run_calls == []
+
+
+@pytest.mark.parametrize("policy", ["manual", "suggest"])
+def test_failed_stale_operator_receipt_is_not_auto_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: str,
+) -> None:
+    project, workspace, run_dir = _layout(tmp_path)
+    checkout = tmp_path / "checkout"
+    _init_repo(checkout)
+    (checkout / "README.md").write_text("A\n", encoding="utf-8")
+    plugin = PluginConfig(
+        verification_envs={"ci": {}},
+        verification={
+            "default_env": "ci", "commands": {"manual": {"run": "true"}},
+            "required": ["manual"],
+            "schedule": [{"before_delivery": True, "policy": policy, "commands": ["manual"]}],
+        },
+    )
+    contract = VerificationContract.from_plugin(plugin)
+    assert contract is not None
+    ctx = _ctx(contract, checkout=checkout, project=project,
+               workspace=workspace, run_dir=run_dir)
+    _write_receipt(run_dir, "manual", exit_code=1, checkout=checkout)
+    (checkout / "README.md").write_text("B\n", encoding="utf-8")
+    rec = _Recorder(run_dir).install(monkeypatch)
+
+    materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(checkout), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    assert rec.run_calls == []
 
 
 # ── case 4b: exit-0 but failed assertion/detail is authoritatively failed ──

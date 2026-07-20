@@ -44,7 +44,11 @@ from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
 )
-from pipeline.verification_failure import ReceiptClassification, classify_receipt
+from pipeline.verification_failure import (
+    ReceiptClassification,
+    classify_receipt,
+    failed_receipt_refresh_eligible,
+)
 from pipeline.verification_receipt_index import receipt_file_path
 
 __all__ = [
@@ -1308,19 +1312,10 @@ def _failed_blocks_inheritance(
     subject is unavailable or malformed.  Only a direct, usable comparison
     which proves the subjects stale permits parent inheritance.
     """
-    if receipt is None:
-        return False
-    from pipeline.evidence.verification_receipt import subject_identity
-    from pipeline.verification_subject import (
-        VerificationSubjectComparisonVerdict,
-        compare_verification_subjects,
+    return not failed_receipt_refresh_eligible(
+        receipt,
+        current_subject=current_subject,
     )
-
-    comparison = compare_verification_subjects(
-        subject_identity(receipt.get("subject")),
-        current_subject,
-    )
-    return comparison.verdict is not VerificationSubjectComparisonVerdict.STALE
 
 
 def _classify_parent_candidate(

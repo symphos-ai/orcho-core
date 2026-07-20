@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pipeline.verification_failure import failed_receipt_refresh_eligible
 from pipeline.verification_readiness import (
     classify_required_receipts,
     delivery_gate_plan,
@@ -225,6 +226,29 @@ def materialize_required_receipts(
             ),
         )
 
+    # Failed-receipt refresh is based only on the official receipt physically
+    # owned by this run. A parent candidate selected by readiness inheritance,
+    # or an unavailable current identity, is never evidence for execution.
+    from pipeline.evidence.verification_receipt import load_command_receipts
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        capture_verification_subject,
+    )
+
+    current_receipts = {
+        str(receipt.get("command", "")): receipt
+        for receipt in load_command_receipts(run_dir)
+    }
+    try:
+        captured_subject = capture_verification_subject(Path(checkout)) if checkout else None
+        current_subject = (
+            captured_subject.identity
+            if isinstance(captured_subject, VerificationSubjectAvailable)
+            else None
+        )
+    except Exception:  # noqa: BLE001 — identity errors remain fail-closed
+        current_subject = None
+
     # Materialization covers selected engine identities at every delivery
     # position.  Receipt reads remain command-level, but execution ownership
     # comes from the typed resolver so manual/suggest never reach sdk.verify.
@@ -262,11 +286,21 @@ def materialize_required_receipts(
     for command, status in classification.items():
         if command not in engine_commands and command not in operator_commands:
             continue
+        if (
+            failed_receipt_refresh_eligible(
+                current_receipts.get(command), current_subject=current_subject,
+            )
+        ):
+            if command in operator_commands:
+                skipped_manual.append(command)
+            else:
+                targets.append(command)
+            continue
         if status.status == "present":
             skipped_fresh.append(command)
             continue
-        # ``failed`` is intentionally left out of every bucket: it is never
-        # rerun in the normal path and must not be reported as fresh.
+        # Same-subject and unverifiable failed receipts remain failed and are
+        # intentionally left out of every execution bucket.
         if status.status in ("missing", "stale", "unverifiable"):
             if command in operator_commands:
                 skipped_manual.append(command)

@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from pipeline.evidence.verification_receipt import command_receipt_passed
-from pipeline.verification_failure import classify_receipt
+from pipeline.verification_failure import (
+    classify_receipt,
+    failed_receipt_refresh_eligible,
+)
 from pipeline.verification_subject import VerificationSubjectIdentity
 
 
@@ -29,6 +32,24 @@ def test_head_drift_is_stale_even_when_tree_matches() -> None:
 
 def test_execution_failure_precedes_subject_verification() -> None:
     assert classify_receipt(_receipt(exit_code=2), current_subject=None).failure_kind == "test_failure"
+
+
+@pytest.mark.parametrize(
+    ("receipt", "current", "eligible"),
+    [
+        (_receipt(exit_code=1), VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None), True),
+        (_receipt(exit_code=1), VerificationSubjectIdentity(1, "sha1", "a" * 40, "b" * 40, None), False),
+        (_receipt(exit_code=1), None, False),
+        (_receipt(exit_code=1, subject={"status": "unavailable"}), VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None), False),
+        (_receipt(exit_code=1, subject={"status": "available", "identity": {}}), VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None), False),
+        ({"schema_version": 2, "exit_code": 1, "assertions": [], "detail": ""}, VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None), False),
+        (_receipt(), VerificationSubjectIdentity(1, "sha1", "a" * 40, "c" * 40, None), False),
+    ],
+)
+def test_failed_receipt_refresh_requires_failed_execution_and_proven_stale_subject(
+    receipt: dict, current: VerificationSubjectIdentity | None, eligible: bool,
+) -> None:
+    assert failed_receipt_refresh_eligible(receipt, current_subject=current) is eligible
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,7 @@ __all__ = [
     "FailedAssertion",
     "ReceiptClassification",
     "classify_receipt",
+    "failed_receipt_refresh_eligible",
     "format_receipt_failure",
 ]
 
@@ -162,6 +163,27 @@ def _identity(value: VerificationSubjectIdentity | VerificationSubjectAvailable 
 
 def _recorded_identity(value: Any) -> VerificationSubjectIdentity | None:
     return _identity(value) if isinstance(value, (VerificationSubjectIdentity, VerificationSubjectAvailable)) else subject_identity(value)
+
+
+def failed_receipt_refresh_eligible(
+    receipt: Mapping[str, Any] | None,
+    *,
+    current_subject: VerificationSubjectIdentity | VerificationSubjectAvailable | None,
+) -> bool:
+    """Whether a failed current-run receipt may be refreshed once.
+
+    Execution failure remains ``failed`` regardless of provenance. Automatic
+    refresh is permitted only when usable typed subjects prove the failed
+    execution covered different content; legacy, malformed, and unavailable
+    subjects therefore fail closed.
+    """
+    if classify_receipt(receipt, current_subject=current_subject).status != "failed":
+        return False
+    comparison = compare_verification_subjects(
+        _recorded_identity(receipt.get("subject")) if receipt is not None else None,
+        _identity(current_subject),
+    )
+    return comparison.verdict.value == "stale"
 
 
 def _last_meaningful_line(receipt: Mapping[str, Any]) -> str:
