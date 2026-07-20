@@ -57,7 +57,7 @@ dev = [
 codemap = [
     "tree-sitter>=0.22",
     "tree-sitter-python>=0.21",
-    "tree-sitter-c-sharp>=0.21",
+    "tree-sitter-c-sharp>=0.23.5",
     "tree-sitter-php>=0.22",
 ]
 
