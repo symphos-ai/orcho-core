@@ -55,6 +55,9 @@ from pipeline.project_orchestrator import run_pipeline
 #   * ``render_phase_outputs`` — follow-up to ADR 0046. Cross terminal
 #     dispatch keeps child runs SILENT for banners/finalization while
 #     allowing mono-run parity for parsed phase response blocks.
+#   * ``preallocated_output_dir`` — ADR 0144. A parent cross coordinator
+#     may write a handoff into a fresh child directory without turning that
+#     child into a checkpoint resume.
 #   * ``auto_waiver_allowed`` — ADR 0073. Operator-set opt-in that lets
 #     the implement-phase substance-repair fallback record a synthetic
 #     waiver and continue instead of pausing; request-only because the
@@ -64,7 +67,7 @@ from pipeline.project_orchestrator import run_pipeline
 #     ``no_interactive=True`` without opting out of pending handoffs.
 _REQUEST_ONLY_FIELDS = {
     "presentation", "render_phase_outputs", "auto_waiver_allowed",
-    "unattended",
+    "unattended", "preallocated_output_dir",
 }
 
 # ── pinned signature reference ────────────────────────────────────────────

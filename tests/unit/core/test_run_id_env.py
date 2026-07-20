@@ -141,6 +141,23 @@ def test_resume_allows_existing_materialized_run_dir(tmp_path):
     _assert_fresh_run_dir_available(run_dir, resume_from="REAL_ADV_1")
 
 
+def test_preallocated_child_dir_allows_parent_handoff_artifact(tmp_path):
+    """A cross parent may prepare a fresh child's handoff without resuming it."""
+    from pipeline.project.bootstrap import (
+        assert_fresh_run_dir_available as _assert_fresh_run_dir_available,
+    )
+
+    run_dir = tmp_path / "runs" / "core"
+    run_dir.mkdir(parents=True)
+    (run_dir / "plan_core.md").write_text("# Plan\n")
+
+    _assert_fresh_run_dir_available(
+        run_dir,
+        resume_from=None,
+        preallocated_output_dir=True,
+    )
+
+
 def test_fresh_run_rejects_plan_artifact_collision(tmp_path):
     from pipeline.project.bootstrap import (
         RunIdCollisionError,

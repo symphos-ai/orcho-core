@@ -77,6 +77,7 @@ def setup_run_id(
     plan_source: str,
     projected_profile: str | None,
     presentation: PresentationPolicy,
+    preallocated_output_dir: bool = False,
 ) -> str:
     """Allocate the run id, wire logging, and emit ``run.start``.
 
@@ -96,6 +97,7 @@ def setup_run_id(
         # (``set_progress_log`` / ``init_event_store``) always fire
         # regardless (ADR 0046 stop #9).
         presentation=presentation,
+        preallocated_output_dir=preallocated_output_dir,
     )
 
 
