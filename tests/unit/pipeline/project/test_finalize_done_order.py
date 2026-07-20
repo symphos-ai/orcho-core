@@ -460,6 +460,67 @@ def test_rejected_contract_with_real_diff_becomes_halted_not_done(
     assert "final_acceptance=reject" in str(run_end["summary"])
 
 
+@pytest.mark.parametrize("delivery_status", ["committed", "applied_uncommitted"])
+def test_rejected_contract_with_real_diff_operator_override_is_truthful(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    delivery_status: str,
+) -> None:
+    """The real wrapper renders override delivery separately from rejection."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    final_acceptance = _real_contract_final_acceptance(
+        verdict="REJECTED",
+        ship_ready=False,
+        approved=False,
+        contract_status={"task_contract": "incomplete", "tests": "missing"},
+    )
+    final_acceptance["release_blockers"] = [{
+        "id": "REL-17",
+        "title": "Tests missing for the new branch",
+        "why_blocks_release": "The required release coverage is absent.",
+    }]
+    stub = _real_diff_reject_stub(
+        run_dir,
+        project_dir,
+        final_acceptance=final_acceptance,
+        dry_run=False,
+    )
+    stub.session["commit_delivery"] = {"status": delivery_status}
+    monkeypatch.setattr(
+        "pipeline.project.verification_timeline.build_verification_timeline",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.verification_timeline.render_verification_gate_done_block",
+        lambda _timeline: (
+            "Verification gates",
+            "  unresolved warning: coverage receipt is stale",
+        ),
+    )
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert result.status == "done"
+    assert result.terminal_delivery.disposition.value == "delivered_by_operator_override"
+    assert "DELIVERED BY OPERATOR OVERRIDE" in out
+    assert "DELIVERY BLOCKED" not in out
+    assert "delivery blocked" not in out
+    assert "delivery did not happen" not in out
+    assert "Pipeline complete" not in out
+    assert "Release: rejected" in out
+    assert "Release blockers: 1" in out
+    assert "REL-17: Tests missing for the new branch" in out
+    assert "The required release coverage is absent." in out
+    assert "unresolved warning: coverage receipt is stale" in out
+
+
 def test_rejected_contract_dry_run_is_backstop_noop(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
