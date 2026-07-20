@@ -413,11 +413,15 @@ never has to leak shell work to the operator (ADR 0094). In `_on_phase_pre`
 `before_delivery` gates evaluate, when `name in FINAL_PHASES` the orchestrator
 calls `auto_run_required_receipts(self, name, reason=…)`. That thin adapter runs
 the shared `materialize_required_receipts` executor — auto-running only `missing`
-/ `stale` required commands, skipping `present` (fresh), never re-running
-`failed` (the "never falsely green" invariant), and never auto-running
-`manual_only` hooks / operator-owned commands (those stay an explicit operator
-escape-hatch). It is a strict no-op under dry-run, no contract, or empty
-`required`. The auto-run records durable evidence: an append-only
+/ `stale` required commands and, per [ADR 0141](../adr/0141-subject-aware-refresh-of-failed-verification-receipts.md),
+a failed official current-run receipt only when usable typed subjects prove it
+`STALE` against the current checkout. A same, legacy, malformed, unavailable,
+absent, or inherited subject never authorizes that refresh; execution-first
+reporting still leaves a command failure `failed`. It skips `present` (fresh) and
+never auto-runs `manual_only` hooks / operator-owned commands (those stay an
+explicit operator escape-hatch). The materializer has one command pass, with no
+retry loop. It is a strict no-op under dry-run, no contract, or empty `required`.
+The auto-run records durable evidence: an append-only
 `state.extras['verification_autorun']` list plus a per-phase mirror at
 `session['phase_log'][<phase>]['verification_autorun']`. The `before_delivery`
 gate, the Stage 5 readiness render, and the Stage 6 delivery gate then read the
