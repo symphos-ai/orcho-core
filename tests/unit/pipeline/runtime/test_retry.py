@@ -336,6 +336,28 @@ class TestCallWithRetry:
         assert result == "success"
         assert call_count[0] == 3
 
+    def test_admission_denial_raises_original_before_event_or_sleep(self) -> None:
+        error = RateLimitError("rate_limit_exceeded")
+        order: list[str] = []
+        events: list[RetryEvent] = []
+
+        def fail() -> None:
+            order.append("attempt")
+            raise error
+
+        with pytest.raises(RateLimitError) as excinfo:
+            call_with_retry(
+                fail,
+                config=_make_config(max_retries=1),
+                retry_events=events,
+                retry_admission=lambda received: order.append("admission") or False,
+                _sleep=lambda _delay: order.append("sleep"),
+            )
+
+        assert excinfo.value is error
+        assert order == ["attempt", "admission"]
+        assert events == []
+
     def test_exhausts_and_raises(self) -> None:
         def always_fail():
             raise RateLimitError("rate_limit_exceeded")

@@ -38,6 +38,7 @@ from agents.command_guard import (
     ORCHO_GUARDRAIL_BLOCKED,
     blocked_agent_stream_line,
 )
+from agents.owned_child import OwnedChildRegistry
 from agents.stall_protocol import EventStallDiagnosticSink
 from agents.stream import StreamAbort
 from core.infra import config
@@ -483,6 +484,7 @@ class ClaudeAgent:
             "implement", "claude-opus-4-8[1m]",
         )
         self.effort = effort
+        self._owned_children = OwnedChildRegistry()
         self.session_id: str | None = None
         self._followup_resume_pending: bool = False
         self._last_continue_session: bool = False
@@ -720,6 +722,8 @@ class ClaudeAgent:
                     sandbox_policy=_sandbox_policy,
                     stall_sink=EventStallDiagnosticSink(),
                     stall_phase=_events.current_phase() or "",
+                    owned_child_owner=self._owned_children,
+                    agent_call_id=attempt_call_id,
                 )
             stderr = elide_text_for_model(stderr)
             if returncode != 0 and stderr:
@@ -762,7 +766,7 @@ class ClaudeAgent:
             return ("ok", reply_text, stderr)
 
         tag, reply_text, stderr = _failures.run_invoke_with_retry(
-            _attempt, runtime=self.runtime,
+            _attempt, runtime=self.runtime, owned_children=self._owned_children,
         )
         if tag == "guardrail":
             return f"{ORCHO_GUARDRAIL_BLOCKED}\n{stderr}"

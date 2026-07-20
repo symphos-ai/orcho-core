@@ -768,6 +768,7 @@ def call_with_retry(
     config: RetryConfig = DEFAULT_RETRY_CONFIG,
     phase: str = "",
     retry_events: list[RetryEvent] | None = None,
+    retry_admission: Callable[[AgentCallError], bool] | None = None,
     _sleep: Callable[[float], None] = time.sleep,  # injectable for tests
     **kwargs: Any,
 ) -> Any:
@@ -785,6 +786,9 @@ def call_with_retry(
         Pipeline phase name — embedded in RetryEvent for structured logging.
     retry_events : list[RetryEvent] | None
         If provided, RetryEvent records are appended here (for meta.json).
+    retry_admission : callable | None
+        Optional gate evaluated only after a typed error still has retry
+        budget and before any RetryEvent, backoff, or next invocation.
     _sleep : callable
         Overridable sleep function (swap for no-op in unit tests).
     **kwargs : Any
@@ -811,27 +815,27 @@ def call_with_retry(
             # Context overflow can't be fixed by repeating — give up after 1
             _record_and_maybe_raise(
                 exc, attempt, config.max_retries_for(exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except AgentCallError as exc:
             _record_and_maybe_raise(
                 exc, attempt, config.max_retries_for(exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except (subprocess.TimeoutExpired, TimeoutError) as exc:
             typed = ApiTimeoutError(str(exc), exit_code=-1)
             _record_and_maybe_raise(
                 typed, attempt, config.max_retries_for(typed),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except RuntimeError as exc:
             typed_exc = classify_error(exc)
             _record_and_maybe_raise(
                 typed_exc, attempt, config.max_retries_for(typed_exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
 
@@ -842,10 +846,19 @@ def _record_and_maybe_raise(
     config: RetryConfig,
     phase: str,
     retry_events: list[RetryEvent] | None,
+    retry_admission: Callable[[AgentCallError], bool] | None,
     _sleep: Callable[[float], None],
 ) -> None:
     """Log the retry event. Sleep before next attempt. Raise if exhausted."""
     from datetime import datetime
+
+    if attempt <= max_retries and retry_admission is not None:
+        try:
+            admitted = retry_admission(exc)
+        except Exception:
+            admitted = False
+        if not admitted:
+            raise exc
 
     error_type = _error_type_for(exc)
     delay = config.delay_for(attempt) if attempt <= max_retries else 0.0

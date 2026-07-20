@@ -245,6 +245,10 @@ The architecture is split this way so each decision has one owner:
   it before the phase ends; killing a stalled command stays bounded to the
   run's own child process group with a single trigger (idle-timeout), and the
   engine never matches host processes by free-text name (ADR 0103).
+  Provider retries additionally use an in-memory handle for the exact `Popen`
+  launched by the stream: only a memoized terminal observation may admit a
+  retry. This is not host-process discovery or durable run state, and it does
+  not claim visibility into nested provider-tool children (ADR 0143).
 
 This split keeps the runner small: profile authors change workflow
 shape, phase plugins change behavior, runtime adapters change model

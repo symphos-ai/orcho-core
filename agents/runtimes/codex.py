@@ -57,6 +57,7 @@ from agents.command_guard import (
     ORCHO_GUARDRAIL_BLOCKED,
     blocked_agent_stream_line,
 )
+from agents.owned_child import OwnedChildRegistry
 from agents.runtimes.codex_skills import CodexSkillScope
 from agents.runtimes.codex_telemetry import load_codex_telemetry
 from agents.stall_protocol import EventStallDiagnosticSink
@@ -328,6 +329,7 @@ class CodexAgent:
         self._bin: LazyValue[str] = lazy_cli_binary("codex", config.get_codex_bin)
         self.model = model
         self.effort = effort
+        self._owned_children = OwnedChildRegistry()
         self._skill_scope = CodexSkillScope()
         self.session_id: str | None = None
         self._followup_resume_pending: bool = False
@@ -689,6 +691,8 @@ class CodexAgent:
                         sandbox_policy=_sandbox_policy,
                         stall_sink=EventStallDiagnosticSink(),
                         stall_phase=_events.current_phase() or "",
+                        owned_child_owner=self._owned_children,
+                        agent_call_id=attempt_call_id,
                     )
                 stderr = elide_text_for_model(stderr)
                 new_sid = _extract_codex_session_id(stdout)
@@ -725,7 +729,7 @@ class CodexAgent:
                 return ("ok", reply_text, stderr)
 
             tag, reply_text, stderr = _failures.run_invoke_with_retry(
-                _attempt, runtime="codex",
+                _attempt, runtime="codex", owned_children=self._owned_children,
             )
             if tag == "guardrail":
                 return f"{ORCHO_GUARDRAIL_BLOCKED}\n{stderr}"

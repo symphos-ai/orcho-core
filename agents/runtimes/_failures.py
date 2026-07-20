@@ -37,11 +37,13 @@ import json
 import time
 from collections.abc import Callable
 
+from agents.owned_child import OwnedChildRegistry, OwnedChildState
 from agents.runtimes.auth import (
     looks_like_auth_failure,
     raise_authentication_error,
 )
 from core.io.retry import (
+    AgentCallError,
     ApiConnectionError,
     RetryConfig,
     call_with_retry,
@@ -220,7 +222,22 @@ def raise_on_runtime_failure(
         )
 
 
-def run_invoke_with_retry[T](attempt: Callable[[], T], *, runtime: str) -> T:
+def owned_child_retry_admission(
+    owner: OwnedChildRegistry,
+) -> Callable[[AgentCallError], bool]:
+    """Allow retry only after the prior exact child is known terminal."""
+    def _admit(_error: AgentCallError) -> bool:
+        handle = owner.last_handle
+        if handle is None:
+            return True
+        return owner.poll(handle).state is OwnedChildState.EXITED
+
+    return _admit
+
+
+def run_invoke_with_retry[T](
+    attempt: Callable[[], T], *, runtime: str, owned_children: OwnedChildRegistry | None = None,
+) -> T:
     """Run a single-invocation thunk under the runtime retry policy.
 
     ``attempt`` performs one CLI invocation and either returns its result or
@@ -233,5 +250,9 @@ def run_invoke_with_retry[T](attempt: Callable[[], T], *, runtime: str) -> T:
         attempt,
         config=RUNTIME_RETRY_CONFIG,
         phase=f"{runtime}.invoke",
+        retry_admission=(
+            owned_child_retry_admission(owned_children)
+            if owned_children is not None else None
+        ),
         _sleep=_sleep,
     )

@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 import agents as agents_module
+from agents.owned_child import OwnedChildRegistry
 from agents.runtimes import _failures
 from agents.runtimes.claude import ClaudeAgent
 from agents.runtimes.codex import CodexAgent
@@ -231,6 +232,40 @@ def _runtime_test_environment(
 
 
 class TestRuntimesHaltOnApiFailure:
+    @pytest.mark.parametrize(
+        ("factory", "stdout"),
+        [
+            (lambda: ClaudeAgent(model="claude-test"), "done"),
+            (
+                lambda: CodexAgent(model="gpt-test"),
+                '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+            ),
+            (lambda: GeminiAgent(model="gemini-test"), "done"),
+        ],
+        ids=["claude", "codex", "gemini"],
+    )
+    def test_child_start_identity_matches_agent_start(
+        self, monkeypatch: pytest.MonkeyPatch, factory, stdout: str,
+    ) -> None:
+        stream_kwargs: dict[str, object] = {}
+        emitted: list[tuple[str, dict[str, object]]] = []
+
+        def _fake_stream(*_args, **kwargs):
+            stream_kwargs.update(kwargs)
+            return _stream(stdout=stdout)
+
+        monkeypatch.setattr(agents_module, "_stream_run", _fake_stream)
+        monkeypatch.setattr(
+            "core.observability.events.emit",
+            lambda kind, **payload: emitted.append((kind, payload)),
+        )
+        agent = factory()
+        agent.invoke("hi", "/project")
+
+        start = next(payload for kind, payload in emitted if kind == "agent.start")
+        assert stream_kwargs["owned_child_owner"] is agent._owned_children
+        assert stream_kwargs["agent_call_id"] == start["agent_call_id"]
+
     def test_claude_exit_zero_sentinel_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             agents_module, "_stream_run",
@@ -393,3 +428,54 @@ class TestRunInvokeWithRetrySignalBudget:
         with pytest.raises(AgentCancelledError):
             _failures.run_invoke_with_retry(attempt, runtime="claude")
         assert calls["n"] == 1  # no retry
+
+
+class TestOwnedChildRetryAdmission:
+    class _FakeProc:
+        pid = 5412
+
+        def __init__(self, result: int | None | Exception) -> None:
+            self.result = result
+
+        def poll(self) -> int | None:
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    @pytest.mark.parametrize("result", [None, RuntimeError("lost visibility")])
+    def test_running_or_unavailable_child_blocks_second_attempt(
+        self, monkeypatch: pytest.MonkeyPatch, result: int | None | Exception,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        owner = OwnedChildRegistry()
+        owner.register(self._FakeProc(result))  # type: ignore[arg-type]
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            raise classify_from_exit(-9, "")
+
+        with pytest.raises(AgentProcessKilledError):
+            _failures.run_invoke_with_retry(
+                attempt, runtime="claude", owned_children=owner,
+            )
+        assert calls["n"] == 1
+
+    def test_exited_child_allows_existing_bounded_kill_retry(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        owner = OwnedChildRegistry()
+        owner.register(self._FakeProc(-9))  # type: ignore[arg-type]
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise classify_from_exit(-9, "")
+            return "recovered"
+
+        assert _failures.run_invoke_with_retry(
+            attempt, runtime="claude", owned_children=owner,
+        ) == "recovered"
+        assert calls["n"] == 2
