@@ -220,6 +220,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         plan_source=_profile.plan_source,
         projected_profile=_profile.projected_profile_name,
         presentation=request.presentation,
+        preallocated_output_dir=request.preallocated_output_dir,
     )
 
     plugin = load_plugin(str(project_path))

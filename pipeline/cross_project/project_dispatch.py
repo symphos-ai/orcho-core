@@ -499,7 +499,13 @@ def _dispatch_one_alias(
                 ),
                 phase_config=ctx.phase_config,
                 ma_artifacts_dir_override=str(alias_artifacts),
-                resume_from=alias,
+                # ``project_alias`` carries the child identity for every
+                # dispatch. ``resume_from`` is strictly checkpoint intent:
+                # a fresh child must initialize its own run artifacts,
+                # including a scheduled-gate ledger when the project declares
+                # verification. Passing ``alias`` here unconditionally makes
+                # every fresh cross child look like a checkpoint resume.
+                resume_from=sub_resume,
                 # REA-3.6: parent_run_id + project_alias let MCP /
                 # evidence reconstruct the parent → children timeline.
                 parent_run_id=ctx.run_dir.name,
@@ -510,6 +516,7 @@ def _dispatch_one_alias(
                 # invariant (see block comment above).
                 presentation=PresentationPolicy.SILENT,
                 render_phase_outputs=ctx.terminal,
+                preallocated_output_dir=True,
                 no_interactive=True,
             ),
         )

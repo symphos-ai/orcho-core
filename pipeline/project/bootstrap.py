@@ -259,14 +259,17 @@ def assert_fresh_run_dir_available(
     output_dir: Path | None,
     *,
     resume_from: str | None,
+    preallocated_output_dir: bool = False,
 ) -> None:
     """Fail fast when a fresh run id points at an existing materialized run.
 
     Empty/pre-created directories are allowed so external supervisors can
-    mint an id and directory before spawning Orcho. Reuse of a directory that
-    already contains run artifacts is only valid through ``--resume``.
+    mint an id and directory before spawning Orcho. A typed parent coordinator
+    can additionally mark its own handoff-artifact directory as preallocated;
+    this does not imply checkpoint-resume semantics. All other reuse of a
+    directory that already contains run artifacts requires ``--resume``.
     """
-    if output_dir is None or resume_from:
+    if output_dir is None or resume_from or preallocated_output_dir:
         return
     artifacts = materialized_run_artifacts(output_dir)
     if not artifacts:
@@ -296,6 +299,7 @@ def resolve_run_id_and_setup_logging(
     plan_source: str = "local",
     projected_profile: str | None = None,
     presentation: PresentationPolicy = PresentationPolicy.TERMINAL,
+    preallocated_output_dir: bool = False,
 ) -> str:
     """Resolve the run_id (resume > $ORCHO_RUN_ID > direct caller output
     dir > minted timestamp), set up file-based run logging, and emit
@@ -318,7 +322,11 @@ def resolve_run_id_and_setup_logging(
         or _direct_run_id
         or datetime.now().strftime("%Y%m%d_%H%M%S")
     )
-    assert_fresh_run_dir_available(output_dir, resume_from=resume_from)
+    assert_fresh_run_dir_available(
+        output_dir,
+        resume_from=resume_from,
+        preallocated_output_dir=preallocated_output_dir,
+    )
     is_sub_pipeline = False
     if (
         output_dir is not None

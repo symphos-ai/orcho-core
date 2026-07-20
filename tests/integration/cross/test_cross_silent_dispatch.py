@@ -217,6 +217,14 @@ def test_cross_dispatch_uses_silent_presentation(
         )
         assert request.project_alias in {"api", "web"}
         assert request.plan_source == "cross"
+        assert request.resume_from is None, (
+            "a fresh cross child must not be marked as a checkpoint resume; "
+            "project_alias already carries its cross identity"
+        )
+        assert request.preallocated_output_dir is True, (
+            "cross prepares handoff artifacts before fresh child dispatch; "
+            "that directory ownership must be explicit, not encoded as resume"
+        )
 
 
 def test_cross_transcript_omits_child_banners(

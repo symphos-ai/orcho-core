@@ -1706,9 +1706,9 @@ class TestB10_CrossFinalAcceptance:
         # 28-kwarg ``run_pipeline(**kwargs)`` wrapper. Patch the new
         # symbol at the project_dispatch import site and read
         # ``project_alias`` off the typed request.
-        real_run_project_pipeline = sys.modules[
-            "pipeline.cross_project.project_dispatch"
-        ].run_project_pipeline
+        from pipeline.cross_project import project_dispatch
+
+        real_run_project_pipeline = project_dispatch.run_project_pipeline
 
         def _crash_target(request):
             if request.project_alias == target_alias:
