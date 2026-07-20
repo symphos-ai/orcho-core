@@ -333,6 +333,12 @@ field.
 The read-only advisor persists its recommendation to a **separate** run-state
 directory, **never** `phase_handoff_decisions/`:
 
+Advice artifacts add `contract_snapshot`, structured intent (`proposed_operations`
+and `contract_effects`), `disposition`, `blocked_reason`, and conflict details.
+Those decision-relevant fields are included in idempotency comparison, so a
+different snapshot, intent, or disposition receives a suffix rather than
+overwriting prior evidence.
+
 - `<run_dir>/phase_handoff_advice/<safe_handoff_id>.json` — one directory per
   run, one file per handoff, keyed by the same collision-resistant
   `safe_handoff_id` slug the decision artifacts use. Fields: `run_id`,

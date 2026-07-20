@@ -18,7 +18,10 @@ from typing import Any
 
 import pytest
 
+from agents.entities import SubTask
 from agents.runtimes._strategy import MockAgentProvider
+from pipeline.plan_artifacts import write_parsed_plan_artifact
+from pipeline.plan_parser import ParsedPlan
 from sdk import (
     HandoffAdviceResult,
     HandoffAdviceSafety,
@@ -64,6 +67,7 @@ def _seed_paused_run(
     *,
     status: str = "awaiting_phase_handoff",
     phase_handoff: dict[str, Any] | None = "__default__",  # type: ignore[assignment]
+    with_parsed_plan: bool = True,
 ) -> tuple[Path, str, Path]:
     """Create a runs dir + a paused run dir with meta.json; return (runs, id, dir)."""
     runs = tmp_path / "runs"
@@ -85,6 +89,27 @@ def _seed_paused_run(
     elif phase_handoff is not None:
         meta["phase_handoff"] = phase_handoff
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    if with_parsed_plan:
+        write_parsed_plan_artifact(
+            run_dir,
+            ParsedPlan(
+                subtasks=(
+                    SubTask(
+                        id="repair-review",
+                        goal="Repair the rejected review finding",
+                        done_criteria=("The targeted regression test passes.",),
+                        owned_files=("tests/sdk/test_request_handoff_advice.py",),
+                    ),
+                ),
+                source="json",
+                short_summary="Repair the rejected handoff",
+                planning_context="The review finding requires a focused retry.",
+                goal="Return the rejected handoff to a verified state.",
+                acceptance_criteria=("The handoff advice retry is contract-bound.",),
+                owned_files=("tests/sdk/test_request_handoff_advice.py",),
+            ),
+            attempt=1,
+        )
     (run_dir / "events.jsonl").write_text("", encoding="utf-8")
     return runs, run_id, run_dir
 
@@ -189,6 +214,26 @@ def test_advice_writes_no_decision_and_does_not_change_status(
     # The only durable write is the advice artifact.
     advice_files = list((run_dir / "phase_handoff_advice").iterdir())
     assert len(advice_files) == 1
+
+
+def test_no_parsed_plan_requires_operator_review_without_a_decision(
+    tmp_path: Path,
+) -> None:
+    runs, run_id, run_dir = _seed_paused_run(tmp_path, with_parsed_plan=False)
+
+    result = request_handoff_advice(
+        run_id,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
+    )
+
+    assert result.disposition == "operator_review_required"
+    assert result.safety.auto_apply_ok is False
+    advice_files = list((run_dir / "phase_handoff_advice").glob("*.json"))
+    assert len(advice_files) == 1
+    assert not (run_dir / "parsed_plan.json").exists()
+    assert not (run_dir / "phase_handoff_decisions").exists()
 
 
 # ── typed errors (no traceback) ──────────────────────────────────────────────

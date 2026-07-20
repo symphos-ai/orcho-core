@@ -345,9 +345,9 @@ class _MockClaude:
         # task marker. Detect it before the plan/release/review branches so the
         # synthetic advisor JSON never falls through to a plan or review parser.
         if _prompt_requests_handoff_advice(prompt):
-            content = _handoff_advice_json()
+            content = _handoff_advice_json(prompt)
             self._record_call(
-                f"handoff_advice for: {prompt[:80]}",
+                f"handoff_advice for: [handoff_advice] {prompt[:60]}",
                 content,
                 duration_s=_mock_duration("plan", prompt, content),
             )
@@ -603,7 +603,7 @@ class _MockCodex:
         # codex mock serves it under --mock too. Detect the marker before the
         # release / review branches and emit an advisor record.
         if _prompt_requests_handoff_advice(prompt):
-            content = _handoff_advice_json()
+            content = _handoff_advice_json(prompt)
             self._record_call(prompt, content, duration_s=_mock_duration("codex", prompt, content))
             _write_to_agent_log("CODEX handoff_advice (mock)", content, duration_s=self.last_duration_s)
             return content
@@ -1644,7 +1644,7 @@ def _prompt_requests_handoff_advice(prompt: str) -> bool:
     return "[handoff_advice]" in prompt
 
 
-def _handoff_advice_json() -> str:
+def _handoff_advice_json(prompt: str = "") -> str:
     """Synthesise a valid phase-handoff advisor JSON record.
 
     Returned by the mock when the reviewer prompt carries the
@@ -1652,6 +1652,7 @@ def _handoff_advice_json() -> str:
     well-formed recommendation. Defaults to a confident ``retry_feedback`` with
     a non-empty feedback string so the advisory retry path has concrete input.
     """
+    invariant_ids = re.findall(r"\[(acceptance:\d+|task:[^:\]\s]+:done:\d+)\]", prompt)
     return json.dumps({
         "recommended_action": "retry_feedback",
         "confidence": "high",
@@ -1666,6 +1667,15 @@ def _handoff_advice_json() -> str:
         "risks": ["The retry must stay scoped to the recorded findings."],
         "expected_files": ["the files named in the recorded findings"],
         "operator_note": "Mock advisor recommendation.",
+        "proposed_operations": [{
+            "kind": "repair",
+            "target": "recorded_findings",
+            "summary": "Address the recorded findings directly.",
+        }],
+        "contract_effects": [
+            {"invariant_id": invariant_id, "effect": "advance"}
+            for invariant_id in invariant_ids
+        ],
     })
 
 

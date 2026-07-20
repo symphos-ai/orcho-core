@@ -73,6 +73,7 @@ from sdk.evidence_slices import (
 )
 from sdk.fine_tune import FineTuneResult, fine_tune_project
 from sdk.handoff_advice import (
+    HandoffAdviceConflict,
     HandoffAdviceResult,
     HandoffAdviceSafety,
     request_handoff_advice,
@@ -235,6 +236,7 @@ __all__ = [
     # Read-only handoff advisory accessor (Stage 0/1 advisor)
     "request_handoff_advice",
     "HandoffAdviceResult",
+    "HandoffAdviceConflict",
     "HandoffAdviceSafety",
     # Post-release delivery decisions (ADR 0100)
     "decide_delivery",

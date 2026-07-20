@@ -12,6 +12,10 @@ Read the recorded review surface for this handoff: the verdict, the listed
 findings, the last reviewer or delivery output, and the working-tree summary.
 Weigh the smallest honest way forward.
 
+The accepted plan contract is authoritative: check each published invariant
+before recommending a retry, and do not infer missing contract facts from the
+review prose.
+
 Recommend exactly one path:
 
 - Retry the phase with corrective feedback, when the findings name a concrete,

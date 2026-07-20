@@ -503,6 +503,17 @@ the fresh-run path is byte-for-byte unchanged. Its sole consumer today is
 correction routing (ADR 0086) — it is a correction-specific mechanism, not
 a general branching primitive.
 
+### Contract-aware handoff advice
+
+Advice is advisory only: the canonical decision path remains
+`phase_handoff_decide` with one of the four published actions. The advisor sees
+separate dynamic prompt parts for raw task, accepted parsed-plan contract, and
+handoff findings. Structured intent is assessed as `safe`, `contract_conflict`,
+`operator_review_required`, or `policy_blocked`; `auto_apply_ok` is derived.
+Unsafe conflict/ambiguity never use interactive apply/edit or CI retry and
+return to the canonical manual handoff menu. Stage 2 uses only the nearest
+same-phase linked retry result, never terminal or downstream success.
+
 ## Verification hygiene handoff
 
 At the scheduled-gate routing seam, a typed `test_failure` continues through

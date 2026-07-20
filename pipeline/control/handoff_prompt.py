@@ -766,6 +766,8 @@ def prompt_advice_followup(
     risks: Sequence[str] = (),
     expected_files: Sequence[str] = (),
     operator_note: str = "",
+    disposition: str = "",
+    conflict_details: Sequence[str] = (),
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
 ) -> AdviceFollowup | _Aborted:
@@ -804,6 +806,8 @@ def prompt_advice_followup(
             risks=risks,
             expected_files=expected_files,
             operator_note=operator_note,
+            disposition=disposition,
+            conflict_details=conflict_details,
             color=color,
         ),
         file=actual_stdout,
