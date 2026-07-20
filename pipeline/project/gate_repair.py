@@ -45,11 +45,7 @@ from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
 )
-from pipeline.verification_selection import (
-    SelectionContext,
-    repair_loop_target,
-    selection_context_from_extras,
-)
+from pipeline.verification_selection import repair_loop_target
 
 # Deprecated compatibility name for readers that have not yet migrated to the
 # ledger runtime. No writer stores this key in ``state.extras``.
@@ -1281,34 +1277,11 @@ def _plan(run: Any, contract: Any, *, epoch: str) -> Any:
     current at that point. Routing never reads the prompt preview.
     """
     from pipeline.project.verification_ledger_runtime import select_epoch
+    from pipeline.project.verification_selection_context import selection_context_for_run
 
     return select_epoch(
-        run, contract, epoch=epoch, context=_selection_context(run, contract),
+        run, contract, epoch=epoch, context=selection_context_for_run(run, contract),
     )
-
-
-def _selection_context(run: Any, contract: Any) -> SelectionContext:
-    """Build the selection context for executable routing.
-
-    ``touched_paths`` are the run worktree's current changed files (best-effort,
-    computed fresh per hook). ``task_kind`` / ``operator_sets`` are the
-    operator/profile declarations threaded through ``state.extras`` (the stable
-    run-level source — keys ``verification_task_kind`` /
-    ``verification_operator_sets``); auto-inference of ``task_kind`` is a TODO.
-    """
-    touched: tuple[str, ...] = ()
-    ph = _placeholders(run)
-    checkout = getattr(ph, "checkout", "") or ""
-    if checkout:
-        try:
-            from core.io.git_helpers import git_changed_files
-
-            touched = tuple(git_changed_files(checkout))
-        except Exception:  # noqa: BLE001 — selection touched-paths is best-effort
-            touched = ()
-    state = getattr(run, "state", None)
-    extras = getattr(state, "extras", {}) or {}
-    return selection_context_from_extras(extras, contract, touched_paths=touched)
 
 
 def _repair_budget(run: Any, profile: Any) -> int:

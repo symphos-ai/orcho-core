@@ -502,13 +502,19 @@ class TestDeliveryGatePlanSource:
 
         assert ROUTING_PLANS_EXTRAS_KEY == VERIFICATION_GATE_ROUTING_PLANS_KEY
 
-    def test_prefers_executable_before_delivery_epoch(self) -> None:
+    def test_prefers_executable_before_delivery_epoch(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         contract = _selection_contract()
         routed = build_scheduled_gate_plan(
             contract,
             SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
         )
         extras = {ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": routed}}
+        monkeypatch.setattr(
+            "pipeline.verification_selection.build_scheduled_gate_plan",
+            lambda *_args: pytest.fail("readiness rebuilt recorded delivery epoch"),
+        )
         plan = delivery_gate_plan(contract, extras, checkout="")
         assert plan is routed
 
@@ -543,6 +549,38 @@ class TestDeliveryGatePlanSource:
         assert rendered is not None
         # smoke is scheduled require at before_delivery → a require gap.
         assert "missing required: smoke" in rendered
+
+    @pytest.mark.git_worktree
+    def test_recorded_epoch_wins_over_stale_prompt_preview(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A preview is advisory even when it disagrees with the durable plan."""
+        contract = _selection_contract()
+        co = _git_checkout(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stale_preview = build_scheduled_gate_plan(
+            contract, SelectionContext(work_mode="governed"),
+        )
+        recorded = build_scheduled_gate_plan(
+            contract, SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
+        )
+        assert "smoke" not in stale_preview.selected_commands
+        assert "smoke" in recorded.selected_commands
+        extras = {
+            "verification_gate_prompt_preview": stale_preview,
+            ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": recorded},
+        }
+        monkeypatch.setattr(
+            "pipeline.verification_selection.build_scheduled_gate_plan",
+            lambda *_args: pytest.fail("readiness rebuilt recorded delivery epoch"),
+        )
+
+        summary = build_final_acceptance_readiness(
+            contract, run_dir, PlaceholderContext(checkout=str(co)), extras=extras,
+        )
+
+        assert "smoke" in summary.required_missing
 
 
 # ─────────────────────────────────────────────────────────────────────────────

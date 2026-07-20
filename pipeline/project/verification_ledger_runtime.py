@@ -72,10 +72,15 @@ def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> Schedu
             state._verification_ledger_epoch_cache = cache
         if epoch not in cache:
             cache[epoch] = build_scheduled_gate_plan(contract, context)
-        return cache[epoch]
+        return _publish_epoch_plan(state, epoch, cache[epoch])
     recorded = [event for event in ledger.trail if event.kind == "selection" and event.reason == epoch]
     if recorded:
-        return _replay_epoch(ledger, contract, recorded)
+        plan = (
+            _recorded_delivery_plan(ledger, contract)
+            if epoch == "before_delivery:"
+            else _replay_epoch(ledger, contract, recorded)
+        )
+        return _publish_epoch_plan(state, epoch, plan)
     if ledger.finalized:
         raise ResumeVerificationLedgerError("cannot resolve a new epoch for finalized ledger")
     if getattr(run, "checkpoint_resume", False):
@@ -109,7 +114,46 @@ def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> Schedu
             rows.append(row if row.selected is not None else replace(row, selected=False))
     ledger = ScheduledGateLedger(tuple(rows), tuple(trail), False)
     write_ledger(Path(state.output_dir), ledger)
+    # The durable selection is authoritative.  Do not expose an in-memory plan
+    # until its selection trail is safely written.
+    return _publish_epoch_plan(
+        state,
+        epoch,
+        _published_epoch_plan(ledger, contract, epoch, plan),
+    )
+
+
+def _publish_epoch_plan(state: Any, epoch: str, plan: ScheduledGatePlan) -> ScheduledGatePlan:
+    """Publish the selected or replayed authoritative plan for read-side users."""
+    extras = getattr(state, "extras", None)
+    if isinstance(extras, dict):
+        extras.setdefault("verification_gate_routing_plans", {})[epoch] = plan
     return plan
+
+
+_DELIVERY_POSITIONS = frozenset({
+    ("after_phase", "implement"),
+    ("before_delivery", ""),
+})
+
+
+def _published_epoch_plan(
+    ledger: ScheduledGateLedger,
+    contract: Any,
+    epoch: str,
+    fresh_plan: ScheduledGatePlan,
+) -> ScheduledGatePlan:
+    """Return the stable read-side shape for a newly selected epoch.
+
+    ``before_delivery:`` is the authoritative delivery view.  It must contain
+    every already-recorded selected delivery identity, not the live plan that
+    happened to be built while selecting its own rows.  Otherwise a repair-time
+    path change could add an unrecorded ``after_phase:implement`` identity on a
+    fresh pass, while replay would omit a durably selected one after resume.
+    """
+    if epoch != "before_delivery:":
+        return fresh_plan
+    return _recorded_delivery_plan(ledger, contract)
 
 
 def _materialize_manual_availability(row: GateLedgerRow) -> GateLedgerRow:
@@ -198,6 +242,33 @@ def _replay_epoch(ledger: ScheduledGateLedger, contract: Any, events: list[GateT
         row = rows.get(identity)
         if row is None:
             raise ResumeVerificationLedgerError(f"recorded selection has unknown identity {identity!r}")
+        _validate_identity_mechanics(row, contract)
+        entries.append(ScheduledGateEntry(
+            command=row.gate, hook=row.hook, phase=row.phase,
+            policy=row.execution_policy, action=_snapshot_action(row, contract),
+            contributing_gate_sets=row.gate_sets,
+            primary_gate_set=row.gate_sets[0] if row.gate_sets else "",
+            activation_binding=row.activation_binding,
+        ))
+    return _snapshot_plan(entries)
+
+
+def _recorded_delivery_plan(
+    ledger: ScheduledGateLedger,
+    contract: Any,
+) -> ScheduledGatePlan:
+    """Reconstruct the sole durable delivery view from selection trail facts."""
+    selected = {
+        event.identity
+        for event in ledger.trail
+        if event.kind == "selection"
+        and event.outcome == "selected"
+        and (event.hook, event.phase) in _DELIVERY_POSITIONS
+    }
+    entries: list[ScheduledGateEntry] = []
+    for row in ledger.rows:
+        if row.identity not in selected or (row.hook, row.phase) not in _DELIVERY_POSITIONS:
+            continue
         _validate_identity_mechanics(row, contract)
         entries.append(ScheduledGateEntry(
             command=row.gate, hook=row.hook, phase=row.phase,

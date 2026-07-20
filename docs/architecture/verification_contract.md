@@ -578,6 +578,16 @@ reads — the prompt may be built before `implement` mutates the tree, so its
 path-based selection can be incomplete, but it cannot suppress a gate that
 becomes relevant only after `implement`.
 
+At the pre-final boundary, the current run-worktree context resolves one
+authoritative `before_delivery:` epoch. Its selection trail is written to the
+scheduled-gate ledger before the identical plan is published in the routing-plan
+cache or any command is materialized. Readiness, the final delivery backstop, and
+the materializer consume that published plan; they do not rebuild path selection
+for an epoch already recorded. A repeated hook or checkpoint resume reconstructs
+the recorded identities from the ledger, so later git changes or plugin selection
+rules cannot rewrite the epoch. Prompt preview remains advisory and never enters
+this replay path.
+
 - `task_kind` — the project/profile-declared task class
   (`verification.task_kind`, override `state.extras["verification_task_kind"]`).
   A `task_kind` rule activates only when it equals this value. Auto-inference
@@ -1136,7 +1146,8 @@ hint — and `final_acceptance` is a model that cannot run shell, so that hint
 leaked the work back to a **human operator** (incidents `20260613_104716` /
 `20260613_125608`). Stage 9 makes the engine materialise that evidence itself.
 
-**Overview.** Before a final phase runs, Orcho regenerates the run's missing/stale
+**Overview.** Before a final phase runs, Orcho first durably selects the current
+`before_delivery:` plan and then regenerates the run's missing/stale
 required delivery receipts through a single shared executor
 (`materialize_required_receipts`), so the `before_delivery` gate, the Stage 5
 readiness render, and the Stage 6 delivery gate all read **fresh on-disk
@@ -1183,8 +1194,9 @@ pass per needed env, one command pass over the targets, **no retry loop**. Any
 executor failure degrades into `errors` and is never raised: `final_acceptance` /
 delivery remain the authoritative verdict.
 
-**Integration point.** `pipeline/project/run.py::_on_phase_pre` calls the thin
-run-adapter `auto_run_required_receipts(self, name, reason=…)` when
+**Integration point.** `pipeline/project/run.py::_on_phase_pre` resolves the
+durable `before_delivery:` epoch and calls the thin run-adapter
+`auto_run_required_receipts(self, name, reason=…, delivery_plan=…)` when
 `name in FINAL_PHASES` (`final_acceptance` / `compliance_check`), **after** the
 correction-route skip check and **before** `evaluate_pre_phase_gates`. The adapter
 resolves `ctx` from `state.extras['verification_placeholders']` (else builds it
@@ -1194,6 +1206,12 @@ via `placeholder_context_for`) and parent sources from `verification_parent_runs
 contract from the project's `plugin.py` (the accepted provenance invariant: the
 executor passes a `project_dir` matching the run's `meta['project']`, so both
 resolve the same contract).
+
+The ledger write precedes plan publication and `sdk.verify` execution. The later
+`before_delivery` hook replays the same selected identities and reuses fresh
+receipts; it never recomputes selection or executes an already materialized
+engine-owned command a second time. Correction pre-review uses the materializer
+without selecting this delivery epoch.
 
 **Durable evidence.** `auto_run_required_receipts` records an **append-only**
 list at `state.extras['verification_autorun']` (one
