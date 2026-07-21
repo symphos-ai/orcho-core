@@ -208,9 +208,14 @@ def _make_capturing_run_project_pipeline(
         }
         if child_session_extras:
             session.update(child_session_extras)
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
             session=session,
-            output_dir=None,
+            output_dir=request.output_dir,
             run_id="test-run",
         )
 
@@ -438,9 +443,14 @@ def test_silent_child_failure_surfaces_structurally_without_stdout(
                 "error": "child blew up",
                 "phase": "implement",
             }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
             session=session,
-            output_dir=None,
+            output_dir=request.output_dir,
             run_id=f"test-run-{request.project_alias}",
         )
 
@@ -521,7 +531,16 @@ def test_mixed_child_readiness_bypasses_contract_review_and_reaches_cfa(
                 "status": "done",
                 "phases": {"final_acceptance": _approved_child_release()},
             }
-        return ProjectRunResult(session=session, output_dir=None, run_id=request.project_alias)
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
+        return ProjectRunResult(
+            session=session,
+            output_dir=request.output_dir,
+            run_id=request.project_alias,
+        )
 
     monkeypatch.setattr(dispatch, "run_project_pipeline", _mixed_child)
     provider = _ScriptedProvider(
@@ -624,7 +643,16 @@ def test_child_readiness_blocks_delivery_when_cfa_is_policy_skipped(
                 "status": "done",
                 "phases": {"final_acceptance": _approved_child_release()},
             }
-        return ProjectRunResult(session=session, output_dir=None, run_id=request.project_alias)
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
+        return ProjectRunResult(
+            session=session,
+            output_dir=request.output_dir,
+            run_id=request.project_alias,
+        )
 
     delivery_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(project_dispatch, "run_project_pipeline", _child)

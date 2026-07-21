@@ -2,75 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-
-import pytest
 
 from pipeline.cross_project import project_dispatch
 from pipeline.cross_project.project_dispatch import (
     DispatchPorts,
     ProjectDispatchContext,
-    _classify_child_outcome,
     run_project_dispatch,
 )
-
-
-@pytest.mark.parametrize(
-    ("session", "kind", "reason"),
-    [
-        ({"status": "done"}, "success", "status:done"),
-        ({"status": "success"}, "success", "status:success"),
-        ({"status": "completed"}, "success", "status:completed"),
-        (
-            {"status": "awaiting_phase_handoff", "phase_handoff": {"id": "p"}},
-            "pause",
-            "status:awaiting_phase_handoff",
-        ),
-        ({"status": "failed"}, "failure", "status:failed"),
-        ({"status": "halted"}, "failure", "status:halted"),
-        (
-            {
-                "status": "halted",
-                "halt_reason": "final_acceptance_rejected",
-                "phases": {
-                    "final_acceptance": {
-                        "verdict": "REJECTED",
-                        "ship_ready": False,
-                    },
-                },
-            },
-            "release_rejected",
-            "status:halted:final_acceptance_rejected",
-        ),
-        (
-            {
-                "status": "halted",
-                "halt_reason": "final_acceptance_rejected",
-                "phases": {},
-            },
-            "failure",
-            "status:halted",
-        ),
-        ({"status": "interrupted"}, "failure", "status:interrupted"),
-        ({}, "failure", "status_missing"),
-        ({"status": None}, "failure", "status_not_string"),
-        ({"status": "mystery"}, "failure", "status_unknown:mystery"),
-        (
-            {"status": "awaiting_phase_handoff"},
-            "failure",
-            "pause_payload_missing_or_invalid",
-        ),
-        (
-            {"status": "awaiting_phase_handoff", "phase_handoff": "not a mapping"},
-            "failure",
-            "pause_payload_missing_or_invalid",
-        ),
-    ],
-)
-def test_classify_child_outcome_is_bounded_and_fail_closed(session, kind, reason) -> None:
-    outcome = _classify_child_outcome(session)
-    assert (outcome.kind, outcome.reason) == (kind, reason)
 
 
 def _context(tmp_path, aliases=("core", "mcp")) -> ProjectDispatchContext:
@@ -138,7 +79,9 @@ def test_exception_records_failure_and_continues_to_later_alias(tmp_path, monkey
         calls.append(request.project_alias)
         if request.project_alias == "core":
             raise RuntimeError("broken child")
-        return SimpleNamespace(session={"status": "done", "phases": {}})
+        session = {"status": "done", "phases": {}}
+        (ctx.run_dir / request.project_alias / "meta.json").write_text(json.dumps(session))
+        return SimpleNamespace(session=session)
 
     monkeypatch.setattr(project_dispatch, "run_project_pipeline", _child)
 
@@ -154,7 +97,7 @@ def test_exception_records_failure_and_continues_to_later_alias(tmp_path, monkey
     }
 
 
-def test_resume_retries_failed_and_unknown_but_skips_only_done(tmp_path, monkeypatch) -> None:
+def test_resume_retries_embedded_done_without_physical_child(tmp_path, monkeypatch) -> None:
     ctx = _context(tmp_path, ("done", "failed", "unknown"))
     ctx.cross_ckpt["sub_status"] = {
         "done": "done", "failed": "failed", "unknown": "wat",
@@ -165,15 +108,35 @@ def test_resume_retries_failed_and_unknown_but_skips_only_done(tmp_path, monkeyp
         "unknown": {"status": "wat"},
     }
     calls: list[str] = []
+    def _child(request):
+        calls.append(request.project_alias)
+        session = {"status": "done", "phases": {}}
+        (ctx.run_dir / request.project_alias / "meta.json").write_text(json.dumps(session))
+        return SimpleNamespace(session=session)
+
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", _child)
+
+    result = run_project_dispatch(ctx)
+
+    assert calls == ["done", "failed", "unknown"]
+    assert result.blocking_aliases == ()
+    assert ctx.session["phases"]["projects"]["done"] == {"status": "done", "phases": {}}
+
+
+def test_residual_handoff_on_failed_child_is_not_paused(tmp_path, monkeypatch) -> None:
+    ctx = _context(tmp_path, ("core",))
     monkeypatch.setattr(
         project_dispatch,
         "run_project_pipeline",
-        lambda request: calls.append(request.project_alias)
-        or SimpleNamespace(session={"status": "done", "phases": {}}),
+        lambda request: SimpleNamespace(
+            session={
+                "status": "failed",
+                "phase_handoff": {"id": "child-1", "available_actions": ["continue"]},
+                "phases": {},
+            }
+        ),
     )
 
     result = run_project_dispatch(ctx)
 
-    assert calls == ["failed", "unknown"]
-    assert result.blocking_aliases == ()
-    assert ctx.session["phases"]["projects"]["done"] == {"status": "done"}
+    assert result == project_dispatch.ProjectDispatchResult(paused=False, blocking_aliases=("core",))

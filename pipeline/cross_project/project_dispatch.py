@@ -34,15 +34,14 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from agents.runtimes import AgentProvider, MockAgentProvider
 from core.io.ansi import C
-from pipeline.control.resume_context import is_terminal_final_acceptance_rejected
 from pipeline.cross_project.checkpoint import write_cross_checkpoint
 from pipeline.cross_project.handoff import Handoff, write_handoff
 from pipeline.cross_project.handoff_payloads import (
@@ -57,11 +56,6 @@ from pipeline.project.types import PresentationPolicy, ProjectRunRequest
 # one of the four stable orchestrator-module re-exports). Importing it
 # from ``pipeline.project_orchestrator`` is the canonical path.
 from pipeline.project_orchestrator import SessionMode
-from pipeline.run_state.status_vocab import (
-    FAILURE_TERMINAL_STATUSES,
-    PAUSE_STATUS,
-    TERMINAL_SUCCESS_STATUSES,
-)
 
 #: Color escape for the ``▶ SUB-PIPELINE [alias]`` banner. Resolved at
 #: import via :data:`core.io.ansi.C.BLUE` so the palette stays single-
@@ -83,8 +77,7 @@ def _normalize_unit_declared_files(alias: str, files: Any) -> tuple[str, ...]:
     for entry in files or ():
         if not isinstance(entry, str):
             raise ValueError(
-                f"cross task unit for alias {alias!r} has non-string file entry "
-                f"{entry!r}"
+                f"cross task unit for alias {alias!r} has non-string file entry {entry!r}"
             )
         match = _LEADING_BRACKET_ALIAS_RE.match(entry)
         if match is None:
@@ -113,9 +106,10 @@ class DispatchPorts:
     and alternative embedders can pass silent or capturing
     implementations without monkey-patching the orchestrator module.
     """
-    banner: Callable[..., None]   #: ``(phase: str, title: str, color: str, **kwargs) -> None``
+
+    banner: Callable[..., None]  #: ``(phase: str, title: str, color: str, **kwargs) -> None``
     success: Callable[[str], None]
-    warn:    Callable[[str], None]
+    warn: Callable[[str], None]
 
 
 @dataclass(slots=True)
@@ -127,6 +121,7 @@ class ProjectDispatchContext:
     the driver updates in place so the caller observes the same
     side-effects the original inline block produced.
     """
+
     # Run identity / inputs
     task: str
     projects: dict[str, Path]
@@ -135,15 +130,15 @@ class ProjectDispatchContext:
     dry_run: bool
     max_rounds: int
     code_model: str
-    phase_config: Any                          # PhaseAgentConfig | None
-    child_profile: Any | None                  # Profile | None
+    phase_config: Any  # PhaseAgentConfig | None
+    child_profile: Any | None  # Profile | None
     requested_profile_name: str
     has_global_plan: bool
     provider: AgentProvider
     hypothesis_enabled: bool
     followup_session_seeds_per_alias: dict | None
     run_dir: Path
-    output_dir: Any                            # truthy → persist to disk
+    output_dir: Any  # truthy → persist to disk
     plan_output: str
     plan_review_dict: dict | None
     # Mutable shared state
@@ -180,76 +175,12 @@ class ProjectDispatchResult:
     either done, skipped, or recorded as failed) and the caller may
     proceed to ``contract_check`` and beyond.
     """
+
     paused: bool
     #: Child aliases whose returned durable session was not a successful
     #: terminal outcome.  This is an immutable dispatch fact: callers must not
     #: reconstruct readiness by rereading mutable checkpoint/session state.
     blocking_aliases: tuple[str, ...] = ()
-
-
-@dataclass(slots=True, frozen=True)
-class ChildDispatchOutcome:
-    """Pure classification of a returned child session.
-
-    Only these four values leave dispatch: success, a release-evaluable
-    rejection, a decision-ready pause, or failure.  A normal Python return is
-    deliberately not success evidence; the child's durable ``session.status``
-    and typed final-acceptance record are the authority.
-    """
-
-    kind: Literal["success", "release_rejected", "pause", "failure"]
-    reason: str
-
-
-def _has_reviewable_rejected_release(project_session: Mapping[str, Any]) -> bool:
-    """Return whether a halted child has complete rejected-release evidence.
-
-    A project final-acceptance rejection is terminal and not ship-ready, but it
-    is still a complete input to the cross contract and release gates.  Admit
-    only the canonical rejection terminal with a typed rejecting record;
-    arbitrary halted sessions remain fail-closed.
-    """
-    if not is_terminal_final_acceptance_rejected(project_session):
-        return False
-    phases = project_session.get("phases")
-    if not isinstance(phases, Mapping):
-        return False
-    release = phases.get("final_acceptance")
-    return (
-        isinstance(release, Mapping)
-        and release.get("verdict") == "REJECTED"
-        and release.get("ship_ready") is False
-    )
-
-
-def _classify_child_outcome(project_session: Any) -> ChildDispatchOutcome:
-    """Classify a child session fail-closed from its durable status.
-
-    ``awaiting_phase_handoff`` is a pause only when its payload is a mapping.
-    All absent, malformed, and unrecognised statuses are failures so a parent
-    can never infer readiness from a normal child return.
-    """
-    if not isinstance(project_session, Mapping):
-        return ChildDispatchOutcome("failure", "session_not_mapping")
-    if "status" not in project_session:
-        return ChildDispatchOutcome("failure", "status_missing")
-    status = project_session["status"]
-    if not isinstance(status, str):
-        return ChildDispatchOutcome("failure", "status_not_string")
-    if status in TERMINAL_SUCCESS_STATUSES:
-        return ChildDispatchOutcome("success", f"status:{status}")
-    if _has_reviewable_rejected_release(project_session):
-        return ChildDispatchOutcome(
-            "release_rejected",
-            f"status:{status}:{project_session.get('halt_reason')}",
-        )
-    if status in FAILURE_TERMINAL_STATUSES:
-        return ChildDispatchOutcome("failure", f"status:{status}")
-    if status == PAUSE_STATUS:
-        if isinstance(project_session.get("phase_handoff"), Mapping):
-            return ChildDispatchOutcome("pause", f"status:{status}")
-        return ChildDispatchOutcome("failure", "pause_payload_missing_or_invalid")
-    return ChildDispatchOutcome("failure", f"status_unknown:{status}")
 
 
 @contextlib.contextmanager
@@ -280,7 +211,9 @@ def _run_child_pipeline(alias: str, request: ProjectRunRequest) -> Any:
 
 
 def _bind_child_editable_checkout(
-    ctx: ProjectDispatchContext, alias: str, project_session: Any,
+    ctx: ProjectDispatchContext,
+    alias: str,
+    project_session: Any,
 ) -> None:
     """Bind ``alias``'s ``editable_checkout`` to the child's real isolated worktree.
 
@@ -306,7 +239,8 @@ def _bind_child_editable_checkout(
     # seeded per alias in run_setup) — never break the dispatch loop.
     with contextlib.suppress(KeyError):
         pset.bind_editable_checkout(
-            alias, str(path),
+            alias,
+            str(path),
             isolation=str(child_isolation) if child_isolation is not None else None,
         )
 
@@ -331,12 +265,30 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
     them.
     """
     existing_children = ctx.session.get("phases", {}).get("projects", {})
+    from pipeline.cross_project.parent_state_runtime import (
+        reduce_runtime_cross_parent_state,
+    )
+
+    state_session = (
+        ctx.session
+        if isinstance(ctx.session.get("projects"), dict)
+        else {**ctx.session, "projects": {alias: str(path) for alias, path in ctx.projects.items()}}
+    )
+    canonical_children = {
+        child.alias: child
+        for child in reduce_runtime_cross_parent_state(
+            state_session, ctx.cross_ckpt, ctx.run_dir
+        ).children
+    }
     if isinstance(existing_children, dict):
         sub_status_map = ctx.cross_ckpt.get("sub_status") or {}
         preserved = {
             alias: child_entry
             for alias, child_entry in existing_children.items()
             if sub_status_map.get(alias) == "done"
+            and alias in canonical_children
+            and canonical_children[alias].execution.value == "terminal"
+            and canonical_children[alias].contract_evaluable
         }
     else:
         preserved = {}
@@ -363,8 +315,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
 
     approved_plan_path = str(ctx.run_dir / "cross_plan.md")
     cross_summary = (
-        (ctx.plan_review_dict or {}).get("short_summary", "")
-        if ctx.plan_review_dict else ""
+        (ctx.plan_review_dict or {}).get("short_summary", "") if ctx.plan_review_dict else ""
     )
 
     # ADR 0054 — the approved cross plan arrives as a typed ``CrossTaskPlan``
@@ -375,9 +326,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
     # Dry runs and review-only projections carry ``task_plan=None`` → empty
     # slices and the per-alias fallback to ``ctx.task``.
     interface_contract = ctx.task_plan.interface_contract if ctx.task_plan else ""
-    implementation_order = (
-        "\n".join(ctx.task_plan.implementation_order) if ctx.task_plan else ""
-    )
+    implementation_order = "\n".join(ctx.task_plan.implementation_order) if ctx.task_plan else ""
     units_by_alias = ctx.task_plan.units_by_alias() if ctx.task_plan else {}
     # ADR 0054: the handoff's ``full_cross_plan_markdown`` field is MARKDOWN
     # (its companion ``full_cross_plan_path`` points at ``cross_plan.md``), NOT
@@ -407,7 +356,8 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
         )
         if outcome is _DISPATCH_PAUSED:
             return ProjectDispatchResult(
-                paused=True, blocking_aliases=tuple(blocking_aliases),
+                paused=True,
+                blocking_aliases=tuple(blocking_aliases),
             )
         if outcome is _DISPATCH_FAILURE:
             blocking_aliases.append(alias)
@@ -443,7 +393,8 @@ def _dispatch_one_alias(
     unit = (units_by_alias or {}).get(alias)
     project_task = (unit.spec if unit else "") or ctx.task
     declared_files = _normalize_unit_declared_files(
-        alias, getattr(unit, "files", ()) if unit else (),
+        alias,
+        getattr(unit, "files", ()) if unit else (),
     )
 
     # Resume skip: alias finished previously → pass.
@@ -451,16 +402,11 @@ def _dispatch_one_alias(
     # resume_from so the child's checkpoints.db picks up where it
     # left off.
     sub_status = ctx.cross_ckpt.get("sub_status", {}).get(alias)
-    if sub_status == "done":
+    if sub_status == "done" and alias in ctx.session["phases"]["projects"]:
         ctx.ports.success(f"[{alias}] already done in previous run — skipping")
         return _DISPATCH_CONTINUE
     sub_resume = (
-        alias
-        if (
-            sub_status in {"failed", "awaiting_phase_handoff"}
-            and ctx.resume_from
-        )
-        else None
+        alias if (sub_status in {"failed", "awaiting_phase_handoff"} and ctx.resume_from) else None
     )
 
     # ``▶`` arrow distinguishes the per-project sub-run header from
@@ -470,22 +416,20 @@ def _dispatch_one_alias(
     # (review-only projections).
     plan_marker = (
         "satisfied by approved cross handoff"
-        if ctx.has_global_plan else "none (review-only projection)"
+        if ctx.has_global_plan
+        else "none (review-only projection)"
     )
     ctx.ports.banner(
         f"▶ SUB-PIPELINE [{alias}]",
         f"Project: {Path(project_path).name}"
         + (" (RESUME)" if sub_resume else "")
         + f"  profile={ctx.requested_profile_name}  "
-          f"plan={plan_marker}",
+        f"plan={plan_marker}",
         _SUB_PIPELINE_BANNER_COLOR,
     )
 
     if ctx.dry_run:
-        ctx.ports.warn(
-            f"[DRY RUN] Would run pipeline for [{alias}]: "
-            f"{project_task[:80]}…"
-        )
+        ctx.ports.warn(f"[DRY RUN] Would run pipeline for [{alias}]: {project_task[:80]}…")
         ctx.session["phases"]["projects"][alias] = {"dry_run": True}
         return _DISPATCH_CONTINUE
 
@@ -502,7 +446,8 @@ def _dispatch_one_alias(
             f"## Subtask\n{project_task}\n"
         )
         (alias_artifacts / f"plan_{plan_ts}.md").write_text(
-            plan_content, encoding="utf-8",
+            plan_content,
+            encoding="utf-8",
         )
 
     # Write the handoff artifact only when the cross level actually
@@ -548,9 +493,7 @@ def _dispatch_one_alias(
     # rationale: hypothesis fires on the plan agent before plan and
     # would consume the one-shot seed). Children without seeds keep
     # the cross-level ``hypothesis_enabled`` value.
-    alias_seeds: dict[str, str] | None = (
-        (ctx.followup_session_seeds_per_alias or {}).get(alias)
-    )
+    alias_seeds: dict[str, str] | None = (ctx.followup_session_seeds_per_alias or {}).get(alias)
     child_hypothesis = False if alias_seeds else ctx.hypothesis_enabled
 
     try:
@@ -640,11 +583,37 @@ def _dispatch_one_alias(
         # isolation-off child the path equals the canonical project, so
         # editable_checkout == delivery_target and the degraded contract holds.
         _bind_child_editable_checkout(ctx, alias, project_session)
-        child_outcome = _classify_child_outcome(project_session)
-        if child_outcome.kind == "pause":
+        # The reducer is the sole child-outcome authority.  In particular a
+        # checkpoint cursor must never turn a halted/failed physical child into
+        # a skip candidate after this boundary.
+        from pipeline.cross_project.parent_state_runtime import (
+            reduce_runtime_cross_parent_state,
+        )
+
+        state_session = (
+            ctx.session
+            if isinstance(ctx.session.get("projects"), dict)
+            else {
+                **ctx.session,
+                "projects": {name: str(path) for name, path in ctx.projects.items()},
+            }
+        )
+        child_state = next(
+            child
+            for child in reduce_runtime_cross_parent_state(
+                state_session, ctx.cross_ckpt, ctx.run_dir
+            ).children
+            if child.alias == alias
+        )
+        if (
+            child_state.execution.value == "paused"
+            and child_state.pending_decision is not None
+            and isinstance(project_session.get("phase_handoff"), dict)
+        ):
             child_payload = project_session["phase_handoff"]
             parent_payload = build_project_phase_handoff_payload(
-                alias=alias, child_payload=child_payload,
+                alias=alias,
+                child_payload=child_payload,
             )
             ctx.cross_ckpt["sub_status"][alias] = "awaiting_phase_handoff"
             ctx.cross_ckpt["phase_handoff_kind"] = "project"
@@ -659,7 +628,7 @@ def _dispatch_one_alias(
                 terminal=ctx.terminal,
             )
             return _DISPATCH_PAUSED
-        if child_outcome.kind in {"success", "release_rejected"}:
+        if child_state.contract_evaluable:
             ctx.cross_ckpt["sub_status"][alias] = "done"
             write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
             return _DISPATCH_CONTINUE
@@ -668,7 +637,8 @@ def _dispatch_one_alias(
         write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
         ctx.ports.warn(
             f"[{alias}] child session classified as failed "
-            f"({child_outcome.reason}); continuing to later aliases."
+            f"({', '.join(blocker.code for blocker in child_state.blockers)}); "
+            "continuing to later aliases."
         )
         return _DISPATCH_FAILURE
     except Exception as child_exc:

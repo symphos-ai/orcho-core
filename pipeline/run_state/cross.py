@@ -33,6 +33,7 @@ Severity convention (mirrors :mod:`pipeline.run_state.consistency`):
   carrying a stale handoff, kind/id disagreement, incomplete project marker).
 - ``"info"`` — reserved; no current cross invariant is purely informational.
 """
+
 from __future__ import annotations
 
 import json
@@ -40,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pipeline.run_state.cross_parent import CrossParentState, reduce_cross_parent_state
+from pipeline.run_state.cross_parent_disk import load_cross_parent_facts
 from pipeline.run_state.status_vocab import TERMINAL_CROSS_STATUSES
 from pipeline.run_state.types import RunStateIssue
 
@@ -105,6 +108,9 @@ class CrossRunStateSnapshot:
     sub_status: dict[str, Any] = field(default_factory=dict)
     child_statuses: dict[str, str | None] = field(default_factory=dict)
     decisions: tuple[dict[str, Any], ...] = ()
+    #: Canonical reduction of exact declared durable facts.  Legacy fields above
+    #: remain a repair-facing compatibility projection only.
+    canonical_state: CrossParentState | None = None
 
 
 def classify_cross_run_state(run_dir: Path | str) -> CrossRunStateSnapshot:
@@ -122,35 +128,29 @@ def classify_cross_run_state(run_dir: Path | str) -> CrossRunStateSnapshot:
     meta_status = meta.get("status")
     active_handoff = meta.get("phase_handoff")
     active_handoff = active_handoff if isinstance(active_handoff, dict) else None
-    active_handoff_id = (
-        active_handoff.get("id") if isinstance(active_handoff, dict) else None
-    )
+    active_handoff_id = active_handoff.get("id") if isinstance(active_handoff, dict) else None
 
     cfa_paused_state = checkpoint.get("cfa_paused_state")
     pending_gate = checkpoint.get("pending_gate")
     sub_status = checkpoint.get("sub_status")
     sub_status = sub_status if isinstance(sub_status, dict) else {}
 
+    canonical_state = reduce_cross_parent_state(load_cross_parent_facts(path))
     return CrossRunStateSnapshot(
         meta_status=meta_status if isinstance(meta_status, str) else None,
         active_handoff=active_handoff,
-        active_handoff_id=(
-            active_handoff_id if isinstance(active_handoff_id, str) else None
-        ),
+        active_handoff_id=(active_handoff_id if isinstance(active_handoff_id, str) else None),
         checkpoint_pending=bool(checkpoint.get("phase_handoff_pending")),
         checkpoint_kind=_opt_str(checkpoint.get("phase_handoff_kind")),
         checkpoint_id=_opt_str(checkpoint.get("phase_handoff_id")),
-        checkpoint_project_alias=_opt_str(
-            checkpoint.get("phase_handoff_project_alias")
-        ),
+        checkpoint_project_alias=_opt_str(checkpoint.get("phase_handoff_project_alias")),
         checkpoint_child_id=_opt_str(checkpoint.get("phase_handoff_child_id")),
-        cfa_paused_state=(
-            cfa_paused_state if isinstance(cfa_paused_state, dict) else None
-        ),
+        cfa_paused_state=(cfa_paused_state if isinstance(cfa_paused_state, dict) else None),
         pending_gate=pending_gate if isinstance(pending_gate, dict) else None,
         sub_status=dict(sub_status),
         child_statuses=_read_child_statuses(path, sub_status),
         decisions=_read_decisions(path),
+        canonical_state=canonical_state,
     )
 
 
@@ -166,13 +166,25 @@ def validate_cross_run_state(run_dir: Path | str) -> tuple[RunStateIssue, ...]:
     snap = classify_cross_run_state(run_dir)
     issues: list[RunStateIssue] = []
 
+    # The canonical reducer owns contradiction precedence.  Keep legacy issue
+    # text below for repair compatibility, but surface each canonical violation
+    # first as a stable read-only diagnostic.
+    if snap.canonical_state is not None and snap.canonical_state.children:
+        for violation in snap.canonical_state.violations:
+            suffix = f" for child {violation.alias!r}" if violation.alias else ""
+            issues.append(
+                RunStateIssue(
+                    code=f"cross_parent_{violation.code}",
+                    severity="error",
+                    message=f"canonical cross-parent state violation {violation.code}{suffix}",
+                    repair_hint="reconcile the durable parent, child, and checkpoint facts before resume",
+                )
+            )
+
     # 1. Terminal cross run carrying a stale active handoff — INCLUDING
     #    ``failed``. A cross pause short-circuits the run all the way to a
     #    final terminal, so any payload left at a cross terminal is stale.
-    if (
-        snap.active_handoff is not None
-        and snap.meta_status in TERMINAL_CROSS_STATUSES
-    ):
+    if snap.active_handoff is not None and snap.meta_status in TERMINAL_CROSS_STATUSES:
         issues.append(
             RunStateIssue(
                 code="cross_terminal_with_stale_handoff",
@@ -257,11 +269,7 @@ def validate_cross_run_state(run_dir: Path | str) -> tuple[RunStateIssue, ...]:
     #    appear in sub_status and the child id must be non-empty.
     if snap.checkpoint_kind == "project":
         alias = snap.checkpoint_project_alias
-        if (
-            alias is None
-            or alias not in snap.sub_status
-            or not snap.checkpoint_child_id
-        ):
+        if alias is None or alias not in snap.sub_status or not snap.checkpoint_child_id:
             issues.append(
                 RunStateIssue(
                     code="project_handoff_marker_incomplete",
@@ -283,11 +291,7 @@ def validate_cross_run_state(run_dir: Path | str) -> tuple[RunStateIssue, ...]:
 
     # 6. kind == 'cfa' and pending requires the persisted CFA paused state so
     #    resume can re-enter the CFA gate.
-    if (
-        snap.checkpoint_kind == "cfa"
-        and snap.checkpoint_pending
-        and snap.cfa_paused_state is None
-    ):
+    if snap.checkpoint_kind == "cfa" and snap.checkpoint_pending and snap.cfa_paused_state is None:
         issues.append(
             RunStateIssue(
                 code="cfa_pending_without_paused_state",
@@ -327,7 +331,8 @@ def validate_cross_run_state(run_dir: Path | str) -> tuple[RunStateIssue, ...]:
 
 
 def _read_child_statuses(
-    run_dir: Path, sub_status: dict[str, Any],
+    run_dir: Path,
+    sub_status: dict[str, Any],
 ) -> dict[str, str | None]:
     """Read child-run ``meta.status`` for each alias under ``run_dir/<alias>``.
 
@@ -369,9 +374,7 @@ def _read_decisions(run_dir: Path) -> tuple[dict[str, Any], ...]:
             continue
         if not isinstance(raw, dict):
             continue
-        out.append(
-            {"action": raw.get("action"), "handoff_id": raw.get("handoff_id")}
-        )
+        out.append({"action": raw.get("action"), "handoff_id": raw.get("handoff_id")})
     return tuple(out)
 
 

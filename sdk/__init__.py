@@ -6,6 +6,7 @@ Returns typed dataclasses, raises typed errors, never prints, never calls
 
 See `docs/adr/0021-public-sdk-boundary.md` and `docs/reference/sdk_api.md`.
 """
+
 from __future__ import annotations
 
 # Canonical resume/terminal classification predicates. Re-exported additively
@@ -24,10 +25,20 @@ from pipeline.control.resume_context import (
     is_terminal_resume_parent,
     is_terminal_success,
 )
+from pipeline.run_state.cross_parent import (
+    ActiveOperation,
+    ChildExecution,
+    ChildState,
+    CrossParentState,
+    ParentClass,
+    ReleaseDisposition,
+    TerminalDisposition,
+)
 
 # Internal helpers exposed for embedders building IPC bridges
 from sdk._jsonable import to_jsonable
 from sdk.cost import aggregate_cost
+from sdk.cross_parent_state import load_cross_parent_state
 
 # Errors
 from sdk.errors import (
@@ -198,6 +209,14 @@ __all__ = [
     "find_run",
     "load_meta",
     "load_status",
+    "load_cross_parent_state",
+    "CrossParentState",
+    "ChildState",
+    "ActiveOperation",
+    "ChildExecution",
+    "ParentClass",
+    "ReleaseDisposition",
+    "TerminalDisposition",
     "list_history",
     "collect_evidence",
     "render_evidence_md",

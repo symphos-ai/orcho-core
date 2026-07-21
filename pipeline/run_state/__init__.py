@@ -11,6 +11,7 @@ The repair layer (:func:`repair_run_state`) consumes the consistency
 diagnosis, defaults to dry-run, and applies only minimal, crash-safe
 ``meta.json`` mutations when explicitly asked.
 """
+
 from __future__ import annotations
 
 from pipeline.run_state.consistency import validate_run_state
@@ -18,6 +19,30 @@ from pipeline.run_state.cross import (
     CrossRunStateSnapshot,
     classify_cross_run_state,
     validate_cross_run_state,
+)
+from pipeline.run_state.cross_parent import (
+    ActiveOperation,
+    CheckpointHandoff,
+    ChildBlocker,
+    ChildExecution,
+    ChildFacts,
+    ChildState,
+    ConsistencyViolation,
+    CrossParentFacts,
+    CrossParentState,
+    Observation,
+    ParentClass,
+    PendingDecision,
+    PhaseIdentity,
+    ReleaseDisposition,
+    ScheduledGateIdentity,
+    TerminalDisposition,
+    classify_child_outcome,
+    reduce_cross_parent_state,
+)
+from pipeline.run_state.cross_parent_disk import (
+    load_cross_parent_facts,
+    load_cross_parent_state,
 )
 from pipeline.run_state.cross_repair import repair_cross_run_state
 from pipeline.run_state.handoff import (
@@ -84,6 +109,15 @@ from pipeline.run_state.types import (
 
 __all__ = [
     "CrossRunStateSnapshot",
+    "ActiveOperation",
+    "CheckpointHandoff",
+    "ChildBlocker",
+    "ChildExecution",
+    "ChildFacts",
+    "ChildState",
+    "ConsistencyViolation",
+    "CrossParentFacts",
+    "CrossParentState",
     "HandoffAction",
     "HandoffRetryMode",
     "HandoffTransition",
@@ -96,6 +130,13 @@ __all__ = [
     "RunStateValidationReport",
     "RunStatus",
     "RunTransitionError",
+    "Observation",
+    "ParentClass",
+    "PendingDecision",
+    "PhaseIdentity",
+    "ReleaseDisposition",
+    "ScheduledGateIdentity",
+    "TerminalDisposition",
     "CROSS_HANDOFF_MARKER_KEYS",
     "CROSS_SETTLE_RESIDUE_KEYS",
     "SETUP_FAILURE_KIND",
@@ -107,6 +148,9 @@ __all__ = [
     "build_phase_handoff_override",
     "build_phase_handoff_waiver",
     "classify_cross_run_state",
+    "classify_child_outcome",
+    "load_cross_parent_facts",
+    "load_cross_parent_state",
     "clear_active_handoff",
     "continue_handoff",
     "continue_with_waiver_handoff",
@@ -125,6 +169,7 @@ __all__ = [
     "project_events",
     "project_run_dir",
     "repair_cross_run_state",
+    "reduce_cross_parent_state",
     "repair_run_state",
     "request_active_handoff",
     "resolve_terminal_outcome",

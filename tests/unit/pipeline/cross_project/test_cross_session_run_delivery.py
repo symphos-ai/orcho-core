@@ -31,6 +31,12 @@ from pipeline.cross_project.session_run import (
     _cross_delivery_plan,
     _run_delivery_and_finalize,
 )
+from pipeline.run_state.cross_parent import (
+    ChildFacts,
+    CrossParentFacts,
+    Observation,
+    reduce_cross_parent_state,
+)
 
 pytestmark = [pytest.mark.cross_project]
 
@@ -57,6 +63,26 @@ def test_plan_policy_skip_null_cfa_is_null_safe() -> None:
     classifier must return ``override=False`` without ``AttributeError``."""
     ctx = SimpleNamespace(cfa_outcome=None)
     assert _cross_delivery_plan(ctx) == (True, False)
+
+
+def test_rejected_child_override_continue_still_allows_delivery() -> None:
+    state = reduce_cross_parent_state(
+        CrossParentFacts(
+            declared_aliases=("api",),
+            children=(
+                ChildFacts(
+                    "api", Observation.PRESENT, "halted",
+                    halt_reason="final_acceptance_rejected",
+                    release_verdict="REJECTED", release_ship_ready=False,
+                ),
+            ),
+        )
+    )
+    ctx = SimpleNamespace(
+        child_profile=object(), reduced_parent=state,
+        cfa_outcome=SimpleNamespace(outcome="override_continue"),
+    )
+    assert _cross_delivery_plan(ctx) == (True, True)
 
 
 # ── _run_delivery_and_finalize (thin sequencer) ───────────────────────

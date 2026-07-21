@@ -24,6 +24,7 @@ surface. The contract pinned here:
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -938,6 +939,11 @@ def test_dispatch_preserves_completed_child_sessions_on_resume(tmp_path):
     cross_ckpt = {
         "sub_status": {"api": "done"},  # web omitted = not done
     }
+    (run_dir / "api").mkdir()
+    (run_dir / "api" / "meta.json").write_text(
+        json.dumps(completed_api_entry),
+        encoding="utf-8",
+    )
 
     # ``child_profile=None`` short-circuits past the dispatch loop, so
     # the test isolates the preservation logic without driving real

@@ -69,25 +69,47 @@ at least one global `plan` / `validate_plan` step to produce a handoff;
 the `task` scoped profile is rejected for cross mode.
 
 `contract_check` is **not** a profile step. The cross runner appends it
-as a cross-only per-alias gate only after a **readiness decision** over
-all dispatched children; mono runs never invoke it. The child session's
-durable `status`, not a normal Python return, is the authority for that
-decision:
+as a cross-only per-alias gate only after canonical parent-state reduction;
+mono runs never invoke it.
 
-| Child durable status / payload | Readiness outcome | Cross checkpoint `sub_status` |
-| --- | --- | --- |
-| `done`, `success`, `completed` | ready | `done` |
-| `halted` with canonical final-acceptance rejection and a typed rejecting release record | release-evaluable rejection | `done` |
-| `awaiting_phase_handoff` with a mapping payload | pause parent dispatch | `awaiting_phase_handoff` |
-| `failed`, other `halted`, `interrupted` | blocked | `failed` |
-| missing, non-string, unknown, or a pause without mapping payload | fail-closed blocked | `failed` |
+## Canonical parent-state reduction
 
-Dispatch persists the exact child session at
-`session.phases.projects[alias]` and separately returns an ordered,
-immutable readiness result. A non-empty blocked-alias result prevents
-contract gate policy/decision/provider invocation. Instead, only each
-blocked alias receives this precondition evidence at
-`session.phases.contract_check[alias]`:
+`pipeline.run_state.cross_parent.reduce_cross_parent_state` is the single
+authority for parent and child state meaning. It is a pure reducer: immutable
+facts in, immutable `CrossParentState` out, with no I/O or mutation. Runtime
+and durable reads use separate adapters, but both pass their facts through this
+same reducer.
+
+| Concern | Authority |
+| --- | --- |
+| Declared aliases and order | parent `meta.json.projects` |
+| Physical child outcome | exact `<parent-run>/<alias>/meta.json` path |
+| Embedded live child snapshot | runtime adapter observation; cannot override a conflicting physical result |
+| Active normal phase and scheduled gate | typed lifecycle events; gates must also appear in `scheduled_gate_ledger.json` |
+| Pending decision | active handoff payload, checked against explicit checkpoint routing fields |
+| Parent / child classification | canonical reducer only |
+
+Every declared alias becomes exactly one child projection. A child exposes
+separate dimensions: execution, active operations, `contract_evaluable`,
+release disposition, `release_ready`, exact pending decision, and blockers.
+There is intentionally no shared child `ready` boolean. A completed rejected
+release remains contract-evaluable with `release_disposition="rejected"`, but
+is not release-ready. Missing, malformed, failed, interrupted, unknown, and
+non-decision pauses fail closed; `checkpoint.sub_status="done"` never changes
+that physical classification.
+
+The reducer classifies the parent as running, awaiting operator, blocked,
+ready, terminal success/failure/halted, or inconsistent. Conflicting embedded
+and physical observations, invalid handoff correspondence, and terminal
+metadata that conflicts with active or non-ready facts are consistency
+violations rather than successful completion.
+
+### Transition boundaries
+
+Cross dispatch reduces before preserving or skipping a child: the checkpoint
+is only a resume cursor, never success evidence. The cross contract provider
+is called only when reduced required children are contract-evaluable; otherwise
+the existing per-alias `NOT_EVALUABLE` precondition is recorded:
 
 ```json
 {
@@ -103,6 +125,21 @@ blocked alias receives this precondition evidence at
   "checks": []
 }
 ```
+
+The runner reduces again immediately before cross final acceptance and again
+before delivery/finalization. CFA consumes canonical child projections:
+non-evaluable children become `CFA_MISSING_CHILD_<alias>`; a rejected child
+release becomes `CFA_CHILD_REJECTED_<alias>` while still allowing contract
+evidence to be considered. Delivery and terminal finalization reject active,
+pending, non-release-ready, or inconsistent state. Existing gate skip policy,
+CFA override, and delivery aggregation remain separate policy layers.
+
+### Durable adapter scope
+
+The disk adapter reads only the parent run, each declared alias's exact child
+path, typed event streams, and `scheduled_gate_ledger.json`. It does not parse
+transcripts, infer identifiers from prefixes, discover child directories, or
+write a derived reducer artifact.
 
 `NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
 policy applies, and it is not an interface-compatibility verdict.

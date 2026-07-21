@@ -3,6 +3,27 @@
     {
       "fields": [
         {
+          "default": "None",
+          "default_factory": null,
+          "name": "phase",
+          "type": "PhaseIdentity | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "gate",
+          "type": "ScheduledGateIdentity | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "ActiveOperation",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
           "default": null,
           "default_factory": null,
           "name": "provider",
@@ -76,6 +97,81 @@
       "kind": "dataclass",
       "module": "sdk.types",
       "name": "ArtefactRef",
+      "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "ChildExecution",
+      "qualname": "ChildExecution"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "alias",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "execution",
+          "type": "ChildExecution"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "halt_reason",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "active_operations",
+          "type": "tuple[ActiveOperation, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "contract_evaluable",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "release_disposition",
+          "type": "ReleaseDisposition"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "release_ready",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "pending_decision",
+          "type": "PendingDecision | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "blockers",
+          "type": "tuple[ChildBlocker, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "ChildState",
       "slots": true
     },
     {
@@ -388,6 +484,57 @@
       "kind": "dataclass",
       "module": "sdk.evidence_slices",
       "name": "CriterionReport",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "children",
+          "type": "tuple[ChildState, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "active_operations",
+          "type": "tuple[ActiveOperation, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "pending_decision",
+          "type": "PendingDecision | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "blockers",
+          "type": "tuple[ChildBlocker, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "violations",
+          "type": "tuple[ConsistencyViolation, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parent_class",
+          "type": "ParentClass"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "terminal_disposition",
+          "type": "TerminalDisposition | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "CrossParentState",
       "slots": true
     },
     {
@@ -1387,6 +1534,12 @@
       "name": "OrchoError"
     },
     {
+      "kind": "class",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "ParentClass",
+      "qualname": "ParentClass"
+    },
+    {
       "fields": [
         {
           "default": null,
@@ -2108,6 +2261,12 @@
       "module": "sdk.types",
       "name": "RefreshResult",
       "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "ReleaseDisposition",
+      "qualname": "ReleaseDisposition"
     },
     {
       "fields": [
@@ -2924,6 +3083,12 @@
       "module": "sdk.evidence_slices",
       "name": "SubtaskReceipt",
       "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.run_state.cross_parent",
+      "name": "TerminalDisposition",
+      "qualname": "TerminalDisposition"
     },
     {
       "fields": [
@@ -4570,6 +4735,38 @@
         }
       ],
       "return": "dict[str, Any] | None"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.cross_parent_state",
+      "name": "load_cross_parent_state",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "CrossParentState"
     },
     {
       "kind": "callable",
