@@ -18,7 +18,12 @@ from unittest.mock import patch
 
 import pytest
 
+from pipeline.control.handoff_routing import GateIdentity
 from pipeline.plugins import PluginConfig
+from pipeline.project.verification_handoff_retry import (
+    VerificationHandoffRetryBlocked,
+    apply_verification_handoff_retry,
+)
 from pipeline.project_orchestrator import run_pipeline
 from tests.acceptance.test_full_mock_flow import (
     _build_clean_review_provider,
@@ -125,3 +130,82 @@ class TestRequireGateBlocksGreenRun:
         assert receipt["placeholders"]["checkout"] != project
         assert "checkout" in receipt["placeholders"]["checkout"]
         assert receipt["placeholders"]["project"] == project
+
+
+def test_retry_feedback_runs_one_repair_then_fresh_gate_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Vertical control-flow proof for the operator-visible retry path."""
+    from types import SimpleNamespace
+
+    active = {"id": "gate:pytest-unit:1", "round": 1}
+    run = SimpleNamespace(
+        session={"phase_handoff": active, "status": "awaiting_phase_handoff"},
+        state=SimpleNamespace(extras={}, human_feedback="", halt=False, phase_handoff_request=None),
+        output_dir=None,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr("pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None)
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda *_args: calls.append("repair"),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair.rerun_verification_handoff_gate",
+        lambda _run, **kwargs: calls.append(kwargs) or True,
+    )
+
+    result = apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=object(), active=active,
+        handoff_id="gate:pytest-unit:1", feedback="Починить проверку", note=None,
+        decided_at="2026-01-01T00:00:00Z",
+        identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+    assert result.paused is False
+    assert calls == ["repair", {
+        "command": "pytest-unit", "hook": "after_phase", "phase": "implement", "round_n": 2,
+    }]
+    assert run.state.human_feedback == "Починить проверку"
+
+
+def test_retry_control_failure_keeps_subject_but_process_crash_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    def _run() -> SimpleNamespace:
+        active = {"id": "gate:pytest-unit:1", "round": 1}
+        return SimpleNamespace(
+            session={"phase_handoff": active, "status": "awaiting_phase_handoff"},
+            state=SimpleNamespace(extras={}, human_feedback="", halt=False, phase_handoff_request=None),
+            output_dir=None,
+        )
+
+    monkeypatch.setattr("pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None)
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+    identity = GateIdentity("pytest-unit", "after_phase", "implement")
+    control = _run()
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("bad dispatch")),
+    )
+    with pytest.raises(VerificationHandoffRetryBlocked, match="bad dispatch"):
+        apply_verification_handoff_retry(
+            run=control, profile=object(), ctx=object(), active=control.session["phase_handoff"],
+            handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
+            decided_at="now", identity=identity,
+        )
+    assert control.session["phase_handoff"]["id"] == "gate:pytest-unit:1"
+
+    crashed = _run()
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda *_args: (_ for _ in ()).throw(OSError("process crash")),
+    )
+    with pytest.raises(OSError, match="process crash"):
+        apply_verification_handoff_retry(
+            run=crashed, profile=object(), ctx=object(), active=crashed.session["phase_handoff"],
+            handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
+            decided_at="now", identity=identity,
+        )

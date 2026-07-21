@@ -329,6 +329,93 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "resolution",
+          "type": "ContinuationResolution"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parent_run_dir",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parent_meta",
+          "type": "dict[str, Any] | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.continuation",
+      "name": "ContinuationPreflight",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "run_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "intent",
+          "type": "ContinuationIntent"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "operator_comment",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.control.continuation",
+      "name": "ContinuationRequest",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "request",
+          "type": "ContinuationRequest"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "decision",
+          "type": "ContinuationDecision"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "operation",
+          "type": "ContinuationOperation"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "blocker",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.control.continuation",
+      "name": "ContinuationResolution",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "runs_dir",
           "type": "Path"
         },
@@ -1066,6 +1153,45 @@
       "kind": "dataclass",
       "module": "sdk.fine_tune",
       "name": "FineTuneResult",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "parent_run_id",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "runs_dir",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "workspace",
+          "type": "str | None"
+        },
+        {
+          "default": "'feature'",
+          "default_factory": null,
+          "name": "profile",
+          "type": "str"
+        },
+        {
+          "default": "'summary'",
+          "default_factory": null,
+          "name": "output_mode",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.run_control.launch",
+      "name": "FromRunPlanLaunchRequest",
       "slots": true
     },
     {
@@ -4392,6 +4518,26 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.run_control.launch",
+      "name": "launch_from_run_plan",
+      "params": [
+        {
+          "annotation": "FromRunPlanLaunchRequest",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "request"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "run_id"
+        }
+      ],
+      "return": "LaunchResult"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.events",
       "name": "list_events",
       "params": [
@@ -4942,6 +5088,26 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.run_control.continuation",
+      "name": "preflight_continuation",
+      "params": [
+        {
+          "annotation": "ContinuationRequest",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "request"
+        },
+        {
+          "annotation": "Path",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "parent_run_dir"
+        }
+      ],
+      "return": "ContinuationPreflight"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.workspace",
       "name": "preflight_workspace_target",
       "params": [
@@ -5093,6 +5259,38 @@
         }
       ],
       "return": "HandoffAdviceResult"
+    },
+    {
+      "kind": "callable",
+      "module": "pipeline.control.continuation",
+      "name": "resolve_continuation",
+      "params": [
+        {
+          "annotation": "ContinuationRequest",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "request"
+        },
+        {
+          "annotation": "Mapping[str, Any] | None",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
+        },
+        {
+          "annotation": "Path | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "parent_run_dir"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "allow_paused_checkpoint"
+        }
+      ],
+      "return": "ContinuationResolution"
     },
     {
       "kind": "callable",

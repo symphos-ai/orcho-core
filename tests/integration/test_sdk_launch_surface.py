@@ -41,13 +41,17 @@ from pathlib import Path
 
 import pytest
 
-from sdk.errors import RunNotFound
+from sdk.errors import LaunchError, RunNotFound
 from sdk.phase_handoff import phase_handoff_decide
 from sdk.run_control import (
     CancelResult,
+    CorrectionFollowupLaunchRequest,
+    FromRunPlanLaunchRequest,
     LaunchResult,
     LaunchSpec,
     cancel_run,
+    launch_correction_followup,
+    launch_from_run_plan,
     launch_run,
     resume_run,
 )
@@ -379,3 +383,68 @@ def test_resume_missing_run_raises(env: tuple[Path, Path]) -> None:
     _project_dir, runs_dir = env
     with pytest.raises(RunNotFound):
         resume_run("does_not_exist_20260101", runs_dir=str(runs_dir))
+
+
+def test_finalized_resume_preflight_never_spawns(
+    env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir, runs_dir = env
+    run_dir = runs_dir / "parent"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"status": "failed", "task": "t"}))
+    (run_dir / "run_supervisor.json").write_text(json.dumps({"project_dir": str(project_dir)}))
+    (run_dir / "scheduled_gate_ledger.json").write_text(json.dumps({
+        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+    }))
+    monkeypatch.setattr(
+        "sdk.run_control.launch._spawn_detached",
+        lambda *_args, **_kwargs: pytest.fail("finalized parent must not spawn"),
+    )
+    with pytest.raises(LaunchError, match="finalized scheduled-gate ledger"):
+        resume_run("parent", runs_dir=str(runs_dir))
+
+
+def test_followup_and_plan_children_use_fresh_lineage(
+    env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir, runs_dir = env
+    worktree = project_dir.parent / "retained"
+    _init_git_repo(worktree)
+    (worktree / "change.txt").write_text("retained\n")
+    parent = runs_dir / "parent"
+    parent.mkdir()
+    (parent / "meta.json").write_text(json.dumps({
+        "status": "halted", "halt_reason": "final_acceptance_rejected",
+        "project": str(project_dir), "task": "fix", "worktree": {
+            "path": str(worktree), "isolation": "per_run",
+        }, "phases": {"final_acceptance": {"verdict": "REJECTED"}},
+    }))
+    spawned: list[list[str]] = []
+
+    class _Popen:
+        pid = 123
+
+    monkeypatch.setattr(
+        "sdk.run_control.launch._spawn_detached",
+        lambda cmd, **_kwargs: spawned.append(cmd) or _Popen(),
+    )
+    child = launch_correction_followup(
+        CorrectionFollowupLaunchRequest("parent", "исправить", runs_dir=str(runs_dir)),
+        run_id="followup",
+    )
+    assert child.run.run_id != "parent"
+    assert child.run.run_dir == runs_dir / "followup"
+    assert "--resume" in spawned[0] and "parent" in spawned[0]
+    assert not (child.run.run_dir / "scheduled_gate_ledger.json").exists()
+
+    # A plan child is a distinct operation, never a correction resume.
+    (parent / "parsed_plan.json").write_text("{}")
+    plan_parent = json.loads((parent / "meta.json").read_text())
+    plan_parent.update({"halt_reason": "other", "worktree": {}})
+    (parent / "meta.json").write_text(json.dumps(plan_parent))
+    plan = launch_from_run_plan(
+        FromRunPlanLaunchRequest("parent", runs_dir=str(runs_dir)), run_id="plan-child",
+    )
+    assert plan.run.run_id != "parent"
+    assert "--from-run-plan" in spawned[1]
+    assert "--resume" not in spawned[1]

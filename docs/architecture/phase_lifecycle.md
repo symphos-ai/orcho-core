@@ -186,6 +186,38 @@ field divergence for the same `handoff_id` raises
 `InvalidPhaseHandoffState`. See ADR 0031 § 2 for the full matrix
 including `halt`-after-`halt` replay semantics.
 
+### Canonical continuation selection (ADR 0149)
+
+Checkpoint resume, retained-change followup, and `from_run_plan` are three
+separate operations, selected only by the typed continuation reducer.  A
+checkpoint resume reuses the parent run directory, but preflight rejects it
+when the parent's scheduled-gate ledger is finalized.  This strict
+finalized-ledger rule never transfers to a fresh child: both a followup and a
+from-run-plan launch require a child id distinct from the parent and a fresh
+output directory with explicit parent lineage.
+
+A followup requires an isolated dirty retained worktree and a non-empty
+operator comment.  `from_run_plan` requires the parent's `parsed_plan.json`
+and consumes only that plan artifact; it is not a fallback for a retained
+change.  Missing, clean, unreadable, or non-isolated retained work is a typed
+blocker.  CLI, SDK, and transport entry points must not infer a different
+operation after the reducer or preflight refuses one.
+
+### Trigger-first verification recovery (ADR 0149)
+
+Handoff ownership is selected by trigger before phase.  A
+`verification_gate_failed` handoff is verification recovery even when it was
+emitted at `final_acceptance`; scope expansion requires its own explicit
+`scope_expansion:*` trigger.  Verification recovery validates an exact
+`(command, hook, phase)` identity, active handoff identity, feedback, retained
+repair subject, and repair step before consuming the decision.  It performs
+one repair and one rerun of that same gate on the fresh repaired subject.
+
+A control-plane blocker leaves the original handoff available to the operator;
+a provider or process crash remains the ordinary interrupted/failed lifecycle
+and is not recast as a blocker.  This lifecycle rule does not define a
+`final_acceptance` recovery path.
+
 ### Canonical state
 
 There is one source of truth for active-pause state:

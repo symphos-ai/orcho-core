@@ -709,6 +709,29 @@ so Stage 5 readiness, the Stage 6 delivery gate, and the evidence bundle see
 the same proof routing acted on (ADR 0090 — the silent-skip incident ran gates
 against the original project directory and dropped the receipts).
 
+### Handoff retry: fresh subject, exact identity (ADR 0149)
+
+When a required verification gate publishes a
+`trigger="verification_gate_failed"` handoff, routing is trigger-first rather
+than phase-first.  It therefore remains a verification retry if the pause is
+at `final_acceptance`; it is not scope expansion unless the trigger explicitly
+states `scope_expansion:*`.  The recovery owner accepts only an exact durable
+gate identity `(command, hook, phase)`, obtained from the handoff or an
+unambiguous scheduled-gate ledger record.
+
+After all preconditions succeed, the owner consumes the active decision once,
+runs exactly one `repair_changes` step against the retained worktree, and
+reruns only the identified gate against that freshly repaired subject.  A
+passing rerun continues; a failing rerun creates a new handoff.  Missing
+feedback, ambiguous identity, stale handoff id, unproven repair subject, or a
+missing repair step is a **blocker**: the original handoff remains available
+and no decision is consumed.  A provider/process exception is a **crash** and
+uses the normal interrupted/failed lifecycle rather than being converted into
+a blocker or a second retry.
+
+This is verification-routing behavior only.  It does not specify MCP handler
+implementation and does not make final-acceptance recovery part of core.
+
 <!-- TODO(orcho-verification-stage4): expand the full authoring guide (worked
 gate_set/selection recipes per stack, override-chain examples) once the
 workspace → project → run prompt-policy override chain lands. -->

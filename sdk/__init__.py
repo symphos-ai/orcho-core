@@ -13,7 +13,13 @@ from __future__ import annotations
 # from the control layer so MCP/CLI consume one source of truth. These are pure
 # predicate functions (no dataclass payload, no wire schema); the re-export
 # changes no signatures or behavior.
-from pipeline.control.continuation import ContinuationDecision, resolve_continuation_decision
+from pipeline.control.continuation import (
+    ContinuationDecision,
+    ContinuationRequest,
+    ContinuationResolution,
+    resolve_continuation,
+    resolve_continuation_decision,
+)
 from pipeline.control.resume_context import (
     get_resume_intent_options,
     is_terminal_commit_decision_fix,
@@ -103,6 +109,7 @@ from sdk.pricing import refresh_pricing, show_pricing
 from sdk.profile_customize import ProfileCustomizeResult, customize_profile
 from sdk.profiles import ProfileSummary, catalogue_path, list_profiles
 from sdk.prompts import list_prompts, resolve_prompt
+from sdk.run_control.continuation import ContinuationPreflight, preflight_continuation
 
 # Run-control delivery decisions — the out-of-band post-release gate surface
 from sdk.run_control.delivery import decide_delivery, delivery_decision_state
@@ -111,6 +118,7 @@ from sdk.run_control.delivery import decide_delivery, delivery_decision_state
 # resume situation. Exported additively here; it is MCP-visible and intended
 # for consumption by the follow-up P1-mcp migration without a wire break.
 from sdk.run_control.diagnosis import run_diagnosis
+from sdk.run_control.launch import FromRunPlanLaunchRequest, launch_from_run_plan
 from sdk.run_control.recovery_lineage import recovery_lineage
 from sdk.run_control.types import (
     DeliveryDecisionCommand,
@@ -244,7 +252,14 @@ __all__ = [
     "is_terminal_final_acceptance_rejected",
     "get_resume_intent_options",
     "ContinuationDecision",
+    "ContinuationPreflight",
+    "ContinuationRequest",
+    "ContinuationResolution",
+    "FromRunPlanLaunchRequest",
+    "resolve_continuation",
     "resolve_continuation_decision",
+    "preflight_continuation",
+    "launch_from_run_plan",
     # Generic phase handoff
     "phase_handoff_decide",
     "load_active_phase_handoff",

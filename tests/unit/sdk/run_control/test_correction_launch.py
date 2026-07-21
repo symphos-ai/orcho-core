@@ -10,7 +10,10 @@ from pipeline.project.correction_followup import compose_correction_context
 from sdk.errors import LaunchError
 from sdk.run_control.launch import (
     CorrectionFollowupLaunchRequest,
+    FromRunPlanLaunchRequest,
     launch_correction_followup,
+    launch_from_run_plan,
+    resume_run,
 )
 
 
@@ -140,3 +143,66 @@ def test_fix_parent_context_uses_delivery_gate_blockers() -> None:
 
     assert "Persisted Release Blockers" in context
     assert "RB-fix" in context
+
+
+def test_followup_refuses_parent_id_before_spawn(tmp_path: Path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    _parent(runs)
+    monkeypatch.setattr(
+        "sdk.run_control.launch._spawn_detached",
+        lambda *args, **kwargs: pytest.fail("must not spawn"),
+    )
+
+    with pytest.raises(LaunchError, match="must differ"):
+        launch_correction_followup(
+            CorrectionFollowupLaunchRequest("parent", "comment", runs_dir=str(runs)),
+            run_id="parent",
+        )
+
+
+def test_from_run_plan_launch_is_fresh_and_not_a_resume(tmp_path: Path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    parent = _parent(runs, halt_reason="other")
+    (parent / "parsed_plan.json").write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class _Popen:
+        pid = 12345
+
+    def _spawn(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _Popen()
+
+    monkeypatch.setattr("sdk.run_control.launch._spawn_detached", _spawn)
+    result = launch_from_run_plan(
+        FromRunPlanLaunchRequest("parent", runs_dir=str(runs)), run_id="child",
+    )
+
+    command = captured["cmd"]
+    assert isinstance(command, list)
+    assert "--from-run-plan" in command
+    assert command[command.index("--from-run-plan") + 1] == "parent"
+    assert "--resume" not in command
+    assert result.run.run_id == "child"
+    assert result.run.run_dir == runs / "child"
+
+
+def test_finalized_ledger_blocks_resume_before_spawn(tmp_path: Path, monkeypatch) -> None:
+    runs = tmp_path / "runs"
+    run = runs / "parent"
+    project = tmp_path / "project"
+    project.mkdir()
+    run.mkdir(parents=True)
+    (run / "run_supervisor.json").write_text(json.dumps({"project_dir": str(project)}))
+    (run / "meta.json").write_text(json.dumps({"task": "resume", "status": "failed"}))
+    # A valid empty finalized ledger is enough: no subprocess can reopen it.
+    (run / "scheduled_gate_ledger.json").write_text(json.dumps({
+        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+    }))
+    monkeypatch.setattr(
+        "sdk.run_control.launch._spawn_detached",
+        lambda *args, **kwargs: pytest.fail("must not spawn"),
+    )
+
+    with pytest.raises(LaunchError, match="finalized scheduled-gate ledger"):
+        resume_run("parent", runs_dir=str(runs))
