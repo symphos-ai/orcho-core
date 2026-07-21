@@ -154,6 +154,25 @@ def test_no_contract_returns_none() -> None:
     assert _part(state, "plan") is None
 
 
+def test_write_phase_without_contract_gets_managed_command_boundary(
+    tmp_path,
+) -> None:
+    state = SimpleNamespace(
+        extras={"git_cwd": str(tmp_path / "checkout")},
+        output_dir=tmp_path / "run-1",
+        project_dir="/canonical",
+    )
+
+    part = _part(state, "repair_changes")
+
+    assert part is not None
+    assert "orcho command run" in part.body
+    assert f"--run-dir {tmp_path / 'run-1'}" in part.body
+    assert f"--cwd {tmp_path / 'checkout'}" in part.body
+    assert "Targeted and diff-scoped checks may run normally" in part.body
+    assert _part(state, "review_changes") is None
+
+
 def test_empty_plan_returns_none() -> None:
     # gate_sets declared but selection selects nothing (task_kind rule with no
     # matching context kind) -> empty plan -> no block for any phase.

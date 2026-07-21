@@ -38,7 +38,7 @@ import html
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.entities import SubTask
 from agents.registry import AgentRegistry
@@ -59,6 +59,9 @@ from pipeline.subtask_attestation_repair import (
     parse_attestation_for_subtask,
     repair_subtask_attestation,
 )
+
+if TYPE_CHECKING:
+    from pipeline.prompts.types import PromptPart
 
 #: Strategy that executes one subtask turn. ``_run_subtask_dag_implement``
 #: injects a session-aware adapter (PromptTurn → ``_session_aware_invoke``);
@@ -486,6 +489,7 @@ def run_dag_sequential(
     dry_run: bool = False,
     invoke_subtask: SubtaskInvoke | None = None,
     prior_results: dict[str, SubTaskResult | PriorSubtaskContext] | None = None,
+    verification_part: PromptPart | None = None,
 ) -> DagRunResult:
     """Walk ``parsed_plan.subtasks`` in topological order and execute each.
 
@@ -514,6 +518,9 @@ def run_dag_sequential(
             whose only dependency is a prior result schedules immediately. The
             prior nodes are NOT in ``parsed_plan.subtasks`` and are never
             re-invoked or re-mutated.
+        verification_part: run-scoped verification and long-command execution
+            policy composed by the phase handler and carried into every
+            executable subtask prompt.
 
     Returns a :class:`DagRunResult` so the caller can route to the right
     post-step (final_acceptance on success, replan or repair_changes on failure) and
@@ -615,6 +622,7 @@ def run_dag_sequential(
                     change_handoff=change_handoff,
                     dry_run=dry_run,
                     invoke_subtask=invoke,
+                    verification_part=verification_part,
                 )
             except Exception as e:  # noqa: BLE001 - preserve receipt completeness
                 binding = None
@@ -899,6 +907,7 @@ def _run_single_subtask(
     change_handoff: str = "uncommitted",
     dry_run: bool,
     invoke_subtask: SubtaskInvoke,
+    verification_part: PromptPart | None = None,
 ) -> tuple[SubTaskResult, SkillBinding | None]:
     """Resolve agent, build the turn, invoke via the injected strategy.
 
@@ -933,6 +942,7 @@ def _run_single_subtask(
         dag_map=dag_map,
         upstream_receipts=upstream_receipts,
         change_handoff=change_handoff,
+        verification_part=verification_part,
     )
     prompt_chars = len(turn.text)
 

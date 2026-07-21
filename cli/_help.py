@@ -44,6 +44,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("demos", "bootstrap packaged demo fixtures"),
     ]),
     ("Maintenance", [
+        ("command", "run long agent commands with duplicate admission"),
         ("repair-state", "inspect and safely apply known run-state repairs"),
     ]),
     # NOTE: the ``tui`` and ``web`` interface commands are intentionally

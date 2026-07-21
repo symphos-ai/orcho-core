@@ -118,6 +118,19 @@ class TestParser:
         assert args.task == "Do X"
         assert args.project == "/p"
 
+    def test_managed_command_run_subcommand(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "command", "run",
+            "--run-dir", "/runs/r1",
+            "--phase", "implement",
+            "--cwd", "/checkout",
+            "--", "python", "-m", "pytest",
+        ])
+        assert args.command == "command"
+        assert args.command_action == "run"
+        assert args.argv == ["--", "python", "-m", "pytest"]
+
     def test_run_task_file(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["run", "--task-file", "task.md", "--project", "/p"])
