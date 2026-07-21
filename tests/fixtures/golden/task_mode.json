@@ -141,7 +141,7 @@
         "cache_effect": "none",
         "class_counts": {
           "decision_bearing": 1,
-          "ephemeral": 0,
+          "ephemeral": 1,
           "persisted_artifact": 0,
           "re_fetchable": 6
         },
@@ -161,6 +161,7 @@
         "prefix_hash": "<VOLATILE>",
         "render_mode": "full",
         "retained_part_ids": [
+          "verification_contract:implement:77a52839797b@0",
           "turn_input:implement_task@0"
         ],
         "round": null,
@@ -225,6 +226,7 @@
           "task:implement@0",
           "contract:authoring_language:v1:english@1",
           "context:project@0",
+          "verification_contract:implement:77a52839797b@0",
           "turn_input:implement_task@0"
         ],
         "payload_hash": "<VOLATILE>",
@@ -240,6 +242,7 @@
           "task:implement@0",
           "contract:authoring_language:v1:english@1",
           "context:project@0",
+          "verification_contract:implement:77a52839797b@0",
           "turn_input:implement_task@0"
         ],
         "session_key": {

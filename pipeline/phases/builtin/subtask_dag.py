@@ -24,6 +24,7 @@ from pipeline.phases.builtin.lifecycle import (
     _change_handoff_for,
     _ensure_lifecycle_ctx,
 )
+from pipeline.phases.builtin.prompt_parts import _verification_contract_part
 from pipeline.phases.builtin.review_support import _print_implement_summary
 from pipeline.phases.builtin.session_invoke import _session_aware_invoke
 from pipeline.phases.builtin.session_keys import (
@@ -820,6 +821,7 @@ def _run_subtask_dag_implement(
         dry_run=state.dry_run,
         invoke_subtask=_invoke_subtask,
         prior_results=prior_results,
+        verification_part=_verification_contract_part(state, "implement"),
     )
     state.dag_result = result
 
@@ -924,6 +926,9 @@ def _run_subtask_dag_implement(
                     dry_run=state.dry_run,
                     invoke_subtask=_invoke_subtask,
                     prior_results=prior,
+                    verification_part=_verification_contract_part(
+                        state, "implement",
+                    ),
                 )
                 # F1: overlay THIS pass's receipts immediately. The substance
                 # repair engine keeps only the final pass's receipts, so a

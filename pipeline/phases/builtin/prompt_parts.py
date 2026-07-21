@@ -169,7 +169,7 @@ def _resolve_gate_plan(state: PipelineState, contract: Any) -> Any:
 
 
 def _verification_contract_part(state: PipelineState, phase: str) -> Any:
-    """Wrap the phase-limited verification-contract block as a PromptPart.
+    """Wrap verification and managed-command policy as one PromptPart.
 
     Reads the validated contract + resolved ``PlaceholderContext`` that the
     run coordinator stored in ``state.extras`` (keys ``verification_contract``
@@ -178,9 +178,9 @@ def _verification_contract_part(state: PipelineState, phase: str) -> Any:
     (effective policy/action after the work_mode transform) via
     :func:`pipeline.verification_contract.render_phase_gate_block`; otherwise it
     falls back to the Stage 1 schedule projection
-    (:func:`pipeline.verification_contract.render_phase_block`). Returns ``None``
-    when no contract is declared OR the phase has nothing to surface — callers
-    then leave the prompt bytes byte-identical to the no-contract path.
+    (:func:`pipeline.verification_contract.render_phase_block`). Write phases
+    also receive the run-scoped managed-command invocation for legitimate long
+    commands. Returns ``None`` only when neither policy has content.
 
     Read-only projection: the block is informational only; nothing here executes
     a command or blocks a transition. It is a RUN-scoped dynamic part (stability
@@ -188,30 +188,38 @@ def _verification_contract_part(state: PipelineState, phase: str) -> Any:
     cacheable cross-run prefix — the block depends on per-run project config and
     the phase, so it must not pollute a stable cache prefix.
     """
+    body_parts: list[str] = []
+    gate_body: str | None = None
     contract = state.extras.get("verification_contract")
-    if contract is None:
+
+    if contract is not None:
+        from pipeline.verification_contract import (
+            PlaceholderContext,
+            render_phase_block,
+            render_phase_gate_block,
+        )
+
+        ctx = state.extras.get("verification_placeholders")
+        if ctx is None:
+            ctx = PlaceholderContext()
+
+        has_plan = bool(getattr(contract, "gate_sets", None)) or bool(
+            getattr(contract, "selection", ()),
+        )
+        if has_plan:
+            plan = _resolve_gate_plan(state, contract)
+            gate_body = render_phase_gate_block(contract, plan, phase, ctx)
+        else:
+            gate_body = render_phase_block(contract, phase, ctx)
+        if gate_body:
+            body_parts.append(gate_body)
+
+    managed_body = _managed_command_block(state, phase)
+    if managed_body:
+        body_parts.append(managed_body)
+    if not body_parts:
         return None
-
-    from pipeline.verification_contract import (
-        PlaceholderContext,
-        render_phase_block,
-        render_phase_gate_block,
-    )
-
-    ctx = state.extras.get("verification_placeholders")
-    if ctx is None:
-        ctx = PlaceholderContext()
-
-    has_plan = bool(getattr(contract, "gate_sets", None)) or bool(
-        getattr(contract, "selection", ()),
-    )
-    if has_plan:
-        plan = _resolve_gate_plan(state, contract)
-        body = render_phase_gate_block(contract, plan, phase, ctx)
-    else:
-        body = render_phase_block(contract, phase, ctx)
-    if not body:
-        return None
+    body = "\n\n".join(body_parts)
 
     import hashlib
 
@@ -222,7 +230,17 @@ def _verification_contract_part(state: PipelineState, phase: str) -> Any:
         PromptStability,
     )
 
-    sig = hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+    # The rendered managed command contains absolute run/worktree paths. They
+    # are run-scoped payload, not a stable part identity: hashing them makes
+    # snapshot/trace ids depend on the host temp root. The run-dir basename is
+    # the durable run identity and still flips the part on a follow-up. Keep the
+    # gate body in the signature so an in-run contract projection change is
+    # never hidden by prompt delta selection.
+    signature_body = body
+    if managed_body:
+        run_name = getattr(getattr(state, "output_dir", None), "name", "")
+        signature_body = f"{gate_body or ''}\nmanaged:{phase}:{run_name}"
+    sig = hashlib.sha256(signature_body.encode("utf-8")).hexdigest()[:12]
     return PromptPart(
         kind="verification_contract",
         name=phase,
@@ -234,3 +252,32 @@ def _verification_contract_part(state: PipelineState, phase: str) -> Any:
         volatile_reason="per-run verification contract block; phase-scoped",
         id=f"verification_contract:{phase}:{sig}",
     )
+
+
+def _managed_command_block(state: PipelineState, phase: str) -> str | None:
+    """Return the exact run-scoped command boundary for write phases."""
+    output_dir = getattr(state, "output_dir", None)
+    if phase not in {"implement", "repair_changes"} or output_dir is None:
+        return None
+
+    import shlex
+
+    cwd = str(state.extras.get("git_cwd") or getattr(state, "project_dir", ""))
+    prefix = " ".join((
+        "orcho command run",
+        "--run-dir", shlex.quote(str(output_dir)),
+        "--phase", shlex.quote(phase),
+        "--cwd", shlex.quote(cwd),
+        "--",
+    ))
+    return "\n".join((
+        "Long-command execution policy:",
+        "  Orcho executes configured broad verification gates; do not run "
+        "those gate commands as implementation work.",
+        "  Targeted and diff-scoped checks may run normally.",
+        "  For another repo-wide or expected-long command, invoke it through "
+        "the durable boundary:",
+        f"  {prefix} <command> [args...]",
+        "  If that boundary refuses a duplicate, do not bypass or relaunch it; "
+        "report the unresolved command state.",
+    ))

@@ -83,6 +83,7 @@ from cli._help import (
     print_quick_help,
     render_verbose_header,
 )
+from cli._managed_command import add_managed_command_parser
 from cli._profile_prompt import require_profile_or_exit
 from cli._quality_gates import cmd_quality_gates
 from cli._repair_state import format_repair_report, repair_report_to_json
@@ -1171,6 +1172,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show installed orcho package versions and exit",
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    add_managed_command_parser(sub)
 
     p_run = sub.add_parser(
         "run",

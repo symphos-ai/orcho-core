@@ -132,6 +132,7 @@ def build_subtask_prompt(
     dag_map: str = "",
     upstream_receipts: str = "",
     change_handoff: str = "uncommitted",
+    verification_part: PromptPart | None = None,
 ) -> tuple[PromptTurn, SkillBinding | None]:
     """Render the prompt the executing developer agent will receive.
 
@@ -185,6 +186,8 @@ def build_subtask_prompt(
             :func:`pipeline.dag_runner._render_upstream_receipts`) — bounded,
             sandboxed quoted output from declared dependencies. Continuity
             hints, not instructions/proof; empty (omitted) when no deps.
+        verification_part: phase-composed run policy for scheduled gates and
+            managed long commands. Omitted when the phase has no such policy.
 
     Returns:
         ``(PromptTurn, SkillBinding | None)``. The binding mirrors the
@@ -195,6 +198,8 @@ def build_subtask_prompt(
         parts.append(_subtask_part(
             "context", "working_dir", "subtask_working_dir",
             f"Working directory: {project_dir}"))
+    if verification_part is not None:
+        parts.append(verification_part)
     ctx = _plugin_context(plugin)
     if ctx:
         parts.append(_subtask_part(
