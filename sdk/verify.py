@@ -123,6 +123,7 @@ def _resolve_run_project_contract(
     project: str | None,
     run_id: str | None,
     workspace: str | None,
+    runs_dir: Path | str | None,
     cwd: Path | str | None | object = _CWD_DEFAULT,
 ) -> tuple[RunRef, Path, str, VerificationContract | None, str, dict[str, Any]]:
     """Resolve run, validate project match, load contract; raise before any write.
@@ -133,8 +134,10 @@ def _resolve_run_project_contract(
     what shape of contract it requires. Raises :class:`VerifyEnvError` for a
     project↔run mismatch or a run with no recorded project.
 
-    ``cwd`` is forwarded to :func:`find_run` for run discovery. It defaults to
-    the walk-up sentinel (unchanged behaviour for the CLI verify callers);
+    ``runs_dir`` and ``cwd`` are forwarded to :func:`find_run` for run
+    discovery. ``runs_dir`` takes the SDK's usual explicit-location priority.
+    ``cwd`` defaults to the walk-up sentinel (unchanged behaviour for the CLI
+    verify callers);
     embedders that must NOT bind to an arbitrary process cwd — the MCP server —
     pass ``cwd=None`` to disable walk-up, exactly as the other SDK read
     accessors do.
@@ -143,7 +146,7 @@ def _resolve_run_project_contract(
     from pipeline.plugins import load_plugin
     from pipeline.verification_contract import VerificationContract
 
-    ref = find_run(run_id, workspace=workspace, cwd=cwd)
+    ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     run_dir = ref.run_dir
     meta = load_meta(run_dir)
     meta_project = meta.get("project")
@@ -421,6 +424,7 @@ def verify_env(
     env: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
     subject_checkout: str | None = None,
 ) -> VerifyEnvResult:
     """Execute one verification_env's assertions and write an env-receipt.
@@ -429,6 +433,7 @@ def verify_env(
     below passes):
 
     1. Resolve the run (``run_id`` or newest) and load its ``meta.json``.
+       Pass ``runs_dir`` when the run is under an explicit parent directory.
     2. Determine the project. With an explicit ``project``, the run must
        belong to it: both paths are normalised via ``Path.resolve()`` and
        compared to ``meta['project']``; a missing / empty / mismatched
@@ -448,7 +453,7 @@ def verify_env(
     from pipeline.verification_env import run_env_assertions
 
     ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.verification_envs:
         raise VerifyEnvError(
@@ -501,6 +506,7 @@ def verify_list(
     project: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
 ) -> VerifyListResult:
     """List declared commands with their run-text placeholder-resolved.
 
@@ -510,6 +516,7 @@ def verify_list(
     declared command's ``name`` / ``env`` /
     ``run_resolved`` / ``required`` flag. Executes nothing and writes nothing.
     An undeclared / command-less contract raises :class:`VerifyEnvError`.
+    Pass ``runs_dir`` to resolve a run beneath an explicit parent directory.
     """
     from pipeline.verification_contract import (
         placeholder_context_for,
@@ -517,7 +524,7 @@ def verify_list(
     )
 
     ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.commands:
         raise VerifyEnvError(
@@ -564,6 +571,7 @@ def verify_run(
     project: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
     commands: list[str] | None = None,
     required_only: bool = False,
     include_manual: bool = False,
@@ -580,6 +588,8 @@ def verify_run(
     ``subject_checkout`` is an internal controller seam. It may confirm an
     isolated recorded identity or establish a non-canonical subject when the
     metadata is incomplete; it never overrides conflicting identity.
+
+    Pass ``runs_dir`` to resolve a run beneath an explicit parent directory.
 
     Command selection (resolved — and validated — *before* any execution):
 
@@ -601,7 +611,7 @@ def verify_run(
     from pipeline.verification_contract import placeholder_context_for
 
     ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.commands:
         raise VerifyEnvError(

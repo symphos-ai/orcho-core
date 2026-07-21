@@ -169,6 +169,88 @@ class TestVerifyList:
             verify_list(project=str(project), run_id="20260101_000000")
 
 
+class TestVerifyRunsDir:
+    @pytest.mark.parametrize("nested", [False, True], ids=["top_level", "nested"])
+    def test_verify_all_entry_points_resolve_explicit_or_default_runs_dir(
+        self, tmp_path: Path, runs_dir: Path, nested: bool,
+    ) -> None:
+        """The legacy top-level form and explicit child locator share find_run."""
+        project = _write_project(tmp_path)
+        locator = runs_dir / "parent" if nested else None
+        if locator is not None:
+            locator.mkdir()
+        run_dir = _write_meta_run(
+            locator or runs_dir, "alias", project=project, worktree=None,
+        )
+        kwargs = {"runs_dir": locator} if locator is not None else {}
+
+        env = verify_env(project=str(project), env="ci", run_id="alias", **kwargs)
+        listed = verify_list(project=str(project), run_id="alias", **kwargs)
+        ran = verify_run(
+            project=str(project), run_id="alias", commands=["echo_co"], **kwargs,
+        )
+
+        from pipeline.evidence.verification_receipt import (
+            COMMAND_RECEIPTS_DIRNAME,
+            ENV_RECEIPTS_DIRNAME,
+        )
+
+        assert env.receipt_path == (
+            run_dir / ENV_RECEIPTS_DIRNAME / "verify_env_ci.json"
+        )
+        assert listed.run_id == ran.run_id == "alias"
+        assert ran.outcomes[0].receipt_path == (
+            run_dir / COMMAND_RECEIPTS_DIRNAME / "echo_co.json"
+        )
+        if nested:
+            assert not (runs_dir / "alias").exists()
+
+    def test_verify_wrong_project_writes_no_nested_runs_dir_receipt(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        from pipeline.evidence.verification_receipt import ENV_RECEIPTS_DIRNAME
+
+        project = _write_project(tmp_path)
+        other_project = tmp_path / "other-project"
+        parent = runs_dir / "parent"
+        parent.mkdir()
+        child_dir = _write_meta_run(
+            parent, "alias", project=project, worktree=None,
+        )
+
+        with pytest.raises(VerifyEnvError, match="project does not match run"):
+            verify_env(
+                project=str(other_project), env="ci", run_id="alias", runs_dir=parent,
+            )
+
+        assert not (child_dir / ENV_RECEIPTS_DIRNAME).exists()
+
+    def test_verify_conflicting_subject_writes_no_nested_runs_dir_receipt(
+        self, tmp_path: Path, runs_dir: Path,
+    ) -> None:
+        from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
+
+        project = _write_project(tmp_path)
+        worktree = tmp_path / "worktree"
+        conflicting = tmp_path / "conflicting"
+        worktree.mkdir()
+        conflicting.mkdir()
+        parent = runs_dir / "parent"
+        parent.mkdir()
+        child_dir = _write_meta_run(
+            parent, "alias", project=project,
+            worktree={"isolation": "worktree", "path": str(worktree)},
+        )
+
+        with pytest.raises(VerifyEnvError, match="conflicts"):
+            verify_run(
+                project=str(project), run_id="alias", runs_dir=parent,
+                commands=["echo_co"], subject_checkout=str(conflicting),
+            )
+
+        assert not (child_dir / COMMAND_RECEIPTS_DIRNAME).exists()
+
+
 class TestVerificationSubjectResolution:
     def test_correction_child_inherits_retained_parent_subject(
         self, tmp_path: Path, runs_dir: Path,

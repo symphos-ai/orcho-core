@@ -335,6 +335,7 @@ def materialize_required_receipts(
                 env=env_name,
                 run_id=run_id,
                 workspace=resolved_workspace,
+                runs_dir=run_dir.parent,
                 subject_checkout=checkout or None,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise
@@ -356,6 +357,7 @@ def materialize_required_receipts(
                 project=project_dir,
                 run_id=run_id,
                 workspace=resolved_workspace,
+                runs_dir=run_dir.parent,
                 commands=list(targets),
                 # Both receipt kinds receive the same resolved physical subject.
                 subject_checkout=checkout or None,

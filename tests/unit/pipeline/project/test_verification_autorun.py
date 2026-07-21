@@ -366,6 +366,106 @@ def test_materializer_threads_subject_checkout_into_both_verify_calls(
 
     assert rec.env_calls[0]["subject_checkout"] == str(worktree)
     assert rec.run_calls[0]["subject_checkout"] == str(worktree)
+    for call in (*rec.env_calls, *rec.run_calls):
+        assert call["run_id"] == run_dir.name
+        assert call["runs_dir"] == run_dir.parent
+
+
+def test_nested_stage9_uses_child_locator_and_real_sdk_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child alias is resolved only below its physical parent run directory."""
+    workspace = tmp_path / "workspace"
+    runs_dir = workspace / "runspace" / "runs"
+    child_dir = runs_dir / "parent-a" / "alias"
+    child_dir.mkdir(parents=True)
+    project = tmp_path / "project"
+    plugin_dir = project / ".orcho" / "multiagent"
+    plugin_dir.mkdir(parents=True)
+    plugin = {
+        "verification_envs": {"ci": {}},
+        "verification": {
+            "default_env": "ci",
+            "required": ["engine", "manual"],
+            "commands": {
+                "engine": {
+                    "run": (
+                        "python -c \"from pathlib import Path; "
+                        "Path('engine-count.txt').open('a').write('x')\""
+                    ),
+                },
+                "manual": {
+                    "run": (
+                        "python -c \"from pathlib import Path; "
+                        "Path('manual-count.txt').open('a').write('x')\""
+                    ),
+                },
+            },
+            "gate_sets": {"manuals": {"commands": ["manual"]}},
+            "schedule": [
+                {"before_delivery": True, "policy": "require", "commands": ["engine"]},
+                {"manual_only": True, "gate_sets": ["manuals"]},
+            ],
+        },
+    }
+    (plugin_dir / "plugin.py").write_text(f"PLUGIN = {plugin!r}\n", encoding="utf-8")
+    (child_dir / "meta.json").write_text(json.dumps({
+        "task": "nested", "status": "running", "project": str(project),
+        "worktree": {"isolation": "off"},
+    }), encoding="utf-8")
+
+    # Same alias elsewhere must not influence resolution or receive receipts.
+    root_alias = runs_dir / "alias"
+    other_alias = runs_dir / "parent-b" / "alias"
+    root_alias.mkdir()
+    other_alias.mkdir(parents=True)
+
+    from pipeline.plugins import load_plugin
+
+    contract = VerificationContract.from_plugin(load_plugin(project))
+    assert contract is not None
+    ctx = _ctx(contract, checkout=project, project=project,
+               workspace=workspace, run_dir=child_dir)
+    _write_receipt(child_dir, "engine", checkout_head="0" * 40, checkout=project)
+    assert classify_required_receipts(
+        contract, child_dir, ctx, checkout=str(project),
+    )["engine"].status == "stale"
+
+    import sdk.verify as verify_sdk
+
+    real_find_run = verify_sdk.find_run
+    find_calls: list[tuple[str | None, Path | str | None]] = []
+
+    def find_run_spy(run_id: str | None = None, **kwargs: Any) -> Any:
+        find_calls.append((run_id, kwargs.get("runs_dir")))
+        return real_find_run(run_id, **kwargs)
+
+    monkeypatch.setattr(verify_sdk, "find_run", find_run_spy)
+    result = materialize_required_receipts(
+        run_id=child_dir.name, run_dir=child_dir, project_dir=str(project),
+        checkout=str(project), contract=contract, ctx=ctx,
+        workspace=str(workspace), reason="pre-final",
+    )
+
+    from pipeline.evidence.verification_receipt import ENV_RECEIPTS_DIRNAME
+
+    assert result.ran_commands == ("engine",)
+    assert result.skipped_manual == ("manual",)
+    assert (project / "engine-count.txt").read_text(encoding="utf-8") == "x"
+    assert not (project / "manual-count.txt").exists()
+    assert (child_dir / ENV_RECEIPTS_DIRNAME / "verify_env_ci.json").is_file()
+    assert (child_dir / COMMAND_RECEIPTS_DIRNAME / "engine.json").is_file()
+    assert not (root_alias / ENV_RECEIPTS_DIRNAME).exists()
+    assert not (root_alias / COMMAND_RECEIPTS_DIRNAME).exists()
+    assert not (other_alias / ENV_RECEIPTS_DIRNAME).exists()
+    assert not (other_alias / COMMAND_RECEIPTS_DIRNAME).exists()
+    assert find_calls == [
+        (child_dir.name, child_dir.parent),
+        (child_dir.name, child_dir.parent),
+    ]
+    assert classify_required_receipts(
+        contract, child_dir, ctx, checkout=str(project),
+    )["engine"].status == "present"
 
 
 # ── case 2: fresh -> skipped, verify_run not called ───────────────────────

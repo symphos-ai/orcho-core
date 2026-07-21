@@ -1229,6 +1229,7 @@ class TestCorrectionRouteWiring:
                     "env": "core-local",
                     "run_id": "child_run",
                     "workspace": str(workspace),
+                    "runs_dir": workspace / "runspace" / "runs",
                     "subject_checkout": str(project),
                 },
             ),
@@ -1238,6 +1239,7 @@ class TestCorrectionRouteWiring:
                     "project": str(project),
                     "run_id": "child_run",
                     "workspace": str(workspace),
+                    "runs_dir": workspace / "runspace" / "runs",
                     "commands": ["env-provenance", "lint"],
                     # The resolved subject checkout is pinned through so gates
                     # execute against the run's worktree, not a meta fallback.
@@ -1272,6 +1274,7 @@ class TestCorrectionRouteWiring:
             "project": str(project),
             "run_id": "child_run",
             "workspace": str(workspace),
+            "runs_dir": workspace / "runspace" / "runs",
             "commands": ["lint"],
             "subject_checkout": str(project),
         }]
