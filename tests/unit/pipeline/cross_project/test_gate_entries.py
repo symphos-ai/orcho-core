@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pipeline.cross_project.gate_entries import (
+    child_readiness_contract_entry,
     skipped_contract_entry,
     skipped_release_entry,
 )
@@ -50,6 +51,32 @@ class TestSkippedContractEntry:
                 alias="x", reason=reason, source=source, on_skip=on_skip,
             )
             assert e["approved"] is False
+
+
+def test_child_readiness_entry_is_not_a_policy_skip() -> None:
+    entry = child_readiness_contract_entry(
+        alias="core",
+        child_status="halted",
+        child_reason="operator requested stop",
+    )
+    assert entry == {
+        "approved": False,
+        "verdict": "NOT_EVALUABLE",
+        "not_evaluable": True,
+        "source": "precondition",
+        "reason": "child_readiness",
+        "child_status": "halted",
+        "child_reason": "operator requested stop",
+        "short_summary": (
+            "contract_check not evaluable for [core]: child is halted "
+            "(operator requested stop)."
+        ),
+        "findings": [],
+        "risks": [],
+        "checks": [],
+    }
+    assert "skipped" not in entry
+    assert "on_skip" not in entry
 
 
 class TestSkippedReleaseEntry:

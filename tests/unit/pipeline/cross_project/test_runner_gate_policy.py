@@ -24,6 +24,7 @@ from pipeline.runtime import (
 # mock-flow conventions and we don't reinvent fixtures.
 from tests.acceptance.test_full_mock_flow import (  # noqa: E402
     PLUGIN,
+    _init_git_repo,
     _patches,
 )
 
@@ -32,7 +33,10 @@ def _make_projects(tmp_path: Path) -> dict[str, Path]:
     out = {}
     for name in ("unity", "api"):
         p = tmp_path / name
-        p.mkdir()
+        # These policy scenarios exercise gate behavior after successful child
+        # dispatch. The feature profile uses worktree isolation, which requires
+        # each project path to be a real git checkout.
+        _init_git_repo(p)
         out[name] = p
     return out
 

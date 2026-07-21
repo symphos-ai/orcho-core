@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,10 +26,12 @@ from pipeline.control import OperatorDecisionOverride
 from pipeline.cross_project import contract_check as cc_mod
 from pipeline.cross_project.contract_check import (
     ContractCheckContext,
+    ContractCheckResult,
     run_cross_contract_check,
 )
 from pipeline.cross_project.gate_decisions import GateDecision
 from pipeline.cross_project.planning_loop import approved_review_json
+from pipeline.cross_project.project_dispatch import ProjectDispatchResult
 from pipeline.runtime import (
     CrossGatePolicy,
     CrossGateRunPolicy,
@@ -170,6 +173,118 @@ def test_resume_disk_fallback_loads_cached_rejected_results(tmp_path: Path) -> N
     assert result.contract_check_failed is True
     assert "rejected" in result.contract_check_failure_reason
     assert ctx.session["phases"]["contract_check"]["core"]["approved"] is False
+
+
+def test_resume_does_not_cache_child_readiness_precondition(tmp_path: Path) -> None:
+    """A retried child must replace NOT_EVALUABLE with a real review verdict."""
+    codex = _FakeCodex(reply=approved_review_json("retry succeeded"))
+    ctx = _ctx(
+        tmp_path,
+        resume_from="20260101_000000",
+        codex=codex,
+        session={
+            "phases": {
+                "contract_check": {
+                    "core": {
+                        "approved": False,
+                        "verdict": "NOT_EVALUABLE",
+                        "not_evaluable": True,
+                        "source": "precondition",
+                        "reason": "child_readiness",
+                    },
+                },
+            },
+        },
+    )
+
+    result = run_cross_contract_check(ctx)
+
+    assert len(codex.calls) == 1
+    assert result.contract_results["core"]["verdict"] == "APPROVED"
+
+
+def test_completed_contract_cache_predicate_accepts_real_verdicts() -> None:
+    assert cc_mod._is_completed_contract_cache_entry({"verdict": "APPROVED"})
+    assert cc_mod._is_completed_contract_cache_entry({"verdict": "REJECTED"})
+    assert cc_mod._is_completed_contract_cache_entry(
+        {"verdict": "SKIPPED", "skipped": True},
+    )
+    assert not cc_mod._is_completed_contract_cache_entry(
+        {"verdict": "NOT_EVALUABLE", "not_evaluable": True},
+    )
+
+
+def test_dispatch_readiness_bypasses_contract_gate_and_all_success_runs_it(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The coordinator uses immutable dispatch readiness, never session rereads."""
+    from pipeline.cross_project import session_run
+
+    core = tmp_path / "core"
+    core.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    request = SimpleNamespace(
+        task="cross task", projects={"core": core}, task_plan=None,
+        resume_from=None, dry_run=False, max_rounds=1, phase_config=None,
+        hypothesis_enabled=False, followup_session_seeds_per_alias=None,
+        output_dir=None, plan_output="", plan_review_dict=None,
+        operator_decisions=None, no_interactive=True,
+    )
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *a, **k: None, success=lambda *a, **k: None,
+                          warn=lambda *a, **k: None),
+        task_plan=None, code_model="test", child_profile=object(),
+        requested_profile=SimpleNamespace(name="test"), has_global_plan=False,
+        provider=object(), cross_ckpt={"sub_status": {}},
+        session={"phases": {"projects": {
+            "core": {"status": "halted", "halt_reason": "operator stop"},
+        }}},
+        cross_phase_usage={}, terminal=False, participant_set=None,
+        run_dir=run_dir, plan_output="", plan_review_dict=None,
+        common_cwd=str(tmp_path), review_agent=object(),
+        profile_setup=SimpleNamespace(contract_gate_policy=_policy()),
+    )
+    monkeypatch.setattr(
+        session_run, "_run_project_dispatch",
+        lambda _dispatch_ctx: ProjectDispatchResult(False, ("core",)),
+    )
+    gate_calls: list[object] = []
+    monkeypatch.setattr(
+        session_run, "run_cross_contract_check",
+        lambda _ctx: gate_calls.append(_ctx) or (_ for _ in ()).throw(
+            AssertionError("contract gate must not run for blocked children"),
+        ),
+    )
+
+    assert session_run._run_dispatch_and_contract(request, ctx) is False
+    assert gate_calls == []
+    entry = ctx.contract_results["core"]
+    assert entry["verdict"] == "NOT_EVALUABLE"
+    assert entry["child_status"] == "halted"
+    assert entry["child_reason"] == "operator stop"
+    assert ctx.contract_check_failed is False
+
+    monkeypatch.setattr(
+        session_run, "_run_project_dispatch",
+        lambda _dispatch_ctx: ProjectDispatchResult(False, ()),
+    )
+    expected = ContractCheckResult(
+        contract_results={"core": {"verdict": "APPROVED", "approved": True}},
+        contract_check_failed=False,
+        contract_check_failure_reason=None,
+        control="continue",
+        review_projects={"core": core},
+        review_common_cwd=str(core),
+    )
+    monkeypatch.setattr(
+        session_run, "run_cross_contract_check",
+        lambda _ctx: gate_calls.append(_ctx) or expected,
+    )
+
+    assert session_run._run_dispatch_and_contract(request, ctx) is False
+    assert len(gate_calls) == 1
+    assert ctx.contract_results == expected.contract_results
 
 
 @pytest.mark.parametrize(
