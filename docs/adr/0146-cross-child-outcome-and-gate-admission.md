@@ -20,8 +20,9 @@ readiness.  Dispatch classifies it using the canonical status vocabulary:
 | Child status / payload | Dispatch outcome | Checkpoint sub-status |
 | --- | --- | --- |
 | `done`, `success`, `completed` | success | `done` |
+| `halted` with canonical final-acceptance rejection and a typed rejecting release record | release-evaluable rejection | `done` |
 | `awaiting_phase_handoff` with a mapping payload | pause | existing handoff proxy |
-| `failed`, `halted`, `interrupted` | failure | `failed` |
+| `failed`, other `halted`, `interrupted` | failure | `failed` |
 | missing, non-string, unknown, or pause without a mapping payload | fail-closed failure | `failed` |
 
 The exact returned session remains persisted under
@@ -29,6 +30,11 @@ The exact returned session remains persisted under
 derived readiness fact.  Dispatch continues later sibling aliases after a
 failure and returns ordered immutable `blocking_aliases`, rather than asking a
 later admission decision to reread mutable session or checkpoint state.
+
+A rejected child release is not dispatch success and never becomes ship-ready.
+It is nevertheless complete gate input: contract review may inspect it and
+cross final acceptance preserves the specific `CFA_CHILD_REJECTED_<alias>`
+blocker instead of misreporting a completed child as missing.
 
 Dry runs and profiles with no project-scoped child steps retain their separate
 simulation/skip behavior and are not synthetic missing child returns.

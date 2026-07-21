@@ -42,6 +42,7 @@ from typing import Any, Literal
 
 from agents.runtimes import AgentProvider, MockAgentProvider
 from core.io.ansi import C
+from pipeline.control.resume_context import is_terminal_final_acceptance_rejected
 from pipeline.cross_project.checkpoint import write_cross_checkpoint
 from pipeline.cross_project.handoff import Handoff, write_handoff
 from pipeline.cross_project.handoff_payloads import (
@@ -190,13 +191,35 @@ class ProjectDispatchResult:
 class ChildDispatchOutcome:
     """Pure classification of a returned child session.
 
-    Only these three values leave dispatch: success, a decision-ready pause,
-    or failure.  A normal Python return is deliberately not success evidence;
-    the child's durable ``session.status`` is the authority.
+    Only these four values leave dispatch: success, a release-evaluable
+    rejection, a decision-ready pause, or failure.  A normal Python return is
+    deliberately not success evidence; the child's durable ``session.status``
+    and typed final-acceptance record are the authority.
     """
 
-    kind: Literal["success", "pause", "failure"]
+    kind: Literal["success", "release_rejected", "pause", "failure"]
     reason: str
+
+
+def _has_reviewable_rejected_release(project_session: Mapping[str, Any]) -> bool:
+    """Return whether a halted child has complete rejected-release evidence.
+
+    A project final-acceptance rejection is terminal and not ship-ready, but it
+    is still a complete input to the cross contract and release gates.  Admit
+    only the canonical rejection terminal with a typed rejecting record;
+    arbitrary halted sessions remain fail-closed.
+    """
+    if not is_terminal_final_acceptance_rejected(project_session):
+        return False
+    phases = project_session.get("phases")
+    if not isinstance(phases, Mapping):
+        return False
+    release = phases.get("final_acceptance")
+    return (
+        isinstance(release, Mapping)
+        and release.get("verdict") == "REJECTED"
+        and release.get("ship_ready") is False
+    )
 
 
 def _classify_child_outcome(project_session: Any) -> ChildDispatchOutcome:
@@ -215,6 +238,11 @@ def _classify_child_outcome(project_session: Any) -> ChildDispatchOutcome:
         return ChildDispatchOutcome("failure", "status_not_string")
     if status in TERMINAL_SUCCESS_STATUSES:
         return ChildDispatchOutcome("success", f"status:{status}")
+    if _has_reviewable_rejected_release(project_session):
+        return ChildDispatchOutcome(
+            "release_rejected",
+            f"status:{status}:{project_session.get('halt_reason')}",
+        )
     if status in FAILURE_TERMINAL_STATUSES:
         return ChildDispatchOutcome("failure", f"status:{status}")
     if status == PAUSE_STATUS:
@@ -631,7 +659,7 @@ def _dispatch_one_alias(
                 terminal=ctx.terminal,
             )
             return _DISPATCH_PAUSED
-        if child_outcome.kind == "success":
+        if child_outcome.kind in {"success", "release_rejected"}:
             ctx.cross_ckpt["sub_status"][alias] = "done"
             write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
             return _DISPATCH_CONTINUE

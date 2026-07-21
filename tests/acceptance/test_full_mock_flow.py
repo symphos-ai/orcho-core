@@ -952,6 +952,8 @@ class TestCrossDemoExample:
         web_dst = tmp_path / "web"
         shutil.copytree(self.EXAMPLE_DIR / "api", api_dst)
         shutil.copytree(self.EXAMPLE_DIR / "web", web_dst)
+        _init_git_repo(api_dst)
+        _init_git_repo(web_dst)
         return {"api": api_dst, "web": web_dst}
 
     def test_cross_demo_runs_end_to_end(

@@ -77,8 +77,9 @@ decision:
 | Child durable status / payload | Readiness outcome | Cross checkpoint `sub_status` |
 | --- | --- | --- |
 | `done`, `success`, `completed` | ready | `done` |
+| `halted` with canonical final-acceptance rejection and a typed rejecting release record | release-evaluable rejection | `done` |
 | `awaiting_phase_handoff` with a mapping payload | pause parent dispatch | `awaiting_phase_handoff` |
-| `failed`, `halted`, `interrupted` | blocked | `failed` |
+| `failed`, other `halted`, `interrupted` | blocked | `failed` |
 | missing, non-string, unknown, or a pause without mapping payload | fail-closed blocked | `failed` |
 
 Dispatch persists the exact child session at

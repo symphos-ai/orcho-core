@@ -29,6 +29,29 @@ from pipeline.cross_project.project_dispatch import (
         ),
         ({"status": "failed"}, "failure", "status:failed"),
         ({"status": "halted"}, "failure", "status:halted"),
+        (
+            {
+                "status": "halted",
+                "halt_reason": "final_acceptance_rejected",
+                "phases": {
+                    "final_acceptance": {
+                        "verdict": "REJECTED",
+                        "ship_ready": False,
+                    },
+                },
+            },
+            "release_rejected",
+            "status:halted:final_acceptance_rejected",
+        ),
+        (
+            {
+                "status": "halted",
+                "halt_reason": "final_acceptance_rejected",
+                "phases": {},
+            },
+            "failure",
+            "status:halted",
+        ),
         ({"status": "interrupted"}, "failure", "status:interrupted"),
         ({}, "failure", "status_missing"),
         ({"status": None}, "failure", "status_not_string"),
