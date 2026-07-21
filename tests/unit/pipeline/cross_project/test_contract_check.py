@@ -261,14 +261,22 @@ def test_dispatch_readiness_bypasses_contract_gate_and_all_success_runs_it(
     assert gate_calls == []
     entry = ctx.contract_results["core"]
     assert entry["verdict"] == "NOT_EVALUABLE"
-    assert entry["child_status"] == "halted"
+    # A session snapshot cannot promote a missing durable child outcome.
+    assert entry["child_status"] == "pending"
     assert entry["child_reason"] == "operator stop"
     assert ctx.contract_check_failed is False
 
-    monkeypatch.setattr(
-        session_run, "_run_project_dispatch",
-        lambda _dispatch_ctx: ProjectDispatchResult(False, ()),
-    )
+    def _successful_dispatch(_dispatch_ctx):
+        # A real successful dispatch replaces the prior halted child snapshot;
+        # keeping it halted here would intentionally trip canonical admission.
+        child = {"status": "done"}
+        ctx.session["phases"]["projects"]["core"] = child
+        child_dir = run_dir / "core"
+        child_dir.mkdir()
+        (child_dir / "meta.json").write_text(json.dumps(child), encoding="utf-8")
+        return ProjectDispatchResult(False, ())
+
+    monkeypatch.setattr(session_run, "_run_project_dispatch", _successful_dispatch)
     expected = ContractCheckResult(
         contract_results={"core": {"verdict": "APPROVED", "approved": True}},
         contract_check_failed=False,
@@ -285,6 +293,59 @@ def test_dispatch_readiness_bypasses_contract_gate_and_all_success_runs_it(
     assert session_run._run_dispatch_and_contract(request, ctx) is False
     assert len(gate_calls) == 1
     assert ctx.contract_results == expected.contract_results
+
+
+def test_parent_consistency_violation_uses_parent_readiness_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An evaluable child does not become non-evaluable because its parent is inconsistent."""
+    from pipeline.cross_project import session_run
+
+    core = tmp_path / "core"
+    core.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "core").mkdir()
+    (run_dir / "core" / "meta.json").write_text(
+        json.dumps({"status": "done"}), encoding="utf-8"
+    )
+    request = SimpleNamespace(
+        task="cross task", projects={"core": core}, task_plan=None,
+        resume_from=None, dry_run=False, max_rounds=1, phase_config=None,
+        hypothesis_enabled=False, followup_session_seeds_per_alias=None,
+        output_dir=None, plan_output="", plan_review_dict=None,
+        operator_decisions=None, no_interactive=True,
+    )
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *a, **k: None, success=lambda *a, **k: None,
+                          warn=lambda *a, **k: None),
+        task_plan=None, code_model="test", child_profile=object(),
+        requested_profile=SimpleNamespace(name="test"), has_global_plan=False,
+        provider=object(),
+        cross_ckpt={"phase_handoff_pending": True, "sub_status": {"core": "done"}},
+        session={"phases": {"projects": {"core": {"status": "done"}}}},
+        cross_phase_usage={}, terminal=False, participant_set=None,
+        run_dir=run_dir, plan_output="", plan_review_dict=None,
+        common_cwd=str(core), review_agent=object(),
+        profile_setup=SimpleNamespace(contract_gate_policy=_policy()),
+    )
+    monkeypatch.setattr(
+        session_run, "_run_project_dispatch",
+        lambda _dispatch_ctx: ProjectDispatchResult(False, ()),
+    )
+    monkeypatch.setattr(
+        session_run,
+        "run_cross_contract_check",
+        lambda _ctx: (_ for _ in ()).throw(
+            AssertionError("contract gate must not run for an inconsistent parent")
+        ),
+    )
+
+    assert session_run._run_dispatch_and_contract(request, ctx) is False
+    entry = ctx.contract_results["core"]
+    assert entry["verdict"] == "NOT_EVALUABLE"
+    assert entry["child_status"] == "done"
+    assert entry["child_reason"] == "parent_inconsistent:checkpoint_pending_without_payload"
 
 
 @pytest.mark.parametrize(

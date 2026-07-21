@@ -86,6 +86,7 @@ __all__ = ["run_cross_pipeline_session"]
 @dataclasses.dataclass
 class _Renderers:
     """Presentation-gated render callables (from :func:`silent_renderers`); under SILENT stdout callables are no-ops and ``banner`` forwards ``terminal=False`` so ``log_phase`` still fires (ADR 0046 stop #9)."""
+
     banner: Callable
     success: Callable
     warn: Callable
@@ -98,6 +99,7 @@ class _Renderers:
 @dataclasses.dataclass
 class _CrossRunContext:
     """Resolved cross-run state threaded across the coordinator stages."""
+
     terminal: bool
     r: _Renderers
     session_ts: str
@@ -139,6 +141,7 @@ class _CrossRunContext:
     cfa_result: Any = None
     cfa_outcome: Any = None
     delivery_result: Any = None
+    reduced_parent: Any = None
     # ADR 0112 §1 (increment B): the run-scoped, in-memory ParticipantSet seeded
     # provisionally in ``setup_cross_run`` and bound per-alias post-dispatch. Lives
     # here (not in ``session``) so it is never persisted.
@@ -232,12 +235,20 @@ def _run_cross_hypothesis(request: CrossRunRequest, ctx: _CrossRunContext) -> No
     )
     if request.dry_run or _hypothesis_step is None:
         return
-    r.banner("CROSS_HYPOTHESIS", "CROSS-HYPOTHESIS — fast pre-plan gut-check",
-             r.C.MAGENTA, phase_kind=_pk.HYPOTHESIS, attempt=1)
+    r.banner(
+        "CROSS_HYPOTHESIS",
+        "CROSS-HYPOTHESIS — fast pre-plan gut-check",
+        r.C.MAGENTA,
+        phase_kind=_pk.HYPOTHESIS,
+        attempt=1,
+    )
     _hyp_t0 = time.time()
     cross_hypothesis, _attempts = run_hypothesis_loop(
-        ctx.plan_agent, ctx.review_agent,
-        request.task, ctx.common_cwd, "",
+        ctx.plan_agent,
+        ctx.review_agent,
+        request.task,
+        ctx.common_cwd,
+        "",
         _hypothesis_attempts_for_step(_hypothesis_step),
         prompt_spec=getattr(_hypothesis_step, "prompt", None),
         hypothesis_format=_hypothesis_format_for_step(_hypothesis_step),
@@ -250,12 +261,16 @@ def _run_cross_hypothesis(request: CrossRunRequest, ctx: _CrossRunContext) -> No
         "approved": cross_hypothesis,
         "attempts": _attempts,
     }
-    _hyp_in = sum(int(a.get("plan_usage", {}).get("tokens_in", 0))
-                 + int(a.get("qa_usage", {}).get("tokens_in", 0))
-                 for a in _attempts)
-    _hyp_out = sum(int(a.get("plan_usage", {}).get("tokens_out", 0))
-                  + int(a.get("qa_usage", {}).get("tokens_out", 0))
-                  for a in _attempts)
+    _hyp_in = sum(
+        int(a.get("plan_usage", {}).get("tokens_in", 0))
+        + int(a.get("qa_usage", {}).get("tokens_in", 0))
+        for a in _attempts
+    )
+    _hyp_out = sum(
+        int(a.get("plan_usage", {}).get("tokens_out", 0))
+        + int(a.get("qa_usage", {}).get("tokens_out", 0))
+        for a in _attempts
+    )
     _hyp_cost = 0.0
     if config.accounting_enabled():
         for a in _attempts:
@@ -264,10 +279,10 @@ def _run_cross_hypothesis(request: CrossRunRequest, ctx: _CrossRunContext) -> No
                 if c is not None:
                     _hyp_cost += float(c)
     _hyp_usage: dict = {
-        "tokens_in":   _hyp_in,
-        "tokens_out":  _hyp_out,
+        "tokens_in": _hyp_in,
+        "tokens_out": _hyp_out,
         "total_tokens": _hyp_in + _hyp_out,
-        "duration_s":  _hyp_dt,
+        "duration_s": _hyp_dt,
         "token_split_estimated": False,
         "token_split_source": "exact",
     }
@@ -275,18 +290,21 @@ def _run_cross_hypothesis(request: CrossRunRequest, ctx: _CrossRunContext) -> No
         _hyp_usage["cost_usd_equivalent"] = _hyp_cost
         _hyp_usage["cost_estimated"] = False
     _accumulate_phase_usage(
-        ctx.cross_phase_usage, "cross_hypothesis", _hyp_usage,
+        ctx.cross_phase_usage,
+        "cross_hypothesis",
+        _hyp_usage,
     )
     log_phase(
-        "CROSS_HYPOTHESIS", "CROSS-HYPOTHESIS — fast pre-plan gut-check",
+        "CROSS_HYPOTHESIS",
+        "CROSS-HYPOTHESIS — fast pre-plan gut-check",
         "END",
-        ("direction validated" if cross_hypothesis
-         else "all rejected" if _attempts
-         else "skipped"),
-        phase_kind=_pk.HYPOTHESIS, attempt=1,
+        ("direction validated" if cross_hypothesis else "all rejected" if _attempts else "skipped"),
+        phase_kind=_pk.HYPOTHESIS,
+        attempt=1,
     )
     _print_usage_snapshot(
-        "cross_hypothesis", ctx.cross_phase_usage["cross_hypothesis"],
+        "cross_hypothesis",
+        ctx.cross_phase_usage["cross_hypothesis"],
         terminal=ctx.terminal,
     )
 
@@ -297,11 +315,14 @@ def _resolve_global_plan_steps(ctx: _CrossRunContext) -> None:
 
     def _find_handler(steps, handler_name):
         for s in steps:
-            if (isinstance(s, _PhaseStep)
-                    and s.cross is not None
-                    and s.cross.handler == handler_name):
+            if (
+                isinstance(s, _PhaseStep)
+                and s.cross is not None
+                and s.cross.handler == handler_name
+            ):
                 return s
         return None
+
     for _entry in ctx.projection.global_steps:
         if isinstance(_entry, _LoopStep):
             inner_plan = _find_handler(_entry.steps, "cross_plan")
@@ -309,7 +330,8 @@ def _resolve_global_plan_steps(ctx: _CrossRunContext) -> None:
                 ctx.global_plan_loop = _entry
                 ctx.global_plan_step = inner_plan
                 ctx.global_validate_step = _find_handler(
-                    _entry.steps, "cross_validate_plan",
+                    _entry.steps,
+                    "cross_validate_plan",
                 )
                 break
         elif isinstance(_entry, _PhaseStep) and _entry.cross is not None:
@@ -329,11 +351,11 @@ def _run_planning(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
     r = ctx.r
     pre_existing_plan = _read_plan_file(request.plan_file, terminal=ctx.terminal)
     from pipeline.runtime.roles import PhaseHandoffType as _PhaseHandoffType
+
     _validate_handoff_fires = (
         ctx.global_validate_step is not None
         and ctx.global_validate_step.handoff is not None
-        and ctx.global_validate_step.handoff.type
-            is _PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT
+        and ctx.global_validate_step.handoff.type is _PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT
     )
     _planning_ctx = _CrossPlanningContext(
         task=request.task,
@@ -372,18 +394,25 @@ def _run_planning(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
     ctx.skipped_phase0 = _planning_result.skipped_phase0
     if ctx.has_global_plan:
         ctx.session["phases"]["cross_plan"] = {
-            "output":   ctx.plan_output,
-            "run_dir":  str(ctx.run_dir),
-            "rounds":   ctx.plan_rounds,
+            "output": ctx.plan_output,
+            "run_dir": str(ctx.run_dir),
+            "rounds": ctx.plan_rounds,
             "approved": ctx.plan_approved,
         }
     # ADR 0054: render .md from JSON (fallback for paths planning_loop missed).
-    if (ctx.has_global_plan and not request.dry_run and not ctx.skipped_phase0
-            and not (ctx.run_dir / "cross_plan.md").exists()):
+    if (
+        ctx.has_global_plan
+        and not request.dry_run
+        and not ctx.skipped_phase0
+        and not (ctx.run_dir / "cross_plan.md").exists()
+    ):
         _fallback = plan_parser.parse_cross_plan(ctx.plan_output, ctx.aliases)
         plan_parser.write_cross_plan_artifacts(
-            ctx.run_dir, _fallback, task=request.task,
-            projects=request.projects, aliases=ctx.aliases,
+            ctx.run_dir,
+            _fallback,
+            task=request.task,
+            projects=request.projects,
+            aliases=ctx.aliases,
         )
     ctx.cross_ckpt["phase0_done"] = True
     _write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
@@ -393,18 +422,22 @@ def _run_planning(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         ctx.task_plan = None
     else:
         ctx.task_plan = normalize_cross_task_plan(
-            plan_parser.parse_cross_plan(ctx.plan_output, ctx.aliases), ctx.aliases,
+            plan_parser.parse_cross_plan(ctx.plan_output, ctx.aliases),
+            ctx.aliases,
         )
     distribution: list[tuple[str, str | None]] = (
         [(u.alias, (u.spec or None)) for u in ctx.task_plan.units]
-        if ctx.task_plan else [(a, None) for a in ctx.aliases]
+        if ctx.task_plan
+        else [(a, None) for a in ctx.aliases]
     )
     r.print()
-    r.print(paint(
-        f"  Distribution: {len(distribution)} subtasks → "
-        f"{len(ctx.aliases)} projects",
-        r.C.MAGENTA, r.C.BOLD,
-    ))
+    r.print(
+        paint(
+            f"  Distribution: {len(distribution)} subtasks → {len(ctx.aliases)} projects",
+            r.C.MAGENTA,
+            r.C.BOLD,
+        )
+    )
     for alias, subtask in distribution:
         if subtask:
             line = subtask.replace("\n", " ")[:140]
@@ -458,23 +491,53 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
     _dispatch_result = _run_project_dispatch(_dispatch_ctx)
     if _dispatch_result.paused:
         return True
-    if _dispatch_result.blocking_aliases:
+    from pipeline.cross_project.parent_state_runtime import (
+        reduce_runtime_cross_parent_state,
+    )
+
+    state_session = (
+        ctx.session
+        if isinstance(ctx.session.get("projects"), dict)
+        else {
+            **ctx.session,
+            "projects": {
+                alias: str(path) for alias, path in request.projects.items()
+            },
+        }
+    )
+    reduced_parent = reduce_runtime_cross_parent_state(
+        state_session, ctx.cross_ckpt, ctx.run_dir
+    )
+    ctx.reduced_parent = reduced_parent
+    non_evaluable = tuple(
+        child for child in reduced_parent.children if not child.contract_evaluable
+    )
+    # Cross-only profiles intentionally have no per-project pipeline.  Their
+    # aliases remain represented as missing canonical child facts, but they are
+    # not required inputs to a cross-only contract/release gate.  Profiles
+    # which dispatch children retain the reducer's fail-closed admission.
+    if (
+        (non_evaluable or reduced_parent.violations or reduced_parent.active_operations)
+        and ctx.child_profile is not None
+        and not request.dry_run
+    ):
         from pipeline.cross_project.gate_entries import child_readiness_contract_entry
 
         readiness_entries: dict[str, dict] = {}
-        children = ctx.session.get("phases", {}).get("projects", {})
-        for alias in _dispatch_result.blocking_aliases:
-            child = children.get(alias) if isinstance(children, dict) else None
-            child_status = (
-                child.get("status")
-                if isinstance(child, dict) and isinstance(child.get("status"), str)
-                else "missing"
+        blocked_children = non_evaluable or tuple(reduced_parent.children)
+        parent_violation_reason = (
+            f"parent_inconsistent:{reduced_parent.violations[0].code}"
+            if not non_evaluable and reduced_parent.violations
+            else None
+        )
+        for child_state in blocked_children:
+            alias = child_state.alias
+            child_status = child_state.status or child_state.execution.value
+            child_reason = parent_violation_reason or next(
+                (blocker.code for blocker in child_state.blockers), "child_not_evaluable"
             )
-            child_reason = (
-                str(child.get("halt_reason") or child.get("error") or child_status)
-                if isinstance(child, dict)
-                else "child_session_missing"
-            )
+            if child_state.halt_reason and parent_violation_reason is None:
+                child_reason = child_state.halt_reason
             readiness_entries[alias] = child_readiness_contract_entry(
                 alias=alias,
                 child_status=child_status,
@@ -491,7 +554,8 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
         ctx.review_projects = {alias: Path(path) for alias, path in request.projects.items()}
         ctx.review_common_cwd = (
             os.path.commonpath([str(path) for path in ctx.review_projects.values()])
-            if ctx.review_projects else ctx.common_cwd
+            if ctx.review_projects
+            else ctx.common_cwd
         )
         return False
     _cc_result = run_cross_contract_check(
@@ -525,19 +589,27 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
 def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
     """Run the CFA / system release gate: policy-skip entry or CFA evaluation, persisting the verdict (override preserves the REJECTED audit entry; approved/retry persist the real result). Returns ``True`` on terminal ``halted``; the observability tail / pause is in :func:`_finalize_release_verdict`."""
     r = ctx.r
+    # Re-read at the release boundary: a child may have persisted a terminal
+    # update after dispatch, and CFA must never consume a stale dispatch result.
+    from pipeline.cross_project.parent_state_runtime import reduce_runtime_cross_parent_state
+
+    state_session = (
+        ctx.session
+        if isinstance(ctx.session.get("projects"), dict)
+        else {**ctx.session, "projects": {alias: str(path) for alias, path in request.projects.items()}}
+    )
+    ctx.reduced_parent = reduce_runtime_cross_parent_state(
+        state_session, ctx.cross_ckpt, ctx.run_dir
+    )
     from pipeline.cross_project.gate_entries import skipped_release_entry
     from pipeline.runtime import CrossGateRunPolicy
+
     _release_policy = ctx.profile_setup.cfa_gate_policy
     ctx.release_skipped_by_policy = (
-        not _release_policy.enabled
-        or _release_policy.run is CrossGateRunPolicy.NEVER
+        not _release_policy.enabled or _release_policy.run is CrossGateRunPolicy.NEVER
     )
     if ctx.release_skipped_by_policy:
-        _reason = (
-            "policy_disabled"
-            if not _release_policy.enabled
-            else "policy_never"
-        )
+        _reason = "policy_disabled" if not _release_policy.enabled else "policy_never"
         ctx.session["phases"]["cross_final_acceptance"] = skipped_release_entry(
             reason=_reason,
             source="policy",
@@ -557,10 +629,13 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         build_context,
         result_to_phase_log_entry,
     )
+
     r.banner(
         "CROSS_FINAL_ACCEPTANCE",
         "CROSS-FINAL-ACCEPTANCE — system release gate",
-        r.C.MAGENTA, phase_kind=None, attempt=1,
+        r.C.MAGENTA,
+        phase_kind=None,
+        attempt=1,
     )
     _cfa_ctx = build_context(
         cross_plan_markdown=ctx.plan_output,
@@ -568,6 +643,12 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         session_phases=ctx.session["phases"],
         common_cwd=str(ctx.review_common_cwd),
         review_paths={a: str(p) for a, p in ctx.review_projects.items()},
+        child_states={child.alias: child for child in ctx.reduced_parent.children},
+        parent_blocked=bool(
+            ctx.reduced_parent.violations
+            or ctx.reduced_parent.active_operations
+            or ctx.reduced_parent.pending_decision
+        ),
     )
     _cfa_outcome = evaluate_cfa_gate(
         cfa_ctx=_cfa_ctx,
@@ -591,11 +672,10 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         # Operator override: PRESERVE the REJECTED audit entry, only stamp
         # the override marker (finalizer reads the synthetic result).
         cfa_entry = ctx.session.setdefault("phases", {}).setdefault(
-            "cross_final_acceptance", {},
+            "cross_final_acceptance",
+            {},
         )
-        if isinstance(cfa_entry, dict) and (
-            _cfa_outcome.override_marker is not None
-        ):
+        if isinstance(cfa_entry, dict) and (_cfa_outcome.override_marker is not None):
             cfa_entry["override"] = dict(_cfa_outcome.override_marker)
     elif _cfa_outcome.outcome != "paused":
         # approved_terminal / retry_consumed — persist the real verdict.
@@ -612,17 +692,22 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
     _cfa_outcome = ctx.cfa_outcome
     if _cfa_result.prompt_text:
         _cfa_usage = _capture_invoke_usage(
-            ctx.review_agent, _cfa_result.duration_s,
+            ctx.review_agent,
+            _cfa_result.duration_s,
             prompt=_cfa_result.prompt_text,
             output=_cfa_result.raw_output,
             model=getattr(ctx.review_agent, "model", None),
             terminal=ctx.terminal,
         )
         _accumulate_phase_usage(
-            ctx.cross_phase_usage, "cross_final_acceptance", _cfa_usage,
+            ctx.cross_phase_usage,
+            "cross_final_acceptance",
+            _cfa_usage,
         )
         _print_usage_snapshot(
-            "cross_final_acceptance", _cfa_usage, terminal=ctx.terminal,
+            "cross_final_acceptance",
+            _cfa_usage,
+            terminal=ctx.terminal,
         )
     _cfa_language = str(config.AppConfig.load().task_language or "")
     _cfa_label = (
@@ -638,6 +723,7 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
     from pipeline.cross_project.final_acceptance import (
         result_to_phase_log_entry,
     )
+
     _cfa_block = render_cross_final_acceptance_block(
         result_to_phase_log_entry(_cfa_result),
     )
@@ -656,7 +742,8 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
         "CROSS-FINAL-ACCEPTANCE — system release gate",
         "END",
         (f"{_cfa_result.parsed.verdict} (source={_cfa_result.source})"),
-        phase_kind=None, attempt=1,
+        phase_kind=None,
+        attempt=1,
     )
     # Pause already persisted via the gate; exit WITHOUT finalize (no
     # ``run.end``). Re-flush metrics to include the CFA tokens the gate's
@@ -667,10 +754,13 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
                 import json as _json
 
                 from core.observability.metrics import cross_metrics_dict
+
                 _paused_metrics = cross_metrics_dict({}, ctx.cross_phase_usage)
                 (ctx.run_dir / "metrics.json").write_text(
                     _json.dumps(
-                        _paused_metrics, indent=2, ensure_ascii=False,
+                        _paused_metrics,
+                        indent=2,
+                        ensure_ascii=False,
                     ),
                     encoding="utf-8",
                 )
@@ -699,24 +789,19 @@ def _cross_delivery_plan(ctx: _CrossRunContext) -> tuple[bool, bool]:
     outcome. On the policy-skip path ``ctx.cfa_outcome is None`` so ``override``
     is ``False`` — no ``AttributeError`` on ``ctx.cfa_outcome.outcome``.
     """
-    from pipeline.cross_project.gate_entries import (
-        child_readiness_blocking_aliases,
-    )
-
-    # Child readiness is an admission precondition, independent of the CFA
-    # policy.  A disabled/never CFA writes a SKIPPED audit entry, but it must
-    # not allow delivery to begin for a required child that never reached a
-    # terminal-success state.  Finalization repeats this fail-closed decision
-    # when setting the durable parent status.
-    if child_readiness_blocking_aliases(
-        getattr(ctx, "contract_results", {}),
+    # Contract-evaluable child inputs are the readiness precondition.  A
+    # rejected release stays evaluable so CFA can reject it and an existing
+    # operator override can preserve the established delivery semantics.
+    reduced_parent = getattr(ctx, "reduced_parent", None)
+    if getattr(ctx, "child_profile", None) is not None and reduced_parent is not None and (
+        reduced_parent.violations
+        or reduced_parent.active_operations
+        or reduced_parent.pending_decision is not None
+        or any(not child.contract_evaluable for child in reduced_parent.children)
     ):
         return False, False
 
-    override = (
-        ctx.cfa_outcome is not None
-        and ctx.cfa_outcome.outcome == "override_continue"
-    )
+    override = ctx.cfa_outcome is not None and ctx.cfa_outcome.outcome == "override_continue"
     return True, override
 
 
@@ -729,10 +814,20 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
     deliver. The 'deliver now?' decision lives in :func:`_cross_delivery_plan`;
     this stays a thin sequencer.
     """
+    # Finalization is a second durable boundary, independent of the release
+    # result that was just computed.  Narrow direct unit callers do not carry
+    # a parent session manifest and therefore have no reducible parent facts.
+    if isinstance(ctx.session.get("projects"), dict):
+        from pipeline.cross_project.parent_state_runtime import reduce_runtime_cross_parent_state
+
+        ctx.reduced_parent = reduce_runtime_cross_parent_state(
+            ctx.session, ctx.cross_ckpt, ctx.run_dir
+        )
     should_deliver, override = _cross_delivery_plan(ctx)
     if should_deliver:
         from core.infra import config as _delivery_config
         from pipeline.cross_project.cross_delivery import run_cross_delivery
+
         ctx.delivery_result = run_cross_delivery(
             session=ctx.session,
             projects=request.projects,
@@ -748,6 +843,7 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
         finalize_cross_run,
         finalize_cross_with_terminal_output,
     )
+
     _finalization_ctx = CrossFinalizationContext(
         run_dir=ctx.run_dir,
         output_dir=bool(request.output_dir),
@@ -761,6 +857,8 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
         cross_phase_usage=ctx.cross_phase_usage,
         delivery_result=ctx.delivery_result,
         cross_ckpt=ctx.cross_ckpt,
+        parent_state=getattr(ctx, "reduced_parent", None),
+        require_child_readiness=getattr(ctx, "child_profile", True) is not None,
     )
     if ctx.terminal:
         finalize_cross_with_terminal_output(_finalization_ctx)

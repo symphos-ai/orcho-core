@@ -152,12 +152,18 @@ def _make_capturing_child_dispatch(
 
     def _fake(request):
         captured.append(request)
+        session = {
+            "status": "done",
+            "phases": {"rounds": [{"round": 1}]},
+        }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
-            session={
-                "status": "done",
-                "phases": {"rounds": [{"round": 1}]},
-            },
-            output_dir=None,
+            session=session,
+            output_dir=request.output_dir,
             run_id=f"test-child-{request.project_alias}",
         )
 

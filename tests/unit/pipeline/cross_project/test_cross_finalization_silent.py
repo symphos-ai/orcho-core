@@ -23,6 +23,7 @@ Pins the load-bearing contract Phase F introduces:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -34,6 +35,14 @@ from pipeline.cross_project.finalization import (
     CrossFinalizationResult,
     finalize_cross_run,
     finalize_cross_with_terminal_output,
+)
+from pipeline.run_state.cross_parent import (
+    ActiveOperation,
+    ChildFacts,
+    CrossParentFacts,
+    Observation,
+    PhaseIdentity,
+    reduce_cross_parent_state,
 )
 
 
@@ -148,6 +157,38 @@ def test_silent_service_emits_run_end_exactly_once(
     assert run_end[0]["status"] == "done"
     assert run_end[0]["projects"] == 2
     assert run_end[0]["rounds"] == 2
+
+
+def test_canonical_active_child_blocks_terminal_success(tmp_path: Path) -> None:
+    """A fresh reducer boundary wins over an otherwise approved CFA result."""
+    state = reduce_cross_parent_state(
+        CrossParentFacts(
+            declared_aliases=("api",),
+            children=(
+                ChildFacts(
+                    alias="api",
+                    physical=Observation.PRESENT,
+                    physical_status="done",
+                    active_operations=(ActiveOperation(phase=PhaseIdentity("verify", "api")),),
+                ),
+            ),
+        )
+    )
+    ctx = _make_context(
+        run_dir=tmp_path,
+        output_dir=False,
+        cfa_result=_make_cfa(approved=True),
+        projects={"api": Path("/tmp/api")},
+    )
+    ctx = replace(ctx, parent_state=state)
+    with (
+        patch("core.observability.events.emit"),
+        patch("pipeline.engine.artifact_mirror.mirror_to_projects", return_value=[]),
+    ):
+        result = finalize_cross_run(ctx)
+
+    assert result.status == "failed"
+    assert result.halt_reason == "cross_child_readiness_blocked"
 
 
 def test_terminal_wrapper_does_not_re_emit_run_end(

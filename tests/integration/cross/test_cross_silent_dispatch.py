@@ -50,6 +50,7 @@ per-alias dispatch without needing a real LLM provider.
 
 from __future__ import annotations
 
+import json
 from dataclasses import fields
 from types import SimpleNamespace
 from typing import Any
@@ -134,12 +135,18 @@ def _make_capturing_run_project_pipeline(
 
     def _fake(request):
         captured_requests.append(request)
+        session = {
+            "status": "done",
+            "phases": {"rounds": [{"round": 1}]},
+        }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
-            session={
-                "status": "done",
-                "phases": {"rounds": [{"round": 1}]},
-            },
-            output_dir=None,
+            session=session,
+            output_dir=request.output_dir,
             run_id="test-run",
         )
 

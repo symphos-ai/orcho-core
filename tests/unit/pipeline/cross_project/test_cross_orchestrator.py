@@ -18,7 +18,9 @@ function.
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import fields
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -70,7 +72,18 @@ def _make_fake_run_project_pipeline(handler):
         kwargs = _request_as_kwargs(request)
         result = handler(**kwargs)
         if isinstance(result, dict):
-            return _run_pipeline_result(result)
+            output_dir = Path(request.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            meta_path = output_dir / "meta.json"
+            if not meta_path.exists():
+                meta_path.write_text(json.dumps(result), encoding="utf-8")
+            from pipeline.project.types import ProjectRunResult
+
+            return ProjectRunResult(
+                session=result,
+                output_dir=output_dir,
+                run_id=request.project_alias or "test-run",
+            )
         return result
     return _fake
 

@@ -254,6 +254,11 @@ def test_dispatch_resume_rebinds_done_alias_from_durable_session(
     )
     ctx.cross_ckpt = {"sub_status": {"core": "done"}}
     ctx.session = {"phases": {"projects": {"core": preserved_child}}}
+    (run_dir / "core").mkdir()
+    (run_dir / "core" / "meta.json").write_text(
+        json.dumps(preserved_child),
+        encoding="utf-8",
+    )
 
     result = run_project_dispatch(ctx)
     assert result.paused is False

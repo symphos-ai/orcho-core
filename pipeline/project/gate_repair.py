@@ -107,9 +107,7 @@ def run_gate_hook(
     # reconciliation pass can tell apart "ran" from "planned but not run".
     executed: set[tuple[str, str, str]] = set()
     existing_receipts = (
-        _delivery_receipt_statuses(run, contract)
-        if hook == "before_delivery"
-        else {}
+        _delivery_receipt_statuses(run, contract) if hook == "before_delivery" else {}
     )
     for entry in gates:
         identity = _entry_identity(entry)
@@ -149,8 +147,22 @@ def run_gate_hook(
                 )
                 return disposition
             continue
-        receipt = _run_gate_command(run, contract, entry)
+        _emit_scheduled_gate_start(entry, hook=hook, phase=phase)
+        try:
+            receipt = _run_gate_command(run, contract, entry)
+        except BaseException:
+            _emit_scheduled_gate_end(
+                entry, hook=hook, phase=phase, outcome="failed", duration_s=0.0
+            )
+            raise
         classification = _classify_gate_receipt(receipt, _placeholders(run))
+        _emit_scheduled_gate_end(
+            entry,
+            hook=hook,
+            phase=phase,
+            outcome="passed" if classification.status == "present" else "failed",
+            duration_s=_gate_duration(receipt),
+        )
         executed.add(identity)
         _record_executed_gate_event(
             run,
@@ -399,6 +411,7 @@ def evaluate_post_phase_gates(run: Any, phase: str) -> None:
         return
     previous_signal = run.state.phase_handoff_request
     from pipeline.project.verification_ledger_runtime import live_delta
+
     before = len(live_delta(run))
     run._in_gate_hook = True
     try:
@@ -629,12 +642,14 @@ def _entry_identity(entry: Any) -> tuple[str, str, str]:
 
 def _resolve_entry(entry: Any):
     """Resolve execution ownership and base consequence for one plan entry."""
-    return resolve_selected_execution(VerificationIdentity(
-        command=entry.command,
-        hook=entry.hook,
-        phase=entry.phase,
-        policy=entry.policy,
-    ))
+    return resolve_selected_execution(
+        VerificationIdentity(
+            command=entry.command,
+            hook=entry.hook,
+            phase=entry.phase,
+            policy=entry.policy,
+        )
+    )
 
 
 def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
@@ -773,6 +788,44 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
     return receipt
 
 
+def _emit_scheduled_gate_start(entry: Any, *, hook: str, phase: str) -> None:
+    """Persist the engine-owned gate boundary before its blocking command."""
+    from core.observability.events import emit
+
+    emit(
+        "gate.start",
+        name=entry.command,
+        gate_kind="scheduled",
+        command=entry.command,
+        hook=hook,
+        phase=phase,
+        ownership="engine",
+    )
+
+
+def _emit_scheduled_gate_end(
+    entry: Any, *, hook: str, phase: str, outcome: str, duration_s: float
+) -> None:
+    """Close the typed gate boundary after the command returns or raises."""
+    from core.observability.events import emit
+
+    emit(
+        "gate.end",
+        name=entry.command,
+        outcome=outcome,
+        duration_s=duration_s,
+        command=entry.command,
+        hook=hook,
+        phase=phase,
+        ownership="engine",
+    )
+
+
+def _gate_duration(receipt: dict) -> float:
+    value = receipt.get("duration_s")
+    return float(value) if isinstance(value, int | float) else 0.0
+
+
 def _persist_gate_receipt(run: Any, receipt: dict) -> None:
     """Write the command receipt under the run dir; never raises."""
     output_dir = getattr(getattr(run, "state", None), "output_dir", None)
@@ -795,7 +848,9 @@ def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
 
     checkout = str(getattr(ctx, "checkout", "") or "")
     captured = capture_verification_subject(Path(checkout)) if checkout else None
-    current_subject = captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
+    current_subject = (
+        captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
+    )
     return classify_receipt(
         receipt,
         current_subject=current_subject,
@@ -847,11 +902,15 @@ def _append_gate_event(run: Any, event: dict) -> None:
         record_reuse,
     )
 
-    entry = type("LedgerEntry", (), {
-        "command": event["command"],
-        "hook": event["hook"],
-        "phase": event["phase"],
-    })()
+    entry = type(
+        "LedgerEntry",
+        (),
+        {
+            "command": event["command"],
+            "hook": event["hook"],
+            "phase": event["phase"],
+        },
+    )()
     decision = event["decision"]
     receipt = event.get("receipt_path")
     if decision == "executed_pass":
@@ -941,7 +1000,8 @@ def _fresh_required_commands(run: Any, contract: Any) -> set[str]:
     return {
         command
         for command, (classification, _receipt) in _delivery_receipt_statuses(
-            run, contract,
+            run,
+            contract,
         ).items()
         if classification.status == "present"
     }
@@ -1050,9 +1110,7 @@ def _synthesize_critique(
         stdout = receipt.get("stdout_tail") or ""
         stderr = receipt.get("stderr_tail") or ""
         detail = receipt.get("detail") or ""
-        state.last_test_output = "\n".join(
-            part for part in (evidence, stdout, stderr) if part
-        )
+        state.last_test_output = "\n".join(part for part in (evidence, stdout, stderr) if part)
         if detail:
             parts.append(f"Detail: {detail}")
         if stderr:
@@ -1280,7 +1338,10 @@ def _plan(run: Any, contract: Any, *, epoch: str) -> Any:
     from pipeline.project.verification_selection_context import selection_context_for_run
 
     return select_epoch(
-        run, contract, epoch=epoch, context=selection_context_for_run(run, contract),
+        run,
+        contract,
+        epoch=epoch,
+        context=selection_context_for_run(run, contract),
     )
 
 

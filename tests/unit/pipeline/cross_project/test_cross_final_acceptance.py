@@ -15,6 +15,7 @@ respectively — this file pins the gate module in isolation.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -23,6 +24,12 @@ from pipeline.cross_project.final_acceptance import (
     build_context,
     result_to_phase_log_entry,
     run_cross_final_acceptance,
+)
+from pipeline.run_state.cross_parent import (
+    ChildFacts,
+    CrossParentFacts,
+    Observation,
+    reduce_cross_parent_state,
 )
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -230,6 +237,16 @@ class TestPreconditionMissingRelease:
         assert [b.id for b in res.parsed.release_blockers] == [
             "CFA_MISSING_RELEASE_api",
         ]
+
+    def test_canonical_success_without_release_entry_still_blocks(self) -> None:
+        state = reduce_cross_parent_state(
+            CrossParentFacts(("api",), (ChildFacts("api", Observation.PRESENT, "done"),))
+        )
+        ctx = _build(("api",), projects={"api": {"status": "done", "phases": {}}})
+        ctx = replace(ctx, child_states={"api": state.children[0]})
+        res = run_cross_final_acceptance(ctx, codex=None, dry_run=False)
+
+        assert [b.id for b in res.parsed.release_blockers] == ["CFA_MISSING_RELEASE_api"]
 
     def test_child_with_partial_release_surface_blocks(self) -> None:
         # final_acceptance present but missing release fields (legacy /

@@ -92,6 +92,29 @@ sub-project list (status per alias). `quality_gates` is a best-effort
 projection of finalized gate events from `evidence.json` when that artifact
 exists.
 
+### `sdk.cross_parent_state`
+
+```python
+load_cross_parent_state(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossParentState
+```
+
+Loads the immutable canonical reduction for one cross-project parent run. The
+result is additive to the SDK surface and does not alter `RunStatus` or an
+existing payload. `CrossParentState` contains ordered child projections,
+active operations, an exact pending decision, blockers, consistency violations,
+the parent classification, and an optional terminal disposition. Child
+projections keep execution, contract evaluability, release disposition, and
+release readiness as distinct fields. The exported supporting types are
+`ChildState`, `ActiveOperation`, `PhaseIdentity`, `ScheduledGateIdentity`,
+`PendingDecision`, `ChildBlocker`, and `ConsistencyViolation`.
+
+This is read-only: context resolution uses `find_run`, then the loader reads
+only the parent metadata, declared child paths, typed events, and scheduled-gate
+ledger through the shared disk adapter. It does not write a state snapshot,
+parse transcripts, infer handoff identifiers from prefixes, or discover
+directories. Runtime consumers and this SDK reader use the same reducer for
+equivalent facts.
+
 ### `sdk.history`
 
 ```python
