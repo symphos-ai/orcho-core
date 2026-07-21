@@ -13,9 +13,65 @@ whether the skip blocks system release.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from pipeline.runtime import CrossGateSkipPolicy
+
+
+def child_readiness_contract_entry(
+    *,
+    alias: str,
+    child_status: str,
+    child_reason: str,
+) -> dict[str, Any]:
+    """Build an unevaluable contract entry for a non-ready child.
+
+    This is a readiness precondition, not a policy skip or a compatibility
+    verdict.  It deliberately has no ``skipped`` / ``on_skip`` fields: policy
+    skip semantics must never decide what happens to a child that did not
+    produce a reviewable terminal-success session.
+    """
+    return {
+        "approved":      False,
+        "verdict":       "NOT_EVALUABLE",
+        "not_evaluable": True,
+        "source":        "precondition",
+        "reason":        "child_readiness",
+        "child_status":  child_status,
+        "child_reason":  child_reason,
+        "short_summary": (
+            f"contract_check not evaluable for [{alias}]: child is "
+            f"{child_status} ({child_reason})."
+        ),
+        "findings":      [],
+        "risks":         [],
+        "checks":        [],
+    }
+
+
+def child_readiness_blocking_aliases(
+    entries: Mapping[str, Any] | Any,
+) -> tuple[str, ...]:
+    """Return aliases carrying the terminal child-readiness precondition.
+
+    This deliberately recognises the full NOT_EVALUABLE precondition shape,
+    rather than treating arbitrary contract-check failures as readiness
+    failures.  Both delivery admission and terminal finalization consume this
+    predicate so a policy-skipped CFA cannot green-light a non-success child.
+    """
+    if not isinstance(entries, Mapping):
+        return ()
+    return tuple(
+        alias
+        for alias, entry in entries.items()
+        if isinstance(alias, str)
+        and isinstance(entry, Mapping)
+        and entry.get("verdict") == "NOT_EVALUABLE"
+        and entry.get("not_evaluable") is True
+        and entry.get("source") == "precondition"
+        and entry.get("reason") == "child_readiness"
+    )
 
 
 def skipped_contract_entry(
@@ -110,6 +166,8 @@ def _short_summary_release(reason: str, source: str) -> str:
 
 
 __all__ = [
+    "child_readiness_blocking_aliases",
+    "child_readiness_contract_entry",
     "skipped_contract_entry",
     "skipped_release_entry",
 ]

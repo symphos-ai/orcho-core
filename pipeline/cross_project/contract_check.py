@@ -104,6 +104,29 @@ class ContractCheckResult:
     review_common_cwd: str
 
 
+def _is_completed_contract_cache_entry(entry: Any) -> bool:
+    """Return whether one persisted entry is a reusable contract result.
+
+    ``NOT_EVALUABLE`` records a dispatch readiness precondition, not a completed
+    contract evaluation.  Retrying the child must therefore re-enter this gate
+    instead of indefinitely reusing that entry as a verdict.
+    """
+    if not isinstance(entry, Mapping) or entry.get("not_evaluable") is True:
+        return False
+    verdict = entry.get("verdict")
+    if verdict in {"APPROVED", "REJECTED"}:
+        return True
+    return verdict == "SKIPPED" and entry.get("skipped") is True
+
+
+def _has_completed_contract_cache(entries: Any) -> bool:
+    return (
+        isinstance(entries, Mapping)
+        and bool(entries)
+        and all(_is_completed_contract_cache_entry(entry) for entry in entries.values())
+    )
+
+
 def run_cross_contract_check(ctx: ContractCheckContext) -> ContractCheckResult:
     """Run the cross contract-check gate; see module docstring."""
     task = ctx.task
@@ -200,15 +223,13 @@ def run_cross_contract_check(ctx: ContractCheckContext) -> ContractCheckResult:
                     session.setdefault("phases", {})["contract_check"] = _disk_cc
             except (OSError, ValueError):
                 pass
-    _contract_check_cached = (
-        bool(resume_from)
-        and isinstance(session.get("phases", {}).get("contract_check"), dict)
-        and bool(session["phases"]["contract_check"])
+    _contract_check_cached = bool(resume_from) and _has_completed_contract_cache(
+        session.get("phases", {}).get("contract_check"),
     )
     if _contract_check_cached:
         contract_results = session["phases"]["contract_check"]
         for _entry in contract_results.values():
-            if isinstance(_entry, dict) and _entry.get("approved") is False:
+            if isinstance(_entry, dict) and _entry.get("verdict") == "REJECTED":
                 contract_check_failed = True
                 if contract_check_failure_reason is None:
                     contract_check_failure_reason = (

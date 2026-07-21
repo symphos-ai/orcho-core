@@ -69,10 +69,46 @@ at least one global `plan` / `validate_plan` step to produce a handoff;
 the `task` scoped profile is rejected for cross mode.
 
 `contract_check` is **not** a profile step. The cross runner appends it
-as a cross-only per-alias gate after all project pipelines finish; mono
-runs never invoke it. Contract-check verdicts are recorded in
-`session.phases.contract_check[alias]` and feed into the system
-release gate below.
+as a cross-only per-alias gate only after a **readiness decision** over
+all dispatched children; mono runs never invoke it. The child session's
+durable `status`, not a normal Python return, is the authority for that
+decision:
+
+| Child durable status / payload | Readiness outcome | Cross checkpoint `sub_status` |
+| --- | --- | --- |
+| `done`, `success`, `completed` | ready | `done` |
+| `halted` with canonical final-acceptance rejection and a typed rejecting release record | release-evaluable rejection | `done` |
+| `awaiting_phase_handoff` with a mapping payload | pause parent dispatch | `awaiting_phase_handoff` |
+| `failed`, other `halted`, `interrupted` | blocked | `failed` |
+| missing, non-string, unknown, or a pause without mapping payload | fail-closed blocked | `failed` |
+
+Dispatch persists the exact child session at
+`session.phases.projects[alias]` and separately returns an ordered,
+immutable readiness result. A non-empty blocked-alias result prevents
+contract gate policy/decision/provider invocation. Instead, only each
+blocked alias receives this precondition evidence at
+`session.phases.contract_check[alias]`:
+
+```json
+{
+  "approved": false,
+  "verdict": "NOT_EVALUABLE",
+  "not_evaluable": true,
+  "source": "precondition",
+  "reason": "child_readiness",
+  "child_status": "halted",
+  "child_reason": "operator requested stop",
+  "findings": [],
+  "risks": [],
+  "checks": []
+}
+```
+
+`NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
+policy applies, and it is not an interface-compatibility verdict.
+Resume treats it as incomplete evidence and re-runs contract evaluation
+after a successful child retry. Real `APPROVED`, `REJECTED`, and explicit
+`SKIPPED` entries retain their normal resume-cache behavior.
 
 `cross_final_acceptance` is the **system release
 gate**: a single cross-only terminal step that runs once after
@@ -85,8 +121,11 @@ matching. It runs in two paths:
   release verdict when any upstream signal blocks ship: missing /
   crashed child sub-pipeline, missing per-project release verdict,
   per-project `final_acceptance.ship_ready == false`, contract_check
-  REJECTED, or parse error upstream. Each violation produces one
-  release blocker with a `CFA_*` id prefix.
+  REJECTED, or parse error upstream. A `NOT_EVALUABLE` child-readiness
+  entry becomes `CFA_MISSING_CHILD_<alias>` with its exact child status
+  and halt/error reason; it does not become `CFA_CONTRACT_REJECTED` and
+  synthesizes `contract_status.interfaces=not_applicable`. Each
+  violation produces one release blocker with a `CFA_*` id prefix.
 * **Agent path** — preconditions pass → invokes the cross reviewer
   with the cross plan + per-project release verdicts + contract check
   results, parses via `parse_release` (Phase 1 contract).
@@ -130,9 +169,12 @@ flowchart TD
   L --> M["write implementation_handoff.{json,md} (JSON canonical)"]
   M --> N["run_pipeline(profile_obj, plan_source='cross', handoff_path=…json)"]
   N --> O["project_steps: implement / review / repair / final"]
-  O --> P["contract_check (per-alias, cross-only)"]
-  P --> R["cross_final_acceptance (system release gate, cross-only)"]
-  R --> Q["run.end (status=done | failed)"]
+  O --> P{"all children ready?"}
+  P -->|yes| R["contract_check (per-alias, cross-only)"]
+  P -->|no| S["persist NOT_EVALUABLE child_readiness evidence"]
+  R --> T["cross_final_acceptance (system release gate, cross-only)"]
+  S --> T
+  T --> Q["run.end (status=done | failed)"]
 ```
 
 `cross_final_acceptance` is the single terminal step that writes
@@ -146,6 +188,11 @@ with `CFA_*` ids:
 | `CFA_CHILD_REJECTED_<alias>` | per-project `final_acceptance.ship_ready == false` |
 | `CFA_CONTRACT_REJECTED_<alias>` | `contract_check[alias].verdict == "REJECTED"` |
 | `CFA_PARSE_ERROR_<alias>` | parse error in upstream `final_acceptance` or `contract_check` |
+
+`CFA_MISSING_CHILD_<alias>` also represents dispatch-readiness failures
+such as a durable child `halted`, `interrupted`, or unknown status. Its
+body carries the persisted child status plus halt reason/error; it is a
+readiness blocker, not proof that an interface is broken.
 
 Event identity:
 
@@ -268,6 +315,9 @@ contract review surfaces as a structured object in
 contract; `raw_response` preserves the model's JSON for re-validation.
 Malformed structured output is downgraded to `REJECTED` with a
 `parse_error` field — the contract is the gate, not prose heuristics.
+When child readiness blocks admission, the separate `NOT_EVALUABLE`
+precondition shape above is persisted instead; consumers must not render
+it as a rejected compatibility verdict.
 
 ## After the gate: cross delivery and resume (pointers)
 

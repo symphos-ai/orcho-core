@@ -458,6 +458,42 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
     _dispatch_result = _run_project_dispatch(_dispatch_ctx)
     if _dispatch_result.paused:
         return True
+    if _dispatch_result.blocking_aliases:
+        from pipeline.cross_project.gate_entries import child_readiness_contract_entry
+
+        readiness_entries: dict[str, dict] = {}
+        children = ctx.session.get("phases", {}).get("projects", {})
+        for alias in _dispatch_result.blocking_aliases:
+            child = children.get(alias) if isinstance(children, dict) else None
+            child_status = (
+                child.get("status")
+                if isinstance(child, dict) and isinstance(child.get("status"), str)
+                else "missing"
+            )
+            child_reason = (
+                str(child.get("halt_reason") or child.get("error") or child_status)
+                if isinstance(child, dict)
+                else "child_session_missing"
+            )
+            readiness_entries[alias] = child_readiness_contract_entry(
+                alias=alias,
+                child_status=child_status,
+                child_reason=child_reason,
+            )
+        ctx.session["phases"]["contract_check"] = readiness_entries
+        ctx.contract_results = readiness_entries
+        # Readiness is a CFA precondition, not an interface compatibility
+        # failure.  Do not trigger contract-rejection finalization semantics.
+        ctx.contract_check_failed = False
+        ctx.contract_check_failure_reason = None
+        # CFA still needs safe, total review targets even though its
+        # precondition path will avoid an agent call.
+        ctx.review_projects = {alias: Path(path) for alias, path in request.projects.items()}
+        ctx.review_common_cwd = (
+            os.path.commonpath([str(path) for path in ctx.review_projects.values()])
+            if ctx.review_projects else ctx.common_cwd
+        )
+        return False
     _cc_result = run_cross_contract_check(
         ContractCheckContext(
             task=request.task,
@@ -663,6 +699,20 @@ def _cross_delivery_plan(ctx: _CrossRunContext) -> tuple[bool, bool]:
     outcome. On the policy-skip path ``ctx.cfa_outcome is None`` so ``override``
     is ``False`` — no ``AttributeError`` on ``ctx.cfa_outcome.outcome``.
     """
+    from pipeline.cross_project.gate_entries import (
+        child_readiness_blocking_aliases,
+    )
+
+    # Child readiness is an admission precondition, independent of the CFA
+    # policy.  A disabled/never CFA writes a SKIPPED audit entry, but it must
+    # not allow delivery to begin for a required child that never reached a
+    # terminal-success state.  Finalization repeats this fail-closed decision
+    # when setting the durable parent status.
+    if child_readiness_blocking_aliases(
+        getattr(ctx, "contract_results", {}),
+    ):
+        return False, False
+
     override = (
         ctx.cfa_outcome is not None
         and ctx.cfa_outcome.outcome == "override_continue"

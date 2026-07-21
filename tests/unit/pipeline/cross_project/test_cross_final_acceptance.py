@@ -101,6 +101,21 @@ def _rejected_contract_check() -> dict:
     }
 
 
+def _child_readiness_contract_check() -> dict:
+    return {
+        "approved": False,
+        "verdict": "NOT_EVALUABLE",
+        "not_evaluable": True,
+        "source": "precondition",
+        "reason": "child_readiness",
+        "child_status": "halted",
+        "child_reason": "operator requested stop",
+        "findings": [],
+        "risks": [],
+        "checks": [],
+    }
+
+
 def _build(aliases, *, projects=None, contracts=None, plan="# cross plan") -> CrossFinalAcceptanceContext:
     return build_context(
         cross_plan_markdown=plan,
@@ -181,6 +196,30 @@ class TestPreconditionMissingChild:
         assert blocker.id == "CFA_MISSING_CHILD_api"
         # Error hint is folded into the body so log greppers can find it.
         assert "RuntimeError" in blocker.body
+
+    def test_halted_readiness_is_not_a_contract_rejection(self) -> None:
+        ctx = _build(
+            ("api",),
+            projects={
+                "api": {
+                    "status": "halted",
+                    "halt_reason": "operator requested stop",
+                    "phases": {},
+                },
+            },
+            contracts={"api": _child_readiness_contract_check()},
+        )
+        res = run_cross_final_acceptance(ctx, codex=None, dry_run=False)
+
+        assert res.source == "precondition"
+        assert [b.id for b in res.parsed.release_blockers] == [
+            "CFA_MISSING_CHILD_api",
+        ]
+        body = res.parsed.release_blockers[0].body
+        assert "halted" in body
+        assert "operator requested stop" in body
+        assert "CFA_CONTRACT_REJECTED" not in body
+        assert res.parsed.contract_status.interfaces == "not_applicable"
 
 
 class TestPreconditionMissingRelease:

@@ -333,6 +333,19 @@ def _decide_base_status(
     ctx: CrossFinalizationContext,
 ) -> tuple[Literal["done", "failed"], str | None, str | None, bool]:
     """The pre-delivery CFA / contract_check status decision."""
+    from pipeline.cross_project.gate_entries import (
+        child_readiness_blocking_aliases,
+    )
+
+    readiness_blocks = child_readiness_blocking_aliases(ctx.contract_results)
+    if readiness_blocks:
+        return (
+            "failed",
+            "cross_child_readiness_blocked",
+            "required child readiness precondition failed "
+            f"(aliases: {', '.join(readiness_blocks)})",
+            False,
+        )
     if ctx.cfa_result is None:
         _blocking_skips: list[str] = []
         for _alias, _entry in ctx.contract_results.items():
