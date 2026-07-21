@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from pipeline.control.continuation import (
     ContinuationDecision,
+    ContinuationRequest,
+    ContinuationResolution,
+    resolve_continuation,
     resolve_continuation_decision,
 )
 from pipeline.control.handoff_banners import (
@@ -123,6 +126,9 @@ __all__ = [
     "classify_implement_incomplete",
     "classify_resume_mode",
     "ContinuationDecision",
+    "ContinuationRequest",
+    "ContinuationResolution",
+    "resolve_continuation",
     "detect_active_followup_child",
     "detect_active_handoff_without_decision",
     "extract_cross_followup_session_seeds",

@@ -39,12 +39,13 @@ from typing import Any
 
 from core.observability.logging import normalize_output_mode
 from pipeline.argv import build_orch_argv
-from pipeline.control.continuation import resolve_continuation_decision
+from pipeline.control.continuation import ContinuationRequest
 from pipeline.project.correction_followup import (
     compose_correction_context,
     compose_correction_task,
 )
 from sdk.errors import LaunchError, RunNotFound
+from sdk.run_control.continuation import preflight_continuation
 from sdk.runs import find_runs_dir
 
 # ---------------------------------------------------------------------------
@@ -114,6 +115,17 @@ class CorrectionFollowupLaunchRequest:
     operator_comment: str
     runs_dir: str | None = None
     workspace: str | None = None
+    output_mode: str = "summary"
+
+
+@dataclass(frozen=True, slots=True)
+class FromRunPlanLaunchRequest:
+    """Request a fresh implementation child from a persisted parent plan."""
+
+    parent_run_id: str
+    runs_dir: str | None = None
+    workspace: str | None = None
+    profile: str = "feature"
     output_mode: str = "summary"
 
 
@@ -489,6 +501,12 @@ def resume_run(
     if not run_dir.is_dir():
         raise RunNotFound(f"run not found: {run_id} (in {rd})")
 
+    preflight = preflight_continuation(
+        ContinuationRequest(run_id=run_id, intent="resume"), parent_run_dir=run_dir,
+    )
+    if preflight.resolution.blocker:
+        raise LaunchError(f"resume cannot start: {preflight.resolution.blocker}")
+
     state = read_launch_state(run_dir)
     if state is None:
         raise RunNotFound(
@@ -565,14 +583,17 @@ def launch_correction_followup(
         workspace=request.workspace, runs_dir=request.runs_dir, cwd=None,
     )
     parent_dir = runs_dir / request.parent_run_id
-    parent_meta = _read_meta(parent_dir)
+    preflight = preflight_continuation(
+        ContinuationRequest(
+            run_id=request.parent_run_id, intent="followup", operator_comment=comment,
+        ),
+        parent_run_dir=parent_dir,
+    )
+    parent_meta = preflight.parent_meta
     if parent_meta is None:
         raise RunNotFound(f"run {request.parent_run_id}: meta.json is unavailable")
-    decision = resolve_continuation_decision(
-        run_id=request.parent_run_id, meta=parent_meta, parent_run_dir=parent_dir,
-    )
-    if decision.blocked or decision.continuation_subject != "retained_change":
-        raise LaunchError(f"correction follow-up cannot start: {decision.reason}")
+    if preflight.resolution.blocker:
+        raise LaunchError(f"correction follow-up cannot start: {preflight.resolution.blocker}")
     project_dir = parent_meta.get("project")
     task = parent_meta.get("task")
     if not isinstance(project_dir, str) or not project_dir.strip():
@@ -580,7 +601,11 @@ def launch_correction_followup(
     if not isinstance(task, str) or not task.strip():
         raise LaunchError("parent meta.json missing task")
     child_id = run_id or _mint_run_id()
+    if child_id == request.parent_run_id:
+        raise LaunchError("follow-up child run_id must differ from parent_run_id")
     child_dir = runs_dir / child_id
+    if child_dir.exists():
+        raise LaunchError(f"follow-up child run already exists: {child_id}")
     child_dir.mkdir(parents=True)
     context = child_dir / "correction_context.md"
     context.write_text(
@@ -599,6 +624,55 @@ def launch_correction_followup(
         workspace=_workspace_from_runs_dir(runs_dir), resume=request.parent_run_id,
         run_id=child_id, output_dir=str(child_dir), profile="correction",
         output_mode=output_mode, no_interactive=True,
+    )
+    cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
+    env = _launch_env(child_id)
+    log_fd = (child_dir / "runner.log").open("w", encoding="utf-8")
+    popen = _spawn_detached(cmd, project_dir=project_dir, env=env, log_fd=log_fd)
+    run = LaunchedRun(
+        run_id=child_id, pid=popen.pid, pgid=popen.pid, run_dir=child_dir,
+        project_dir=project_dir, command=cmd, started_at=now_iso(), mock=False,
+        output_mode=output_mode,
+    )
+    write_launch_state(run)
+    return LaunchResult(run=run, popen=popen)
+
+
+def launch_from_run_plan(
+    request: FromRunPlanLaunchRequest, *, run_id: str | None = None,
+) -> LaunchResult:
+    """Spawn a fresh child that consumes only a parent's parsed-plan artifact."""
+    runs_dir = find_runs_dir(
+        workspace=request.workspace, runs_dir=request.runs_dir, cwd=None,
+    )
+    parent_dir = runs_dir / request.parent_run_id
+    preflight = preflight_continuation(
+        ContinuationRequest(run_id=request.parent_run_id, intent="from_run_plan"),
+        parent_run_dir=parent_dir,
+    )
+    parent_meta = preflight.parent_meta
+    if parent_meta is None:
+        raise RunNotFound(f"run {request.parent_run_id}: meta.json is unavailable")
+    if preflight.resolution.blocker:
+        raise LaunchError(f"from-run-plan cannot start: {preflight.resolution.blocker}")
+    project_dir = parent_meta.get("project")
+    task = parent_meta.get("task")
+    if not isinstance(project_dir, str) or not project_dir.strip():
+        raise LaunchError("parent meta.json missing project")
+    if not isinstance(task, str) or not task.strip():
+        raise LaunchError("parent meta.json missing task")
+    child_id = run_id or _mint_run_id()
+    if child_id == request.parent_run_id:
+        raise LaunchError("from-run-plan child run_id must differ from parent_run_id")
+    child_dir = runs_dir / child_id
+    if child_dir.exists():
+        raise LaunchError(f"from-run-plan child run already exists: {child_id}")
+    child_dir.mkdir(parents=True)
+    output_mode = normalize_output_mode(request.output_mode)
+    argv = build_orch_argv(
+        project=project_dir, task=task, workspace=_workspace_from_runs_dir(runs_dir),
+        run_id=child_id, output_dir=str(child_dir), profile=request.profile,
+        output_mode=output_mode, from_run_plan=request.parent_run_id,
     )
     cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]
     env = _launch_env(child_id)
@@ -666,6 +740,8 @@ def cancel_run(
 
 __all__ = [
     "CancelResult",
+    "CorrectionFollowupLaunchRequest",
+    "FromRunPlanLaunchRequest",
     "LaunchResult",
     "LaunchSpec",
     "LaunchedRun",
@@ -674,6 +750,8 @@ __all__ = [
     "cancel_run",
     "is_pid_alive",
     "launch_run",
+    "launch_correction_followup",
+    "launch_from_run_plan",
     "meta_status_is_terminal",
     "now_iso",
     "read_launch_state",

@@ -43,6 +43,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pipeline.control.continuation import ContinuationRequest
 from pipeline.control.resume_context import (
     detect_active_followup_child,
     is_terminal_commit_delivery_pending,
@@ -71,6 +72,8 @@ from sdk.run_control import (
     recovery_lineage,
     run_diagnosis,
 )
+from sdk.run_control.continuation import preflight_continuation
+from sdk.status import load_status
 from tests.integration.control_loop import _harness as H
 
 pytestmark = [pytest.mark.project_run, pytest.mark.serial]
@@ -336,6 +339,70 @@ def test_rejected_release_terminal_family_matches_predicate(
     # A rejected release that is still decidable must be a correction gate.
     if dds.decidable:
         assert dds.kind == "correction"
+
+
+def test_continuation_read_models_preserve_retained_followup_and_preflight_blocker(
+    states: dict[str, H.DriverResult], tmp_path,
+) -> None:
+    """All SDK projections defer operation selection to the continuation reducer.
+
+    A retained correction is a child follow-up only — never a plan-artifact
+    launch.  Conversely, a checkpoint-looking finalized parent may be visible
+    to read models but its canonical launch preflight blocks the actual resume
+    before any launcher can consume the finalized ledger.
+    """
+    retained = states["correction_followup_required"]
+    status = load_status(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+    diagnosis = run_diagnosis(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+    lineage = recovery_lineage(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+
+    assert status.continuation_decision is not None
+    assert status.continuation_decision.continuation_subject == "retained_change"
+    assert status.continuation_decision.recommended_next_action == "start_followup"
+    assert diagnosis.recommended_next_action == "start_followup"
+    assert lineage.recommended_next_action == "start_followup"
+    assert status.next_actions
+    assert all(
+        action.args.get("from_run_plan") != retained.run_id
+        for action in status.next_actions
+    )
+    followup = status.next_actions[0]
+    assert followup.tool == "orcho_run_resume"
+    assert followup.choices == ("followup", "exit")
+
+    parent = tmp_path / "finalized-parent"
+    parent.mkdir()
+    (parent / "meta.json").write_text(json.dumps({
+        "task": "resume", "status": "failed",
+    }), encoding="utf-8")
+    (parent / "scheduled_gate_ledger.json").write_text(json.dumps({
+        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+    }), encoding="utf-8")
+
+    finalized_status = load_status("finalized-parent", runs_dir=parent.parent, cwd=None)
+    finalized_diagnosis = run_diagnosis(
+        "finalized-parent", runs_dir=parent.parent, cwd=None,
+    )
+    finalized_lineage = recovery_lineage(
+        "finalized-parent", runs_dir=parent.parent, cwd=None,
+    )
+    preflight = preflight_continuation(
+        ContinuationRequest(run_id="finalized-parent", intent="resume"),
+        parent_run_dir=parent,
+    )
+
+    assert finalized_status.continuation_decision is not None
+    assert finalized_status.continuation_decision.recommended_next_action == "resume_checkpoint"
+    assert finalized_diagnosis.condition == "failed"
+    assert finalized_lineage.continuation_subject == "none"
+    assert finalized_lineage.recommended_next_action is None
+    assert any(
+        action.tool == "orcho_run_resume" and action.args == {"run_id": "finalized-parent"}
+        for action in finalized_status.next_actions
+    )
+    assert preflight.resolution.operation == "blocked"
+    assert preflight.resolution.blocker is not None
+    assert "finalized scheduled-gate ledger" in preflight.resolution.blocker
 
 
 def test_commit_delivery_pending_terminal_family_matches_predicate(

@@ -53,6 +53,24 @@ call time.
 
 ## Modules
 
+### `sdk.run_control.continuation` and `sdk.run_control.launch`
+
+`ContinuationRequest` is the explicit operator intent (`resume`, `followup`,
+or `from_run_plan`); `resolve_continuation(...)` returns exactly one selected
+operation or a typed blocker. `preflight_continuation(...)` reads the parent
+metadata and strictly validates any scheduled-gate ledger before launch.
+
+`resume_run(...)` can reopen only a checkpoint-resumable parent and refuses a
+finalized scheduled-gate ledger before it attempts a subprocess spawn.
+`launch_correction_followup(...)` requires a retained dirty worktree, an
+operator comment, and a child id distinct from its parent. It preserves parent
+lineage through its `--resume <parent>` argv while creating a fresh output
+directory. `launch_from_run_plan(...)` is a separate fresh-child operation; it
+requires `parsed_plan.json`, emits `--from-run-plan <parent>`, and never uses
+that route for a retained-change correction. This additive public wire surface
+requires coordinated adaptation in the companion `orcho-mcp` repository before
+promotion; no companion production files are changed here.
+
 ### `sdk.handoff_advice`
 
 `request_handoff_advice(...) -> HandoffAdviceResult` is read-only apart from its

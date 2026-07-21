@@ -1003,6 +1003,32 @@ def _profile_phases_through(profile, end_phase: str) -> frozenset[str]:
     return frozenset(names[: names.index(end_phase) + 1])
 
 
+def _scheduled_gate_identities(run: Any) -> tuple[Any, ...]:
+    """Load durable verification identities for legacy handoff recovery.
+
+    Historical verification handoffs recorded only ``gate_command``.  They may
+    resume only when the parent ledger resolves that command to one identity;
+    malformed ledger evidence remains a typed fail-closed blocker.
+    """
+    output_dir = getattr(run, "output_dir", None)
+    if output_dir is None:
+        return ()
+    from pipeline.control.handoff_routing import GateIdentity
+    from pipeline.verification_ledger_store import LedgerStoreError, load_ledger
+
+    ledger_path = output_dir / "scheduled_gate_ledger.json"
+    if not ledger_path.exists():
+        return ()
+    try:
+        ledger = load_ledger(output_dir)
+    except LedgerStoreError as exc:
+        raise RuntimeError(f"scheduled-gate ledger is unreadable: {exc}") from exc
+    return tuple(
+        GateIdentity(row.gate, row.hook, row.phase)
+        for row in ledger.rows
+    )
+
+
 def _apply_scope_expansion_handoff_resume(
     run: Any,
     profile,
@@ -1358,7 +1384,37 @@ def apply_phase_handoff_resume(
             "halt is terminal; start a new run instead."
         )
 
-    if active.get("phase") == "implement":
+    # Trigger is the primary discriminator. In particular a verification gate
+    # may fail at final_acceptance; phase-only routing would incorrectly arm
+    # the scope-expansion sanction path. Halt deliberately precedes this
+    # classification: it can always close a persisted recovery subject.
+    from pipeline.control.handoff_routing import (
+        HandoffRouteResolution,
+        classify_handoff_route,
+    )
+
+    try:
+        ledger_identities = _scheduled_gate_identities(run)
+    except RuntimeError as exc:
+        route = HandoffRouteResolution("blocked", blocker=str(exc))
+    else:
+        route = classify_handoff_route(active, ledger_identities=ledger_identities)
+    if route.route == "blocked":
+        raise RuntimeError(f"Cannot resume handoff {handoff_id!r}: {route.blocker}")
+
+    if route.route == "verification_retry":
+        from pipeline.project.verification_handoff_retry import (
+            apply_verification_handoff_resume,
+        )
+
+        assert route.gate_identity is not None
+        return apply_verification_handoff_resume(
+            run=run, profile=profile, ctx=ctx, active=active,
+            handoff_id=handoff_id, action=action, feedback=feedback, note=note,
+            decided_at=decided_at, identity=route.gate_identity,
+        )
+
+    if route.route == "implement_incomplete":
         # ADR 0073: the implement handoff is a bare top-level step (no loop to
         # strip). Accept marks implement completed + records a waiver;
         # retry_feedback re-runs only the incomplete subtasks. Kept as thin
@@ -1374,7 +1430,7 @@ def apply_phase_handoff_resume(
             decided_at=decided_at,
         )
 
-    if active.get("phase") == SCOPE_EXPANSION_HANDOFF_PHASE:
+    if route.route == "scope_expansion":
         # ADR 0112 §5 (F1 fix): the scope-expansion sanction handoff
         # (``scope_expansion:participant_add:<repo>`` / ``scope_expansion:out_of_plan``)
         # is raised at the terminal ``final_acceptance`` seam — a bare top-level
@@ -1397,7 +1453,7 @@ def apply_phase_handoff_resume(
 
     if action == "continue":
         active_phase = active.get("phase")
-        if active_phase == "review_changes":
+        if route.route == "review_retry":
             next_profile = strip_repair_loop(profile)
             completed = frozenset({"review_changes", "repair_changes"})
         else:
@@ -1438,7 +1494,7 @@ def apply_phase_handoff_resume(
                 "findings are accepted."
             )
         active_phase = active.get("phase")
-        if active_phase == "review_changes":
+        if route.route == "review_retry":
             next_profile = strip_repair_loop(profile)
             completed = frozenset({"review_changes", "repair_changes"})
         else:
@@ -1491,7 +1547,7 @@ def apply_phase_handoff_resume(
             f"Cannot resume run: retry_feedback decision for "
             f"{handoff_id!r} is missing the feedback string."
         )
-    if active.get("phase") == "review_changes":
+    if route.route == "review_retry":
         return apply_review_repair_handoff_retry(
             run=run,
             profile=profile,

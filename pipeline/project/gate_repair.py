@@ -508,6 +508,8 @@ def _route_failed_gate(
             1,
             1,
             phase=_handoff_phase(hook, phase),
+            hook=hook,
+            gate_phase=phase,
         )
         return GateRepairOutcome(active=True, paused=True)
     if action == "repair_loop":
@@ -521,6 +523,8 @@ def _route_failed_gate(
                 1,
                 1,
                 phase=_handoff_phase(hook, phase),
+                hook=hook,
+                gate_phase=phase,
             )
             return GateRepairOutcome(active=True, paused=True)
         if repair_loop_target(hook, phase) == "repair" and _repair_step(profile) is not None:
@@ -548,6 +552,8 @@ def _route_failed_gate(
             1,
             1,
             phase=_handoff_phase(hook, phase),
+            hook=hook,
+            gate_phase=phase,
         )
         return GateRepairOutcome(active=True, paused=True)
 
@@ -584,6 +590,8 @@ def _repair_loop(
                 round_n,
                 max_rounds,
                 phase=_handoff_phase(hook, phase),
+                hook=hook,
+                gate_phase=phase,
             )
             return GateRepairOutcome(active=True, paused=True, rounds=round_n)
 
@@ -616,6 +624,8 @@ def _repair_loop(
                 round_n,
                 max_rounds,
                 phase=_handoff_phase(hook, phase),
+                hook=hook,
+                gate_phase=phase,
             )
             return GateRepairOutcome(active=True, paused=True, rounds=round_n)
         if round_n >= max_rounds:
@@ -628,6 +638,8 @@ def _repair_loop(
                 round_n,
                 max_rounds,
                 phase=_handoff_phase(hook, phase),
+                hook=hook,
+                gate_phase=phase,
             )
             return GateRepairOutcome(active=True, paused=True, rounds=round_n)
 
@@ -1188,6 +1200,8 @@ def _request_handoff(
     max_rounds: int,
     *,
     phase: str,
+    hook: str,
+    gate_phase: str,
 ) -> None:
     """Stash a phase-handoff signal so the caller persists the pause."""
     from pipeline.runtime.handoff import PhaseHandoffRequested
@@ -1234,6 +1248,7 @@ def _request_handoff(
         artifacts={
             "gate_command": entry.command,
             "gate_set": entry.primary_gate_set,
+            "gate_identity": {"command": entry.command, "hook": hook, "phase": gate_phase},
             "findings": [finding],
             "short_summary": evidence,
         },
@@ -1358,6 +1373,40 @@ def _repair_budget(run: Any, profile: Any) -> int:
     return 1
 
 
+def rerun_verification_handoff_gate(
+    run: Any, *, command: str, hook: str, phase: str, round_n: int,
+) -> bool:
+    """Re-execute exactly one durable selected gate after a human repair.
+
+    The lookup is identity-based; a missing or duplicate match is a control
+    failure, not permission to run a similarly named command.
+    """
+    contract = _contract(run)
+    if contract is None:
+        raise RuntimeError("verification retry has no persisted verification contract")
+    plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
+    matches = [
+        entry for entry in _gates_for_hook(plan, hook=hook, phase=phase)
+        if _entry_identity(entry) == (command, hook, phase)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("verification retry gate identity is missing or ambiguous")
+    entry = matches[0]
+    receipt = _run_gate_command(run, contract, entry)
+    classification = _classify_gate_receipt(receipt, _placeholders(run))
+    _record_executed_gate_event(
+        run, entry, receipt, classification, hook=hook, phase=phase,
+    )
+    if classification.status == "present":
+        return True
+    _synthesize_critique(run.state, entry, receipt, classification)
+    _request_handoff(
+        run, entry, receipt, classification, round_n, max(1, round_n),
+        phase=_handoff_phase(hook, phase), hook=hook, gate_phase=phase,
+    )
+    return False
+
+
 __all__ = [
     "VERIFICATION_GATE_EVENTS_KEY",
     "GateRepairOutcome",
@@ -1365,4 +1414,5 @@ __all__ = [
     "evaluate_pre_phase_gates",
     "run_gate_hook",
     "run_post_implement_gate_repair",
+    "rerun_verification_handoff_gate",
 ]
