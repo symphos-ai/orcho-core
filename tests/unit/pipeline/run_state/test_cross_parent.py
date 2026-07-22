@@ -100,6 +100,33 @@ def test_running_phase_and_gate_are_ordered_active_operations() -> None:
     assert state.active_operations == (phase, gate)
 
 
+def test_running_child_with_active_gate_has_no_unknown_status_blocker() -> None:
+    gate = ActiveOperation(
+        gate=ScheduledGateIdentity("implement", "after_phase", ("pytest",), "api")
+    )
+    state = reduce_cross_parent_state(
+        _facts(
+            ChildFacts("api", Observation.PRESENT, "running", active_operations=(gate,)),
+            _success("web"),
+        )
+    )
+
+    child = state.children[0]
+    assert child.execution is ChildExecution.RUNNING
+    assert child.blockers == ()
+    assert state.parent_class is ParentClass.RUNNING
+
+
+def test_running_child_without_active_operation_still_fails_closed() -> None:
+    state = reduce_cross_parent_state(
+        _facts(ChildFacts("api", Observation.PRESENT, "running"), _success("web"))
+    )
+
+    child = state.children[0]
+    assert child.execution is ChildExecution.TERMINAL
+    assert {blocker.code for blocker in child.blockers} == {"status_unknown:running"}
+
+
 def test_proxied_handoff_has_exact_payload_actions_and_checkpoint_routing() -> None:
     decision = PendingDecision(
         "project:api:parent",

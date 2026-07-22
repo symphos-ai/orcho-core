@@ -338,7 +338,7 @@ def _reduce_child(facts: ChildFacts) -> tuple[ChildState, tuple[ConsistencyViola
         )
     else:
         disposition, release_ready = ReleaseDisposition.UNAVAILABLE, False
-        if not blockers:
+        if execution is not ChildExecution.RUNNING and not blockers:
             blockers.append(ChildBlocker(reason, facts.alias))
 
     if facts.checkpoint_sub_status == "done" and not success and not rejected:

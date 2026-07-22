@@ -147,12 +147,22 @@ def run_gate_hook(
                 )
                 return disposition
             continue
-        _emit_scheduled_gate_start(entry, hook=hook, phase=phase)
+        _emit_scheduled_gate_start(
+            entry,
+            hook=hook,
+            phase=phase,
+            project_alias=getattr(run, "project_alias", None),
+        )
         try:
             receipt = _run_gate_command(run, contract, entry)
         except BaseException:
             _emit_scheduled_gate_end(
-                entry, hook=hook, phase=phase, outcome="failed", duration_s=0.0
+                entry,
+                hook=hook,
+                phase=phase,
+                outcome="failed",
+                duration_s=0.0,
+                project_alias=getattr(run, "project_alias", None),
             )
             raise
         classification = _classify_gate_receipt(receipt, _placeholders(run))
@@ -162,6 +172,7 @@ def run_gate_hook(
             phase=phase,
             outcome="passed" if classification.status == "present" else "failed",
             duration_s=_gate_duration(receipt),
+            project_alias=getattr(run, "project_alias", None),
         )
         executed.add(identity)
         _record_executed_gate_event(
@@ -801,7 +812,9 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
     return receipt
 
 
-def _emit_scheduled_gate_start(entry: Any, *, hook: str, phase: str) -> None:
+def _emit_scheduled_gate_start(
+    entry: Any, *, hook: str, phase: str, project_alias: str | None = None
+) -> None:
     """Persist the engine-owned gate boundary before its blocking command."""
     from core.observability.events import emit
 
@@ -813,11 +826,18 @@ def _emit_scheduled_gate_start(entry: Any, *, hook: str, phase: str) -> None:
         hook=hook,
         phase=phase,
         ownership="engine",
+        **({"project_alias": project_alias} if project_alias else {}),
     )
 
 
 def _emit_scheduled_gate_end(
-    entry: Any, *, hook: str, phase: str, outcome: str, duration_s: float
+    entry: Any,
+    *,
+    hook: str,
+    phase: str,
+    outcome: str,
+    duration_s: float,
+    project_alias: str | None = None,
 ) -> None:
     """Close the typed gate boundary after the command returns or raises."""
     from core.observability.events import emit
@@ -831,6 +851,7 @@ def _emit_scheduled_gate_end(
         hook=hook,
         phase=phase,
         ownership="engine",
+        **({"project_alias": project_alias} if project_alias else {}),
     )
 
 

@@ -1,7 +1,8 @@
 """Exact-path durable facts adapter for :mod:`pipeline.run_state.cross_parent`.
 
 The adapter intentionally never discovers children: parent ``projects`` order is
-the manifest and every child read is exactly ``run_dir / alias``.
+the manifest, child artifacts live under ``run_dir / alias``, and attributed
+lifecycle events come from the cross-run's shared event stream.
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ def _child_facts(path: Path, alias: str, checkpoint: dict[str, Any]) -> ChildFac
         child,
         physical=observation,
         checkpoint_sub_status=_string(_mapping(checkpoint.get("sub_status")).get(alias)),
-        active_operations=_active_operations(path / alias, alias),
+        active_operations=_active_operations(path, alias),
         checkpoint=checkpoint,
     )
 
@@ -193,7 +194,8 @@ def _active_operations(path: Path, alias: str | None = None) -> tuple[ActiveOper
     gates: list[ActiveOperation] = []
     active_phases: dict[str, ActiveOperation] = {}
     active_gates: dict[tuple[str, str, str], ActiveOperation] = {}
-    ledger = _ledger_identities(path)
+    ledger_path = path / alias if alias is not None else path
+    ledger = _ledger_identities(ledger_path)
     for event in read_all(path):
         payload = event.payload
         # Only canonical phase-key lifecycle events represent execution.
@@ -201,10 +203,16 @@ def _active_operations(path: Path, alias: str | None = None) -> tuple[ActiveOper
         # ordering, but have no ``phase_key`` and often no matching end.
         phase = _string(payload.get("phase_key")) or ""
         if event.kind == "phase.start" and phase:
+            if _string(payload.get("project_alias")) != alias:
+                continue
             active_phases[phase] = ActiveOperation(phase=PhaseIdentity(phase, alias))
         elif event.kind == "phase.end" and phase:
+            if _string(payload.get("project_alias")) != alias:
+                continue
             active_phases.pop(phase, None)
         elif event.kind == "gate.start":
+            if _string(payload.get("project_alias")) != alias:
+                continue
             command = _string(payload.get("command")) or _string(payload.get("name"))
             hook = _string(payload.get("hook"))
             gate_phase = _string(payload.get("phase")) or phase
@@ -214,6 +222,8 @@ def _active_operations(path: Path, alias: str | None = None) -> tuple[ActiveOper
                     gate=ScheduledGateIdentity(gate_phase, hook, tuple(command.split("\0")), alias)
                 )
         elif event.kind == "gate.end":
+            if _string(payload.get("project_alias")) != alias:
+                continue
             command = _string(payload.get("command")) or _string(payload.get("name"))
             hook = _string(payload.get("hook"))
             gate_phase = _string(payload.get("phase")) or phase

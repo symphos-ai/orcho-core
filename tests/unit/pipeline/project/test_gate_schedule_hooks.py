@@ -65,6 +65,29 @@ def test_scheduled_gate_lifecycle_events_carry_full_identity(monkeypatch) -> Non
     ]
 
 
+def test_scheduled_gate_lifecycle_events_carry_project_alias(monkeypatch) -> None:
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.observability.events.emit",
+        lambda kind, **payload: emitted.append((kind, payload)),
+    )
+    entry = SimpleNamespace(command="test")
+
+    gate_repair._emit_scheduled_gate_start(
+        entry, hook="after_phase", phase="implement", project_alias="api"
+    )
+    gate_repair._emit_scheduled_gate_end(
+        entry,
+        hook="after_phase",
+        phase="implement",
+        outcome="passed",
+        duration_s=1.0,
+        project_alias="api",
+    )
+
+    assert [payload["project_alias"] for _, payload in emitted] == ["api", "api"]
+
+
 def _contract(
     schedule: list,
     *,
