@@ -51,7 +51,7 @@ def test_unmatched_scheduled_gate_is_active_and_end_closes_it(tmp_path: Path) ->
     _write(tmp_path / "web" / "meta.json", {"status": "done"})
     _write(
         tmp_path / "scheduled_gate_ledger.json",
-        {"rows": [{"command": "pytest", "hook": "after_phase", "phase": "implement"}]},
+        {"rows": [{"gate": "pytest", "hook": "after_phase", "phase": "implement"}]},
     )
     _write(
         tmp_path / "events.jsonl",
@@ -93,7 +93,7 @@ def test_child_scheduled_gate_uses_parent_stream_and_exact_alias(tmp_path: Path)
     for alias in ("api", "web"):
         _write(
             tmp_path / alias / "scheduled_gate_ledger.json",
-            {"rows": [{"command": "pytest", "hook": "after_phase", "phase": "implement"}]},
+            {"rows": [{"gate": "pytest", "hook": "after_phase", "phase": "implement"}]},
         )
     _write(
         tmp_path / "events.jsonl",
