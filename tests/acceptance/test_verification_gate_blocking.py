@@ -138,6 +138,7 @@ def test_verification_retry_feedback_preserves_human_directed_round_context(
 ) -> None:
     """Vertical control-flow proof for the operator-visible retry path."""
     from types import SimpleNamespace
+
     from pipeline.control.handoff_labels import render_round_label
 
     active = {"id": "gate:pytest-unit:2", "round": 2, "loop_max_rounds": 2}
