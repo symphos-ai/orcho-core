@@ -99,6 +99,29 @@ def test_hook_selection_and_execution_are_full_identity_events(tmp_path: Path) -
     assert [event.kind for event in ledger.trail] == ["selection", "execution"]
 
 
+def test_runtime_records_distinct_idempotent_rerun_execution(tmp_path: Path) -> None:
+    run = _run(tmp_path, _contract())
+    initialize(run.state)
+    entry = select_epoch(
+        run, run.state.extras["verification_contract"],
+        epoch="after_phase:implement", context=SelectionContext(),
+    ).entries[0]
+
+    record_execution(run, entry, passed=False, receipt_evidence="receipts/original.json")
+    record_execution(
+        run, entry, passed=True, receipt_evidence="receipts/rerun.json", rerun=True,
+    )
+    record_execution(
+        run, entry, passed=True, receipt_evidence="receipts/rerun.json", rerun=True,
+    )
+
+    executions = [event for event in load_ledger(tmp_path).trail if event.kind == "execution"]
+    assert [(event.identity, event.receipt_evidence, event.rerun) for event in executions] == [
+        (("check", "after_phase", "implement"), "receipts/original.json", False),
+        (("check", "after_phase", "implement"), "receipts/rerun.json", True),
+    ]
+
+
 def test_fresh_epoch_writes_before_publishing_authoritative_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

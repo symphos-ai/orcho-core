@@ -53,6 +53,27 @@ def test_event_is_idempotent_and_finalized_semantic_update_is_rejected(tmp_path:
         update_ledger(tmp_path, GateTrailEvent("one", "after_phase", "implement", "receipt", "failed"))
 
 
+def test_rerun_execution_round_trip_is_distinct_and_idempotent(tmp_path: Path) -> None:
+    ledger = ScheduledGateLedger((_row("one", "after_phase", "implement"),))
+    write_ledger(tmp_path, ledger)
+    original = GateTrailEvent(
+        "one", "after_phase", "implement", "execution", "fail",
+        receipt_evidence="receipts/original.json",
+    )
+    rerun = GateTrailEvent(
+        "one", "after_phase", "implement", "execution", "pass",
+        receipt_evidence="receipts/rerun.json", rerun=True,
+    )
+
+    update_ledger(tmp_path, original)
+    once = update_ledger(tmp_path, rerun)
+    twice = update_ledger(tmp_path, rerun)
+
+    assert twice == once
+    assert twice.trail == (original, rerun)
+    assert load_ledger(tmp_path).trail[1].rerun is True
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     (("declared", "true", "declared must be bool"), ("receipt_evidence", 1, "receipt_evidence must be a string or null")),
@@ -68,6 +89,20 @@ def test_strict_loader_rejects_wrong_optional_and_boolean_wire_types(
     path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(LedgerStoreError, match=message):
+        load_ledger(tmp_path)
+
+
+def test_strict_loader_rejects_non_boolean_rerun(tmp_path: Path) -> None:
+    ledger = ScheduledGateLedger((_row("one", "after_phase", "implement"),), (
+        GateTrailEvent("one", "after_phase", "implement", "execution", "pass"),
+    ))
+    write_ledger(tmp_path, ledger)
+    path = tmp_path / "scheduled_gate_ledger.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["trail"][0]["rerun"] = "true"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(LedgerStoreError, match="rerun must be bool"):
         load_ledger(tmp_path)
 
 

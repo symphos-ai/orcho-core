@@ -1,6 +1,8 @@
 """One-shot retained-worktree retry for ``verification_gate_failed`` handoffs."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from core.io.retry import AgentCallError
@@ -16,6 +18,39 @@ from pipeline.runtime.handoff import HUMAN_DIRECTED_FLAG_KEY
 
 class VerificationHandoffRetryBlocked(RuntimeError):
     """A control-plane precondition failed without consuming the recovery subject."""
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationHandoffRetryContext:
+    """Canonical identity and round accounting for one human gate retry.
+
+    The active handoff, rather than the fresh retry round, remains the source
+    of the automatic loop maximum.  This makes the one-shot retry structurally
+    human-directed even when it produces another gate handoff.
+    """
+
+    identity: GateIdentity
+    prior_round: int
+    fresh_round: int
+    loop_max_rounds: int
+    human_retry_ordinal: int
+
+    @classmethod
+    def from_active(
+        cls, active: Mapping[str, object], identity: GateIdentity,
+    ) -> VerificationHandoffRetryContext:
+        prior_round = max(1, int(active.get("round", 1) or 1))
+        loop_max_rounds = max(
+            1, int(active.get("loop_max_rounds", prior_round) or prior_round),
+        )
+        fresh_round = prior_round + 1
+        return cls(
+            identity=identity,
+            prior_round=prior_round,
+            fresh_round=fresh_round,
+            loop_max_rounds=loop_max_rounds,
+            human_retry_ordinal=max(1, fresh_round - loop_max_rounds),
+        )
 
 
 def apply_verification_handoff_resume(
@@ -108,11 +143,7 @@ def apply_verification_handoff_retry(
     if repair_step is None:
         raise VerificationHandoffRetryBlocked("verification retry profile has no repair_changes step")
 
-    prior_round = int(active.get("round", 1) or 1)
-    fresh_round = prior_round + 1
-    loop_max_rounds = int(
-        active.get("loop_max_rounds", prior_round) or prior_round,
-    )
+    retry_context = VerificationHandoffRetryContext.from_active(active, identity)
 
     transition = retry_feedback_handoff(
         run.session, handoff_id=handoff_id, mode=HandoffRetryMode.VERIFICATION,
@@ -129,8 +160,7 @@ def apply_verification_handoff_retry(
             run,
             repair_step,
             ctx,
-            round_n=fresh_round,
-            loop_max_rounds=loop_max_rounds,
+            retry_context=retry_context,
         )
     except AgentCallError:
         # Provider/process failures retain their established lifecycle handling;
@@ -142,11 +172,15 @@ def apply_verification_handoff_retry(
     if getattr(run.state, "halt", False):
         return _outcome(profile, paused=False)
     from pipeline.project.gate_repair import rerun_verification_handoff_gate
+    from pipeline.project.handoff import _persist_handoff_retry_metrics
+
+    # The FSM remains the sole owner of the repair_changes attempt.  Preserve
+    # its completed attempt before the exact-gate rerun can publish a new pause.
+    _persist_handoff_retry_metrics(run)
 
     try:
         passed = rerun_verification_handoff_gate(
-            run, command=identity.command, hook=identity.hook, phase=identity.phase,
-            round_n=fresh_round,
+            run, retry_context=retry_context,
         )
     except AgentCallError:
         raise
@@ -167,8 +201,7 @@ def _dispatch_one_repair(
     repair_step: Any,
     ctx: Any,
     *,
-    round_n: int,
-    loop_max_rounds: int,
+    retry_context: VerificationHandoffRetryContext,
 ) -> None:
     """Dispatch a human-directed repair with explicit loop identity."""
     from pipeline.runtime.runner import _dispatch_via_fsm
@@ -181,8 +214,10 @@ def _dispatch_one_repair(
     previous_human_directed = run.state.extras.get(
         HUMAN_DIRECTED_FLAG_KEY, human_directed_sentinel,
     )
-    run.state.extras["repair_round"] = round_n
-    run.state.extras["repair_round_max"] = loop_max_rounds
+    # These are the existing FSM-facing keys.  Keep the richer retry context
+    # local to this orchestration seam rather than growing state.extras flags.
+    run.state.extras["repair_round"] = retry_context.fresh_round
+    run.state.extras["repair_round_max"] = retry_context.loop_max_rounds
     run.state.extras["_active_loop_round_key"] = "repair_round"
     run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
     try:
@@ -220,5 +255,5 @@ def _outcome(profile: Any, *, paused: bool) -> Any:
 
 __all__ = [
     "VerificationHandoffRetryBlocked", "apply_verification_handoff_resume",
-    "apply_verification_handoff_retry",
+    "VerificationHandoffRetryContext", "apply_verification_handoff_retry",
 ]

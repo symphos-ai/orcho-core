@@ -96,7 +96,7 @@ def get_verification_timeline(
         ScheduledGateEvent(
             command=event.command, hook=event.hook, phase=event.phase,
             kind=event.kind, outcome=event.outcome, reason=event.reason,
-            receipt_evidence=_receipt(event.receipt_evidence),
+            receipt_evidence=_receipt(event.receipt_evidence, rerun=event.rerun),
         )
         for event in ledger.trail
     )
@@ -107,8 +107,8 @@ def get_verification_timeline(
     )
 
 
-def _receipt(path: str | None) -> ReceiptEvidence | None:
-    return ReceiptEvidence(path=path) if path else None
+def _receipt(path: str | None, *, rerun: bool = False) -> ReceiptEvidence | None:
+    return ReceiptEvidence(path=path, rerun=rerun) if path else None
 
 
 __all__ = [
