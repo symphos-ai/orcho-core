@@ -18,9 +18,10 @@ development only; it is separate from Orcho-managed worktree runs.
 
 ## Stable Install Is Read-Only
 
-Do not edit code under `$HOME/.local/share/orcho-*` directly. Change the
-canonical workspace repos and use `orcho-promote`; touch stable checkouts only
-when the user explicitly asks to debug or repair them.
+Stable Orcho is a pipx install (venv at `$HOME/.local/pipx/venvs/orcho`,
+shims in `$HOME/.local/bin`). Do not edit files inside that venv directly.
+Change the canonical workspace repos and promote with `orcho-promote`; touch
+the stable install only when the user explicitly asks to debug or repair it.
 
 ## Build, Run, And Test
 
