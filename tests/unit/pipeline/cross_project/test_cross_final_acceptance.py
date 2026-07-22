@@ -19,6 +19,13 @@ from dataclasses import replace
 
 import pytest
 
+from pipeline.cross_project.execution_graph import CrossExecutionGraphNodeKind
+from pipeline.cross_project.execution_graph_state import (
+    CrossExecutionGraphNodeState,
+    CrossExecutionGraphReason,
+    CrossExecutionGraphState,
+    CrossExecutionGraphStatus,
+)
 from pipeline.cross_project.final_acceptance import (
     CrossFinalAcceptanceContext,
     build_context,
@@ -31,6 +38,7 @@ from pipeline.run_state.cross_parent import (
     Observation,
     reduce_cross_parent_state,
 )
+from pipeline.runtime import CrossGatePolicy, CrossGateRunPolicy, CrossGateSkipPolicy
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -906,3 +914,71 @@ class TestCfaReviewTargets:
         )
         focus = _build_agent_focus_task(ctx)
         assert "Review targets" not in focus
+
+
+def test_graph_blocked_cfa_never_invokes_evaluator(tmp_path, monkeypatch) -> None:
+    """CFA provider admission is owned by the re-reduced graph state."""
+    from types import SimpleNamespace
+
+    from pipeline.cross_project import cfa_gate, parent_state_runtime, session_run
+
+    parent = reduce_cross_parent_state(CrossParentFacts(("core",), ()))
+    monkeypatch.setattr(
+        parent_state_runtime, "reduce_runtime_cross_parent_state", lambda *_: parent,
+    )
+    monkeypatch.setattr(
+        session_run, "reduce_runtime_cross_execution_graph_state",
+        lambda *_: CrossExecutionGraphState((
+            CrossExecutionGraphNodeState(
+                "cfa", CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE,
+                CrossExecutionGraphStatus.BLOCKED,
+                CrossExecutionGraphReason.DEPENDENCY_BLOCKED,
+            ),
+        )),
+    )
+    monkeypatch.setattr(
+        cfa_gate, "evaluate_cfa_gate",
+        lambda **_: pytest.fail("blocked graph must not invoke CFA evaluator"),
+    )
+    policy = CrossGatePolicy(
+        enabled=True,
+        run=CrossGateRunPolicy.ALWAYS,
+        on_skip=CrossGateSkipPolicy.ALLOW_WITH_GAP,
+    )
+    request = SimpleNamespace(projects={"core": tmp_path}, dry_run=False)
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *_, **__: None, C=SimpleNamespace(MAGENTA="")),
+        session={"projects": {"core": str(tmp_path)}, "phases": {}},
+        cross_ckpt={}, run_dir=tmp_path, profile_setup=SimpleNamespace(cfa_gate_policy=policy),
+        execution_graph=object(), graph_gate_blocked=False,
+    )
+
+    assert session_run._run_release_gate(request, ctx) is False
+    assert ctx.graph_gate_blocked is True
+
+
+def test_graph_blocked_gate_finalizes_failed_without_delivery(tmp_path) -> None:
+    """The coordinator's graph denial is terminal rather than a CFA crash."""
+    from types import SimpleNamespace
+
+    from pipeline.cross_project.finalization import (
+        CrossFinalizationContext,
+        _decide_base_status,
+    )
+    from pipeline.cross_project.session_run import _cross_delivery_plan
+
+    assert _cross_delivery_plan(SimpleNamespace(graph_gate_blocked=True)) == (False, False)
+    status, halt_reason, _, _ = _decide_base_status(CrossFinalizationContext(
+        run_dir=tmp_path,
+        output_dir=False,
+        session={"phases": {}},
+        projects={},
+        max_rounds=1,
+        cfa_result=None,
+        contract_results={},
+        contract_check_failed=False,
+        contract_check_failure_reason=None,
+        cross_phase_usage={},
+        graph_gate_blocked=True,
+    ))
+    assert (status, halt_reason) == ("failed", "cross_execution_graph_blocked")

@@ -2,7 +2,7 @@
 
 ## `cross_execution_graph.json`
 
-An admitted non-dry-run cross plan may create one immutable C1 structural
+An admitted non-dry-run cross plan may create one immutable structural
 snapshot in its run directory. Its exact closed JSON shape is:
 
 ```json

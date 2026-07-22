@@ -8,8 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline.cross_project import session_run
-from pipeline.cross_project.execution_graph import CrossExecutionGraphCompileError
-from pipeline.cross_project.execution_graph_store import load_cross_execution_graph
+from pipeline.cross_project.execution_graph_store import (
+    CrossExecutionGraphStoreError,
+    load_cross_execution_graph,
+)
 from pipeline.cross_project.planning_loop import CrossPlanningResult
 from pipeline.cross_project.profile_projection import CrossProjection
 from pipeline.cross_project.profile_setup import CrossProfileSetup
@@ -88,13 +90,12 @@ def test_non_admitted_paths_do_not_write_snapshot(tmp_path, monkeypatch, dry_run
     assert session_run._run_planning(request, ctx) is True
 
 
-def test_resume_graph_drift_stops_before_dispatch(tmp_path, monkeypatch) -> None:
+def test_resume_without_graph_snapshot_stops_before_dispatch(tmp_path, monkeypatch) -> None:
     ctx, request = _context(tmp_path), _request(tmp_path)
     request.resume_from = "prior"
     monkeypatch.setattr(session_run, "_run_cross_planning", lambda _ctx: CrossPlanningResult(status="approved", plan_output=_PLAN, plan_approved=True, skipped_phase0=True))
     monkeypatch.setattr(session_run, "_write_cross_checkpoint", lambda *_: None)
-    monkeypatch.setattr(session_run, "write_cross_execution_graph", lambda *_: (_ for _ in ()).throw(CrossExecutionGraphCompileError("drift")))
-    with pytest.raises(CrossExecutionGraphCompileError, match="drift"):
+    with pytest.raises(CrossExecutionGraphStoreError, match="graph is missing"):
         session_run._run_planning(request, ctx)
 
 
@@ -119,7 +120,7 @@ def test_graph_is_not_consumed_by_dispatch_gates_checkpoint_or_parent_reducer() 
         assert "execution_graph" not in inspect.getsource(module)
 
 
-def test_live_dispatch_keeps_request_order_despite_graph_order(tmp_path, monkeypatch) -> None:
+def test_dispatch_receives_graph_for_serial_selection(tmp_path, monkeypatch) -> None:
     ctx, request = _context(tmp_path), _request(tmp_path)
     ctx.task_plan = session_run.normalize_cross_task_plan(
         session_run.plan_parser.parse_cross_plan(_PLAN, ctx.aliases), ctx.aliases,
@@ -135,7 +136,8 @@ def test_live_dispatch_keeps_request_order_despite_graph_order(tmp_path, monkeyp
     request.phase_config = None
     request.hypothesis_enabled = None
     request.followup_session_seeds_per_alias = None
+    ctx.execution_graph = object()
     captured: list = []
-    monkeypatch.setattr(session_run, "_run_project_dispatch", lambda dispatch: captured.append(list(dispatch.projects)) or SimpleNamespace(paused=True))
+    monkeypatch.setattr(session_run, "_run_project_dispatch", lambda dispatch: captured.append(dispatch.execution_graph) or SimpleNamespace(paused=True))
     assert session_run._run_dispatch_and_contract(request, ctx) is True
-    assert captured == [["consumer", "producer"]]
+    assert captured == [ctx.execution_graph]

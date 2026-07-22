@@ -737,6 +737,123 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "identity",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "CrossExecutionGraphNodeKind"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "CrossExecutionGraphStatus"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reason",
+          "type": "CrossExecutionGraphReason"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "alias",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "operations",
+          "type": "tuple[CrossExecutionGraphOperation, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphNodeState",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "alias",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "executor",
+          "type": "CrossExecutionGraphOperationExecutor"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "hook",
+          "type": "str | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "command",
+          "type": "tuple[str, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphOperation",
+      "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphOperationExecutor",
+      "qualname": "CrossExecutionGraphOperationExecutor"
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphReason",
+      "qualname": "CrossExecutionGraphReason"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "nodes",
+          "type": "tuple[CrossExecutionGraphNodeState, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphState",
+      "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "CrossExecutionGraphStatus",
+      "qualname": "CrossExecutionGraphStatus"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "children",
           "type": "tuple[ChildState, ...]"
         },
@@ -3182,6 +3299,54 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "identity",
+          "type": "str"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "completed",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "skipped",
+          "type": "bool"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "active",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "RunnerGateFact",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "entries",
+          "type": "tuple[RunnerGateFact, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph_state",
+      "name": "RunnerGateFacts",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "command",
           "type": "str"
         },
@@ -5132,6 +5297,38 @@
         }
       ],
       "return": "CrossExecutionGraph"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.cross_execution_graph_state",
+      "name": "load_cross_execution_graph_state",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "CrossExecutionGraphState"
     },
     {
       "kind": "callable",

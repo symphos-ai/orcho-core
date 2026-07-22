@@ -80,11 +80,11 @@ persists `cross_execution_graph.json`. The artifact is an immutable topology:
 global declarations, project dependency edges, and runner-owned gate policy.
 It has no lifecycle ledger, status, readiness, retry, or completion fields.
 
-This is deliberately a C1 inspection boundary only. The live dispatcher still
-uses request alias order, and resume, contract-check, CFA, checkpointing, and
-the canonical parent reducer do not read the graph. A future C2 scheduler/state
-reducer may consume this durable structure; C1 does not. It is also not an
-MCP/XF3 payload or a replacement for existing cross evidence.
+The C2 scheduler and resume path load this immutable graph and combine it with
+canonical durable facts to select one ready structural node at a time. Derived
+state is never persisted as a mutable graph ledger. Child phases and scheduled
+gates remain nested, child-owned observations; the checkpoint is routing-only.
+MCP/XF3 projection and parallel scheduling remain deferred.
 
 ## Canonical parent-state reduction
 

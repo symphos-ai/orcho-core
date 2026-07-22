@@ -43,6 +43,13 @@ from typing import Any
 from agents.runtimes import AgentProvider, MockAgentProvider
 from core.io.ansi import C
 from pipeline.cross_project.checkpoint import write_cross_checkpoint
+from pipeline.cross_project.execution_graph_state_runtime import (
+    reduce_runtime_cross_execution_graph_state,
+)
+from pipeline.cross_project.graph_scheduler import (
+    select_first_ready_project,
+    selected_blocking_aliases,
+)
 from pipeline.cross_project.handoff import Handoff, write_handoff
 from pipeline.cross_project.handoff_payloads import (
     apply_cross_phase_handoff_pause,
@@ -161,6 +168,12 @@ class ProjectDispatchContext:
     # worktree, it does NOT create a parent worktree. ``None`` when no set was
     # threaded (older embedders / some test fixtures) → the bind is a no-op.
     participant_set: Any = None
+    # Immutable C2 graph. ``None`` preserves the narrow direct-driver test
+    # seam used by pre-graph callers; the cross coordinator always supplies it.
+    execution_graph: Any = None
+    # A single alias whose durable project-handoff decision was applied before
+    # dispatch. This is continuation routing, not a readiness assertion.
+    resolved_handoff_alias: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -281,12 +294,10 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
         ).children
     }
     if isinstance(existing_children, dict):
-        sub_status_map = ctx.cross_ckpt.get("sub_status") or {}
         preserved = {
             alias: child_entry
             for alias, child_entry in existing_children.items()
-            if sub_status_map.get(alias) == "done"
-            and alias in canonical_children
+            if alias in canonical_children
             and canonical_children[alias].execution.value == "terminal"
             and canonical_children[alias].contract_evaluable
         }
@@ -342,8 +353,10 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
             full_plan_markdown = _md_path.read_text(encoding="utf-8")
 
     blocking_aliases: list[str] = []
-    for alias, project_path in ctx.projects.items():
-        outcome = _dispatch_one_alias(
+
+    def dispatch(alias: str) -> object:
+        project_path = ctx.projects[alias]
+        return _dispatch_one_alias(
             ctx,
             alias=alias,
             project_path=project_path,
@@ -354,6 +367,36 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
             full_plan_markdown=full_plan_markdown,
             units_by_alias=units_by_alias,
         )
+
+    if ctx.execution_graph is not None:
+        if ctx.resolved_handoff_alias is not None:
+            alias = ctx.resolved_handoff_alias
+            ctx.resolved_handoff_alias = None
+            if alias not in ctx.projects:
+                raise RuntimeError(f"resolved project handoff has unknown alias {alias!r}")
+            outcome = dispatch(alias)
+            if outcome is _DISPATCH_PAUSED:
+                return ProjectDispatchResult(paused=True)
+            if outcome is _DISPATCH_FAILURE:
+                blocking_aliases.append(alias)
+        while True:
+            state = reduce_runtime_cross_execution_graph_state(
+                ctx.execution_graph, state_session, ctx.cross_ckpt, str(ctx.run_dir)
+            )
+            selected = select_first_ready_project(state)
+            if selected is None:
+                blocking_aliases.extend(selected_blocking_aliases(state))
+                break
+            # Project aliases are structurally resolved by the graph reducer.
+            outcome = dispatch(selected.alias)
+            if outcome is _DISPATCH_PAUSED:
+                return ProjectDispatchResult(paused=True, blocking_aliases=tuple(blocking_aliases))
+            if outcome is _DISPATCH_FAILURE:
+                blocking_aliases.append(selected.alias)
+        return ProjectDispatchResult(paused=False, blocking_aliases=tuple(dict.fromkeys(blocking_aliases)))
+
+    for alias in ctx.projects:
+        outcome = dispatch(alias)
         if outcome is _DISPATCH_PAUSED:
             return ProjectDispatchResult(
                 paused=True,
@@ -402,7 +445,11 @@ def _dispatch_one_alias(
     # resume_from so the child's checkpoints.db picks up where it
     # left off.
     sub_status = ctx.cross_ckpt.get("sub_status", {}).get(alias)
-    if sub_status == "done" and alias in ctx.session["phases"]["projects"]:
+    if (
+        ctx.execution_graph is None
+        and sub_status == "done"
+        and alias in ctx.session["phases"]["projects"]
+    ):
         ctx.ports.success(f"[{alias}] already done in previous run — skipping")
         return _DISPATCH_CONTINUE
     sub_resume = (
