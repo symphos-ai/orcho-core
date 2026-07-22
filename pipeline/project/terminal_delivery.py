@@ -125,10 +125,10 @@ def render_delivery_destination_lines(
         pr_url = str(record.get("pr_url") or "")
         if branch and not sha:
             if pr_url:
-                return (f"Delivery: pushed {branch} → PR {pr_url}",)
+                return (f"Delivery: branch {branch} → PR {pr_url}",)
             return (
-                f"Delivery: pushed {branch} → branch ready — "
-                "open a PR / push manually",
+                f"Delivery: branch {branch} ready — "
+                "push if needed, then open a PR",
             )
         if sha and not branch:
             return (f"Delivery: committed {sha[:7]} to project checkout",)

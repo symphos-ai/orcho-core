@@ -1536,7 +1536,7 @@ class FinalizationResult:
     scope_expansion_lines: tuple[str, ...] = ()
     # Compact 'Delivery: ...' destination line for the DONE tail, rendered from
     # the terminal ``commit_delivery`` audit record. One scannable line naming
-    # where the diff landed (pushed delivery branch + PR / checkout commit /
+    # where the diff landed (delivery branch + PR / checkout commit /
     # applied uncommitted / skipped / not delivered). Empty tuple when the run
     # carries no terminal delivery record. Defaulted so existing construction
     # sites and tests are unaffected.
@@ -2570,7 +2570,7 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
     for line in result.evidence_summary_lines:
         _done_line(line, color=C.MAGENTA, icon="•", icon_color=C.MAGENTA)
 
-    # Delivery destination line: where the diff actually landed (pushed delivery
+    # Delivery destination line: where the diff actually landed (delivery
     # branch + PR / checkout commit / applied uncommitted / skipped / not
     # delivered). Neutral cyan — a factual destination report, not a verdict.
     # Empty tuple -> nothing (no terminal delivery record for this run).
