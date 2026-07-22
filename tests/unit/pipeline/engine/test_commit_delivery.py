@@ -2144,7 +2144,7 @@ def test_worktree_branch_publishes_and_leaves_canonical_untouched(
 ) -> None:
     """worktree_branch (per_run): the canonical checkout's HEAD and working tree
     are never touched; the run's work is published as ``orcho/deliver/…`` and the
-    decision surfaces ``commit_sha=None`` + ``delivery_branch``."""
+    decision surfaces ``commit_sha=None`` plus the published branch identity."""
     repo = tmp_path / "repo"
     old_head = _init_repo(repo)
     run_dir = tmp_path / "run"
@@ -2163,6 +2163,7 @@ def test_worktree_branch_publishes_and_leaves_canonical_untouched(
     assert _status(repo) == ""
     # commit_sha absent for a pure publish; the branch is the deliverable.
     assert delivered.commit_sha is None
+    assert delivered.published_commit_sha == _head(worktree)
     assert delivered.delivery_branch is not None
     assert delivered.delivery_branch.startswith("orcho/deliver/r1-")
     assert delivered.pr_intent is not None
@@ -2173,6 +2174,7 @@ def test_worktree_branch_publishes_and_leaves_canonical_untouched(
     # Serialized projection carries the additive keys.
     payload = delivered.to_dict()
     assert payload["delivery_branch"] == delivered.delivery_branch
+    assert payload["published_commit_sha"] == delivered.published_commit_sha
     assert "commit_sha" not in payload
     # No git-provider is registered in the test env, so no PR was opened:
     # the typed twin stays None and the notice invites a manual PR.

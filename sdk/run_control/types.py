@@ -262,6 +262,9 @@ class DeliveryDecisionResult:
     halt_reason: str | None = None
     artifact_paths: tuple[str, ...] = ()
     commit_sha: str | None = None
+    # Commit created on a published delivery branch; it did not land in the
+    # target checkout and therefore must not populate ``commit_sha``.
+    published_commit_sha: str | None = None
     # ADR 0119 — additive delivery-branch projection. ``delivery_branch`` is the
     # published/publishable branch and ``pr_intent`` its provider-neutral PR
     # record. Fill rule mirrors the core decision: ``commit_sha`` stays populated

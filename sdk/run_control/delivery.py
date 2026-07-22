@@ -858,6 +858,7 @@ def _finalize(
         halt_reason=result_halt_reason,
         artifact_paths=tuple(artifact_paths),
         commit_sha=applied.commit_sha,
+        published_commit_sha=applied.published_commit_sha,
         # ADR 0119 — additive delivery-branch projection. ``commit_sha`` above
         # already carries the fill rule (populated for a commit onto the target
         # checkout, ``None`` for a pure worktree_branch publish); ``delivery_branch``

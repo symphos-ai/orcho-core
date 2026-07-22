@@ -117,6 +117,9 @@ class CommitDeliveryDecision:
     commit_message_strategy: str | None = None
     final_message: str | None = None
     commit_sha: str | None = None
+    # Commit created on a published delivery branch. Unlike ``commit_sha``,
+    # this commit did not land in the target checkout.
+    published_commit_sha: str | None = None
     error: str | None = None
     decided_at: str | None = None
     artifact_path: Path | None = None
@@ -203,6 +206,8 @@ class CommitDeliveryDecision:
             out["strategy"] = self.commit_message_strategy
         if self.commit_sha:
             out["commit_sha"] = self.commit_sha
+        if self.published_commit_sha:
+            out["published_commit_sha"] = self.published_commit_sha
         if self.error:
             out["error"] = self.error
         if self.decided_at:
@@ -1009,6 +1014,7 @@ def _deliver_published_branch(
         status="committed",
         commit_sha=None,
         artifact_commit_sha=branch_sha,
+        published_commit_sha=branch_sha,
         delivery_branch=published.delivery_branch,
         pr_intent=published.pr_intent,
         # Same ``result.pr_url`` that shaped the 'PR opened' notice above;
@@ -1191,6 +1197,7 @@ def _persist(
     delivery_warnings: tuple[str, ...] = (),
     delivery_notices: tuple[str, ...] = (),
     artifact_commit_sha: str | None = None,
+    published_commit_sha: str | None = None,
 ) -> CommitDeliveryDecision:
     """Write the audit artifact and rebuild the frozen decision dataclass.
 
@@ -1253,6 +1260,7 @@ def _persist(
         # the action was substituted away from approve.
         final_message=decision.final_message if final_action == "approve" else None,
         commit_sha=commit_sha,
+        published_commit_sha=published_commit_sha,
         error=error,
         decided_at=decision.decided_at,
         artifact_path=artifact_path,
