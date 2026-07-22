@@ -1828,8 +1828,10 @@ def _approve_helptext(destination: str, *, correction: bool) -> str:
         return "Apply the diff to the project checkout AND create a commit."
     if destination == _DESTINATION_PUBLISHED_BRANCH:
         body = (
-            "commit onto a delivery branch, push it, and open a pull request "
-            "— your project checkout is NOT modified."
+            "commit onto a delivery branch and attempt to push it and open a "
+            "pull request. If automatic publication is unavailable, the branch "
+            "remains ready for manual publication. Your project checkout is "
+            "NOT modified."
         )
     elif destination == _DESTINATION_BRANCH_IN_CHECKOUT:
         body = (
@@ -1838,9 +1840,9 @@ def _approve_helptext(destination: str, *, correction: bool) -> str:
         )
     else:  # fallback — honest for both publish and in-place under the policy.
         body = (
-            "commit — under the branch policy this pushes an orcho/deliver "
-            "branch and opens a PR on protected targets, or commits to your "
-            "checkout otherwise."
+            "commit according to the branch policy. Protected targets use a "
+            "delivery branch and may attempt publication; other targets commit "
+            "to your checkout."
         )
     if correction:
         return "Override final acceptance, " + body

@@ -554,13 +554,14 @@ def _menu_blob(
     return strip_ansi("\n".join(lines))
 
 
-def test_interactive_menu_published_branch_describes_push_and_pr(
+def test_interactive_menu_published_branch_describes_attempt_and_fallback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     # An isolated (per_run) worktree under the default ``worktree_branch`` policy
-    # publishes the run branch and opens a PR — the checkout is never touched.
-    # The menu must say so and must NOT promise a checkout commit.
+    # attempts to publish the run branch — the checkout is never touched. The
+    # menu must describe both automatic publication and its local-only fallback
+    # without promising either a push or a pull request.
     repo = tmp_path / "repo"
     _init_repo(repo)
     run_dir = tmp_path / "run"
@@ -576,8 +577,10 @@ def test_interactive_menu_published_branch_describes_push_and_pr(
     )
 
     assert "delivery branch" in blob
-    assert "open a pull request" in blob
-    assert "your project checkout is NOT modified" in blob
+    assert "attempt to push it and open a pull request" in blob
+    assert "remains ready for manual publication" in blob
+    assert "Your project checkout is NOT modified" in blob
+    assert "push it, and open a pull request" not in blob
     # The stale wording that lied about a publish as a checkout commit is gone.
     assert "Apply the diff to the project checkout AND create a commit." not in blob
 
