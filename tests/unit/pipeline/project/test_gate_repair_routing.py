@@ -7,6 +7,7 @@ a duck-typed run object — no real agent, worktree, or review pass.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from pipeline.evidence.verification_receipt import subject_identity
@@ -470,13 +471,81 @@ def test_run_gate_command_overwrites_receipt_on_rerun(
     queue = [_fake_command_receipt(1), _fake_command_receipt(0)]
     monkeypatch.setattr(vc, "run_command", lambda *a, **k: queue.pop(0))
 
-    entry = SimpleNamespace(command="test")
+    entry = SimpleNamespace(command="test", hook="after_phase", phase="implement")
     gate_repair._run_gate_command(run, contract, entry)
     gate_repair._run_gate_command(run, contract, entry)
 
     persisted = load_command_receipts(tmp_path)
     assert len(persisted) == 1
     assert persisted[0]["exit_code"] == 0
+    evidence = sorted(
+        (tmp_path / "verification_command_receipts" / "executions").glob("*.json"),
+    )
+    assert len(evidence) == 2
+    assert [json.loads(path.read_text())["exit_code"] for path in evidence] == [1, 0]
+
+
+def test_automatic_recheck_preserves_truthful_receipt_timeline(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import pipeline.verification_command as vc
+    from pipeline.evidence.verification_receipt import load_command_receipts
+    from pipeline.project.verification_ledger_runtime import initialize
+    from pipeline.verification_ledger_store import load_ledger
+    from sdk.verification_timeline import get_verification_timeline
+
+    run_dir = tmp_path / "runs" / "20260722_automatic_retry"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps({"status": "done", "project": "/tmp/project"}),
+        encoding="utf-8",
+    )
+    contract = _contract()
+    run = _run(contract)
+    run.state.output_dir = run_dir
+    initialize(run.state)
+    queue = [_fake_command_receipt(1), _fake_command_receipt(0)]
+    monkeypatch.setattr(vc, "run_command", lambda *a, **k: queue.pop(0))
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: SimpleNamespace(
+            status="present" if receipt["exit_code"] == 0 else "absent",
+            failure_kind="test_failure",
+            exit_code=receipt["exit_code"],
+            assertions_passed=0,
+            assertions_total=0,
+            failed_assertions=(),
+        ),
+    )
+    calls = {"repair": 0}
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.passed and outcome.rounds == 1
+    executions = [
+        event for event in load_ledger(run_dir).trail if event.kind == "execution"
+    ]
+    assert [(event.outcome, event.rerun) for event in executions] == [
+        ("fail", False),
+        ("pass", True),
+    ]
+    evidence_paths = [event.receipt_evidence for event in executions]
+    assert all(evidence_paths)
+    assert evidence_paths[0] != evidence_paths[1]
+    assert [
+        json.loads((run_dir / path).read_text())["exit_code"]
+        for path in evidence_paths
+    ] == [1, 0]
+    assert [receipt["exit_code"] for receipt in load_command_receipts(run_dir)] == [0]
+
+    monkeypatch.setenv("ORCHO_RUNSPACE", str(tmp_path))
+    projected = get_verification_timeline(run_id=run_dir.name)
+    projected_executions = [event for event in projected.events if event.kind == "execution"]
+    assert [event.receipt_evidence.path for event in projected_executions] == evidence_paths
+    assert [event.receipt_evidence.rerun for event in projected_executions] == [False, True]
 
 
 def test_run_gate_command_tolerates_missing_output_dir(

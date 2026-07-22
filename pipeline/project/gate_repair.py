@@ -611,6 +611,7 @@ def _repair_loop(
             classification,
             hook=hook,
             phase=phase,
+            rerun=True,
         )
         if classification.status == "present":
             return GateRepairOutcome(active=True, passed=True, rounds=round_n)
@@ -794,7 +795,7 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
         _placeholders(run),
         required=True,
     )
-    _persist_gate_receipt(run, receipt)
+    _persist_gate_receipt(run, entry, receipt)
     if show_progress:
         _render_gate_command_result(entry.command, receipt)
     return receipt
@@ -838,15 +839,25 @@ def _gate_duration(receipt: dict) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
 
 
-def _persist_gate_receipt(run: Any, receipt: dict) -> None:
-    """Write the command receipt under the run dir; never raises."""
+_RECEIPT_EVIDENCE_PATH_KEY = "_scheduled_receipt_evidence_path"
+
+
+def _persist_gate_receipt(run: Any, entry: Any, receipt: dict) -> None:
+    """Write latest + immutable scheduled receipt evidence; never raises."""
     output_dir = getattr(getattr(run, "state", None), "output_dir", None)
     from contextlib import suppress
 
     with suppress(Exception):
-        from pipeline.evidence.verification_receipt import write_command_receipt
+        from pipeline.evidence.verification_receipt import write_scheduled_command_receipt
 
-        write_command_receipt(output_dir=output_dir, result=receipt)
+        evidence = write_scheduled_command_receipt(
+            output_dir=output_dir,
+            result=receipt,
+            hook=str(getattr(entry, "hook", "")),
+            phase=str(getattr(entry, "phase", "")),
+        )
+        if evidence is not None:
+            receipt[_RECEIPT_EVIDENCE_PATH_KEY] = evidence.relative_to(output_dir).as_posix()
 
 
 def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
@@ -969,14 +980,8 @@ def _record_executed_gate_event(
 ) -> None:
     """Stamp the ``executed_pass`` / ``executed_fail`` event for a run gate."""
     decision = "executed_pass" if classification.status == "present" else "executed_fail"
-    output_dir = getattr(getattr(run, "state", None), "output_dir", None)
-    receipt_path: str | None = None
-    if output_dir is not None:
-        from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
-
-        receipt_path = str(
-            Path(output_dir) / COMMAND_RECEIPTS_DIRNAME / f"{entry.command}.json",
-        )
+    evidence = receipt.get(_RECEIPT_EVIDENCE_PATH_KEY)
+    receipt_path = evidence if isinstance(evidence, str) else None
     _append_gate_event(
         run,
         _gate_event(

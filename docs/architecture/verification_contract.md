@@ -121,6 +121,10 @@ one phase-metrics attempt; the retry owner does not add another counter.  The
 only durable gate record is `scheduled_gate_ledger.json`: its execution trail
 stores the exact rerun as `rerun: true` with receipt evidence.  Evidence and
 the SDK read that same ledger; no SDK or MCP wire schema changes are involved.
+The same execution rule covers automatic repair-loop rechecks: every execution
+after the initial exact gate identity is a rerun. Each trail event references a
+different immutable receipt copy, while the flat command receipt remains the
+single latest result classified by readiness and delivery.
 
 ## Verification subject identity (ADR 0140, I4-R1)
 
