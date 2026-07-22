@@ -114,7 +114,10 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         "plan": _build_plan_record(events, meta),
         "phases": _build_phases(events),
         "gates": _build_gates(events),
-        "commands": _build_commands(events),
+        "commands": [
+            *_build_commands(events),
+            *_build_managed_commands(target),
+        ],
         "artifacts": _build_artifacts(events),
         "metrics": _build_metrics_rollup(metrics),
         "errors": _build_errors(events, meta, target),
@@ -598,6 +601,37 @@ def _build_commands(events: list[_RawEvent]) -> list[dict[str, Any]]:
         stuck["exit_code"] = stuck.get("exit_code") if stuck.get("exit_code") is not None else -1
         closed.append(stuck)
     return closed
+
+
+def _build_managed_commands(run_dir: Path) -> list[dict[str, Any]]:
+    """Project the managed-command owner's bounded durable records."""
+    from agents.managed_command import ManagedCommandStore
+
+    return [
+        {
+            "argv_summary": record.executable,
+            "cwd": "",
+            "exit_code": record.exit_code,
+            "duration_s": record.duration_s,
+            "outcome": (
+                "unknown"
+                if record.state == "unknown"
+                else "success"
+                if record.exit_code == 0
+                else "failure"
+            ),
+            "source": "managed",
+            "identity_digest": record.identity_digest,
+            "phase": record.phase,
+            "state": str(record.state),
+            "executable": record.executable,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "artifact_path": record.artifact_path,
+            "degraded_reason": record.degraded_reason,
+        }
+        for record in ManagedCommandStore(run_dir).evidence()
+    ]
 
 
 def _build_artifacts(events: list[_RawEvent]) -> list[dict[str, Any]]:

@@ -19,6 +19,19 @@ The public wire has no legacy status enum, autorun compatibility DTO, manual
 aggregate, or scheduled-trail availability/gap field. Core delivery remains
 stopped until paired `scheduled-gates-4` `orcho-mcp` L1–L4 validation succeeds.
 
+## Managed-command evidence
+
+`list_commands()` includes durable agent-managed command records alongside
+ordinary command-event records. Managed records have `source="managed"` and
+project the lifecycle state (`unknown` or `exited`), exit code, identity digest,
+phase, bounded executable name, timestamps when available, and a run-relative
+artifact path. They do not expose raw arguments or environment values and do
+not count as scheduled-verification receipts.
+
+An unsettled lease is reported as `unknown`; only an exact terminal receipt is
+reported as `exited`. A malformed artifact remains visible with
+`degraded_reason` instead of suppressing other command evidence.
+
 ## Conventions
 
 Every read/report call accepts the same explicit-context triple:

@@ -997,6 +997,60 @@
           "default_factory": null,
           "name": "outcome",
           "type": "str"
+        },
+        {
+          "default": "'event'",
+          "default_factory": null,
+          "name": "source",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "identity_digest",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "phase",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "state",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "executable",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "started_at",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "finished_at",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "artifact_path",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "degraded_reason",
+          "type": "str | None"
         }
       ],
       "frozen": true,

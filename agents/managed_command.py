@@ -80,6 +80,22 @@ class ManagedCommandObservation:
     exit_code: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ManagedCommandEvidence:
+    """Secret-conscious read projection for one durable command artifact."""
+
+    identity_digest: str
+    phase: str
+    state: ManagedCommandState
+    exit_code: int | None
+    executable: str
+    started_at: str | None
+    finished_at: str | None
+    duration_s: float
+    artifact_path: str
+    degraded_reason: str | None = None
+
+
 class DuplicateManagedCommandError(RuntimeError):
     """Raised when an active or unobservable equivalent lease exists."""
 
@@ -204,6 +220,22 @@ class ManagedCommandStore:
             lease.lease_path.unlink(missing_ok=True)
         return lease.receipt_path
 
+    def evidence(self) -> tuple[ManagedCommandEvidence, ...]:
+        """Project leases and receipts without exposing argv or environment."""
+        records: list[ManagedCommandEvidence] = []
+        for directory, unsettled in ((self.receipts, False), (self.leases, True)):
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.json")):
+                records.append(
+                    _managed_command_evidence(
+                        self.run_dir,
+                        path,
+                        unsettled=unsettled,
+                    ),
+                )
+        return tuple(sorted(records, key=lambda record: record.artifact_path))
+
 
 def run_managed_command(
     *,
@@ -260,6 +292,89 @@ def _attempt_id_from(path: Path) -> str | None:
     except (OSError, ValueError, TypeError):
         return None
     return str(value) if value else None
+
+
+def _managed_command_evidence(
+    run_dir: Path,
+    path: Path,
+    *,
+    unsettled: bool,
+) -> ManagedCommandEvidence:
+    """Build one bounded record; malformed artifacts remain visible."""
+    digest = _bounded(path.name.split(".", 1)[0], limit=64)
+    relative_path = path.relative_to(run_dir).as_posix()
+    try:
+        payload = _read_json(path)
+        identity = payload.get("identity")
+        if not isinstance(identity, dict):
+            raise ValueError("identity is not an object")
+        argv = identity.get("argv")
+        if not isinstance(argv, list) or not argv or not isinstance(argv[0], str):
+            raise ValueError("identity argv has no executable")
+        executable = _bounded(Path(argv[0]).name or argv[0], limit=80)
+        phase = _bounded(str(identity.get("phase") or ""), limit=64)
+        started_at = _optional_timestamp(payload.get("started_at"))
+        finished_at = _optional_timestamp(payload.get("finished_at"))
+        if unsettled:
+            state = ManagedCommandState.UNKNOWN
+            exit_code = None
+        else:
+            exit_code_raw = payload.get("exit_code")
+            if payload.get("state") != ManagedCommandState.EXITED:
+                raise ValueError("terminal receipt is not exited")
+            if not isinstance(exit_code_raw, int) or isinstance(exit_code_raw, bool):
+                raise ValueError("terminal receipt has no integer exit code")
+            state = ManagedCommandState.EXITED
+            exit_code = exit_code_raw
+        return ManagedCommandEvidence(
+            identity_digest=digest,
+            phase=phase,
+            state=state,
+            exit_code=exit_code,
+            executable=executable,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_s=_duration_between(started_at, finished_at),
+            artifact_path=relative_path,
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return ManagedCommandEvidence(
+            identity_digest=digest,
+            phase="",
+            state=ManagedCommandState.UNKNOWN,
+            exit_code=None,
+            executable="",
+            started_at=None,
+            finished_at=None,
+            duration_s=0.0,
+            artifact_path=relative_path,
+            degraded_reason="malformed managed-command artifact",
+        )
+
+
+def _bounded(value: str, *, limit: int) -> str:
+    return value if len(value) <= limit else f"{value[: limit - 1]}…"
+
+
+def _optional_timestamp(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
+def _duration_between(started_at: str | None, finished_at: str | None) -> float:
+    if started_at is None or finished_at is None:
+        return 0.0
+    try:
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return 0.0
+    return max(0.0, (finished - started).total_seconds())
 
 
 def _read_json(path: Path) -> dict[str, Any]:

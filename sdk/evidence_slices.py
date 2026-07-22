@@ -107,6 +107,15 @@ class CommandRecord:
     exit_code: int | None
     duration_s: float
     outcome: str                # "success" | "failure" | …
+    source: str = "event"
+    identity_digest: str | None = None
+    phase: str | None = None
+    state: str | None = None
+    executable: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    artifact_path: str | None = None
+    degraded_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +475,15 @@ def list_commands(
             exit_code=_optional_int(c.get("exit_code")),
             duration_s=float(c.get("duration_s") or 0.0),
             outcome=str(c.get("outcome") or ""),
+            source=str(c.get("source") or "event"),
+            identity_digest=_optional_str(c.get("identity_digest")),
+            phase=_optional_str(c.get("phase")),
+            state=_optional_str(c.get("state")),
+            executable=_optional_str(c.get("executable")),
+            started_at=_optional_str(c.get("started_at")),
+            finished_at=_optional_str(c.get("finished_at")),
+            artifact_path=_optional_str(c.get("artifact_path")),
+            degraded_reason=_optional_str(c.get("degraded_reason")),
         )
         for c in cmds if isinstance(c, dict)
     ]
