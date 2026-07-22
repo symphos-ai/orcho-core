@@ -704,6 +704,12 @@
         {
           "default": "None",
           "default_factory": null,
+          "name": "published_commit_sha",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
           "name": "delivery_branch",
           "type": "str | None"
         },

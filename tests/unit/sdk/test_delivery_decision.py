@@ -1094,6 +1094,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
         "halt_reason",
         "artifact_paths",
         "commit_sha",
+        "published_commit_sha",
         "delivery_branch",
         "pr_intent",
         "pr_url",
@@ -1114,6 +1115,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     # bypass commits onto the checkout: commit_sha carries the outcome, the
     # branch-publish fields stay null.
     assert payload["delivery_branch"] is None
+    assert payload["published_commit_sha"] is None
     assert payload["pr_intent"] is None
     # No PR was opened on the commit-onto-checkout path.
     assert payload["pr_url"] is None
@@ -1175,6 +1177,7 @@ def test_worktree_branch_publish_projects_delivery_branch_and_pr_intent(
     assert result.terminal_outcome == "done"
     # Pure publish: no commit landed on the canonical checkout.
     assert result.commit_sha is None
+    assert result.published_commit_sha
     assert subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo,
         capture_output=True, text=True, check=True,
@@ -1196,6 +1199,7 @@ def test_worktree_branch_publish_projects_delivery_branch_and_pr_intent(
 
     payload = to_jsonable(result)
     assert payload["commit_sha"] is None
+    assert payload["published_commit_sha"] == result.published_commit_sha
     assert payload["delivery_branch"] == result.delivery_branch
     assert payload["pr_intent"] == {
         "branch": result.delivery_branch,
@@ -1247,6 +1251,7 @@ def test_bypass_projection_carries_commit_sha_not_branch(tmp_path: Path) -> None
     assert result.status == "committed"
     # bypass committed onto the checkout: commit_sha populated.
     assert result.commit_sha
+    assert result.published_commit_sha is None
     # No branch was published, so both additive fields stay None.
     assert result.delivery_branch is None
     assert result.pr_intent is None

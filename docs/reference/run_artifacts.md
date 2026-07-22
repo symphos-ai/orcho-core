@@ -624,7 +624,8 @@ Written by the cross delivery loop before `run.end`. Phase-scoped
     "<alias>": {
       "alias": "<alias>",
       "status": "committed | applied_uncommitted | no_diff | skipped | skipped_already_delivered | target_dirty | commit_failed | apply_failed | not_applicable | halted | disabled",
-      "commit_sha": "<sha, present for committed>",
+      "commit_sha": "<sha landed in the target checkout, when present>",
+      "published_commit_sha": "<sha created on the published delivery branch, when present>",
       "error": "<text, present on failure>",
       "release_override": {
         "original_verdict": "REJECTED",
