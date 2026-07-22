@@ -88,6 +88,7 @@ VERIFICATION_ENV_KIND = "verification_env_assertions"
 # VERIFICATION_COMMAND_KIND never enters the evidence v1 bundle — kept out by
 # *physical location*, not by filtering. Do NOT point the collector here.
 COMMAND_RECEIPTS_DIRNAME = "verification_command_receipts"
+COMMAND_RECEIPT_EXECUTIONS_DIRNAME = "executions"
 VERIFICATION_COMMAND_KIND = "verification_command"
 # v2 adds the top-level ``dependencies`` block (per-declared-dependency
 # cross-repo provenance — name/path/head/dirty/changed_files_count/
@@ -777,6 +778,44 @@ def write_command_receipt(
     path = receipts_dir / f"{_sanitize_filename_stem(command)}.json"
     path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     return path
+
+
+def write_scheduled_command_receipt(
+    *,
+    output_dir: Path | str | None,
+    result: Mapping[str, Any],
+    hook: str,
+    phase: str,
+) -> Path | None:
+    """Write the latest receipt and one immutable scheduled-execution copy.
+
+    The flat ``<command>.json`` receipt remains the sole authoritative input to
+    readiness and delivery. The nested execution copy exists only for the
+    scheduled-gate ledger to reference; command-receipt loaders deliberately do
+    not recurse into this directory.
+    """
+    latest = write_command_receipt(output_dir=output_dir, result=result)
+    if latest is None:
+        return None
+
+    command = str(result.get("command", "")) or "command"
+    identity = "--".join(
+        _sanitize_filename_stem(value)
+        for value in (command, hook, phase or "none")
+    )
+    executions_dir = latest.parent / COMMAND_RECEIPT_EXECUTIONS_DIRNAME
+    executions_dir.mkdir(parents=True, exist_ok=True)
+    encoded = latest.read_text(encoding="utf-8")
+    attempt = 1
+    while True:
+        evidence = executions_dir / f"{identity}--{attempt:04d}.json"
+        try:
+            with evidence.open("x", encoding="utf-8") as stream:
+                stream.write(encoded)
+        except FileExistsError:
+            attempt += 1
+            continue
+        return evidence
 
 
 def load_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:

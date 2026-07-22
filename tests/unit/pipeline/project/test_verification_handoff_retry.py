@@ -468,7 +468,6 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The production rerun seam appends, rather than replaces, its execution."""
-    from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
     from pipeline.project import gate_repair
 
     contract = VerificationContract.from_plugin(PluginConfig(verification={
@@ -496,7 +495,27 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
     ).entries[0]
     record_execution(run, entry, passed=False, receipt_evidence="receipts/original.json")
 
-    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args: {"exit_code": 1})
+    monkeypatch.setattr(
+        "pipeline.verification_command.run_command",
+        lambda *_args, **_kwargs: {
+            "command": "pytest-unit",
+            "env": "",
+            "cwd": "/tmp/wt",
+            "placeholders": {"checkout": "/tmp/wt", "project": "/tmp/wt"},
+            "argv": ["pytest", "tests/unit"],
+            "env_overrides": {},
+            "assertions": [],
+            "exit_code": 1,
+            "duration_s": 0.1,
+            "stdout_tail": "",
+            "stderr_tail": "failed",
+            "log_path": None,
+            "parity": "absolute",
+            "detail": "",
+            "git": {"checkout_head": None, "baseline_head": None},
+            "dependencies": [],
+        },
+    )
     monkeypatch.setattr(
         gate_repair,
         "_classify_gate_receipt",
@@ -521,12 +540,12 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
     executions = [event for event in load_ledger(tmp_path).trail if event.kind == "execution"]
     assert [(event.identity, event.receipt_evidence, event.rerun) for event in executions] == [
         (("pytest-unit", "after_phase", "implement"), "receipts/original.json", False),
-        (
-            ("pytest-unit", "after_phase", "implement"),
-            str(tmp_path / COMMAND_RECEIPTS_DIRNAME / "pytest-unit.json"),
-            True,
-        ),
+        (("pytest-unit", "after_phase", "implement"),
+         "verification_command_receipts/executions/"
+         "pytest-unit--after_phase--implement--0001.json", True),
     ]
+    rerun_path = tmp_path / executions[-1].receipt_evidence
+    assert rerun_path.is_file()
 
 
 def test_rerun_gate_passes_only_for_the_selected_identity(

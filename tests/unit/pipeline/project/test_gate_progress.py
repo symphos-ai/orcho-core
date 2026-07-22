@@ -118,7 +118,9 @@ def test_run_gate_command_terminal_renders_start_and_result(monkeypatch) -> None
         },
     )
     monkeypatch.setattr(gate_repair, "_placeholders", lambda run: None)
-    monkeypatch.setattr(gate_repair, "_persist_gate_receipt", lambda run, r: None)
+    monkeypatch.setattr(
+        gate_repair, "_persist_gate_receipt", lambda run, entry, receipt: None,
+    )
 
     lines = _cap(lambda: gate_repair._run_gate_command(
         _fake_run(terminal=True),
@@ -138,7 +140,9 @@ def test_run_gate_command_silent_run_prints_nothing(monkeypatch) -> None:
         lambda *a, **k: {"exit_code": 0, "assertions": [], "detail": ""},
     )
     monkeypatch.setattr(gate_repair, "_placeholders", lambda run: None)
-    monkeypatch.setattr(gate_repair, "_persist_gate_receipt", lambda run, r: None)
+    monkeypatch.setattr(
+        gate_repair, "_persist_gate_receipt", lambda run, entry, receipt: None,
+    )
 
     lines = _cap(lambda: gate_repair._run_gate_command(
         _fake_run(terminal=False),
