@@ -11,6 +11,7 @@ from pipeline.run_state import (
     continue_with_waiver_handoff,
     retry_feedback_handoff,
 )
+from pipeline.runtime.handoff import HUMAN_DIRECTED_FLAG_KEY
 
 
 class VerificationHandoffRetryBlocked(RuntimeError):
@@ -107,6 +108,12 @@ def apply_verification_handoff_retry(
     if repair_step is None:
         raise VerificationHandoffRetryBlocked("verification retry profile has no repair_changes step")
 
+    prior_round = int(active.get("round", 1) or 1)
+    fresh_round = prior_round + 1
+    loop_max_rounds = int(
+        active.get("loop_max_rounds", prior_round) or prior_round,
+    )
+
     transition = retry_feedback_handoff(
         run.session, handoff_id=handoff_id, mode=HandoffRetryMode.VERIFICATION,
         feedback=feedback, note=note, decided_at=decided_at,
@@ -118,19 +125,24 @@ def apply_verification_handoff_retry(
     _persist_handoff_running_state(run)
 
     try:
-        _dispatch_one_repair(run, repair_step, ctx)
+        _dispatch_one_repair(
+            run,
+            repair_step,
+            ctx,
+            round_n=fresh_round,
+            loop_max_rounds=loop_max_rounds,
+        )
     except AgentCallError:
         # Provider/process failures retain their established lifecycle handling;
         # they are not operator control-plane blockers.
         raise
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         _restore_recovery_subject(run, active)
         raise VerificationHandoffRetryBlocked(str(exc)) from exc
     if getattr(run.state, "halt", False):
         return _outcome(profile, paused=False)
     from pipeline.project.gate_repair import rerun_verification_handoff_gate
 
-    fresh_round = int(active.get("round", 1) or 1) + 1
     try:
         passed = rerun_verification_handoff_gate(
             run, command=identity.command, hook=identity.hook, phase=identity.phase,
@@ -138,7 +150,7 @@ def apply_verification_handoff_retry(
         )
     except AgentCallError:
         raise
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         # Identity/ledger/dispatch configuration errors are control-plane
         # blockers. Re-expose the original subject rather than consuming it.
         _restore_recovery_subject(run, active)
@@ -150,14 +162,44 @@ def apply_verification_handoff_retry(
     return _outcome(profile, paused=False)
 
 
-def _dispatch_one_repair(run: Any, repair_step: Any, ctx: Any) -> None:
+def _dispatch_one_repair(
+    run: Any,
+    repair_step: Any,
+    ctx: Any,
+    *,
+    round_n: int,
+    loop_max_rounds: int,
+) -> None:
+    """Dispatch a human-directed repair with explicit loop identity."""
     from pipeline.runtime.runner import _dispatch_via_fsm
 
-    run.state = _dispatch_via_fsm(
-        repair_step, run.state, ctx,
-        on_phase_start=getattr(run, "_on_phase_start", None),
-        on_phase_end=getattr(run, "_on_phase_end", None),
+    active_key_sentinel = object()
+    human_directed_sentinel = object()
+    previous_active_key = run.state.extras.get(
+        "_active_loop_round_key", active_key_sentinel,
     )
+    previous_human_directed = run.state.extras.get(
+        HUMAN_DIRECTED_FLAG_KEY, human_directed_sentinel,
+    )
+    run.state.extras["repair_round"] = round_n
+    run.state.extras["repair_round_max"] = loop_max_rounds
+    run.state.extras["_active_loop_round_key"] = "repair_round"
+    run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
+    try:
+        run.state = _dispatch_via_fsm(
+            repair_step, run.state, ctx,
+            on_phase_start=getattr(run, "_on_phase_start", None),
+            on_phase_end=getattr(run, "_on_phase_end", None),
+        )
+    finally:
+        if previous_active_key is active_key_sentinel:
+            run.state.extras.pop("_active_loop_round_key", None)
+        else:
+            run.state.extras["_active_loop_round_key"] = previous_active_key
+        if previous_human_directed is human_directed_sentinel:
+            run.state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
+        else:
+            run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = previous_human_directed
 
 
 def _restore_recovery_subject(run: Any, active: dict[str, Any]) -> None:

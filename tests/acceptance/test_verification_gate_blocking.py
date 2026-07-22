@@ -149,7 +149,7 @@ def test_retry_feedback_runs_one_repair_then_fresh_gate_subject(
     monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
     monkeypatch.setattr(
         "pipeline.project.verification_handoff_retry._dispatch_one_repair",
-        lambda *_args: calls.append("repair"),
+        lambda *_args, **kwargs: calls.append({"repair": kwargs}),
     )
     monkeypatch.setattr(
         "pipeline.project.gate_repair.rerun_verification_handoff_gate",
@@ -163,7 +163,7 @@ def test_retry_feedback_runs_one_repair_then_fresh_gate_subject(
         identity=GateIdentity("pytest-unit", "after_phase", "implement"),
     )
     assert result.paused is False
-    assert calls == ["repair", {
+    assert calls == [{"repair": {"round_n": 2, "loop_max_rounds": 1}}, {
         "command": "pytest-unit", "hook": "after_phase", "phase": "implement", "round_n": 2,
     }]
     assert run.state.human_feedback == "Починить проверку"
@@ -188,7 +188,9 @@ def test_retry_control_failure_keeps_subject_but_process_crash_propagates(
     control = _run()
     monkeypatch.setattr(
         "pipeline.project.verification_handoff_retry._dispatch_one_repair",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("bad dispatch")),
+        lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError("bad dispatch")),
     )
     with pytest.raises(VerificationHandoffRetryBlocked, match="bad dispatch"):
         apply_verification_handoff_retry(
@@ -201,7 +203,9 @@ def test_retry_control_failure_keeps_subject_but_process_crash_propagates(
     crashed = _run()
     monkeypatch.setattr(
         "pipeline.project.verification_handoff_retry._dispatch_one_repair",
-        lambda *_args: (_ for _ in ()).throw(OSError("process crash")),
+        lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(OSError("process crash")),
     )
     with pytest.raises(OSError, match="process crash"):
         apply_verification_handoff_retry(
