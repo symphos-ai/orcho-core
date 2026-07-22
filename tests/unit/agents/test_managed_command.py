@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -168,3 +170,67 @@ def test_interrupt_cancels_only_exact_child_and_records_exit(tmp_path: Path) -> 
     observed = ManagedCommandStore(run_dir).observe(identity)
     assert observed.state is ManagedCommandState.EXITED
     assert observed.exit_code == -15
+
+
+def test_evidence_projects_terminal_receipt_without_raw_arguments(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "runs" / "run-1"
+    cwd = tmp_path / "checkout"
+    run_dir.mkdir(parents=True)
+    cwd.mkdir()
+    secret = "sentinel-secret-must-not-project"
+    identity = ManagedCommandIdentity.build(
+        run_dir=run_dir,
+        phase="implement",
+        cwd=cwd,
+        argv=("/usr/bin/python3", "-c", secret),
+    )
+    store = ManagedCommandStore(run_dir)
+    store.settle(store.admit(identity), exit_code=0)
+
+    records = store.evidence()
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.identity_digest == identity.key
+    assert record.state is ManagedCommandState.EXITED
+    assert record.exit_code == 0
+    assert record.executable == "python3"
+    assert record.phase == "implement"
+    assert record.artifact_path.startswith("managed_commands/receipts/")
+    assert secret not in json.dumps(asdict(record))
+
+
+def test_evidence_projects_unsettled_lease_as_unknown(tmp_path: Path) -> None:
+    identity = _identity(tmp_path)
+    store = ManagedCommandStore(tmp_path / "runs" / "run-1")
+    store.admit(identity)
+
+    records = store.evidence()
+
+    assert len(records) == 1
+    assert records[0].state is ManagedCommandState.UNKNOWN
+    assert records[0].exit_code is None
+    assert records[0].artifact_path.startswith("managed_commands/leases/")
+
+
+def test_evidence_keeps_corrupt_record_without_erasing_valid_receipt(
+    tmp_path: Path,
+) -> None:
+    identity = _identity(tmp_path)
+    store = ManagedCommandStore(tmp_path / "runs" / "run-1")
+    store.settle(store.admit(identity), exit_code=3)
+    corrupt = store.receipts / f"{'f' * 64}.broken.json"
+    corrupt.write_text("not json", encoding="utf-8")
+
+    records = store.evidence()
+
+    assert len(records) == 2
+    assert any(
+        record.state is ManagedCommandState.EXITED and record.exit_code == 3
+        for record in records
+    )
+    degraded = next(record for record in records if record.degraded_reason)
+    assert degraded.state is ManagedCommandState.UNKNOWN
+    assert degraded.identity_digest == "f" * 64
