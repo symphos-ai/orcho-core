@@ -578,6 +578,165 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "compile_identity",
+          "type": "CrossExecutionGraphCompileIdentity"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "nodes",
+          "type": "tuple[CrossExecutionGraphNode, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraph",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "schema_version",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "fingerprint",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphCompileIdentity",
+      "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphExecutor",
+      "qualname": "CrossExecutionGraphExecutor"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "executor",
+          "type": "CrossExecutionGraphExecutor"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "handler",
+          "type": "str | None"
+        },
+        {
+          "default": "True",
+          "default_factory": null,
+          "name": "enabled",
+          "type": "bool"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "run",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "on_skip",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "mode",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphExecutorPolicy",
+      "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 1,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "CrossExecutionGraphInvalid"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "identity",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "kind",
+          "type": "CrossExecutionGraphNodeKind"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "dependencies",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "owner",
+          "type": "CrossExecutionGraphNodeOwner"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "executor",
+          "type": "CrossExecutionGraphExecutorPolicy"
+        },
+        {
+          "default": "True",
+          "default_factory": null,
+          "name": "required",
+          "type": "bool"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphNode",
+      "slots": true
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphNodeKind",
+      "qualname": "CrossExecutionGraphNodeKind"
+    },
+    {
+      "kind": "class",
+      "module": "pipeline.cross_project.execution_graph",
+      "name": "CrossExecutionGraphNodeOwner",
+      "qualname": "CrossExecutionGraphNodeOwner"
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "children",
           "type": "tuple[ChildState, ...]"
         },
@@ -4941,6 +5100,38 @@
         }
       ],
       "return": "dict[str, Any] | None"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.cross_execution_graph",
+      "name": "load_cross_execution_graph",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "CrossExecutionGraph"
     },
     {
       "kind": "callable",

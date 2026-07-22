@@ -38,6 +38,8 @@ from pipeline.cross_project.contract_check import (
     ContractCheckContext,
     run_cross_contract_check,
 )
+from pipeline.cross_project.execution_graph import compile_cross_execution_graph
+from pipeline.cross_project.execution_graph_store import write_cross_execution_graph
 from pipeline.cross_project.handoff import resume_project_phase_handoff
 from pipeline.cross_project.planning_loop import (
     CrossPlanningContext as _CrossPlanningContext,
@@ -425,6 +427,13 @@ def _run_planning(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
             plan_parser.parse_cross_plan(ctx.plan_output, ctx.aliases),
             ctx.aliases,
         )
+    # C1 durable structure only: admission produces an immutable graph before
+    # presentation/dispatch.  No subsequent lifecycle consumer reads it yet.
+    if ctx.task_plan is not None:
+        graph = compile_cross_execution_graph(
+            ctx.task_plan, ctx.aliases, ctx.profile_setup,
+        )
+        write_cross_execution_graph(ctx.run_dir, graph)
     distribution: list[tuple[str, str | None]] = (
         [(u.alias, (u.spec or None)) for u in ctx.task_plan.units]
         if ctx.task_plan
