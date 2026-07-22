@@ -111,7 +111,7 @@ def _session_resolved() -> dict[str, Any]:
 # ── delivery destination line ───────────────────────────────────────────────
 
 
-def test_delivery_line_published_branch_shows_push_and_pr() -> None:
+def test_delivery_line_published_branch_shows_branch_and_pr() -> None:
     session = {
         "commit_delivery": {
             "status": "committed",
@@ -120,7 +120,7 @@ def test_delivery_line_published_branch_shows_push_and_pr() -> None:
         },
     }
     assert render_delivery_destination_lines(session) == (
-        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/7",
+        "Delivery: branch orcho/deliver/r1-feature → PR https://example.test/pr/7",
     )
 
 
@@ -133,8 +133,8 @@ def test_delivery_line_published_branch_without_pr_is_actionable() -> None:
         },
     }
     assert render_delivery_destination_lines(session) == (
-        "Delivery: pushed orcho/deliver/r1-feature → "
-        "branch ready — open a PR / push manually",
+        "Delivery: branch orcho/deliver/r1-feature ready — "
+        "push if needed, then open a PR",
     )
 
 

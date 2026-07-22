@@ -1531,7 +1531,7 @@ def _delivery_done_stub(
     return stub
 
 
-def test_done_tail_shows_pushed_delivery_branch_and_pr(
+def test_done_tail_shows_delivery_branch_and_pr(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -1556,15 +1556,15 @@ def test_done_tail_shows_pushed_delivery_branch_and_pr(
 
     out = strip_ansi(capsys.readouterr().out)
     assert result.delivery_summary_lines == (
-        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/9",
+        "Delivery: branch orcho/deliver/r1-feature → PR https://example.test/pr/9",
     )
     assert (
-        "Delivery: pushed orcho/deliver/r1-feature → PR https://example.test/pr/9"
+        "Delivery: branch orcho/deliver/r1-feature → PR https://example.test/pr/9"
         in out
     )
     assert "Pipeline complete" in out
     # The delivery line lands in the DONE tail, right after the Evidence block.
-    assert out.index("Evidence") < out.index("Delivery: pushed")
+    assert out.index("Evidence") < out.index("Delivery: branch")
 
 
 def test_done_tail_shows_checkout_commit_sha(
