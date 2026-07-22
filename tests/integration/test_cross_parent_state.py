@@ -47,7 +47,7 @@ def durable_cross_run(tmp_path: Path) -> tuple[Path, dict, dict]:
     _write(run / "api" / "meta.json", {"status": "done"})
     _write(run / "web" / "meta.json", {"status": "done"})
     _write(run / "scheduled_gate_ledger.json", {
-        "rows": [{"command": "pytest\u0000-q", "hook": "after_phase", "phase": "implement"}],
+        "rows": [{"gate": "pytest\u0000-q", "hook": "after_phase", "phase": "implement"}],
     })
     _write(run / "events.jsonl", {
         "seq": 1,

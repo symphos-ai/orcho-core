@@ -241,10 +241,10 @@ def _ledger_identities(path: Path) -> set[tuple[str, str, str]]:
     if not isinstance(rows, list):
         return set()
     return {
-        (row["command"], row["hook"], row["phase"])
+        (row["gate"], row["hook"], row["phase"])
         for row in rows
         if isinstance(row, dict)
-        and all(isinstance(row.get(field), str) for field in ("command", "hook", "phase"))
+        and all(isinstance(row.get(field), str) for field in ("gate", "hook", "phase"))
     }
 
 
