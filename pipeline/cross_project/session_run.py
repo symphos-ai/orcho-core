@@ -18,6 +18,7 @@ import from :mod:`pipeline.cross_project.app`.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import time
 from collections.abc import Callable
@@ -38,8 +39,19 @@ from pipeline.cross_project.contract_check import (
     ContractCheckContext,
     run_cross_contract_check,
 )
-from pipeline.cross_project.execution_graph import compile_cross_execution_graph
-from pipeline.cross_project.execution_graph_store import write_cross_execution_graph
+from pipeline.cross_project.execution_graph import (
+    CrossExecutionGraphNodeKind,
+    compile_cross_execution_graph,
+)
+from pipeline.cross_project.execution_graph_state import CrossExecutionGraphStatus
+from pipeline.cross_project.execution_graph_state_runtime import (
+    reduce_runtime_cross_execution_graph_state,
+)
+from pipeline.cross_project.execution_graph_store import (
+    load_cross_execution_graph,
+    write_cross_execution_graph,
+)
+from pipeline.cross_project.graph_scheduler import select_ready_runner_gate
 from pipeline.cross_project.handoff import resume_project_phase_handoff
 from pipeline.cross_project.planning_loop import (
     CrossPlanningContext as _CrossPlanningContext,
@@ -148,6 +160,9 @@ class _CrossRunContext:
     # provisionally in ``setup_cross_run`` and bound per-alias post-dispatch. Lives
     # here (not in ``session``) so it is never persisted.
     participant_set: Any = None
+    execution_graph: Any = None
+    resolved_handoff_alias: str | None = None
+    graph_gate_blocked: bool = False
 
 
 def _setup_cross_run(request: CrossRunRequest) -> _CrossRunContext:
@@ -427,13 +442,35 @@ def _run_planning(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
             plan_parser.parse_cross_plan(ctx.plan_output, ctx.aliases),
             ctx.aliases,
         )
-    # C1 durable structure only: admission produces an immutable graph before
-    # presentation/dispatch.  No subsequent lifecycle consumer reads it yet.
+    # Admission produces one immutable graph. Resume reads its existing
+    # snapshot first, retaining the C1 equality/drift check without rewriting
+    # topology from mutable run state.
     if ctx.task_plan is not None:
-        graph = compile_cross_execution_graph(
+        compiled_graph = compile_cross_execution_graph(
             ctx.task_plan, ctx.aliases, ctx.profile_setup,
         )
-        write_cross_execution_graph(ctx.run_dir, graph)
+        if request.resume_from:
+            # C2 runs normally resume the immutable C1 artifact.  A run
+            # paused before C1 was promoted has no artifact to load; compile
+            # it once from the already-approved canonical plan, then retain
+            # the same immutable snapshot for every later resume.
+            graph_path = ctx.run_dir / "cross_execution_graph.json"
+            if graph_path.exists():
+                graph = load_cross_execution_graph(ctx.run_dir)
+                if graph != compiled_graph:
+                    raise RuntimeError("cross execution graph drift on resume")
+            elif (ctx.run_dir / "cross_plan.json").is_file():
+                graph = compiled_graph
+                write_cross_execution_graph(ctx.run_dir, graph)
+            else:
+                # Without either C1's structural snapshot or the approved
+                # canonical plan artifact, reconstructing topology would let
+                # transient planning output manufacture a resume graph.
+                graph = load_cross_execution_graph(ctx.run_dir)
+        else:
+            graph = compiled_graph
+            write_cross_execution_graph(ctx.run_dir, graph)
+        ctx.execution_graph = graph
     distribution: list[tuple[str, str | None]] = (
         [(u.alias, (u.spec or None)) for u in ctx.task_plan.units]
         if ctx.task_plan
@@ -496,6 +533,8 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
         ports=_dispatch_ports,
         terminal=ctx.terminal,
         participant_set=ctx.participant_set,
+        execution_graph=getattr(ctx, "execution_graph", None),
+        resolved_handoff_alias=getattr(ctx, "resolved_handoff_alias", None),
     )
     _dispatch_result = _run_project_dispatch(_dispatch_ctx)
     if _dispatch_result.paused:
@@ -504,6 +543,18 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
         reduce_runtime_cross_parent_state,
     )
 
+    # Admission is graph-driven, so hydrate the durable gate result before
+    # reducing it.  ``run_cross_contract_check`` has the same fallback for
+    # its own cache reuse, but doing it there would be too late: a resumed CFA
+    # continue path would see the contract node as unfinished and deny CFA.
+    if request.resume_from and not ctx.session.get("phases", {}).get("contract_check"):
+        try:
+            persisted = json.loads((ctx.run_dir / "meta.json").read_text(encoding="utf-8"))
+            entry = persisted.get("phases", {}).get("contract_check")
+            if isinstance(entry, dict) and entry:
+                ctx.session.setdefault("phases", {})["contract_check"] = entry
+        except (OSError, ValueError, AttributeError):
+            pass
     state_session = (
         ctx.session
         if isinstance(ctx.session.get("projects"), dict)
@@ -518,6 +569,22 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
         state_session, ctx.cross_ckpt, ctx.run_dir
     )
     ctx.reduced_parent = reduced_parent
+    execution_graph = getattr(ctx, "execution_graph", None)
+    graph_state = (
+        reduce_runtime_cross_execution_graph_state(
+            execution_graph, state_session, ctx.cross_ckpt, str(ctx.run_dir)
+        )
+        if execution_graph is not None
+        else None
+    )
+    contract_node = (
+        next(
+            node for node in graph_state.nodes
+            if node.kind is CrossExecutionGraphNodeKind.CONTRACT_CHECK
+        )
+        if graph_state is not None
+        else None
+    )
     non_evaluable = tuple(
         child for child in reduced_parent.children if not child.contract_evaluable
     )
@@ -566,7 +633,30 @@ def _run_dispatch_and_contract(request: CrossRunRequest, ctx: _CrossRunContext) 
             if ctx.review_projects
             else ctx.common_cwd
         )
+        # NOT_EVALUABLE is the established contract-readiness precondition:
+        # preserve its CFA precondition/policy-skip audit path. It does not
+        # admit either provider because the gate entry is already materialized.
         return False
+    if graph_state is not None and contract_node is not None:
+        selected_contract = select_ready_runner_gate(
+            graph_state, CrossExecutionGraphNodeKind.CONTRACT_CHECK,
+        )
+        if contract_node.status is CrossExecutionGraphStatus.COMPLETED and request.resume_from:
+            # Re-enter the existing cache path so a cached REJECTED restores
+            # its failure flags; it does not invoke the provider.
+            selected_contract = contract_node
+        # A policy-skipped node still delegates to the legacy gate entry so
+        # its existing audit/on_skip semantics are materialized; it never
+        # reaches the provider path.
+        if (
+            selected_contract is None
+            and contract_node.status is not CrossExecutionGraphStatus.SKIPPED
+        ):
+            ctx.graph_gate_blocked = True
+            ctx.contract_results = {}
+            ctx.contract_check_failed = False
+            ctx.contract_check_failure_reason = None
+            return False
     _cc_result = run_cross_contract_check(
         ContractCheckContext(
             task=request.task,
@@ -610,6 +700,25 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
     ctx.reduced_parent = reduce_runtime_cross_parent_state(
         state_session, ctx.cross_ckpt, ctx.run_dir
     )
+    readiness_precondition = any(
+        isinstance(entry, dict) and entry.get("not_evaluable") is True
+        for entry in (getattr(ctx, "contract_results", None) or {}).values()
+    )
+    execution_graph = getattr(ctx, "execution_graph", None)
+    if execution_graph is not None:
+        graph_state = reduce_runtime_cross_execution_graph_state(
+            execution_graph, state_session, ctx.cross_ckpt, str(ctx.run_dir),
+        )
+        cfa_node = next(
+            node for node in graph_state.nodes
+            if node.kind is CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE
+        )
+        if (
+            cfa_node.status is CrossExecutionGraphStatus.BLOCKED
+            and not readiness_precondition
+        ):
+            ctx.graph_gate_blocked = True
+            return False
     from pipeline.cross_project.gate_entries import skipped_release_entry
     from pipeline.runtime import CrossGateRunPolicy
 
@@ -629,6 +738,15 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
             r.C.MAGENTA,
         )
         ctx.cfa_result = None
+        return False
+    if (
+        execution_graph is not None
+        and not readiness_precondition
+        and select_ready_runner_gate(
+            graph_state, CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE,
+        ) is None
+    ):
+        ctx.graph_gate_blocked = True
         return False
     from pipeline.cross_project.cfa_gate import (
         CFA_DEFAULT_MAX_ROUNDS,
@@ -801,6 +919,8 @@ def _cross_delivery_plan(ctx: _CrossRunContext) -> tuple[bool, bool]:
     # Contract-evaluable child inputs are the readiness precondition.  A
     # rejected release stays evaluable so CFA can reject it and an existing
     # operator override can preserve the established delivery semantics.
+    if ctx.graph_gate_blocked:
+        return False, False
     reduced_parent = getattr(ctx, "reduced_parent", None)
     if getattr(ctx, "child_profile", None) is not None and reduced_parent is not None and (
         reduced_parent.violations
@@ -868,6 +988,7 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
         cross_ckpt=ctx.cross_ckpt,
         parent_state=getattr(ctx, "reduced_parent", None),
         require_child_readiness=getattr(ctx, "child_profile", True) is not None,
+        graph_gate_blocked=ctx.graph_gate_blocked,
     )
     if ctx.terminal:
         finalize_cross_with_terminal_output(_finalization_ctx)
@@ -886,20 +1007,33 @@ def run_cross_pipeline_session(
         request.resume_from
         and ctx.cross_ckpt.get("phase_handoff_pending")
         and ctx.cross_ckpt.get("phase_handoff_kind") == "project"
-        and resume_project_phase_handoff(
+    ):
+        # The helper validates and applies the durable decision artifact. Keep
+        # only its exact alias as one-shot continuation routing; the graph
+        # reducer still owns every ordinary readiness decision.
+        alias = ctx.cross_ckpt.get("phase_handoff_project_alias")
+        if resume_project_phase_handoff(
             cross_ckpt=ctx.cross_ckpt,
             run_dir=ctx.run_dir,
             output_dir=request.output_dir,
             session=ctx.session,
             success=ctx.r.success,
-        )
-    ):
-        return ctx.session, ctx.run_dir, ctx.session_ts
+        ):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if not isinstance(alias, str) or alias not in ctx.aliases:
+            raise RuntimeError("resolved project handoff has invalid alias")
+        ctx.resolved_handoff_alias = alias
     if _run_planning(request, ctx):
         return ctx.session, ctx.run_dir, ctx.session_ts
     if _run_dispatch_and_contract(request, ctx):
         return ctx.session, ctx.run_dir, ctx.session_ts
+    if ctx.graph_gate_blocked:
+        _run_delivery_and_finalize(request, ctx)
+        return ctx.session, ctx.run_dir, ctx.session_ts
     if _run_release_gate(request, ctx):
+        return ctx.session, ctx.run_dir, ctx.session_ts
+    if ctx.graph_gate_blocked:
+        _run_delivery_and_finalize(request, ctx)
         return ctx.session, ctx.run_dir, ctx.session_ts
     if not ctx.release_skipped_by_policy and _finalize_release_verdict(request, ctx):
         return ctx.session, ctx.run_dir, ctx.session_ts

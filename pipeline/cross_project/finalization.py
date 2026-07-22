@@ -130,6 +130,10 @@ class CrossFinalizationContext:
     # canonical state still represents their declared aliases, while this
     # consumer policy decides whether child release readiness is required.
     require_child_readiness: bool = True
+    # The immutable execution graph rejected admission of a runner-owned gate.
+    # This is derived at the coordinator boundary; it is never persisted as a
+    # mutable graph ledger.
+    graph_gate_blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +344,13 @@ def _decide_base_status(
     ctx: CrossFinalizationContext,
 ) -> tuple[Literal["done", "failed"], str | None, str | None, bool]:
     """The pre-delivery CFA / contract_check status decision."""
+    if ctx.graph_gate_blocked:
+        return (
+            "failed",
+            "cross_execution_graph_blocked",
+            "immutable cross execution graph denied runner-gate admission",
+            False,
+        )
     state = ctx.parent_state
     if ctx.require_child_readiness and state is not None and (
         state.violations

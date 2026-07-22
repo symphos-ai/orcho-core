@@ -47,6 +47,7 @@ pytestmark = [pytest.mark.cross_project]
 def test_plan_override_continue_yields_real_override() -> None:
     ctx = SimpleNamespace(
         cfa_outcome=SimpleNamespace(outcome="override_continue"),
+        graph_gate_blocked=False,
     )
     assert _cross_delivery_plan(ctx) == (True, True)
 
@@ -54,6 +55,7 @@ def test_plan_override_continue_yields_real_override() -> None:
 def test_plan_approved_terminal_yields_no_override() -> None:
     ctx = SimpleNamespace(
         cfa_outcome=SimpleNamespace(outcome="approved_terminal"),
+        graph_gate_blocked=False,
     )
     assert _cross_delivery_plan(ctx) == (True, False)
 
@@ -61,7 +63,7 @@ def test_plan_approved_terminal_yields_no_override() -> None:
 def test_plan_policy_skip_null_cfa_is_null_safe() -> None:
     """Regression: policy-skip path has ``cfa_outcome is None`` — the
     classifier must return ``override=False`` without ``AttributeError``."""
-    ctx = SimpleNamespace(cfa_outcome=None)
+    ctx = SimpleNamespace(cfa_outcome=None, graph_gate_blocked=False)
     assert _cross_delivery_plan(ctx) == (True, False)
 
 
@@ -81,6 +83,7 @@ def test_rejected_child_override_continue_still_allows_delivery() -> None:
     ctx = SimpleNamespace(
         child_profile=object(), reduced_parent=state,
         cfa_outcome=SimpleNamespace(outcome="override_continue"),
+        graph_gate_blocked=False,
     )
     assert _cross_delivery_plan(ctx) == (True, True)
 
@@ -102,6 +105,7 @@ def _ctx(*, cfa_outcome, terminal: bool = False) -> SimpleNamespace:
         cross_phase_usage={},
         delivery_result=None,
         review_agent=None,
+        graph_gate_blocked=False,
     )
 
 
@@ -174,6 +178,7 @@ def test_rejected_release_gate_never_reaches_delivery() -> None:
         session_ts="ts",
         cross_ckpt={},
         release_skipped_by_policy=False,
+        graph_gate_blocked=False,
     )
     request = SimpleNamespace(resume_from=None)
 
@@ -281,6 +286,7 @@ def test_policy_skip_end_to_end_populates_cross_delivery_evidence(
         cross_phase_usage={},
         delivery_result=None,
         review_agent=None,
+        graph_gate_blocked=False,
     )
     request = SimpleNamespace(
         projects={"api": repo}, output_dir=None, max_rounds=1,

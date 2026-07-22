@@ -29,6 +29,13 @@ from pipeline.cross_project.contract_check import (
     ContractCheckResult,
     run_cross_contract_check,
 )
+from pipeline.cross_project.execution_graph import CrossExecutionGraphNodeKind
+from pipeline.cross_project.execution_graph_state import (
+    CrossExecutionGraphNodeState,
+    CrossExecutionGraphReason,
+    CrossExecutionGraphState,
+    CrossExecutionGraphStatus,
+)
 from pipeline.cross_project.gate_decisions import GateDecision
 from pipeline.cross_project.planning_loop import approved_review_json
 from pipeline.cross_project.project_dispatch import ProjectDispatchResult
@@ -346,6 +353,141 @@ def test_parent_consistency_violation_uses_parent_readiness_reason(
     assert entry["verdict"] == "NOT_EVALUABLE"
     assert entry["child_status"] == "done"
     assert entry["child_reason"] == "parent_inconsistent:checkpoint_pending_without_payload"
+
+
+def test_graph_blocked_contract_never_invokes_contract_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A graph-denied contract gate stops before the provider boundary."""
+    from pipeline.cross_project import session_run
+
+    core = tmp_path / "core"
+    core.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    child_dir = run_dir / "core"
+    child_dir.mkdir()
+    (child_dir / "meta.json").write_text('{"status": "done"}', encoding="utf-8")
+    request = SimpleNamespace(
+        task="cross task", projects={"core": core}, task_plan=None,
+        resume_from=None, dry_run=False, max_rounds=1, phase_config=None,
+        hypothesis_enabled=False, followup_session_seeds_per_alias=None,
+        output_dir=None, plan_output="", plan_review_dict=None,
+        operator_decisions=None, no_interactive=True,
+    )
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *a, **k: None, success=lambda *a, **k: None,
+                          warn=lambda *a, **k: None),
+        task_plan=None, code_model="test", child_profile=object(),
+        requested_profile=SimpleNamespace(name="test"), has_global_plan=False,
+        provider=object(), cross_ckpt={}, session={
+            "projects": {"core": str(core)},
+            "phases": {"projects": {"core": {"status": "done"}}},
+        },
+        cross_phase_usage={}, terminal=False, participant_set=None,
+        run_dir=run_dir, plan_output="", plan_review_dict=None,
+        common_cwd=str(core), review_agent=object(), execution_graph=object(),
+        profile_setup=SimpleNamespace(contract_gate_policy=_policy()),
+        graph_gate_blocked=False,
+    )
+    monkeypatch.setattr(
+        session_run, "_run_project_dispatch", lambda _: ProjectDispatchResult(False, ()),
+    )
+    monkeypatch.setattr(
+        session_run, "reduce_runtime_cross_execution_graph_state",
+        lambda *_: CrossExecutionGraphState((
+            CrossExecutionGraphNodeState(
+                "contract", CrossExecutionGraphNodeKind.CONTRACT_CHECK,
+                CrossExecutionGraphStatus.BLOCKED,
+                CrossExecutionGraphReason.DEPENDENCY_BLOCKED,
+            ),
+        )),
+    )
+    monkeypatch.setattr(
+        session_run, "run_cross_contract_check",
+        lambda _: pytest.fail("blocked graph must not invoke contract provider"),
+    )
+
+    assert session_run._run_dispatch_and_contract(request, ctx) is False
+    assert ctx.graph_gate_blocked is True
+    assert ctx.contract_results == {}
+
+
+@pytest.mark.parametrize(
+    ("cached_entry", "expected_failed", "expect_provider"),
+    [
+        pytest.param({"verdict": "REJECTED"}, True, False, id="rejected-cache"),
+        pytest.param(
+            {"verdict": "NOT_EVALUABLE", "not_evaluable": True},
+            True,
+            True,
+            id="stale-readiness-entry",
+        ),
+    ],
+)
+def test_resume_graph_contract_cache_preserves_existing_cache_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cached_entry: dict[str, object],
+    expected_failed: bool,
+    expect_provider: bool,
+) -> None:
+    """Graph admission delegates completed/resumed cache handling to the gate."""
+    from pipeline.cross_project import session_run
+
+    core = tmp_path / "core"
+    core.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    child_dir = run_dir / "core"
+    child_dir.mkdir()
+    (child_dir / "meta.json").write_text('{"status": "done"}', encoding="utf-8")
+    reviewer = _FakeCodex(_REJECTED_REVIEW)
+    request = SimpleNamespace(
+        task="cross task", projects={"core": core}, task_plan=None,
+        resume_from="prior", dry_run=False, max_rounds=1, phase_config=None,
+        hypothesis_enabled=False, followup_session_seeds_per_alias=None,
+        output_dir=None, plan_output="", plan_review_dict=None,
+        operator_decisions=None, no_interactive=True,
+    )
+    status = CrossExecutionGraphStatus.READY if expect_provider else CrossExecutionGraphStatus.COMPLETED
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *a, **k: None, success=lambda *a, **k: None,
+                          warn=lambda *a, **k: None),
+        task_plan=None, code_model="test", child_profile=object(),
+        requested_profile=SimpleNamespace(name="test"), has_global_plan=False,
+        provider=object(), cross_ckpt={},
+        session={
+            "projects": {"core": str(core)},
+            "phases": {
+                "projects": {"core": {"status": "done"}},
+                "contract_check": {"core": cached_entry},
+            },
+        },
+        cross_phase_usage={}, terminal=False, participant_set=None,
+        run_dir=run_dir, plan_output="", plan_review_dict=None,
+        common_cwd=str(core), review_agent=reviewer, execution_graph=object(),
+        profile_setup=SimpleNamespace(contract_gate_policy=_policy()),
+        graph_gate_blocked=False,
+    )
+    monkeypatch.setattr(
+        session_run, "_run_project_dispatch", lambda _: ProjectDispatchResult(False, ()),
+    )
+    monkeypatch.setattr(
+        session_run, "reduce_runtime_cross_execution_graph_state",
+        lambda *_: CrossExecutionGraphState((
+            CrossExecutionGraphNodeState(
+                "contract", CrossExecutionGraphNodeKind.CONTRACT_CHECK, status,
+                CrossExecutionGraphReason.RUNNER_GATE_COMPLETED
+                if status is CrossExecutionGraphStatus.COMPLETED
+                else CrossExecutionGraphReason.DEPENDENCY_PENDING,
+            ),
+        )),
+    )
+
+    assert session_run._run_dispatch_and_contract(request, ctx) is False
+    assert ctx.contract_check_failed is expected_failed
+    assert bool(reviewer.calls) is expect_provider
 
 
 @pytest.mark.parametrize(

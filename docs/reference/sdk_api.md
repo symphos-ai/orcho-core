@@ -166,8 +166,21 @@ executor-policy dataclasses, plus node/owner/executor enums, are JSON-ready via
 missing, malformed, unsupported, or inconsistent snapshots raise
 `CrossExecutionGraphInvalid`.
 
-The graph is C1 structural data only. It is not scheduler/state (C2), does not
-control dispatch or resume, and is not exposed as an MCP/XF3 wire payload.
+The graph is immutable structural data. Core C2 scheduler/state consumes it but does not
+store a status ledger: it drives serial dispatch and resume selection from
+canonical durable facts. It is not exposed as an MCP/XF3 wire payload.
+
+### `sdk.cross_execution_graph_state`
+
+```python
+load_cross_execution_graph_state(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossExecutionGraphState
+```
+
+Loads the current derived node state for the immutable graph using the same
+canonical facts and reducer as the C2 scheduler. The result is frozen, slotted,
+JSON-serializable, and read-only: it does not write a graph status ledger,
+checkpoint, or any run artifact. Nested child operations remain child-owned;
+MCP/XF3 projection is deferred.
 
 ### `sdk.history`
 

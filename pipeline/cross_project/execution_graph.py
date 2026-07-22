@@ -26,6 +26,8 @@ __all__ = [
     "CrossExecutionGraphExecutor",
     "CrossExecutionGraphExecutorPolicy",
     "compile_cross_execution_graph",
+    "project_node_identity",
+    "resolve_project_node_alias",
 ]
 
 
@@ -110,6 +112,27 @@ def _value(value: Any) -> str | None:
 def _opaque_identity(category: str, value: str) -> str:
     digest = hashlib.sha256(f"cross-graph-v{_SCHEMA_VERSION}\0{category}\0{value}".encode()).hexdigest()
     return f"n{digest[:24]}"
+
+
+def project_node_identity(alias: str) -> str:
+    """Return the v1 project identity for ``alias``.
+
+    Graph v1 intentionally persists opaque identities only.  Its admitted
+    plan invariant is ``unit_id == alias``; keep that translation in this
+    one place so graph consumers do not recreate the hashing convention.
+    """
+    if not isinstance(alias, str) or not alias.strip():
+        raise CrossExecutionGraphCompileError("project alias must be a non-empty string")
+    return _opaque_identity("project", alias)
+
+
+def resolve_project_node_alias(graph: CrossExecutionGraph, alias: str) -> CrossExecutionGraphNode | None:
+    """Resolve an alias against a v1 graph, returning ``None`` on mismatch."""
+    identity = project_node_identity(alias)
+    return next(
+        (node for node in graph.nodes if node.identity == identity and node.kind is CrossExecutionGraphNodeKind.PROJECT),
+        None,
+    )
 
 
 def _declared_aliases(owners: Sequence[str] | Mapping[str, Any]) -> tuple[str, ...]:
@@ -299,7 +322,11 @@ def compile_cross_execution_graph(
         raise CrossExecutionGraphCompileError("cycle in project dependencies")
 
     projects_required = _validate_project_entries(profile_setup)
-    project_ids = {alias: _opaque_identity("project", units[alias].unit_id) for alias in owners}
+    # v1 admission requires unit_id==alias.  State consumers resolve this
+    # intentionally narrow invariant through ``project_node_identity``.
+    if any(units[alias].unit_id != alias for alias in owners):
+        raise CrossExecutionGraphCompileError("graph v1 requires project unit_id to equal alias")
+    project_ids = {alias: project_node_identity(alias) for alias in owners}
     project_nodes = [
         CrossExecutionGraphNode(
             identity=project_ids[alias],
