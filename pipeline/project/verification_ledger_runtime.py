@@ -187,8 +187,19 @@ def _epoch_identity(epoch: str) -> tuple[str, str]:
     return hook, phase
 
 
-def record_execution(run: Any, entry: Any, *, passed: bool, receipt_evidence: str | None = None) -> None:
-    _append(run, GateTrailEvent(entry.command, entry.hook, entry.phase, "execution", "pass" if passed else "fail", receipt_evidence=receipt_evidence))
+def record_execution(
+    run: Any,
+    entry: Any,
+    *,
+    passed: bool,
+    receipt_evidence: str | None = None,
+    rerun: bool = False,
+) -> None:
+    _append(run, GateTrailEvent(
+        entry.command, entry.hook, entry.phase,
+        "execution", "pass" if passed else "fail",
+        receipt_evidence=receipt_evidence, rerun=rerun,
+    ))
 
 
 def record_reuse(run: Any, entry: Any, *, fresh: bool, receipt_evidence: str | None = None) -> None:

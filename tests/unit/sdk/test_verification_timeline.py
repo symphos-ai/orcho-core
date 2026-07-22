@@ -66,6 +66,10 @@ def _write_ledger(run_dir: Path) -> None:
     trail = (
         GateTrailEvent("check", "after_phase", "implement", "selection", "selected"),
         GateTrailEvent("check", "after_phase", "implement", "execution", "pass"),
+        GateTrailEvent(
+            "check", "after_phase", "implement", "execution", "pass",
+            receipt_evidence="verification_command_receipts/check-rerun.json", rerun=True,
+        ),
         GateTrailEvent("check", "manual_only", "", "selection", "selected"),
         GateTrailEvent("paths", "before_delivery", "", "selection", "not_selected", "paths"),
     )
@@ -97,9 +101,14 @@ def test_reads_exact_durable_rows_and_identity_scoped_events(
     assert [(event.command, event.hook, event.phase, event.kind) for event in projection.events] == [
         ("check", "after_phase", "implement", "selection"),
         ("check", "after_phase", "implement", "execution"),
+        ("check", "after_phase", "implement", "execution"),
         ("check", "manual_only", "", "selection"),
         ("paths", "before_delivery", "", "selection"),
     ]
+    rerun = projection.events[2]
+    assert rerun.receipt_evidence == ReceiptEvidence(
+        path="verification_command_receipts/check-rerun.json", rerun=True,
+    )
 
 
 def test_completed_projection_is_stable_after_plugin_is_deleted(

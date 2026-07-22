@@ -925,10 +925,11 @@ def _append_gate_event(run: Any, event: dict) -> None:
     )()
     decision = event["decision"]
     receipt = event.get("receipt_path")
+    rerun = bool(event.get("rerun", False))
     if decision == "executed_pass":
-        record_execution(run, entry, passed=True, receipt_evidence=receipt)
+        record_execution(run, entry, passed=True, receipt_evidence=receipt, rerun=rerun)
     elif decision == "executed_fail":
-        record_execution(run, entry, passed=False, receipt_evidence=receipt)
+        record_execution(run, entry, passed=False, receipt_evidence=receipt, rerun=rerun)
     elif decision == "skipped_fresh":
         record_reuse(run, entry, fresh=True, receipt_evidence=receipt)
 
@@ -941,6 +942,7 @@ def _gate_event(
     decision: str,
     exit_code: int | None = None,
     receipt_path: str | None = None,
+    rerun: bool = False,
 ) -> dict:
     """Build one append-only gate-event record for ``entry``."""
     return {
@@ -951,6 +953,7 @@ def _gate_event(
         "decision": decision,
         "exit_code": exit_code,
         "receipt_path": receipt_path,
+        "rerun": rerun,
     }
 
 
@@ -962,6 +965,7 @@ def _record_executed_gate_event(
     *,
     hook: str,
     phase: str,
+    rerun: bool = False,
 ) -> None:
     """Stamp the ``executed_pass`` / ``executed_fail`` event for a run gate."""
     decision = "executed_pass" if classification.status == "present" else "executed_fail"
@@ -982,6 +986,7 @@ def _record_executed_gate_event(
             decision=decision,
             exit_code=receipt.get("exit_code"),
             receipt_path=receipt_path,
+            rerun=rerun,
         ),
     )
 
@@ -1373,14 +1378,15 @@ def _repair_budget(run: Any, profile: Any) -> int:
     return 1
 
 
-def rerun_verification_handoff_gate(
-    run: Any, *, command: str, hook: str, phase: str, round_n: int,
-) -> bool:
+def rerun_verification_handoff_gate(run: Any, *, retry_context: Any) -> bool:
     """Re-execute exactly one durable selected gate after a human repair.
 
     The lookup is identity-based; a missing or duplicate match is a control
     failure, not permission to run a similarly named command.
     """
+    command = retry_context.identity.command
+    hook = retry_context.identity.hook
+    phase = retry_context.identity.phase
     contract = _contract(run)
     if contract is None:
         raise RuntimeError("verification retry has no persisted verification contract")
@@ -1395,13 +1401,14 @@ def rerun_verification_handoff_gate(
     receipt = _run_gate_command(run, contract, entry)
     classification = _classify_gate_receipt(receipt, _placeholders(run))
     _record_executed_gate_event(
-        run, entry, receipt, classification, hook=hook, phase=phase,
+        run, entry, receipt, classification, hook=hook, phase=phase, rerun=True,
     )
     if classification.status == "present":
         return True
     _synthesize_critique(run.state, entry, receipt, classification)
     _request_handoff(
-        run, entry, receipt, classification, round_n, max(1, round_n),
+        run, entry, receipt, classification,
+        retry_context.fresh_round, retry_context.loop_max_rounds,
         phase=_handoff_phase(hook, phase), hook=hook, gate_phase=phase,
     )
     return False

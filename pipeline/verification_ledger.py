@@ -326,6 +326,7 @@ class GateTrailEvent:
     outcome: str = ""
     reason: str = ""
     receipt_evidence: str | None = None
+    rerun: bool = False
 
     @property
     def identity(self) -> tuple[str, str, str]:

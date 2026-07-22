@@ -6,11 +6,21 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline.control.handoff_routing import GateIdentity
+from pipeline.plugins import PluginConfig
 from pipeline.project.verification_handoff_retry import (
     VerificationHandoffRetryBlocked,
+    VerificationHandoffRetryContext,
     apply_verification_handoff_resume,
     apply_verification_handoff_retry,
 )
+from pipeline.project.verification_ledger_runtime import (
+    initialize,
+    record_execution,
+    select_epoch,
+)
+from pipeline.verification_contract import VerificationContract
+from pipeline.verification_ledger_store import load_ledger
+from pipeline.verification_selection import SelectionContext
 
 
 def _run() -> SimpleNamespace:
@@ -88,7 +98,9 @@ def test_phase_handoff_dispatches_verification_retry_with_a_fresh_subject(
     subjects: dict[str, object] = {}
 
     def _repair(*_args, **kwargs) -> None:
-        assert kwargs == {"round_n": 2, "loop_max_rounds": 1}
+        retry_context = kwargs["retry_context"]
+        assert retry_context.fresh_round == 2
+        assert retry_context.loop_max_rounds == 1
         captured = capture_verification_subject(checkout)
         assert isinstance(captured, VerificationSubjectAvailable)
         subjects["repair"] = captured.identity
@@ -98,10 +110,10 @@ def test_phase_handoff_dispatches_verification_retry_with_a_fresh_subject(
         captured = capture_verification_subject(checkout)
         assert isinstance(captured, VerificationSubjectAvailable)
         subjects["rerun"] = captured.identity
-        assert kwargs == {
-            "command": "pytest-unit", "hook": "after_phase", "phase": "implement",
-            "round_n": 2,
-        }
+        assert kwargs["retry_context"].identity == GateIdentity(
+            "pytest-unit", "after_phase", "implement",
+        )
+        assert kwargs["retry_context"].fresh_round == 2
         return True
 
     before_repair = capture_verification_subject(checkout)
@@ -154,8 +166,18 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
     )
 
     assert outcome.paused is False
-    assert calls == [{"repair": {"round_n": 2, "loop_max_rounds": 1}}, {
-        "command": "pytest-unit", "hook": "after_phase", "phase": "implement", "round_n": 2,
+    assert calls == [{"repair": {
+        "retry_context": VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
+    }}, {
+        "retry_context": VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
     }]
     assert run.state.human_feedback == "Поправьте тест"
     assert run.state.extras["phase_handoff_override"]["feedback"] == "Поправьте тест"
@@ -199,6 +221,37 @@ def test_second_failure_keeps_new_recovery_subject(monkeypatch: pytest.MonkeyPat
     )
     assert outcome.paused is True
     assert run.state.phase_handoff_request.handoff_id == "gate:pytest-unit:2"
+
+
+def test_retry_snapshots_fsm_metrics_before_exact_gate_rerun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda *_args, **_kwargs: calls.append("repair"),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.handoff._persist_handoff_retry_metrics",
+        lambda _run: calls.append("metrics"),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair.rerun_verification_handoff_gate",
+        lambda _run, **_kwargs: calls.append("rerun") or True,
+    )
+
+    apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=object(), active={"round": 2, "loop_max_rounds": 2},
+        handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
+        decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+    assert calls == ["repair", "metrics", "rerun"]
 
 
 def test_control_preflight_failure_preserves_active_recovery_subject(
@@ -322,8 +375,11 @@ def test_dispatch_exposes_explicit_human_retry_round_to_lifecycle() -> None:
         run,
         PhaseStep(phase="repair_changes"),
         ctx,
-        round_n=2,
-        loop_max_rounds=1,
+        retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
     )
 
     assert state.extras == {"repair_round": 2, "repair_round_max": 1}
@@ -392,14 +448,85 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
     monkeypatch.setattr(gate_repair, "_synthesize_critique", lambda *_args: None)
 
     passed = gate_repair.rerun_verification_handoff_gate(
-        run, command="pytest-unit", hook="after_phase", phase="implement", round_n=2,
+        run, retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=2, fresh_round=3, loop_max_rounds=2,
+            human_retry_ordinal=1,
+        ),
     )
 
     assert passed is False
-    assert run.state.phase_handoff_request.handoff_id == "gate:pytest-unit:2"
+    assert run.state.phase_handoff_request.handoff_id == "gate:pytest-unit:3"
+    assert run.state.phase_handoff_request.round == 3
+    assert run.state.phase_handoff_request.loop_max_rounds == 2
     assert run.state.phase_handoff_request.artifacts["gate_identity"] == {
         "command": "pytest-unit", "hook": "after_phase", "phase": "implement",
     }
+
+
+def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production rerun seam appends, rather than replaces, its execution."""
+    from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
+    from pipeline.project import gate_repair
+
+    contract = VerificationContract.from_plugin(PluginConfig(verification={
+        "commands": {"pytest-unit": {"run": "pytest tests/unit"}},
+        "gate_sets": {"required": {"commands": ["pytest-unit"]}},
+        "selection": [{"always": ["required"]}],
+        "schedule": [{
+            "after_phase": "implement", "gate_sets": ["required"], "policy": "require",
+        }],
+    }))
+    assert contract is not None
+    run = SimpleNamespace(
+        checkpoint_resume=False,
+        state=SimpleNamespace(
+            output_dir=tmp_path,
+            extras={"verification_contract": contract},
+            phase_handoff_request=None,
+            last_critique="",
+            stop=lambda _reason: None,
+        ),
+    )
+    initialize(run.state)
+    entry = select_epoch(
+        run, contract, epoch="after_phase:implement", context=SelectionContext(),
+    ).entries[0]
+    record_execution(run, entry, passed=False, receipt_evidence="receipts/original.json")
+
+    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args: {"exit_code": 1})
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda *_args: SimpleNamespace(
+            status="absent", failure_kind="test_failure", exit_code=1,
+            assertions_passed=0, assertions_total=0, failed_assertions=(),
+        ),
+    )
+    monkeypatch.setattr(gate_repair, "_synthesize_critique", lambda *_args: None)
+
+    assert gate_repair.rerun_verification_handoff_gate(
+        run,
+        retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=2,
+            fresh_round=3,
+            loop_max_rounds=2,
+            human_retry_ordinal=1,
+        ),
+    ) is False
+
+    executions = [event for event in load_ledger(tmp_path).trail if event.kind == "execution"]
+    assert [(event.identity, event.receipt_evidence, event.rerun) for event in executions] == [
+        (("pytest-unit", "after_phase", "implement"), "receipts/original.json", False),
+        (
+            ("pytest-unit", "after_phase", "implement"),
+            str(tmp_path / COMMAND_RECEIPTS_DIRNAME / "pytest-unit.json"),
+            True,
+        ),
+    ]
 
 
 def test_rerun_gate_passes_only_for_the_selected_identity(
@@ -427,9 +554,30 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
     monkeypatch.setattr(gate_repair, "_record_executed_gate_event", lambda *_args, **_kwargs: None)
 
     assert gate_repair.rerun_verification_handoff_gate(
-        run, command="pytest-unit", hook="after_phase", phase="implement", round_n=2,
+        run, retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
     ) is True
     assert calls == [("pytest-unit", "after_phase", "implement")]
+
+
+def test_retry_context_preserves_exhausted_automatic_budget() -> None:
+    from pipeline.control.handoff_labels import render_round_label
+
+    context = VerificationHandoffRetryContext.from_active(
+        {"round": 2, "loop_max_rounds": 2},
+        GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+    assert context.fresh_round == 3
+    assert context.loop_max_rounds == 2
+    assert context.human_retry_ordinal == 1
+    assert render_round_label(
+        phase="implement", round=context.fresh_round,
+        loop_max_rounds=context.loop_max_rounds, human_directed=True,
+    ) == "implement human retry 1 after REJECTED verdict"
 
 
 def test_legacy_gate_identity_is_loaded_from_the_parent_ledger(tmp_path) -> None:

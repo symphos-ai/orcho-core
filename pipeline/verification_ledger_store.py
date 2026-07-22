@@ -206,6 +206,8 @@ def _event_from_wire(value: Any) -> GateTrailEvent:
         raise LedgerStoreError(
             "scheduled-gate trail event receipt_evidence must be a string or null",
         )
+    if not isinstance(value["rerun"], bool):
+        raise LedgerStoreError("scheduled-gate trail event rerun must be bool")
     try:
         return GateTrailEvent(**value)
     except (TypeError, ValueError) as exc:

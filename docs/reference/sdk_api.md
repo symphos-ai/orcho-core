@@ -10,6 +10,11 @@ JSON-friendly through `to_jsonable` for IPC consumers.
 declaration/selection/execution axes, terminal disposition, and receipt evidence;
 events are identity-scoped. Without `scheduled_gate_ledger.json` it returns an
 empty projection and never loads a plugin or reconstructs plans/receipt status.
+For an exact operator retry, the rerun execution event retains its original
+`command` / `hook` / `phase` identity and receipt path; the existing
+`ReceiptEvidence.rerun` is `true`. Ordinary execution and reuse evidence has
+`rerun=false`. This is a persisted-ledger projection, not an inferred reason,
+and introduces no SDK or MCP wire change.
 The public wire has no legacy status enum, autorun compatibility DTO, manual
 aggregate, or scheduled-trail availability/gap field. Core delivery remains
 stopped until paired `scheduled-gates-4` `orcho-mcp` L1–L4 validation succeeds.

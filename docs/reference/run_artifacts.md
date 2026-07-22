@@ -27,6 +27,11 @@ Resume reuses the snapshot and epoch decisions. Evidence copies the validated
 artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
 project plugin.
 
+An exact operator-triggered gate rerun appends a second `execution` event for
+the same full identity, rather than replacing its original execution.  That
+event has `rerun: true` and the fresh command-receipt evidence path; repeating
+the identical event is idempotent.  This is the only persisted rerun trail.
+
 ---
 
 ## File inventory
@@ -349,6 +354,9 @@ see the SDK reference for client-facing slices.
   finds a populated `metrics.json` to read on bundle finalize, and
   so the resume subprocess can rehydrate via
   `MetricsCollector.load_from_disk` (see [ADR 0035](../adr/0035-terminal-status-and-resume-observability.md)).
+* A human-directed verification retry snapshots the FSM-owned
+  `repair_changes` attempt before its exact gate rerun, so a fresh failed
+  handoff retains the completed repair attempt without adding a second counter.
 
 **No trigger** on generic crashes / `_record_phase_failure` /
 SIGKILL — those paths leave `metrics.json` as last-written (which

@@ -106,6 +106,22 @@ implemented by this foundation.
 
 ## Typed receipt outcomes and hygiene handoff
 
+## Human-directed verification retry observability (ADR 0150)
+
+The owner of verification retry accounting is the immutable
+`VerificationHandoffRetryContext` in
+`pipeline.project.verification_handoff_retry`.  It is built once from the
+active handoff and the exact `(command, hook, phase)` gate identity.  A human
+retry advances the round but never increases the original automatic maximum:
+an exhausted `2/2` retry is round `3/2`, labelled `human retry 1 after
+REJECTED verdict`.
+
+`repair_changes` is dispatched through the normal lifecycle FSM, which writes
+one phase-metrics attempt; the retry owner does not add another counter.  The
+only durable gate record is `scheduled_gate_ledger.json`: its execution trail
+stores the exact rerun as `rerun: true` with receipt evidence.  Evidence and
+the SDK read that same ledger; no SDK or MCP wire schema changes are involved.
+
 ## Verification subject identity (ADR 0140, I4-R1)
 
 Command receipts now use schema **v3**. Their only authoritative freshness
