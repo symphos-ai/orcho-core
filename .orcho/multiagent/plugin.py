@@ -43,7 +43,7 @@ PLUGIN = {
     },
     "verification": {
         "default_env": "core-local",
-        "delivery_policy": "warn",
+        "delivery_policy": "require",
         "required": [
             "env-provenance",
             "lint",
@@ -130,9 +130,16 @@ PLUGIN = {
             },
         },
         "gate_sets": {
-            "baseline": {
-                "commands": ["env-provenance", "lint"],
-                "default_policy": "warn",
+            "provenance": {
+                "commands": ["env-provenance"],
+                "default_policy": "require",
+                "default_action": "handoff",
+                "default_cheap": True,
+            },
+            "hygiene": {
+                "commands": ["lint"],
+                "default_policy": "require",
+                "default_action": "repair_loop",
                 "default_cheap": True,
             },
             "run-state": {
@@ -162,7 +169,7 @@ PLUGIN = {
             },
         },
         "selection": [
-            {"always": ["baseline", "broad"]},
+            {"always": ["provenance", "hygiene", "broad"]},
             {
                 "paths": [
                     "pipeline/run_state/**",
@@ -208,8 +215,15 @@ PLUGIN = {
         "schedule": [
             {
                 "after_phase": "implement",
-                "gate_sets": ["baseline"],
-                "policy": "warn",
+                "gate_sets": ["provenance"],
+                "policy": "require",
+                "action": "handoff",
+            },
+            {
+                "after_phase": "implement",
+                "gate_sets": ["hygiene"],
+                "policy": "require",
+                "action": "repair_loop",
             },
             {
                 "after_phase": "implement",
