@@ -72,6 +72,20 @@ the `task` scoped profile is rejected for cross mode.
 as a cross-only per-alias gate only after canonical parent-state reduction;
 mono runs never invoke it.
 
+### C1 structural execution graph
+
+After a schema-valid cross plan is admitted, `session_run.py` invokes the
+pure compiler in `pipeline.cross_project.execution_graph` and atomically
+persists `cross_execution_graph.json`. The artifact is an immutable topology:
+global declarations, project dependency edges, and runner-owned gate policy.
+It has no lifecycle ledger, status, readiness, retry, or completion fields.
+
+This is deliberately a C1 inspection boundary only. The live dispatcher still
+uses request alias order, and resume, contract-check, CFA, checkpointing, and
+the canonical parent reducer do not read the graph. A future C2 scheduler/state
+reducer may consume this durable structure; C1 does not. It is also not an
+MCP/XF3 payload or a replacement for existing cross evidence.
+
 ## Canonical parent-state reduction
 
 `pipeline.run_state.cross_parent.reduce_cross_parent_state` is the single

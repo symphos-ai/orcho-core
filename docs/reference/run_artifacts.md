@@ -1,5 +1,26 @@
 # Run artifacts on disk
 
+## `cross_execution_graph.json`
+
+An admitted non-dry-run cross plan may create one immutable C1 structural
+snapshot in its run directory. Its exact closed JSON shape is:
+
+```json
+{
+  "schema_version": 1,
+  "compile_identity": {"schema_version": 1, "fingerprint": "sha256"},
+  "nodes": [{"identity": "opaque", "kind": "project", "dependencies": [], "owner": "project", "executor": {"executor": "project_pipeline", "handler": null, "enabled": true, "run": null, "on_skip": null, "mode": null}, "required": true}]
+}
+```
+
+The shape is strict: unknown fields, unsupported versions, mutable lifecycle
+keys such as `status` or `ready`, invalid topology, and a mismatched fingerprint
+make the artifact invalid. The first write uses a flushed, fsynced temporary
+file and `os.replace`; an equal second write is a byte-preserving no-op, while
+a differing or malformed existing snapshot is never overwritten. It is a C1
+structural artifact only, not a scheduler ledger, checkpoint, MCP/XF3 wire
+projection, or source of dispatch/resume decisions.
+
 > Reference for what a finished `orcho` run lands in its run directory.
 > Pin-point for `meta.json`, `evidence.json`, and `metrics.json` shapes.
 > Companion to [ADR 0020](../adr/0020-run-evidence-in-core.md),

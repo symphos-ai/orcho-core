@@ -152,6 +152,23 @@ parse transcripts, infer handoff identifiers from prefixes, or discover
 directories. Runtime consumers and this SDK reader use the same reducer for
 equivalent facts.
 
+### `sdk.cross_execution_graph`
+
+```python
+load_cross_execution_graph(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossExecutionGraph
+```
+
+Loads the immutable `cross_execution_graph.json` snapshot through standard run
+resolution. It is read-only: it never creates, repairs, or reconstructs an
+artifact. `CrossExecutionGraph`, its frozen/slotted node, compile-identity, and
+executor-policy dataclasses, plus node/owner/executor enums, are JSON-ready via
+`to_jsonable`. `RunNotFound` and `NoWorkspace` propagate from resolution;
+missing, malformed, unsupported, or inconsistent snapshots raise
+`CrossExecutionGraphInvalid`.
+
+The graph is C1 structural data only. It is not scheduler/state (C2), does not
+control dispatch or resume, and is not exposed as an MCP/XF3 wire payload.
+
 ### `sdk.history`
 
 ```python

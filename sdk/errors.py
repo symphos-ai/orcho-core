@@ -64,6 +64,12 @@ class EvidenceInvalid(OrchoError):
     exit_code = 1
 
 
+class CrossExecutionGraphInvalid(OrchoError):
+    """The immutable cross execution graph artifact is missing or invalid."""
+
+    exit_code = 1
+
+
 class WorkspaceInitError(OrchoError):
     """``sdk.init_workspace`` refused a target or hit a conflict.
 

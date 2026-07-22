@@ -44,10 +44,21 @@ from pipeline.run_state.cross_parent import (
 # Internal helpers exposed for embedders building IPC bridges
 from sdk._jsonable import to_jsonable
 from sdk.cost import aggregate_cost
+from sdk.cross_execution_graph import (
+    CrossExecutionGraph,
+    CrossExecutionGraphCompileIdentity,
+    CrossExecutionGraphExecutor,
+    CrossExecutionGraphExecutorPolicy,
+    CrossExecutionGraphNode,
+    CrossExecutionGraphNodeKind,
+    CrossExecutionGraphNodeOwner,
+    load_cross_execution_graph,
+)
 from sdk.cross_parent_state import load_cross_parent_state
 
 # Errors
 from sdk.errors import (
+    CrossExecutionGraphInvalid,
     EvidenceInvalid,
     InvalidPhaseHandoffState,
     NoWorkspace,
@@ -206,6 +217,7 @@ __all__ = [
     "PricingFetchError",
     "PromptNotFound",
     "EvidenceInvalid",
+    "CrossExecutionGraphInvalid",
     "InvalidPhaseHandoffState",
     "WorkspaceInitError",
     "ProfileCustomizeError",
@@ -218,6 +230,14 @@ __all__ = [
     "load_meta",
     "load_status",
     "load_cross_parent_state",
+    "load_cross_execution_graph",
+    "CrossExecutionGraph",
+    "CrossExecutionGraphCompileIdentity",
+    "CrossExecutionGraphNode",
+    "CrossExecutionGraphNodeKind",
+    "CrossExecutionGraphNodeOwner",
+    "CrossExecutionGraphExecutor",
+    "CrossExecutionGraphExecutorPolicy",
     "CrossParentState",
     "ChildState",
     "ActiveOperation",
