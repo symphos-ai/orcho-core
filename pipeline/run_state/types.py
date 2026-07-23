@@ -172,6 +172,7 @@ class HandoffRetryMode(StrEnum):
 
     PLAN = "plan"
     REPAIR = "repair"
+    VERIFICATION = "verification"
 
 
 @dataclass(frozen=True, slots=True)

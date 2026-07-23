@@ -45,6 +45,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -148,6 +149,21 @@ def _parent_worktree_is_isolated(
     return not (
         source_checkout is not None
         and _paths_equal(parent_worktree_path, source_checkout)
+    )
+
+
+def parent_worktree_is_isolated(
+    worktree: Mapping[str, Any] | None,
+    *,
+    source_checkout: str | Path | None = None,
+) -> bool:
+    """Public retained-subject predicate shared by control and setup paths."""
+    raw_path = worktree.get("path") if isinstance(worktree, Mapping) else None
+    path = str(raw_path) if raw_path else None
+    return _parent_worktree_is_isolated(
+        dict(worktree) if isinstance(worktree, Mapping) else None,
+        path,
+        source_checkout,
     )
 
 
@@ -464,6 +480,7 @@ __all__ = [
     "classify_followup_worktree",
     "detect_parent_diff_sources",
     "load_followup_parent_worktree",
+    "parent_worktree_is_isolated",
     "parent_has_persisted_plan_artifact",
     "resolve_followup_plan_promotion",
 ]

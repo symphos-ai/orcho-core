@@ -11,7 +11,7 @@ Two coverage tiers:
   that were visibly broken in the original screenshot.
 
 Pre-fix symptom: these phases displayed ``In=0 Out=0 Total=N`` in the
-cross-run rollup, losing the split and the API-equivalent cost estimate.
+cross-run rollup, losing the split and the cost-reference estimate.
 """
 from __future__ import annotations
 

@@ -95,6 +95,9 @@ Environment:
   ORCHO_DEMO_WEB_PORT   Vite web dev port (default 5173).
   ORCHO_DEMO_NPM        npm binary (default 'npm').
   ORCHO_DEMO_PYTHON     python binary for the demo server (default python3).
+  ORCHO_DEMO_CORE_PYTHON
+                        python binary for the orcho workspace-init call
+                        (default: repo .venv, then python3).
   ORCHO_DEMO_MCP_COMMAND
                         Override the orcho-mcp command written into
                         .mcp.json / printed in manual snippets. By
@@ -188,12 +191,21 @@ run_workspace_init() {
   # because the demo root is disposable.
   local wire_mcp="${1:-1}"
 
-  local py_bin="$core_dir/.venv/bin/python"
-  if [[ ! -x "$py_bin" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      py_bin="python3"
-    else
-      py_bin="python"
+  # Interpreter resolution: an explicit ORCHO_DEMO_CORE_PYTHON wins (lets
+  # tests and callers pin the interpreter that actually has orcho's
+  # dependencies), then the repo venv, then bare python3. The bare fallback
+  # requires a python3 new enough for this package — a stale system python3
+  # (e.g. macOS/Xcode 3.9) fails at import time. Distinct from
+  # ORCHO_DEMO_PYTHON, which drives only the demo API server.
+  local py_bin="${ORCHO_DEMO_CORE_PYTHON:-}"
+  if [[ -z "$py_bin" ]]; then
+    py_bin="$core_dir/.venv/bin/python"
+    if [[ ! -x "$py_bin" ]]; then
+      if command -v python3 >/dev/null 2>&1; then
+        py_bin="python3"
+      else
+        py_bin="python"
+      fi
     fi
   fi
 

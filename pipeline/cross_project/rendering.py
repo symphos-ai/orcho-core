@@ -39,9 +39,12 @@ Phase E) keep full observability parity with TERMINAL.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 import pipeline.cross_project.plan_parser as plan_parser
 from core.io.ansi import C, paint
-from core.io.transcript import render_cross_plan_block
+from core.io.transcript import render_cross_plan_block, render_review_block
 from core.observability.logging import log_phase
 
 
@@ -223,6 +226,27 @@ def _render_cross_plan_preview(plan_output: str, aliases: list[str]) -> None:
         preview("Cross-project plan", plan_output, C.MAGENTA)
         return
     print(render_cross_plan_block(result.parsed.to_render_dict()))
+
+
+def render_cross_final_acceptance_block(entry: Mapping[str, Any]) -> str:
+    """Render the cross final-acceptance verdict as a structured,
+    ANSI-styled block instead of a raw markdown dump.
+
+    Reuses the single-project release renderer
+    (:func:`core.io.transcript.render_review_block`) so the cross
+    ``CROSS_FINAL_ACCEPTANCE`` verdict surfaces the same aligned fields
+    the mono ``final_acceptance`` path shows — ``verdict`` / ``ship_ready``
+    / short summary / release blockers / verification gaps / contract
+    status — rather than literal ``#`` / ``**`` / ``-`` markers.
+
+    ``entry`` is the dual-shape phase-log dict produced by
+    :func:`pipeline.cross_project.final_acceptance.result_to_phase_log_entry`.
+    ``title=None`` keeps the ``preview`` label
+    ("Cross-final-acceptance verdict:") as the sole header, mirroring the
+    project path where the phase banner is the header (the renderer would
+    otherwise add its own inner "Review" title line).
+    """
+    return render_review_block(entry, title=None)
 
 
 def silent_renderers(terminal: bool):

@@ -87,7 +87,7 @@ def test_implement_block_shows_debug_freedom_and_effective_action() -> None:
     assert "Debug freely" in body
     # effective action after the work_mode transform (governed + after_phase
     # implement => repair_loop), effective policy require for the required gate.
-    assert "require->repair_loop] test" in body
+    assert "require; action=repair_loop] test" in body
     assert "pytest -q /co" in body
 
 
@@ -107,11 +107,35 @@ def test_delivery_block_is_limited_to_before_delivery_gates() -> None:
     assert part is not None
     body = part.body
     assert body.startswith("Verification contract — final_acceptance:")
-    assert "require->handoff] smoke" in body
+    assert "require; action=handoff] smoke" in body
     assert "pytest -q /co/smoke" in body
     # limited: the implement-only gates are NOT dumped into the delivery block.
     assert "ruff check" not in body
     assert "<core>" not in body
+
+
+def test_delivery_block_describes_operator_owned_entries_without_actions() -> None:
+    from pipeline.verification_contract import render_phase_gate_block
+
+    plan = SimpleNamespace(entries=(
+        SimpleNamespace(
+            command="lint", hook="before_delivery", phase="", policy="manual",
+            action="handoff", primary_gate_set="core",
+        ),
+        SimpleNamespace(
+            command="smoke", hook="before_delivery", phase="", policy="suggest",
+            action="handoff", primary_gate_set="delivery",
+        ),
+    ))
+
+    body = render_phase_gate_block(_plan_contract(), plan, "final_acceptance", PlaceholderContext(
+        checkout="/co",
+    ))
+
+    assert body is not None
+    assert "operator available] lint" in body
+    assert "operator recommendation] smoke" in body
+    assert "manual->" not in body and "suggest->" not in body
 
 
 def test_block_is_run_scoped_with_resolved_placeholders() -> None:
@@ -130,6 +154,25 @@ def test_no_contract_returns_none() -> None:
     assert _part(state, "plan") is None
 
 
+def test_write_phase_without_contract_gets_managed_command_boundary(
+    tmp_path,
+) -> None:
+    state = SimpleNamespace(
+        extras={"git_cwd": str(tmp_path / "checkout")},
+        output_dir=tmp_path / "run-1",
+        project_dir="/canonical",
+    )
+
+    part = _part(state, "repair_changes")
+
+    assert part is not None
+    assert "orcho command run" in part.body
+    assert f"--run-dir {tmp_path / 'run-1'}" in part.body
+    assert f"--cwd {tmp_path / 'checkout'}" in part.body
+    assert "Targeted and diff-scoped checks may run normally" in part.body
+    assert _part(state, "review_changes") is None
+
+
 def test_empty_plan_returns_none() -> None:
     # gate_sets declared but selection selects nothing (task_kind rule with no
     # matching context kind) -> empty plan -> no block for any phase.
@@ -140,7 +183,7 @@ def test_empty_plan_returns_none() -> None:
                 "commands": {"test": {"run": "pytest"}},
                 "gate_sets": {"core": {"commands": ["test"]}},
                 "selection": [{"task_kind": "feature", "include": ["core"]}],
-                "schedule": [{"after_phase": "implement", "commands": ["test"]}],
+                "schedule": [{"after_phase": "implement", "gate_sets": ["core"]}],
             },
         ),
     )

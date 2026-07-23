@@ -23,6 +23,7 @@ from pipeline.verification_contract import (
     VerificationContract,
 )
 from pipeline.verification_readiness import READINESS_POLICY_LINE
+from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
 
 _BLOCK_MARKER = "Verification readiness — final_acceptance:"
 
@@ -66,6 +67,24 @@ def _write_missing_receipt_run(tmp_path: Path) -> Path:
     return run_dir
 
 
+def _repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for argv in (
+        ["git", "init", "-q"], ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(argv, cwd=path, check=True)
+    (path / "base").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=path, check=True)
+
+
+def _subject(checkout: Path):
+    captured = capture_verification_subject(checkout)
+    assert isinstance(captured, VerificationSubjectAvailable)
+    return captured
+
+
 # ── _verification_readiness_text ───────────────────────────────────────
 
 
@@ -85,16 +104,20 @@ class TestReadinessText:
 
     def test_present_receipt_reaches_block(self, tmp_path: Path) -> None:
         run_dir = _write_missing_receipt_run(tmp_path)
+        checkout = tmp_path / "checkout"
+        _repo(checkout)
         write_command_receipt(output_dir=run_dir, result={
             "command": "test", "env": "", "cwd": "/cwd",
-            "placeholders": {"checkout": "", "project": ""},
+            "placeholders": {"checkout": str(checkout), "project": ""},
             "argv": ["pytest"], "assertions": [], "exit_code": 0,
             "duration_s": 0.1, "parity": "absolute", "detail": "",
             "git": {"checkout_head": None, "baseline_head": None,
                     "changed_files_fingerprint": None},
+            "subject": _subject(checkout), "dependencies": [],
         })
         text = _verification_readiness_text(
-            _state(output_dir=run_dir, contract=_contract()),
+            _state(output_dir=run_dir, contract=_contract(),
+                   placeholders=PlaceholderContext(checkout=str(checkout))),
         )
         assert "(none — declared proof complete)" in text
 
@@ -158,18 +181,22 @@ def _dep_new_commit(path: Path) -> str:
     ).stdout.strip()
 
 
-def _dep_receipt(run_dir: Path, dep: Path, head: str, *, depends_on: bool) -> None:
+def _dep_receipt(
+    run_dir: Path, checkout: Path, dep: Path, head: str, *, depends_on: bool,
+) -> None:
     write_command_receipt(output_dir=run_dir, result={
         "command": "test", "env": "", "cwd": "/cwd",
-        "placeholders": {"checkout": "", "project": ""},
+        "placeholders": {"checkout": str(checkout), "project": ""},
         "argv": ["pytest"], "assertions": [], "exit_code": 0,
         "duration_s": 0.1, "parity": "absolute", "detail": "",
         "git": {"checkout_head": None, "baseline_head": None,
                 "changed_files_fingerprint": None},
+        "subject": _subject(checkout),
         "dependencies": [{
             "name": "shared", "path": str(dep), "head": head,
             "dirty": False, "changed_files_count": 0,
             "changed_files_fingerprint": "e", "depends_on": depends_on,
+            "subject": _subject(dep),
         }],
     })
 
@@ -180,32 +207,35 @@ class TestDependencyStaleInPrompt:
         self, tmp_path: Path,
     ) -> None:
         dep = tmp_path / "dep"
+        checkout = tmp_path / "checkout"
         old = _dep_repo(dep)
+        _repo(checkout)
         run_dir = _write_missing_receipt_run(tmp_path)
-        _dep_receipt(run_dir, dep, old, depends_on=True)
-        new = _dep_new_commit(dep)
+        _dep_receipt(run_dir, checkout, dep, old, depends_on=True)
+        _dep_new_commit(dep)
 
         ctx = PlaceholderContext(
-            checkout="", dependencies={"shared": str(dep)},
+            checkout=str(checkout), dependencies={"shared": str(dep)},
         )
         text = _verification_readiness_text(
             _state(output_dir=run_dir, contract=_contract(), placeholders=ctx),
         )
 
         assert _BLOCK_MARKER in text
-        assert "dependency shared HEAD moved" in text
-        assert old in text and new in text
+        assert "dependency shared: observed_head_changed" in text
 
     def test_unmoved_dependency_is_not_stale_in_prompt(
         self, tmp_path: Path,
     ) -> None:
         dep = tmp_path / "dep"
+        checkout = tmp_path / "checkout"
         old = _dep_repo(dep)
+        _repo(checkout)
         run_dir = _write_missing_receipt_run(tmp_path)
-        _dep_receipt(run_dir, dep, old, depends_on=True)  # no HEAD move
+        _dep_receipt(run_dir, checkout, dep, old, depends_on=True)  # no HEAD move
 
         ctx = PlaceholderContext(
-            checkout="", dependencies={"shared": str(dep)},
+            checkout=str(checkout), dependencies={"shared": str(dep)},
         )
         text = _verification_readiness_text(
             _state(output_dir=run_dir, contract=_contract(), placeholders=ctx),

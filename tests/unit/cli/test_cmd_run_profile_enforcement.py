@@ -153,6 +153,21 @@ class TestRequireProfileOrExit:
         assert code == 2
         assert capsys.readouterr().err.strip() != ""
 
+    def test_non_tty_with_auto_detect_defaults_selector_and_proceeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        # The `orcho run` facade opts into auto-detect: with no TTY and no
+        # --profile, enforcement resolves to the auto-detect selector and
+        # proceeds (None) instead of exiting 2. Downstream resolves the token.
+        _force_stdin_tty(monkeypatch, False)
+        _patch_catalog(monkeypatch, _catalog())
+        args = _ns()
+        code = require_profile_or_exit(args, include_auto_detect=True)
+        assert code is None
+        assert args.profile == "auto-detect"
+        assert "auto-detect" in capsys.readouterr().out
+
     def test_interactive_selection_returns_none(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -245,34 +260,53 @@ class TestCmdRunEnforcement:
     ) -> None:
         _force_stdin_tty(monkeypatch, True)
         _patch_catalog(monkeypatch, _catalog())
-        _patch_input(monkeypatch, "")  # ABORTED
+        _patch_input(monkeypatch, None)  # ^D / ^C at the picker → ABORTED
         code = cli.orcho.cmd_run(_ns())
         assert code == 0
         assert self.calls == []
 
-    def test_non_tty_returns_two_and_skips_pipeline(
+    def test_empty_selects_auto_detect_and_runs(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The orcho run picker offers auto-detect as the default choice: a
+        # bare Enter selects it and the pipeline proceeds with the
+        # ``auto-detect`` selector (resolved downstream), not an abort.
+        _force_stdin_tty(monkeypatch, True)
+        _patch_catalog(monkeypatch, _catalog())
+        _patch_input(monkeypatch, "")  # bare Enter → auto-detect
+        code = cli.orcho.cmd_run(_ns())
+        assert code == 0
+        assert len(self.calls) == 1
+        assert self.calls[0].profile == "auto-detect"
+
+    def test_non_tty_defaults_to_auto_detect_and_runs(
         self, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
+        # Headless / non-TTY `orcho run` with no --profile no longer dead-ends
+        # at exit 2: it defaults to the auto-detect selector (resolved
+        # downstream) so a CI/MCP run infers a work kind + mode and proceeds.
         _force_stdin_tty(monkeypatch, False)
         _patch_catalog(monkeypatch, _catalog())
         code = cli.orcho.cmd_run(_ns())
-        assert code == 2
-        assert self.calls == []
-        assert "--profile" in capsys.readouterr().err
+        assert code == 0
+        assert len(self.calls) == 1
+        assert self.calls[0].profile == "auto-detect"
+        assert "auto-detect" in capsys.readouterr().out
 
-    def test_empty_profile_non_tty_returns_two_and_skips_pipeline(
+    def test_empty_profile_non_tty_defaults_to_auto_detect(
         self, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        # `--profile ""` must not slip through as a "set" profile and reach
-        # the pipeline (where the downstream advanced default would apply).
+        # `--profile ""` normalizes to "not set" and, headless, resolves to the
+        # auto-detect selector — NOT the downstream advanced default (the
+        # enforcement it must not silently bypass).
         _force_stdin_tty(monkeypatch, False)
         _patch_catalog(monkeypatch, _catalog())
         code = cli.orcho.cmd_run(_ns(profile=""))
-        assert code == 2
-        assert self.calls == []
-        assert "--profile" in capsys.readouterr().err
+        assert code == 0
+        assert len(self.calls) == 1
+        assert self.calls[0].profile == "auto-detect"
 
     def test_selection_runs_pipeline_with_profile(
         self, monkeypatch: pytest.MonkeyPatch,

@@ -43,6 +43,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pipeline.control.continuation import ContinuationRequest
 from pipeline.control.resume_context import (
     detect_active_followup_child,
     is_terminal_commit_delivery_pending,
@@ -71,9 +72,36 @@ from sdk.run_control import (
     recovery_lineage,
     run_diagnosis,
 )
+from sdk.run_control.continuation import preflight_continuation
+from sdk.status import load_status
 from tests.integration.control_loop import _harness as H
 
 pytestmark = [pytest.mark.project_run, pytest.mark.serial]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _adr0119_legacy_bypass_delivery():
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy harness.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout — so a parent run leaves its checkout clean and a follow-up
+    refuses to start. This module-scoped harness builds its driver results once
+    and predates that policy, so it runs under ``bypass`` (the ADR's explicit
+    legacy opt-out). Module-scoped (via a manual ``MonkeyPatch``) so the patch is
+    active while the ``states`` fixture drives the pipeline. The new
+    branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    import pipeline.engine.delivery_branch as _db
+
+    mp = MonkeyPatch()
+    mp.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+    yield
+    mp.undo()
 
 
 # ── Expected core→SDK matrix ─────────────────────────────────────────────────
@@ -311,6 +339,70 @@ def test_rejected_release_terminal_family_matches_predicate(
     # A rejected release that is still decidable must be a correction gate.
     if dds.decidable:
         assert dds.kind == "correction"
+
+
+def test_continuation_read_models_preserve_retained_followup_and_preflight_blocker(
+    states: dict[str, H.DriverResult], tmp_path,
+) -> None:
+    """All SDK projections defer operation selection to the continuation reducer.
+
+    A retained correction is a child follow-up only — never a plan-artifact
+    launch.  Conversely, a checkpoint-looking finalized parent may be visible
+    to read models but its canonical launch preflight blocks the actual resume
+    before any launcher can consume the finalized ledger.
+    """
+    retained = states["correction_followup_required"]
+    status = load_status(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+    diagnosis = run_diagnosis(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+    lineage = recovery_lineage(retained.run_id, runs_dir=retained.run_dir.parent, cwd=None)
+
+    assert status.continuation_decision is not None
+    assert status.continuation_decision.continuation_subject == "retained_change"
+    assert status.continuation_decision.recommended_next_action == "start_followup"
+    assert diagnosis.recommended_next_action == "start_followup"
+    assert lineage.recommended_next_action == "start_followup"
+    assert status.next_actions
+    assert all(
+        action.args.get("from_run_plan") != retained.run_id
+        for action in status.next_actions
+    )
+    followup = status.next_actions[0]
+    assert followup.tool == "orcho_run_resume"
+    assert followup.choices == ("followup", "exit")
+
+    parent = tmp_path / "finalized-parent"
+    parent.mkdir()
+    (parent / "meta.json").write_text(json.dumps({
+        "task": "resume", "status": "failed",
+    }), encoding="utf-8")
+    (parent / "scheduled_gate_ledger.json").write_text(json.dumps({
+        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+    }), encoding="utf-8")
+
+    finalized_status = load_status("finalized-parent", runs_dir=parent.parent, cwd=None)
+    finalized_diagnosis = run_diagnosis(
+        "finalized-parent", runs_dir=parent.parent, cwd=None,
+    )
+    finalized_lineage = recovery_lineage(
+        "finalized-parent", runs_dir=parent.parent, cwd=None,
+    )
+    preflight = preflight_continuation(
+        ContinuationRequest(run_id="finalized-parent", intent="resume"),
+        parent_run_dir=parent,
+    )
+
+    assert finalized_status.continuation_decision is not None
+    assert finalized_status.continuation_decision.recommended_next_action == "resume_checkpoint"
+    assert finalized_diagnosis.condition == "failed"
+    assert finalized_lineage.continuation_subject == "none"
+    assert finalized_lineage.recommended_next_action is None
+    assert any(
+        action.tool == "orcho_run_resume" and action.args == {"run_id": "finalized-parent"}
+        for action in finalized_status.next_actions
+    )
+    assert preflight.resolution.operation == "blocked"
+    assert preflight.resolution.blocker is not None
+    assert "finalized scheduled-gate ledger" in preflight.resolution.blocker
 
 
 def test_commit_delivery_pending_terminal_family_matches_predicate(
@@ -872,9 +964,8 @@ def test_recover_via_source_run_consistency_and_drift(fresh_base) -> None:
 # ``terminal_outcome.supersede_parent_meta`` reducer behind the finalization seam.
 
 
-def test_delivered_followup_supersedes_parent_to_done(fresh_base) -> None:
-    """POSITIVE: a delivered ``from_run_plan`` child reconciles its rejected-FA
-    parent to ``done`` + ``superseded_by_followup``, evicting the stale residue.
+def test_plan_artifact_child_does_not_supersede_rejected_parent(fresh_base) -> None:
+    """A delivered ``from_run_plan`` child is not correction reconciliation.
 
     The parent dead-ended at ``halted`` / ``final_acceptance_rejected`` with a
     phantom ``commit_delivery`` gate and a ``rejected_outcome`` marker. Its
@@ -897,41 +988,14 @@ def test_delivered_followup_supersedes_parent_to_done(fresh_base) -> None:
     assert res.child_meta.get("plan_source_run_id") == res.parent_run_id
 
     parent = res.parent_meta
-    # Parent reconciled to a clean done with the durable supersede marker.
-    assert parent.get("status") == "done"
-    assert parent.get("halt_reason") is None
-    marker = parent.get("superseded_by_followup")
-    assert isinstance(marker, dict)
-    assert marker.get("child_run_id") == res.child_run_id
-    assert marker.get("child_status") == "done"
-    assert marker.get("delivery_status") == "committed"
-    assert marker.get("reason") == "correction delivered via from_run_plan follow-up"
-
-    # The stale-correction residue is gone: the canonical transient markers AND
-    # the site-local delivery record were evicted, so no surface still reads the
-    # parent as a decidable correction.
-    for residue in (
-        "rejected_outcome",
-        "halt_reason",
-        "halted_at",
-        "halt",
-        "delivery_override",
-        "commit_delivery",
-        "multi_project_delivery",
-    ):
-        assert residue not in parent, (
-            f"superseded parent still carries stale {residue!r}"
-        )
-
-    # Read-model agreement: the reconciled parent is no longer a rejected-FA
-    # terminal; the SDK reads it as closed by its follow-up (the durable
-    # ``superseded_by_followup`` marker drives ``closed_by_followup``), and it
-    # carries no decidable delivery gate.
-    assert is_terminal_final_acceptance_rejected(parent) is False
+    assert parent.get("status") == "halted"
+    assert parent.get("halt_reason") == "final_acceptance_rejected"
+    assert "superseded_by_followup" not in parent
+    assert is_terminal_final_acceptance_rejected(parent) is True
     diag = run_diagnosis(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
-    assert diag.condition == "closed_by_followup"
+    assert diag.condition == "correction_followup_required"
     dds = delivery_decision_state(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
-    assert dds.decidable is False
+    assert dds.decidable is True
 
 
 def test_non_delivering_followup_leaves_parent_halted(fresh_base) -> None:
@@ -1188,13 +1252,20 @@ def test_eviction_finalization_site_b_parent_supersede(tmp_path) -> None:
     (parent_dir / "meta.json").write_text(json.dumps(parent_meta), encoding="utf-8")
     before_parent = set(parent_meta)
 
-    # Minimal fake run: a delivered (``committed``) follow-up child pointing at
-    # the parent via plan_source_run_id — the only inputs the helper reads.
+    # Minimal delivered ordinary correction child.  Plan-artifact lineage is
+    # intentionally insufficient to supersede a retained-change parent.
+    (child_dir / "correction_context.md").write_text("# Correction Context\n")
     run = SimpleNamespace(
         output_dir=child_dir,
-        session={"commit_delivery": {"status": "committed"}, "status": "done"},
+        session={
+            "commit_delivery": {"status": "committed"},
+            "status": "done",
+            "resume_mode": "followup",
+            "profile": "correction",
+            "parent_run_id": "parent_run",
+        },
         session_ts="child_run",
-        state=SimpleNamespace(extras={"plan_source_run_id": "parent_run"}),
+        state=SimpleNamespace(extras={}),
     )
     _supersede_parent_correction_after_followup(run)
 

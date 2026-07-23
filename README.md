@@ -1,4 +1,4 @@
-# Orcho — Multi-Agent Pipeline Engine
+# Orcho — Production Harness for Agentic Software Delivery
 
 [![PyPI](https://img.shields.io/pypi/v/orcho-core.svg)](https://pypi.org/project/orcho-core/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://pypi.org/project/orcho-core/)
@@ -9,9 +9,22 @@
 [![codecov](https://codecov.io/gh/symphos-ai/orcho-core/branch/main/graph/badge.svg)](https://codecov.io/gh/symphos-ai/orcho-core)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/symphos-ai/orcho-core/badge)](https://scorecard.dev/viewer/?uri=github.com/symphos-ai/orcho-core)
 
-**Orcho** — local-first control plane for agentic software delivery.
-Use the coding agents you already trust; Orcho supervises the workflow
-around them: plan → implementation → review → repair → final acceptance.
+**Orcho** is a production harness and control plane for agentic software
+delivery.
+
+**Run one task. Watch Orcho plan, implement, reject false-ready work, repair
+it, and prove what is ready to deliver.**
+
+📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
+
+![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
+
+<sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
+with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
+
+Use the coding agents you already trust. They remain the workers; Orcho owns
+the delivery protocol around them: plan → implementation → review → repair
+→ final acceptance.
 
 It is built for work that needs more structure than a single interactive
 agent session:
@@ -24,27 +37,136 @@ agent session:
 
 Which model runs which phase is **fully configurable**.
 Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
-Assign Claude, Codex, or Gemini to any phase via env vars, profiles,
-or `config.local.json`.
+Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
+Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
-Zero project-specific code — all project context comes through `plugin.py`.
+No engine fork is required for project-specific context. Orcho can run in
+generic mode; add an optional `plugin.py` when the project needs explicit
+architecture, file hints, prompts, or verification policy.
+
+---
+
+## Install
+
+`orcho` is the native CLI distribution — it installs the core CLI **and** the
+MCP server (`orcho-mcp`). The recommended path is `pipx`, which keeps the CLI
+isolated from any project environment. Pick your OS below, or jump to the
+OS-agnostic [Docker](#docker) / [direct engine](#direct-engine-dependency)
+paths.
+
+Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
+least one code-agent CLI or compatible wrapper (`claude`, `claude-glm`,
+`codex`, or `gemini`) available to Orcho.
+
+> `pipx ensurepath` updates `PATH` for **future** shells, not the one you run it
+> in. So after `ensurepath` you must **open a new terminal** before `pipx` (and
+> the installed `orcho`) are on `PATH` — this trips up first-time Windows setups
+> in particular. Each block below marks exactly where to reopen the shell.
+
+### macOS
+
+```bash
+brew install pipx        # skip if pipx is already installed
+pipx ensurepath
+# ↻ reopen your terminal so the installed `orcho` is on PATH:
+pipx install orcho
+orcho --help
+```
+
+### Linux
+
+```bash
+python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
+python3 -m pipx ensurepath
+# ↻ reopen your terminal so `pipx` (and later `orcho`) are on PATH:
+pipx install orcho
+orcho --help
+```
+
+### Windows
+
+Native Windows is supported and exercised in CI. Install
+[Python 3.12+](https://python.org) and [Git for Windows](https://git-scm.com/download/win)
+first, then, in **PowerShell**:
+
+```powershell
+py -m pip install --user pipx
+py -m pipx ensurepath
+# ↻ IMPORTANT: close this window and open a NEW PowerShell now — `ensurepath`
+#   only updates PATH for new shells, so `pipx` is not found until you reopen.
+pipx install orcho
+orcho --help
+```
+
+Prefer a Unix shell? Install into **WSL2** using the Linux steps above. Full
+Windows notes — agent-CLI paths, WSL2 layout, and pipe-based output streaming —
+are in [docs/expert/05_windows.md](docs/expert/05_windows.md).
+
+### Docker
+
+OS-agnostic. Use Docker to try Orcho without installing its Python package or
+agent CLIs on the host:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
+
+orcho run --project /workspace --task "Add input validation to the login endpoint."
+```
+
+The image includes the core CLI and MCP server. See
+[`orcho` Docker docs](https://github.com/symphos-ai/orcho/tree/main/docker)
+for credential bootstrap, MCP stdio setup, and custom project toolchains.
+
+### Direct engine dependency
+
+OS-agnostic. Use `pip` when you intentionally want `orcho-core` in the active
+virtualenv, CI image, devcontainer, or custom image:
+
+```bash
+python -m pip install orcho-core
+```
+
+The `orcho` distribution depends on `orcho-core`; most CLI users should start
+with `orcho`, while integrators can depend on `orcho-core` directly. The
+`orcho[mcp]`/`orcho[all]` extras remain as no-op back-compat aliases.
+
+For source-checkout setup, tests, and contribution workflow, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
 ## Try the golden mock demo
 
 The fastest zero-API proof is the single-project CLI demo. It creates a
-disposable git-backed fixture, runs the full mock pipeline, reviews the
-diff, and writes evidence:
+disposable git-backed fixture, runs the full mock pipeline, reviews the diff,
+and writes evidence.
+
+For an installed CLI, use the packaged demo bootstrap:
+
+```bash
+orcho demos bootstrap golden-api
+```
+
+`orcho demos install golden-api` is accepted as the same operation.
+
+From an existing source checkout, run the shell bootstrap script directly:
 
 ```bash
 examples/scripts/bootstrap_demo_1a.sh
 ```
 
+Do not clone this repository next to a `pipx install orcho` only to obtain the
+demo assets; that creates two Orcho copies on the machine and makes it too easy
+to confuse the installed CLI with source-checkout code.
+
 Then paste the printed `orcho run ... --mock` command and inspect:
 
 ```bash
-orcho evidence --format md --workspace /tmp/orcho_demo_1a/workspace-orchestrator
+orcho evidence --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho status --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
@@ -59,54 +181,6 @@ Full walkthrough: [docs/demos/demo-1a-single-project-cli.md](docs/demos/demo-1a-
 
 The full path from zero to the first result: prerequisites → install →
 connect your project → first run.
-
----
-
-## Install
-
-**Recommended once the packages are published:**
-
-```bash
-pipx install orcho
-orcho --help
-```
-
-Use `python -m pip install orcho` if you prefer a project-managed
-environment over `pipx`.
-
-Optional control surfaces are available through extras:
-
-```bash
-pipx install 'orcho[mcp]'
-pipx install 'orcho[all]'
-```
-
-**Source checkout for development:**
-
-```bash
-git clone git@github.com:symphos-ai/orcho-core.git ~/.local/share/orcho-core
-cd ~/.local/share/orcho-core
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
-Add to `~/.zshrc` / `~/.bashrc`:
-```bash
-export ORCHO_CORE="$HOME/.local/share/orcho-core"
-orcho() { (source "$ORCHO_CORE/.venv/bin/activate" && "$ORCHO_CORE/.venv/bin/python" -m cli.orcho "$@"); }
-```
-
-**Windows (PowerShell):**
-
-```powershell
-git clone git@github.com:symphos-ai/orcho-core.git "$env:LOCALAPPDATA\orcho-core"
-cd "$env:LOCALAPPDATA\orcho-core"
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-```
-Add to `$PROFILE`:
-```powershell
-. "$env:LOCALAPPDATA\orcho-core\shell\orcho-env-base.ps1"
-```
 
 ---
 
@@ -205,7 +279,10 @@ orcho-core/
 
 ## Documentation
 
-Ordered from general to specific — start at the top, go deeper as needed.
+The user-facing portal is **[docs.orcho.dev](https://docs.orcho.dev)** — start there.
+
+The in-repo docs below are the contributor & deep reference: the canonical
+engineering contracts the portal links into. Ordered from general to specific.
 
 | Level | For whom | Link |
 |---------|---------|--------|

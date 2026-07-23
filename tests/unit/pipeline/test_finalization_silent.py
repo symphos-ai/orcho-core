@@ -32,6 +32,7 @@ from pipeline.project.finalization import (
     FinalizationResult,
     finalize_project_run,
 )
+from pipeline.project.terminal_delivery import TerminalDeliveryDisposition
 
 
 class _FakeState:
@@ -124,6 +125,7 @@ class TestFinalizeProjectRunSilent:
         assert result.mirrored_artifacts == []
         assert result.mirror_error is None
         assert result.worktree_teardown_message is None
+        assert result.terminal_delivery.disposition is TerminalDeliveryDisposition.UNKNOWN
 
     def test_session_status_mutated_in_place(
         self,
@@ -644,9 +646,16 @@ def _followup_child(
     from types import SimpleNamespace
 
     extras: dict[str, Any] = {}
+    session: dict[str, Any] = {
+        "status": "done",
+        "resume_mode": "followup",
+        "profile": "correction",
+    }
     if parent_run_id is not None:
-        extras["plan_source_run_id"] = parent_run_id
-    session: dict[str, Any] = {"status": "done"}
+        session["parent_run_id"] = parent_run_id
+        (output_dir / "correction_context.md").write_text(
+            "# Correction Context\n", encoding="utf-8",
+        )
     if delivery_status is not None:
         session["commit_delivery"] = {"status": delivery_status}
     return SimpleNamespace(
@@ -666,6 +675,28 @@ def _parent_meta_after(runs_dir: Path, parent_run_id: str) -> dict[str, Any]:
 
 
 class TestSupersedeParentCorrectionAfterFollowup:
+    @pytest.mark.parametrize("extras", [None, "not-a-mapping"])
+    def test_non_mapping_state_extras_is_a_safe_noop(
+        self, tmp_path: Path, extras: Any,
+    ) -> None:
+        from pipeline.project.finalization import (
+            _supersede_parent_correction_after_followup,
+        )
+
+        child_dir = tmp_path / "runs" / "child"
+        child_dir.mkdir(parents=True)
+        child = _followup_child(
+            output_dir=child_dir,
+            parent_run_id=None,
+            delivery_status="committed",
+            session_ts="child",
+        )
+        child.state.extras = extras
+
+        _supersede_parent_correction_after_followup(child)
+
+        assert child.session["status"] == "done"
+
     @pytest.mark.parametrize(
         "meta_factory",
         [_rejected_fa_parent_meta, _fix_marked_parent_meta],

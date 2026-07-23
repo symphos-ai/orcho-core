@@ -33,11 +33,39 @@ import subprocess
 import sys
 from typing import Any
 
+from pipeline.project.auto_detect import AUTODETECT_DECISION_ENV, WORK_MODE_ENV
 from pipeline.verification_contract import PlaceholderContext, resolve_placeholders
 
 # Subprocess wall-clock budget. A hung interpreter or version tool degrades to a
 # failed assertion rather than blocking the run.
 _TIMEOUT_S = 60
+
+# Env channels the engine sets on its own process for the duration of a run.
+# A verification subprocess must see the ambient host env plus the declared
+# ``env`` overrides — never these run-scoped channels: an inherited channel
+# changes the behavior under test (e.g. a session built inside the subprocess
+# grows an ``auto_detect`` block the golden fixtures never pinned, failing the
+# gate for code that is green in a clean shell). A contract that genuinely
+# needs one of these values must declare it in its ``env`` block, which is
+# applied after the strip.
+RUN_SCOPED_ENV_CHANNELS: tuple[str, ...] = (
+    AUTODETECT_DECISION_ENV,
+    WORK_MODE_ENV,
+)
+
+
+def map_python_token(token: str, python: str) -> str:
+    """Map a bare ``python`` argv token to the declared/resolved interpreter.
+
+    Single source of truth for the bare-``python`` substitution shared by the
+    Stage 2 version-assertion engine (:func:`_version_assert`) and the Stage 3
+    command executor (:func:`pipeline.verification_command._resolve_argv`). Only
+    the token literally equal to ``python`` is remapped; every other token
+    (explicit paths, other executables) is returned unchanged. This lets a
+    contract write bare ``python`` and still resolve the declared interpreter
+    even when it is not on ``PATH``.
+    """
+    return python if token == "python" else token
 
 
 def resolve_env_runtime(
@@ -59,8 +87,8 @@ def resolve_env_runtime(
       isolation a cwd that resolves to the canonical sibling is redirected to the
       worktree checkout (fail-closed; ADR 0112 §3), never silently run against the
       clean source tree.
-    * ``sub_env`` — ``os.environ`` merged with placeholder-resolved ``env``
-      overrides.
+    * ``sub_env`` — ``os.environ`` minus :data:`RUN_SCOPED_ENV_CHANNELS`,
+      merged with placeholder-resolved ``env`` overrides.
     * ``overrides`` — the resolved ``env`` overrides on their own (for receipts).
     """
     python_decl = env_spec.get("python")
@@ -99,6 +127,8 @@ def resolve_env_runtime(
         for key, value in raw_env.items():
             overrides[str(key)] = resolve_placeholders(str(value), ctx)
     sub_env = dict(os.environ)
+    for key in RUN_SCOPED_ENV_CHANNELS:
+        sub_env.pop(key, None)
     sub_env.update(overrides)
 
     return python, eff_cwd, sub_env, overrides
@@ -207,7 +237,9 @@ def _evaluate(
         )
 
     if "version" in raw:
-        return _version_assert(raw, eff_cwd=eff_cwd, sub_env=sub_env, ctx=ctx)
+        return _version_assert(
+            raw, python=python, eff_cwd=eff_cwd, sub_env=sub_env, ctx=ctx,
+        )
 
     keys = sorted(str(k) for k in raw)
     return _result(
@@ -266,6 +298,7 @@ def _path_assert(path: str, eff_cwd: str, kind: str) -> dict[str, Any]:
 def _version_assert(
     raw: dict[str, Any],
     *,
+    python: str,
     eff_cwd: str,
     sub_env: dict[str, str],
     ctx: PlaceholderContext,
@@ -278,6 +311,7 @@ def _version_assert(
             "version must be a non-empty argv list",
         )
     argv = [resolve_placeholders(str(a), ctx) for a in argv_raw]
+    argv = [map_python_token(a, python) for a in argv]
     rc, out, err, exc = _run(argv, eff_cwd, sub_env)
     if exc is not None:
         return _result(

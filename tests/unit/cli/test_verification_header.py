@@ -11,6 +11,7 @@ from core.io.verification_header import (
     GateRowView,
     VerificationHeaderView,
     build_verification_header_view,
+    render_gate_matrix,
     render_verification_header,
 )
 from pipeline.plugins import PluginConfig
@@ -77,7 +78,7 @@ def test_auto_derived_warn_policy_and_effect() -> None:
     view = build_verification_header_view(contract)
 
     assert view is not None
-    assert view.policy_source == "auto-derived from mode/plugin defaults"
+    assert view.policy_source == "declared in contract (suggest, warn)"
     assert view.effect == "warn on missing/failed receipts"
     assert "receipts" in view.effect
     assert view.warned is True
@@ -131,9 +132,8 @@ def test_derived_only_schedule_effect_mentions_receipts() -> None:
     view = build_verification_header_view(contract)
 
     assert view is not None
-    assert view.policy_source == "auto-derived from mode/plugin defaults"
-    assert view.effect == "receipts policy auto-derived from mode/plugin defaults"
-    assert "receipts" in view.effect
+    assert view.policy_source == "declared in contract (suggest)"
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
     assert view.warned is False
 
 
@@ -156,6 +156,7 @@ def test_gate_row_carries_orthogonal_columns() -> None:
     assert row.run_mode == "auto"
     assert row.policy == "warn"
     assert row.kind == "cheap"
+    assert row.activation_binding == "always"
 
 
 def test_manual_only_gate_visible_as_manual_operator() -> None:
@@ -164,15 +165,15 @@ def test_manual_only_gate_visible_as_manual_operator() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         schedule=[
-            {"manual_only": True, "policy": "require", "commands": ["e2e"]},
+            {"manual_only": True, "policy": "suggest", "commands": ["e2e"]},
         ],
     )
     view = build_verification_header_view(contract)
     assert view is not None
     row = _gate(view, "e2e")
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
-    assert row.policy == "require"
+    assert row.run_mode == "operator"
+    assert row.policy == "suggest"
 
 
 def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
@@ -192,7 +193,7 @@ def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
     assert view is not None
     row = _gate(view, "e2e")
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
+    assert row.run_mode == "operator"
     # default_cheap=False is non-cheap with no declared taxonomy -> unknown.
     assert row.kind == "unknown"
 
@@ -201,7 +202,7 @@ def test_gate_set_default_policy_fills_unknown_entry_policy() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "require"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -210,7 +211,7 @@ def test_gate_set_default_policy_fills_unknown_entry_policy() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     # entry.policy is None -> fall back to the gate set's default_policy.
-    assert _gate(view, "e2e").policy == "require"
+    assert _gate(view, "e2e").policy == "suggest"
 
 
 def test_gate_set_default_policy_drives_top_summary() -> None:
@@ -220,7 +221,7 @@ def test_gate_set_default_policy_drives_top_summary() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "require"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -228,13 +229,13 @@ def test_gate_set_default_policy_drives_top_summary() -> None:
     )
     view = build_verification_header_view(contract)
     assert view is not None
-    # Matrix row already shows require...
-    assert _gate(view, "e2e").policy == "require"
+    # Matrix row already shows suggest...
+    assert _gate(view, "e2e").policy == "suggest"
     # ...and the top summary agrees: declared (not auto-derived), warned.
     assert "declared in contract" in view.policy_source
-    assert "require" in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert "suggest" in view.policy_source
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_mixed_source_command_keeps_gate_set_defaults() -> None:
@@ -246,7 +247,7 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
         gate_sets={
             "manuals": {
                 "commands": ["e2e"],
-                "default_policy": "require",
+                "default_policy": "suggest",
                 "default_cheap": True,
             },
         },
@@ -261,14 +262,14 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     assert len(e2e_rows) == 1
     row = e2e_rows[0]
     assert row.timing == "operator"
-    assert row.run_mode == "manual"
-    assert row.policy == "require"
+    assert row.run_mode == "operator"
+    assert row.policy == "suggest"
     assert row.kind == "cheap"
     # ...and the declared data drives the summary, not auto-derived.
     assert "declared in contract" in view.policy_source
     assert "auto-derived" not in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
@@ -285,7 +286,7 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
             },
             "strict": {
                 "commands": ["e2e"],
-                "default_policy": "require",
+                "default_policy": "suggest",
                 "default_cheap": True,
             },
         },
@@ -296,12 +297,12 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     row = _gate(view, "e2e")
-    assert row.policy == "require"  # strictest, not the first 'suggest'
+    assert row.policy == "suggest"
     assert row.kind == "cheap"  # OR-ed across gate sets, not the first False
     # Summary reflects the strictest declared policy too.
-    assert "require" in view.policy_source
-    assert view.effect == "require receipts; missing/failed resolved at gate time"
-    assert view.warned is True
+    assert "suggest" in view.policy_source
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_gate_set_default_policy_warn_warns_in_summary() -> None:
@@ -309,7 +310,7 @@ def test_gate_set_default_policy_warn_warns_in_summary() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_policy": "warn"},
+            "manuals": {"commands": ["e2e"], "default_policy": "suggest"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -317,10 +318,10 @@ def test_gate_set_default_policy_warn_warns_in_summary() -> None:
     )
     view = build_verification_header_view(contract)
     assert view is not None
-    assert _gate(view, "e2e").policy == "warn"
+    assert _gate(view, "e2e").policy == "suggest"
     assert "declared in contract" in view.policy_source
-    assert view.effect == "warn on missing/failed receipts"
-    assert view.warned is True
+    assert view.effect == "suggested; missing/failed receipts noted, not blocking"
+    assert view.warned is False
 
 
 def test_unavailable_properties_render_unknown() -> None:
@@ -334,8 +335,115 @@ def test_unavailable_properties_render_unknown() -> None:
     view = build_verification_header_view(contract)
     assert view is not None
     row = _gate(view, "lint")
-    assert row.policy == "unknown"
+    assert row.policy == "suggest"
     assert row.kind == "unknown"
+
+
+def _reference_contract() -> VerificationContract:
+    """A gate-set/selection/schedule contract shaped like the repo's own plugin.
+
+    baseline/broad are ``always``; run-state/verification/cli-sdk are path-gated;
+    e2e is operator/manual — the mix that exercises the activation column.
+    """
+    return _contract(
+        commands={
+            "env-provenance": {"run": "prov", "cheap": True},
+            "lint": {"run": "ruff check .", "cheap": True},
+            "run-state-unit": {"run": "pytest run_state"},
+            "verification-unit": {"run": "pytest verification"},
+            "cli-sdk-unit": {"run": "pytest cli sdk"},
+            "broad-non-e2e": {"run": "pytest -m 'not e2e'"},
+            "e2e": {"run": "pytest -m e2e"},
+        },
+        gate_sets={
+            "baseline": {
+                "commands": ["env-provenance", "lint"],
+                "default_policy": "warn",
+            },
+            "run-state": {"commands": ["run-state-unit"], "default_policy": "require"},
+            "verification": {
+                "commands": ["verification-unit"], "default_policy": "require",
+            },
+            "cli-sdk": {"commands": ["cli-sdk-unit"], "default_policy": "require"},
+            "broad": {"commands": ["broad-non-e2e"], "default_policy": "require"},
+            "e2e": {"commands": ["e2e"], "default_policy": "suggest"},
+        },
+        selection=[
+            {"always": ["baseline", "broad"]},
+            {"paths": ["pipeline/run_state/**"], "include": ["run-state"]},
+            {"paths": ["pipeline/verification*.py"], "include": ["verification"]},
+            {"paths": ["cli/**", "sdk/**"], "include": ["cli-sdk"]},
+            {"operator": ["e2e"]},
+        ],
+        schedule=[
+            {"after_phase": "implement", "gate_sets": ["baseline"], "policy": "warn"},
+            {
+                "after_phase": "implement",
+                "gate_sets": ["run-state", "verification", "cli-sdk"],
+                "policy": "require",
+            },
+            {"after_phase": "implement", "gate_sets": ["broad"], "policy": "require"},
+            {"manual_only": True, "gate_sets": ["e2e"], "policy": "suggest"},
+        ],
+    )
+
+
+def test_activation_condition_at_start_no_diff() -> None:
+    # At run start (build_verification_header_view reads the ledger with
+    # changed_files=None), each gate carries its declared activation condition:
+    # always for baseline/broad, on_path (+globs) for the subsystem gates, and
+    # operator for e2e. No path-gated gate is shown as an unconditional require.
+    view = build_verification_header_view(_reference_contract())
+    assert view is not None
+
+    for name in ("env-provenance", "lint", "broad-non-e2e"):
+        assert _gate(view, name).condition == "always", name
+        assert _gate(view, name).condition_paths == ()
+
+    verification_row = _gate(view, "verification-unit")
+    assert verification_row.condition == "on_path"
+    assert verification_row.condition_paths == ("pipeline/verification*.py",)
+    assert _gate(view, "run-state-unit").condition == "on_path"
+    assert _gate(view, "cli-sdk-unit").condition == "on_path"
+
+    assert _gate(view, "e2e").condition == "operator"
+
+    # Timing multiplicity is unchanged: the six auto gates all read
+    # after_implement, e2e reads operator.
+    timings = sorted((g.gate, g.timing) for g in view.gates)
+    assert timings == [
+        ("broad-non-e2e", "after_implement"),
+        ("cli-sdk-unit", "after_implement"),
+        ("e2e", "operator"),
+        ("env-provenance", "after_implement"),
+        ("lint", "after_implement"),
+        ("run-state-unit", "after_implement"),
+        ("verification-unit", "after_implement"),
+    ]
+
+
+def test_activation_rendered_as_on_path_manual_always() -> None:
+    # The rendered matrix shows the activation column: on-path gates print their
+    # globs, e2e prints manual, baseline/broad print always — and no path-gated
+    # gate is rendered as an unconditional require cell.
+    view = build_verification_header_view(_reference_contract())
+    assert view is not None
+    out = _strip(render_verification_header(view, compact=False))
+    assert "selection" in out
+
+    verification_line = next(
+        ln for ln in out.splitlines() if "verification-unit" in ln
+    )
+    # The activation cell is the trailing column and shows the globs; the gate's
+    # ``require`` now lives in its own restored ``policy`` column, not the
+    # activation cell — so the line ENDS with the on-path activation.
+    assert verification_line.rstrip().endswith("on-path: pipeline/verification*.py")
+
+    lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
+    assert lint_line.rstrip().endswith("always")
+
+    e2e_line = next(ln for ln in out.splitlines() if ln.strip().startswith("e2e "))
+    assert e2e_line.rstrip().endswith("manual")
 
 
 def test_gate_identity_separates_same_command_across_hooks() -> None:
@@ -354,6 +462,88 @@ def test_gate_identity_separates_same_command_across_hooks() -> None:
     assert timings == ["after_implement", "delivery"]
 
 
+# ── when axis: derived from has_final_phase ────────────────────────────
+
+
+def test_when_require_is_timing_hook_warn_is_pre_final_with_final_phase() -> None:
+    # A profile WITH a final delivery phase: a required gate reads its timing hook
+    # (after_implement), a warn gate defers to pre-final, e2e is operator.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    assert _gate(view, "verification-unit").when == "after_implement"
+    assert _gate(view, "broad-non-e2e").when == "after_implement"
+    assert _gate(view, "lint").when == "pre-final"
+    assert _gate(view, "env-provenance").when == "pre-final"
+    assert _gate(view, "e2e").when == "operator"
+
+
+def test_when_warn_is_not_auto_run_without_final_phase() -> None:
+    # A fast / small_task-style profile with NO final phase: the warn gates are
+    # honestly 'not auto-run', while the required gates still read their hook.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=False,
+    )
+    assert view is not None
+    assert _gate(view, "lint").when == "not auto-run"
+    assert _gate(view, "env-provenance").when == "not auto-run"
+    assert _gate(view, "verification-unit").when == "after_implement"
+    assert _gate(view, "e2e").when == "operator"
+
+
+def test_when_profile_dependent_when_has_final_phase_unknown() -> None:
+    # Default (no has_final_phase): a warn gate is marked profile-dependent, not
+    # guessed; required gates are unaffected.
+    view = build_verification_header_view(_reference_contract())
+    assert view is not None
+    assert _gate(view, "lint").when == "profile-dependent"
+    assert _gate(view, "verification-unit").when == "after_implement"
+
+
+def test_when_rendered_in_matrix_distinguishes_require_from_warn() -> None:
+    # The rendered matrix carries the when column so require->after_implement is
+    # legibly distinct from warn->pre-final on the row itself.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    out = _strip(render_verification_header(view, compact=False))
+    assert "trigger" in out
+    ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
+    assert "after_phase" in ver_line
+    lint_line = next(ln for ln in out.splitlines() if ln.strip().startswith("lint"))
+    assert "after_phase" in lint_line
+
+
+# ── render_gate_matrix: the shared, reusable formatter ─────────────────
+
+
+def test_render_gate_matrix_column_contract_and_reuse() -> None:
+    # render_gate_matrix is the single formatter the banner also uses: its header
+    # names the new column order and the banner reuses exactly its rows.
+    view = build_verification_header_view(
+        _reference_contract(), has_final_phase=True,
+    )
+    assert view is not None
+    matrix = render_gate_matrix(view.gates)
+    # Header row + one row per gate.
+    assert len(matrix) == len(view.gates) + 1
+    header = strip_ansi(matrix[0]).split()
+    assert header == ["gate", "trigger", "executor", "policy", "consequence", "selection"]
+    # The banner renders through the same helper: every matrix data row appears
+    # verbatim inside the banner output (indented under the ``gates`` label).
+    banner = _strip(render_verification_header(view, compact=False))
+    for data_row in matrix[1:]:
+        assert data_row in banner
+
+
+def test_render_gate_matrix_empty_is_empty_list() -> None:
+    # Empty gates -> the shared helper returns [] and leaves the "no gates"
+    # rendering to the caller (the banner shows ``gates  —``).
+    assert render_gate_matrix(()) == []
+
+
 # ── render_verification_header ─────────────────────────────────────────
 
 
@@ -368,6 +558,8 @@ def _warn_view() -> VerificationHeaderView:
                 run_mode="auto",
                 policy="warn",
                 kind="cheap",
+                condition="always",
+                when="pre-final",
             ),
             GateRowView(
                 gate="e2e",
@@ -375,6 +567,8 @@ def _warn_view() -> VerificationHeaderView:
                 run_mode="manual",
                 policy="require",
                 kind="unknown",
+                condition="operator",
+                when="operator",
             ),
         ),
         policy_source="auto-derived from mode/plugin defaults",
@@ -396,18 +590,21 @@ def test_structured_block_has_all_dimension_labels() -> None:
 
 def test_structured_matrix_has_separate_columns_per_gate() -> None:
     out = _strip(render_verification_header(_warn_view(), compact=False))
-    # The matrix header names the orthogonal columns.
-    assert "timing" in out
-    assert "run" in out
+    # The matrix header names the durable execution axes.
+    assert "trigger" in out
+    assert "executor" in out
     assert "policy" in out
-    assert "kind" in out
+    assert "selection" in out
+    assert "timing" not in out  # the raw timing column is gone
     # Each gate row keeps command identity beside its own property cells, on a
     # single line — not a flat comma bucket fusing identity with properties.
     e2e_line = next(ln for ln in out.splitlines() if "e2e" in ln)
-    assert "operator" in e2e_line
-    assert "manual" in e2e_line
-    assert "require" in e2e_line
-    assert "unknown" in e2e_line
+    assert "operator" in e2e_line  # its when stage
+    assert "require" in e2e_line   # its execution policy
+    assert "require" in e2e_line   # its restored policy column
+    # The operator gate's activation cell is the trailing column and reads
+    # ``manual``.
+    assert e2e_line.rstrip().endswith("manual")
     # The legacy flat command bucket and its label are gone.
     assert "lint, e2e" not in out
     assert "commands" not in out

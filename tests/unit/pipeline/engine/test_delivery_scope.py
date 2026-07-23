@@ -110,6 +110,10 @@ def _commit_config() -> dict:
         "auto_in_ci": "approve",
         "add_untracked": True,
         "default_strategy": "release_summary",
+        # These scope tests predate ADR 0119 and assert commit-onto-HEAD
+        # mechanics; opt out of branch protection explicitly (a missing key now
+        # resolves to the ``worktree_branch`` default, not ``bypass``).
+        "branch_policy": "bypass",
     }
 
 
@@ -191,6 +195,9 @@ def test_collect_sibling_changes_returns_per_alias_dirty(tmp_path: Path) -> None
     })
     # Dirty the sibling repo.
     (sibling / "read.py").write_text("changed\n", encoding="utf-8")
+    (sibling / "nested").mkdir()
+    (sibling / "nested" / "one.py").write_text("one\n", encoding="utf-8")
+    (sibling / "nested" / "two.py").write_text("two\n", encoding="utf-8")
 
     out = collect_sibling_changes(
         delivery_projects=("orcho-core", "orcho-mcp"),
@@ -199,7 +206,38 @@ def test_collect_sibling_changes_returns_per_alias_dirty(tmp_path: Path) -> None
     )
     # Primary is skipped (its diff is the run-owned diff); sibling is collected.
     assert set(out) == {"orcho-mcp"}
-    assert out["orcho-mcp"] == ("[orcho-mcp]/read.py",)
+    assert out["orcho-mcp"] == (
+        "[orcho-mcp]/nested/one.py",
+        "[orcho-mcp]/nested/two.py",
+        "[orcho-mcp]/read.py",
+    )
+
+
+@pytest.mark.git_worktree
+@pytest.mark.filesystem_heavy
+@pytest.mark.serial
+def test_collect_sibling_changes_preserves_rename_identities(tmp_path: Path) -> None:
+    primary = tmp_path / "orcho-core"
+    sibling = tmp_path / "orcho-mcp"
+    _init_repo(primary)
+    _init_repo(sibling)
+    ws = tmp_path / "ws"
+    _write_workspace_config(ws, {
+        "orcho-core": str(primary),
+        "orcho-mcp": str(sibling),
+    })
+    (sibling / "app.txt").rename(sibling / "renamed.txt")
+    subprocess.run(["git", "add", "-A"], cwd=sibling, check=True)
+
+    out = collect_sibling_changes(
+        delivery_projects=("orcho-core", "orcho-mcp"),
+        primary_project_dir=primary,
+        workspace=ws,
+    )
+
+    assert out == {
+        "orcho-mcp": ("[orcho-mcp]/app.txt", "[orcho-mcp]/renamed.txt"),
+    }
 
 
 @pytest.mark.git_worktree

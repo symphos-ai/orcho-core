@@ -47,6 +47,7 @@ Critical invariants pinned by tests:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -91,6 +92,7 @@ class CfaGateOutcome:
 
     outcome: Literal[
         "approved_terminal",
+        "cached_terminal",
         "paused",
         "override_continue",
         "halted",
@@ -98,6 +100,74 @@ class CfaGateOutcome:
     ]
     cfa_result: Any | None  # CrossFinalAcceptanceResult when not paused/halted
     override_marker: dict | None = None  # only populated on override_continue
+
+
+def load_completed_cfa_cache(
+    session: dict, run_dir: Path | None = None
+) -> Any | None:
+    """Return a strictly valid, completed CFA cache or ``None``.
+
+    Only an approved, ship-ready persisted result is terminally reusable.  A
+    rejected result needs its handoff route, and absent, pending, or malformed
+    entries must remain on the normal fail-closed gate path.
+    """
+    phases = session.get("phases")
+    entry = phases.get("cross_final_acceptance") if isinstance(phases, dict) else None
+    if entry is None and run_dir is not None:
+        _load_prior_cfa_result_from_disk(run_dir, session)
+        phases = session.get("phases")
+        entry = phases.get("cross_final_acceptance") if isinstance(phases, dict) else None
+    if not _is_completed_cfa_cache_entry(entry):
+        return None
+    return _load_prior_cfa_result(session)
+
+
+def has_completed_cfa_phase_entry(entry: Any) -> bool:
+    """Return whether ``entry`` is a complete persisted CFA result.
+
+    This answers the graph's historical question (did the gate finish?), not
+    the narrower resume-cache question (can an APPROVED result be reused for
+    delivery).  A valid REJECTED result remains completed even when its final
+    disposition was an operator override or a terminal halt.
+    """
+    if not isinstance(entry, dict) or entry.get("skipped") is True:
+        return False
+    required_strings = ("output", "raw_output", "short_summary", "source")
+    if not all(isinstance(entry.get(field), str) for field in required_strings):
+        return False
+    duration = entry.get("duration_s")
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+        return False
+    if not isinstance(entry.get("approved"), bool):
+        return False
+    if entry.get("approved") is not (entry.get("verdict") == "APPROVED"):
+        return False
+
+    from core.contracts.release_schema import ReleaseSchemaError, validate_release_dict
+
+    try:
+        validate_release_dict({
+            field: entry.get(field)
+            for field in (
+                "verdict", "ship_ready", "short_summary", "release_blockers",
+                "verification_gaps", "contract_status",
+            )
+        })
+    except ReleaseSchemaError:
+        return False
+    return True
+
+
+def _is_completed_cfa_cache_entry(entry: Any) -> bool:
+    """Validate the persisted CFA phase-log contract without coercion."""
+    if not has_completed_cfa_phase_entry(entry) or entry.get("parse_error") is not None:
+        return False
+    return (
+        entry.get("verdict") == "APPROVED"
+        and entry.get("approved") is True
+        and entry.get("ship_ready") is True
+        and entry.get("source") in {"agent", "precondition"}
+    )
 
 
 def _clear_cfa_checkpoint_markers(cross_ckpt: dict) -> None:
@@ -556,6 +626,7 @@ def evaluate_cfa_gate(
     output_dir: bool,
     terminal: bool,
     max_rounds: int = CFA_DEFAULT_MAX_ROUNDS,
+    on_fresh_start: Callable[[], None] | None = None,
 ) -> CfaGateOutcome:
     """Gate the cross_final_acceptance phase with pause/decide semantics.
 
@@ -598,6 +669,9 @@ def evaluate_cfa_gate(
             gate surfaces this in the handoff payload as
             ``loop_max_rounds`` so UI / CLI can render ``round N
             of M``.
+        on_fresh_start: optional presentation callback invoked only
+            when the reviewer will actually execute. Cached and
+            decision-only resume paths do not invoke it.
 
     Returns:
         :class:`CfaGateOutcome` carrying the dispatch outcome and (on
@@ -619,7 +693,15 @@ def evaluate_cfa_gate(
             terminal=terminal,
         )
 
+    if resume_from:
+        cached = load_completed_cfa_cache(session, run_dir)
+        if cached is not None:
+            return CfaGateOutcome(outcome="cached_terminal", cfa_result=cached)
+
     # ── Fresh path: run the reviewer ──────────────────────────────────
+    if on_fresh_start is not None:
+        on_fresh_start()
+
     from pipeline.cross_project.final_acceptance import (
         result_to_phase_log_entry,
         run_cross_final_acceptance,

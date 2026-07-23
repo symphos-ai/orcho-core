@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parents[2]
@@ -24,11 +25,24 @@ SCRIPT = CORE_DIR / "examples" / "scripts" / "bootstrap_demo_1a.sh"
 FIXTURE = CORE_DIR / "examples" / "golden-api"
 
 
-def _run(demo_root: Path, *, check: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    demo_root: Path,
+    *,
+    check: bool = True,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(SCRIPT)],
         cwd=CORE_DIR,
-        env={**os.environ, "ORCHO_DEMO_ROOT": str(demo_root)},
+        env={
+            **os.environ,
+            "ORCHO_DEMO_ROOT": str(demo_root),
+            # Pin the orcho interpreter to the one running this test: the
+            # script's bare-python3 fallback breaks on hosts whose system
+            # python3 is too old for this package.
+            "ORCHO_DEMO_CORE_PYTHON": sys.executable,
+            **(env_overrides or {}),
+        },
         capture_output=True,
         text=True,
         check=check,
@@ -85,6 +99,7 @@ class TestBootstrapDemo1A:
         assert local_data["phases"]["implement"]["model"]
         # Stdout includes the copy-pastable run + inspect commands.
         assert "orcho run" in result.stdout
+        assert "--profile feature" in result.stdout
         assert "orcho evidence" in result.stdout
         assert "orcho diff <run-id> --stat" in result.stdout
         assert str(demo_root / "project") in result.stdout
@@ -104,6 +119,42 @@ class TestBootstrapDemo1A:
             str(demo_root / "workspace-orchestrator").replace(" ", "\\ ")
             in command_block
         )
+
+    def test_can_use_installed_orcho_command(self, tmp_path: Path) -> None:
+        fake_bin = tmp_path / "bin" / "orcho"
+        fake_bin.parent.mkdir()
+        fake_bin.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" != "workspace" || "$2" != "init" ]]; then
+  echo "unexpected args: $*" >&2
+  exit 9
+fi
+root="$3"
+mkdir -p "$root/workspace-orchestrator/.orcho"
+cat >"$root/workspace-orchestrator/.orcho/config.local.json" <<'JSON'
+{"phases":{"implement":{"model":"fake-installed-orcho"}}}
+JSON
+""",
+            encoding="utf-8",
+        )
+        fake_bin.chmod(0o755)
+
+        demo_root = tmp_path / "demo"
+        _run(
+            demo_root,
+            env_overrides={
+                "ORCHO_DEMO_CORE_PYTHON": "",
+                "ORCHO_DEMO_ORCHO_BIN": str(fake_bin),
+            },
+        )
+
+        local_config = (
+            demo_root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+        )
+        assert json.loads(local_config.read_text(encoding="utf-8"))["phases"][
+            "implement"
+        ]["model"] == "fake-installed-orcho"
 
     def test_does_not_mutate_source_fixture(self, tmp_path: Path) -> None:
         before = _snapshot(FIXTURE)

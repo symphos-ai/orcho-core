@@ -254,6 +254,26 @@ def test_load_status_setup_child_no_from_run_plan_with_launcher_state(
     assert not any(a.tool == "orcho_run_start" for a in status.next_actions)
 
 
+def test_load_status_excludes_run_artifact_dirs_from_sub_projects(
+    runs_root: Path,
+) -> None:
+    """Run-owned artifact directories must not surface as child projects."""
+    run_dir = _write_minimal_run(runs_root, "20260601_artifact_dirs")
+    for name in (
+        "commit_decisions",
+        "phase_handoff_advice",
+        "phase_handoff_decisions",
+        "phases",
+        "verification_command_receipts",
+        "verification_receipts",
+    ):
+        (run_dir / name).mkdir()
+
+    status = load_status("20260601_artifact_dirs", runs_dir=runs_root)
+
+    assert status.sub_projects == ()
+
+
 def test_get_run_metrics(populated_runs: Path, monkeypatch: pytest.MonkeyPatch):
     from core.infra import config
     monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
@@ -263,6 +283,50 @@ def test_get_run_metrics(populated_runs: Path, monkeypatch: pytest.MonkeyPatch):
     assert m.total_tokens == 12000
     assert m.total_cost_usd_equivalent == pytest.approx(0.42)
     assert "plan" in m.phases
+
+
+def test_get_run_metrics_uses_workspace_accounting_config_without_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from core.infra import config
+
+    monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+    config._reset_config()
+
+    workspace = tmp_path / "workspace-orchestrator"
+    runs = workspace / "runspace" / "runs"
+    run_dir = runs / "20260612_metrics"
+    run_dir.mkdir(parents=True)
+    (workspace / ".orcho").mkdir()
+    (workspace / ".orcho" / "config.local.json").write_text(
+        json.dumps({"accounting": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps({"project": "/repo/orcho-core", "task": "t", "status": "done"}),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        metrics = get_run_metrics("20260612_metrics", workspace=workspace)
+    finally:
+        config._reset_config()
+
+    assert metrics.total_cost_usd_equivalent == pytest.approx(1.23)
 
 
 def test_list_metrics(populated_runs: Path):
@@ -346,7 +410,7 @@ def test_rejected_release_gate_is_decidable_correction(runs_root: Path) -> None:
     assert state.decidable is True
     assert state.kind == "correction"
     # ADR 0111: an auto-refused rejected release (``_is_rejected_release_gate``)
-    # is a dead-end whose only forward motion is a from_run_plan follow-up.
+    # is a dead-end whose only forward motion is an ordinary correction follow-up.
     # Repeating ``fix`` is inert, so it is blocked alongside the shipping actions
     # and ``skip`` (ADR 0106) — only ``halt`` (give up) remains available.
     assert set(state.blocked_actions) == {"fix", "approve", "apply", "skip"}
@@ -356,11 +420,10 @@ def test_rejected_release_gate_is_decidable_correction(runs_root: Path) -> None:
     assert "approve" not in state.available_actions
     # No inert in-gate repeat is advertised as the actionable next step.
     assert state.default_action is None
-    # The reason routes the client to a from_run_plan follow-up (no diff.patch
-    # file written here, so the held-diff suffix is omitted).
+    # The reason routes the client to an ordinary follow-up; diff artifacts are
+    # never replayed as correction input.
     assert state.reason is not None
-    assert f"from_run_plan={run_id}" in state.reason
-    assert "orcho_run_start" in state.reason
+    assert f"orcho_run_resume run_id={run_id}" in state.reason
     assert "inert" in state.reason
     assert "diff.patch" not in state.reason
 

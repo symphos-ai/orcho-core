@@ -98,6 +98,57 @@ def _approved_review_json() -> str:
     )
 
 
+def _approved_release_json() -> str:
+    return json.dumps({
+        "verdict": "APPROVED",
+        "ship_ready": True,
+        "short_summary": "coordinated release is ready",
+        "release_blockers": [],
+        "verification_gaps": [],
+        "contract_status": {
+            "task_contract": "satisfied",
+            "interfaces": "compatible",
+            "persistence": "safe",
+            "tests": "sufficient",
+        },
+    })
+
+
+def _cross_plan_json(*aliases: str) -> str:
+    return json.dumps({
+        "short_summary": "scripted cross feature",
+        "interface_contract": "shared wire contract",
+        "implementation_order": [f"change {alias}" for alias in aliases],
+        "subtasks": [
+            {
+                "alias": alias,
+                "goal": f"change {alias}",
+                "spec": f"implement {alias}",
+                "depends_on": [],
+            }
+            for alias in aliases
+        ],
+    })
+
+
+def _approved_child_release() -> dict[str, Any]:
+    return {
+        "verdict": "APPROVED",
+        "approved": True,
+        "short_summary": "child is ready",
+        "findings": [],
+        "ship_ready": True,
+        "release_blockers": [],
+        "verification_gaps": [],
+        "contract_status": {
+            "task_contract": "satisfied",
+            "interfaces": "compatible",
+            "persistence": "safe",
+            "tests": "sufficient",
+        },
+    }
+
+
 def _cross_appconfig_mock(monkeypatch) -> None:
     """Mock the cross AppConfig + load_plugin so the cross body runs
     without touching real config files or filesystem walkers."""
@@ -157,9 +208,14 @@ def _make_capturing_run_project_pipeline(
         }
         if child_session_extras:
             session.update(child_session_extras)
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
             session=session,
-            output_dir=None,
+            output_dir=request.output_dir,
             run_id="test-run",
         )
 
@@ -167,7 +223,11 @@ def _make_capturing_run_project_pipeline(
 
 
 def _build_silent_request(
-    *, projects: dict[str, Path], output_dir: Path, provider: Any,
+    *,
+    projects: dict[str, Path],
+    output_dir: Path,
+    provider: Any,
+    profile_name: str = "delivery_audit",
 ) -> CrossRunRequest:
     """Phase H light consumer migration helper.
 
@@ -181,7 +241,7 @@ def _build_silent_request(
         output_dir=output_dir,
         provider=provider,
         cross_mode="full",
-        profile_name="delivery_audit",  # review-only projection — no PLAN phase.
+        profile_name=profile_name,
         presentation=PresentationPolicy.SILENT,
         no_interactive=True,  # SILENT requires no_interactive=True.
     )
@@ -383,9 +443,14 @@ def test_silent_child_failure_surfaces_structurally_without_stdout(
                 "error": "child blew up",
                 "phase": "implement",
             }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
             session=session,
-            output_dir=None,
+            output_dir=request.output_dir,
             run_id=f"test-run-{request.project_alias}",
         )
 
@@ -431,6 +496,235 @@ def test_silent_child_failure_surfaces_structurally_without_stdout(
         f"expected exactly one child to record status=failed; got "
         f"{failed_aliases!r} from phases.projects={projects_log!r}"
     )
+
+
+def test_mixed_child_readiness_bypasses_contract_review_and_reaches_cfa(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """A halted child blocks admission but never cancels its done sibling.
+
+    ``feature`` contributes one review-runtime call for plan validation.  The
+    blocked run must stop there: there is no contract-review or CFA-agent call.
+    """
+    from pipeline.cross_project import project_dispatch as dispatch
+    from pipeline.project.types import ProjectRunResult
+
+    _cross_appconfig_mock(monkeypatch)
+    core = tmp_path / "core"
+    mcp = tmp_path / "mcp"
+    core.mkdir()
+    mcp.mkdir()
+    captured: list[Any] = []
+
+    def _mixed_child(request: Any) -> ProjectRunResult:
+        captured.append(request)
+        if request.project_alias == "core":
+            session = {
+                "status": "halted",
+                "halt_reason": "operator requested stop",
+                "phases": {},
+            }
+        else:
+            session = {
+                "status": "done",
+                "phases": {"final_acceptance": _approved_child_release()},
+            }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
+        return ProjectRunResult(
+            session=session,
+            output_dir=request.output_dir,
+            run_id=request.project_alias,
+        )
+
+    monkeypatch.setattr(dispatch, "run_project_pipeline", _mixed_child)
+    provider = _ScriptedProvider(
+        plan_outputs=[_cross_plan_json("core", "mcp")],
+        review_outputs=[_approved_review_json()],
+    )
+    result = run_cross_project_pipeline(_build_silent_request(
+        projects={"core": core, "mcp": mcp},
+        output_dir=tmp_path / "run",
+        provider=provider,
+        profile_name="feature",
+    ))
+
+    assert capsys.readouterr().out == ""
+    assert [request.project_alias for request in captured] == ["core", "mcp"]
+    assert provider.review.calls and len(provider.review.calls) == 1
+    assert result.session["phases"]["projects"]["core"] == {
+        "status": "halted",
+        "halt_reason": "operator requested stop",
+        "phases": {},
+    }
+    assert result.session["phases"]["projects"]["mcp"]["status"] == "done"
+
+    persisted = json.loads((result.output_dir / "meta.json").read_text(encoding="utf-8"))
+    checkpoint = json.loads(
+        (result.output_dir / "cross_checkpoint.json").read_text(encoding="utf-8"),
+    )
+    assert checkpoint["sub_status"] == {"core": "failed", "mcp": "done"}
+    assert persisted["phases"]["projects"]["core"] == {
+        "status": "halted",
+        "halt_reason": "operator requested stop",
+        "phases": {},
+    }
+    readiness = persisted["phases"]["contract_check"]["core"]
+    assert readiness["verdict"] == "NOT_EVALUABLE"
+    assert readiness["not_evaluable"] is True
+    assert readiness["reason"] == "child_readiness"
+    assert readiness["child_status"] == "halted"
+    assert "skipped" not in readiness
+    assert "on_skip" not in readiness
+    cfa = persisted["phases"]["cross_final_acceptance"]
+    assert cfa["source"] == "precondition"
+    assert [blocker["id"] for blocker in cfa["release_blockers"]] == [
+        "CFA_MISSING_CHILD_core",
+    ]
+    assert cfa["contract_status"]["interfaces"] == "not_applicable"
+
+
+def test_child_readiness_blocks_delivery_when_cfa_is_policy_skipped(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A non-success required child fails closed even with CFA disabled."""
+    from dataclasses import replace
+
+    from core.infra.paths import CONFIG_DIR
+    from pipeline.cross_project import cross_delivery, project_dispatch
+    from pipeline.profiles.loader import load_profiles_v2
+    from pipeline.project.types import ProjectRunResult
+    from pipeline.runtime import (
+        CrossGatePolicy,
+        CrossGateRunPolicy,
+        CrossGateSkipPolicy,
+    )
+
+    _cross_appconfig_mock(monkeypatch)
+    profiles = load_profiles_v2(CONFIG_DIR / "pipeline_profiles_v2.json")
+    feature = profiles["feature"]
+    profiles["feature"] = replace(
+        feature,
+        cross_gates={
+            **feature.cross_gates,
+            "cross_final_acceptance": CrossGatePolicy(
+                enabled=False,
+                run=CrossGateRunPolicy.ALWAYS,
+                on_skip=CrossGateSkipPolicy.BLOCK,
+                mode=None,
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        "pipeline.profiles.loader.load_profiles_v2_with_plugins",
+        lambda _path: profiles,
+    )
+
+    core = tmp_path / "core"
+    api = tmp_path / "api"
+    core.mkdir()
+    api.mkdir()
+
+    def _child(request: Any) -> ProjectRunResult:
+        if request.project_alias == "core":
+            session = {
+                "status": "halted",
+                "halt_reason": "operator requested stop",
+                "phases": {},
+            }
+        else:
+            session = {
+                "status": "done",
+                "phases": {"final_acceptance": _approved_child_release()},
+            }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
+        return ProjectRunResult(
+            session=session,
+            output_dir=request.output_dir,
+            run_id=request.project_alias,
+        )
+
+    delivery_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", _child)
+    monkeypatch.setattr(
+        cross_delivery,
+        "run_cross_delivery",
+        lambda **kwargs: delivery_calls.append(kwargs),
+    )
+    provider = _ScriptedProvider(
+        plan_outputs=[_cross_plan_json("core", "api")],
+        review_outputs=[_approved_review_json()],
+    )
+
+    result = run_cross_project_pipeline(_build_silent_request(
+        projects={"core": core, "api": api},
+        output_dir=tmp_path / "run",
+        provider=provider,
+        profile_name="feature",
+    ))
+
+    assert result.session["status"] == "failed"
+    assert result.session["halt_reason"] == "cross_child_readiness_blocked"
+    assert result.session["phases"]["contract_check"]["core"]["verdict"] == "NOT_EVALUABLE"
+    assert result.session["phases"]["cross_final_acceptance"]["skipped"] is True
+    assert delivery_calls == []
+
+
+def test_all_success_feature_keeps_contract_and_cfa_agent_paths(
+    tmp_path: Path,
+    monkeypatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """Successful children retain validation, contract review, and CFA review."""
+    from pipeline.cross_project import project_dispatch as dispatch
+
+    _cross_appconfig_mock(monkeypatch)
+    core = tmp_path / "core"
+    mcp = tmp_path / "mcp"
+    core.mkdir()
+    mcp.mkdir()
+    captured: list[Any] = []
+    monkeypatch.setattr(
+        dispatch,
+        "run_project_pipeline",
+        _make_capturing_run_project_pipeline(
+            captured,
+            child_session_extras={
+                "phases": {"final_acceptance": _approved_child_release()},
+            },
+        ),
+    )
+    provider = _ScriptedProvider(
+        plan_outputs=[_cross_plan_json("core", "mcp")],
+        review_outputs=[
+            _approved_review_json(),  # validate_plan
+            _approved_review_json(),  # contract_check artifact bundle
+            _approved_release_json(),  # cross_final_acceptance
+        ],
+    )
+    result = run_cross_project_pipeline(_build_silent_request(
+        projects={"core": core, "mcp": mcp},
+        output_dir=tmp_path / "run",
+        provider=provider,
+        profile_name="feature",
+    ))
+
+    assert capsys.readouterr().out == ""
+    assert [request.project_alias for request in captured] == ["core", "mcp"]
+    assert len(provider.review.calls) == 3
+    assert result.session["status"] == "done"
+    assert result.session["phases"]["contract_check"]["core"]["verdict"] == "APPROVED"
+    assert result.session["phases"]["cross_final_acceptance"]["source"] == "agent"
 
 
 # ── 4. TERMINAL default regression — legacy transcript shape ─────────

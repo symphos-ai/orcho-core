@@ -16,10 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agents.command_guard import ORCHO_GUARDRAIL_BLOCKED
 from agents.entities import SubTask
 from agents.registry import AgentRegistry
 from core.infra.paths import CONFIG_DIR as _CONFIG_DIR
+from pipeline.engine.declared_write_scope import DECLARED_WRITE_SCOPE_EXTRAS_KEY
 from pipeline.lifecycle import default_lifecycle_context
 from pipeline.phases.builtin import (
     default_registry,
@@ -486,6 +489,47 @@ class TestRegistration:
 # ── Plan ──────────────────────────────────────────────────────────────────────
 
 class TestPlanHandler:
+    def test_success_materializes_declared_write_scope_with_plugin_allowance(self) -> None:
+        payload = json.dumps({
+            "short_summary": "scope",
+            "planning_context": "scope",
+            "owned_files": ["src/owned.py"],
+            "allowed_modifications": ["plan.lock — generated"],
+            "tasks": [{
+                "id": "t1", "goal": "scope", "spec": "scope",
+                "files": ["src/task.py"],
+                "owned_files": ["src/task_owned.py"],
+                "allowed_modifications": ["task.lock — generated"],
+                "done_criteria": ["done"],
+            }],
+        })
+        state = _state(
+            plugin=PluginConfig(allowed_modifications=["plugin.lock — generated"]),
+            phase_config=_StubPhaseConfig(plan_agent=_FakeArchitect(payload)),
+        )
+
+        default_registry().get("plan")(state)
+
+        scope = state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY]
+        assert scope.patterns == (
+            "plan.lock", "plugin.lock", "src/owned.py", "src/task_owned.py",
+            "task.lock",
+        )
+
+    def test_successful_replan_replaces_stale_declared_write_scope(self) -> None:
+        payload = json.dumps({
+            "short_summary": "fresh", "planning_context": "fresh",
+            "owned_files": ["fresh.py"],
+            "tasks": [{"id": "fresh", "goal": "fresh"}],
+        })
+        state = _state(phase_config=_StubPhaseConfig(plan_agent=_FakeArchitect(payload)))
+        state.extras.update({"plan_round": 2, "declared_write_scope": "stale"})
+        state.last_critique = "replace the old plan"
+
+        default_registry().get("plan")(state)
+
+        scope = state.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY]
+        assert scope.patterns == ("fresh.py",)
     def test_captures_markdown_into_state(self) -> None:
         state = _state()
         new = default_registry().get("plan")(state)
@@ -1045,6 +1089,51 @@ class TestBuildHandler:
         assert "subtask_dag delivery blocked" in state.halt_reason
         receipts = state.phase_log["implement"]["implementation_receipts"]
         assert receipts[0]["state"] == "failed"
+
+    def test_subtask_dag_metrics_slice_is_complete_receipt_state_mirror(self) -> None:
+        # R1: ``subtask_metrics`` must be a COMPLETE state slice, not a partial
+        # one. A raising invoke publishes NO metered ``last_invocation_outcome``,
+        # so ``_build_subtask_usage_records`` emits no record for the failed t1;
+        # t2 is skipped (unsatisfied dependency) and never invokes at all. BOTH
+        # must be folded into the slice as state-only markers — otherwise a
+        # slice holding only ``skipped`` would still read non-empty and make
+        # finalization miscount the unmetered ``failed`` as incomplete.
+        class FailingDeveloper(_FakeDeveloper):
+            def invoke(self, *args, **kwargs) -> str:
+                super().invoke(*args, **kwargs)
+                raise RuntimeError("boom")
+
+        agent = FailingDeveloper()
+        state = _state(
+            parsed_plan=_parsed_plan(
+                SubTask(id="t1", goal="Do it."),
+                SubTask(id="t2", goal="Then this.", depends_on=("t1",)),
+            ),
+            registry=_agent_registry(agent),
+            extras={"implementation_execution": "subtask_dag"},
+            phase_config=_StubPhaseConfig(implement_agent=agent),
+        )
+
+        default_registry().get("implement")(state)
+
+        log = state.phase_log["implement"]
+        # t1 failed, t2 skipped after the unsatisfied dependency.
+        receipt_states = {
+            r["subtask_id"]: r["state"]
+            for r in log["implementation_receipts"]
+        }
+        assert receipt_states == {"t1": "failed", "t2": "skipped"}
+
+        records = {r["subtask_id"]: r for r in log["subtask_metrics"]}
+        # Every receipt state is mirrored: both the unmetered failed subtask and
+        # the skipped one appear as state-only markers — no invented usage fields
+        # (honesty rule), just the terminal state.
+        assert records["t1"]["state"] == "failed"
+        assert records["t2"]["state"] == "skipped"
+        for sid in ("t1", "t2"):
+            assert "tokens_in" not in records[sid]
+            assert "total_tokens" not in records[sid]
+            assert "invocations" not in records[sid]
 
     def test_subtask_dag_integrated_output_preserves_incomplete_output(self) -> None:
         from pipeline.dag_runner import DagRunResult, SubTaskResult
@@ -2148,3 +2237,23 @@ class TestPerPhaseFilesDiff:
         # Cumulative artefact (run-level) is written via the default
         # ``diff.patch`` filename.
         assert (run_dir / "diff.patch").exists()
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode_for_full_transcript():
+    """Pin the full live transcript shape (T2 summary reconciliation).
+
+    ``summary`` is the default run-output mode — the compact append-only
+    arc that collapses phase headers to ``▶ <phase>`` and the review /
+    plan / implement outcome blocks to single lines. These tests assert
+    the full-fidelity transcript, so force ``live`` (rendering only; no
+    echo / verbose / trace side effects) and restore afterwards.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before

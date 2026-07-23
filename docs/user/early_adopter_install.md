@@ -153,7 +153,7 @@ Then inspect:
 
 ```bash
 orcho status
-orcho evidence --format md
+orcho evidence
 
 cd ~/www/my-workspace/my-project
 git diff
@@ -170,16 +170,29 @@ git diff
 
 ## Public package path
 
-For the main CLI, the package path is:
+For the native CLI path, the package path is:
 
 ```bash
 pipx install orcho
 orcho workspace init ~/www/my-workspace
 ```
 
-Install extras when you need optional control surfaces:
+Plain `orcho` installs the core CLI and MCP server. The historical extras
+remain aliases:
 
 ```bash
 pipx install 'orcho[mcp]'
 pipx install 'orcho[all]'
+```
+
+For the isolated container path, use the official image and mount a credential
+directory:
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho \
+  orcho --help
 ```

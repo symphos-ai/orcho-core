@@ -20,17 +20,26 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from core.contracts.commit_decision_schema import validate_decision_dict
+from core.io.ansi import C, paint
 from core.io.git_helpers import apply_patch_to_checkout, worktree_diff_against_base
 from core.io.journey_prompt import (
     bold,
     default_chip,
     divider,
-    green_bold,
     help_line,
     is_color_active,
     title,
 )
 from core.io.terminal_input import stdio_interactive
+from pipeline.engine import delivery_branch as _delivery_branch
+from pipeline.engine.delivery_branch import (
+    DeliveryBranchOutcome,
+    DeliveryPrIntent,
+    checkout_delivery_branch,
+    publish_delivery_branch,
+    resolve_delivery_branch,
+)
+from pipeline.engine.delivery_publish import publish_delivery
 from pipeline.engine.run_diff import resolve_git_root
 from pipeline.run_state.release_verdict import is_release_blocked
 
@@ -108,6 +117,9 @@ class CommitDeliveryDecision:
     commit_message_strategy: str | None = None
     final_message: str | None = None
     commit_sha: str | None = None
+    # Commit created on a published delivery branch. Unlike ``commit_sha``,
+    # this commit did not land in the target checkout.
+    published_commit_sha: str | None = None
     error: str | None = None
     decided_at: str | None = None
     artifact_path: Path | None = None
@@ -136,6 +148,27 @@ class CommitDeliveryDecision:
     # state. Empty for a clean single-repo mono run, so the no-companion path
     # stays byte-identical. Serialised (never the patch text) via ``to_dict``.
     scope_companions: tuple[Any, ...] = ()
+    # ADR 0119 delivery-branch policy — additive awareness. ``delivery_branch``
+    # is the published/publishable branch (``orcho/deliver/…`` or a named /
+    # feature branch); ``pr_intent`` the provider-neutral PR record. Both stay
+    # empty for the ``bypass`` opt-out and the pre-ADR-0119 no-op path, and are
+    # serialised via ``to_dict`` only when non-empty so that path stays
+    # byte-identical. The single commit site resolves them through
+    # :mod:`pipeline.engine.delivery_branch`.
+    delivery_branch: str | None = None
+    pr_intent: DeliveryPrIntent | None = None
+    # ADR 0119/0121 — typed machine-readable twin of the human-readable
+    # 'PR opened: {url}' line in ``delivery_notices``. Both are derived from the
+    # same :attr:`PublishResult.pr_url` at the single publish site
+    # (:func:`_deliver_published_branch`); ``None`` whenever no PR was opened
+    # (no provider, gh absent, offline, apply-draft, bypass, push-without-PR).
+    pr_url: str | None = None
+    # ADR 0119 — non-fatal delivery-branch diagnostics (rebase conflict,
+    # offline/no-remote degrade). Persisted onto the decision (and to_dict) so an
+    # operator sees them; empty on the no-op / commit-in-place paths, so those
+    # stay byte-identical.
+    delivery_warnings: tuple[str, ...] = ()
+    delivery_notices: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -173,6 +206,8 @@ class CommitDeliveryDecision:
             out["strategy"] = self.commit_message_strategy
         if self.commit_sha:
             out["commit_sha"] = self.commit_sha
+        if self.published_commit_sha:
+            out["published_commit_sha"] = self.published_commit_sha
         if self.error:
             out["error"] = self.error
         if self.decided_at:
@@ -204,6 +239,20 @@ class CommitDeliveryDecision:
         # paths — never patch text (the patch_text invariant is preserved).
         if self.scope_companions:
             out["scope_companions"] = [c.to_dict() for c in self.scope_companions]
+        # ADR 0119 delivery-branch awareness: present only when non-empty so the
+        # bypass / no-op path stays byte-identical.
+        if self.delivery_branch:
+            out["delivery_branch"] = self.delivery_branch
+        if self.pr_intent is not None:
+            out["pr_intent"] = self.pr_intent.to_dict()
+        # SDK-parity: the typed twin of the 'PR opened' notice is always keyed
+        # (value when a PR was opened, ``None`` otherwise) so downstream
+        # projections can read it without re-parsing ``delivery_notices``.
+        out["pr_url"] = self.pr_url
+        if self.delivery_warnings:
+            out["delivery_warnings"] = list(self.delivery_warnings)
+        if self.delivery_notices:
+            out["delivery_notices"] = list(self.delivery_notices)
         return out
 
 
@@ -491,7 +540,7 @@ def resolve_commit_delivery(
         and not verification_gate.blocking
         and (
             verification_gate.has_blockers
-            or verification_gate.manual_only_gaps
+            or verification_gate.operator_gaps
             or verification_gate.waived_gates
         )
     ):
@@ -528,6 +577,17 @@ def resolve_commit_delivery(
         # mirror release_blocked — default to fix so a bare Enter never delivers.
         default_action = "fix"
     if interactive:
+        # Read-only: classify where an ``approve`` would land so the menu tells
+        # the truth. ``apply_commit_delivery`` re-resolves the policy for the real
+        # transport, so this never changes delivery behavior.
+        destination = _menu_destination(
+            source_worktree=source_worktree,
+            project_dir=project_dir,
+            run_id=run_id,
+            baseline_ref=baseline_ref,
+            cfg=cfg,
+            release_summary=release_summary,
+        )
         action = _prompt_action(
             default_action=default_action,
             release_summary=release_summary,
@@ -543,9 +603,10 @@ def resolve_commit_delivery(
             ),
             verification_suggest_hint=_verification_suggest_hint(verification_gate),
             verification_garbage=_verification_prompt_garbage(verification_gate),
-            verification_manual_only=_verification_prompt_manual_only(
+            verification_operator=_verification_prompt_operator(
                 verification_gate,
             ),
+            destination=destination,
         )
     elif decision_action is not None:
         # ADR 0100 — operator choice injected out of band (decide_delivery).
@@ -580,10 +641,17 @@ def resolve_commit_delivery(
         **release_fields,
     )
     if action == "approve":
+        # On a publish-outward delivery (a PR will be opened) force
+        # content_language authorship of the outward commit message even when
+        # ``default_strategy`` is not ``llm_generate`` — the operator language
+        # must never leak into a public commit / PR (ADR 0121). The bypass /
+        # publish-off local-commit path keeps its configured strategy verbatim.
+        force_llm = _will_open_pr(cfg) and commit_message_generator is not None
         final_message, actual_strategy = _resolve_final_commit_message(
             decision,
             configured_strategy=commit_message_strategy,
             generator=commit_message_generator,
+            force_llm=force_llm,
         )
         decision = replace(
             decision,
@@ -629,6 +697,23 @@ def apply_commit_delivery(
 
     interactive = (not no_interactive) and stdio_interactive()
     in_place_delivery = _same_checkout(decision.source_path, decision.project_path)
+
+    # ADR 0119 — resolve the delivery branch policy for an auto/approve commit
+    # (the interactive ``apply`` draft makes no branch decision). This is the
+    # single point that decides where the commit lands; the policy table,
+    # default-branch detection, rebase and PR-intent all live in
+    # ``pipeline.engine.delivery_branch``. A ``worktree_branch`` publish never
+    # writes the canonical checkout, so it diverges here — before the
+    # target-dirty guard that protects the checkout it will not touch.
+    delivery_outcome: DeliveryBranchOutcome | None = None
+    if decision.action == "approve":
+        delivery_outcome = _resolve_delivery_branch_outcome(decision, commit_config)
+        if delivery_outcome.plan == "publish":
+            return _deliver_published_branch(
+                decision, delivery_outcome,
+                run_dir=run_dir, commit_config=commit_config,
+            )
+
     retries = 0
     while True:
         dirty = _target_dirty_paths(decision.project_path)
@@ -741,6 +826,31 @@ def apply_commit_delivery(
             target_dirty_retries=retries,
         )
 
+    # ADR 0119 — a ``protect_default`` (in-place HEAD=default) or ``named``
+    # delivery commits onto a dedicated branch, not the current HEAD: switch to
+    # it (creating it off the resolved default branch / PR base if absent, not
+    # the checkout's current tip) before staging so the commit never lands on
+    # the default branch and the delivery branch is anchored to the base
+    # delivery point. ``commit_in_place`` (in-place feature branch / bypass)
+    # keeps the current HEAD.
+    if delivery_outcome is not None and delivery_outcome.plan == "commit_on_branch":
+        checkout_err = checkout_delivery_branch(
+            decision.project_path,
+            delivery_outcome.commit_branch or "",
+            base_ref=delivery_outcome.base_ref,
+        )
+        if checkout_err is not None:
+            return _persist(
+                decision,
+                run_dir=run_dir,
+                status="commit_failed",
+                error=(
+                    f"could not switch to delivery branch "
+                    f"{delivery_outcome.commit_branch!r}: {checkout_err}"
+                ),
+                target_dirty_retries=retries,
+            )
+
     # Path-scoped staging — only run-owned paths reach the index.
     # Blanket ``git add -A`` would silently fold in any unrelated
     # parallel work that appeared between the guard's clean check and
@@ -772,7 +882,7 @@ def apply_commit_delivery(
     files_staged = _git_lines(decision.project_path, ["diff", "--cached", "--name-only"])
     commit = _run_git(
         decision.project_path,
-        ["commit", "-m", decision.final_message or _message_from_release_summary("", decision.run_id)],
+        ["commit", "-s", "-m", decision.final_message or _message_from_release_summary("", decision.run_id)],
     )
     if not commit.ok:
         reset = _run_git(decision.project_path, ["reset"])
@@ -797,7 +907,156 @@ def apply_commit_delivery(
         files_staged=tuple(files_staged),
         untracked_delivered=staged_untracked,
         target_dirty_retries=retries,
+        **_delivery_branch_persist_fields(delivery_outcome),
     )
+
+
+def _resolve_delivery_branch_outcome(
+    decision: CommitDeliveryDecision,
+    commit_config: Mapping[str, Any] | None,
+) -> DeliveryBranchOutcome:
+    """Resolve the ADR 0119 delivery-branch outcome for this decision.
+
+    Thin adapter over :func:`pipeline.engine.delivery_branch.resolve_delivery_branch`
+    — it only reads ``branch_policy`` / ``branch_name`` off the commit config and
+    forwards the decision's isolation facts. A commit config that carries no
+    ``branch_policy`` (an un-migrated embedder or an ad-hoc caller) is forwarded
+    as ``None`` and :func:`normalize_branch_policy` selects the ADR 0119 default
+    ``worktree_branch`` — a missing key must never silently weaken the
+    default-branch invariant into ``bypass``. ``bypass`` is reachable only by an
+    explicit opt-out. No policy table lives here.
+    """
+    cfg = dict(commit_config or {})
+    return resolve_delivery_branch(
+        source_path=decision.source_path,
+        project_path=decision.project_path,
+        run_id=decision.run_id,
+        base_ref=decision.baseline_ref,
+        branch_policy=cfg.get("branch_policy"),
+        named_branch=cfg.get("branch_name"),
+        release_summary=decision.release_summary,
+        commit_message=decision.final_message,
+    )
+
+
+def _delivery_branch_persist_fields(
+    outcome: DeliveryBranchOutcome | None,
+) -> dict[str, Any]:
+    """Delivery-branch fields to thread into a committed ``_persist`` call.
+
+    Empty dict for ``bypass`` / no-outcome, so the persisted decision stays
+    byte-identical to the pre-ADR-0119 path.
+    """
+    if outcome is None or outcome.delivery_branch is None:
+        return {}
+    return {
+        "delivery_branch": outcome.delivery_branch,
+        "pr_intent": outcome.pr_intent,
+        "delivery_warnings": outcome.warnings,
+        "delivery_notices": outcome.notices,
+    }
+
+
+def _deliver_published_branch(
+    decision: CommitDeliveryDecision,
+    outcome: DeliveryBranchOutcome,
+    *,
+    run_dir: Path,
+    commit_config: Mapping[str, Any] | None = None,
+) -> CommitDeliveryDecision:
+    """Execute a ``worktree_branch`` publish (ADR 0119 + ADR 0121).
+
+    Commits the run's own work onto its branch inside the disposable run
+    worktree, then publishes (rebase onto fresh default) via
+    :func:`publish_delivery_branch`. The canonical checkout is never touched, so
+    the decision surfaces ``commit_sha=None`` + ``delivery_branch``; the durable
+    audit artifact records the real branch commit (``artifact_commit_sha``) to
+    satisfy its schema. Non-fatal rebase/offline diagnostics ride along on
+    ``delivery_warnings`` / ``delivery_notices``.
+
+    ADR 0121: this is the single point that hands the published branch to a
+    registered git-provider plugin via :func:`publish_delivery` (push +
+    pull-request over the already-signed commit). An opened ``pr_url`` folds
+    into ``delivery_notices`` as a string — no new wire field — and any publish
+    warning folds into ``delivery_warnings``. A disabled gate, missing provider,
+    or provider failure degrades to a "branch ready" notice / warning and the
+    delivery status stays ``committed``.
+    """
+    branch_sha, error = _commit_run_branch(decision)
+    if error is not None:
+        return _persist(
+            decision,
+            run_dir=run_dir,
+            status="commit_failed",
+            error=error,
+        )
+    published = publish_delivery_branch(
+        source_path=decision.source_path,
+        project_path=decision.project_path,
+        outcome=outcome,
+    )
+    result = publish_delivery(
+        published.pr_intent,
+        branch=published.delivery_branch,
+        cwd=decision.source_path,
+        commit_config=commit_config,
+    )
+    if result.pr_url:
+        delivery_notices = published.notices + (f"PR opened: {result.pr_url}",)
+    else:
+        delivery_notices = published.notices + (
+            f"delivery branch {published.delivery_branch} is ready; "
+            "open a pull request or push it manually",
+        )
+    return _persist(
+        decision,
+        run_dir=run_dir,
+        status="committed",
+        commit_sha=None,
+        artifact_commit_sha=branch_sha,
+        published_commit_sha=branch_sha,
+        delivery_branch=published.delivery_branch,
+        pr_intent=published.pr_intent,
+        # Same ``result.pr_url`` that shaped the 'PR opened' notice above;
+        # ``None`` when no PR was opened. Never re-parsed from notices.
+        pr_url=result.pr_url,
+        delivery_warnings=published.warnings + result.warnings,
+        delivery_notices=delivery_notices,
+    )
+
+
+def _commit_run_branch(
+    decision: CommitDeliveryDecision,
+) -> tuple[str | None, str | None]:
+    """Stage + commit the run's own work onto its branch in the run worktree.
+
+    Returns ``(commit_sha, None)`` on success, or ``(None, error)``. The run's
+    changes are otherwise uncommitted working-tree diffs; this materialises them
+    as the delivery commit so ``publish_delivery_branch`` has something to rebase
+    and publish. Runs entirely inside ``decision.source_path`` (the run
+    worktree) — never the canonical checkout.
+    """
+    source = decision.source_path
+    stage_paths = list(decision.changed_paths)
+    if decision.include_untracked:
+        stage_paths += list(decision.untracked_paths)
+    if stage_paths:
+        add = _run_git(source, ["add", "--", *stage_paths])
+        if not add.ok:
+            return None, add.error
+    staged = _run_git(source, ["diff", "--cached", "--name-only"])
+    if staged.ok and staged.stdout.strip():
+        message = decision.final_message or _message_from_release_summary(
+            decision.release_summary, decision.run_id,
+        )
+        commit = _run_git(source, ["commit", "-s", "-m", message])
+        if not commit.ok:
+            _run_git(source, ["reset"])
+            return None, commit.error
+    sha = (_git_stdout(source, ["rev-parse", "HEAD"]) or "").strip()
+    if not sha:
+        return None, "could not resolve delivery branch HEAD after commit"
+    return sha, None
 
 
 def _run_owned_patch(source_worktree: Path, baseline_ref: str) -> str:
@@ -932,12 +1191,27 @@ def _persist(
     target_dirty_paths: tuple[str, ...] = (),
     target_dirty_retries: int = 0,
     action: CommitDeliveryAction | None = None,
+    delivery_branch: str | None = None,
+    pr_intent: DeliveryPrIntent | None = None,
+    pr_url: str | None = None,
+    delivery_warnings: tuple[str, ...] = (),
+    delivery_notices: tuple[str, ...] = (),
+    artifact_commit_sha: str | None = None,
+    published_commit_sha: str | None = None,
 ) -> CommitDeliveryDecision:
     """Write the audit artifact and rebuild the frozen decision dataclass.
 
     ``action`` lets the dirty-prompt skip/halt path substitute the
     final action on the resulting decision (e.g. operator originally
     chose approve but resolved a target-dirty block via skip).
+
+    ``artifact_commit_sha`` (ADR 0119) decouples the durable audit ``commit_sha``
+    from the decision/wire ``commit_sha``. A ``worktree_branch`` publish makes a
+    real commit on the run's delivery branch (recorded in the schema-locked audit
+    artifact, which requires a non-empty sha for a ``committed`` record) but
+    leaves the canonical checkout untouched, so the decision surfaces
+    ``commit_sha=None`` and ``delivery_branch`` instead. When ``None`` the audit
+    sha mirrors the decision ``commit_sha`` (byte-identical prior behavior).
     """
     final_action = action or decision.action
     artifact_path = _artifact_path(run_dir, decision.decision_id)
@@ -945,7 +1219,9 @@ def _persist(
         decision,
         status=status,
         error=error,
-        commit_sha=commit_sha,
+        commit_sha=(
+            artifact_commit_sha if artifact_commit_sha is not None else commit_sha
+        ),
         files_staged=files_staged,
         untracked_delivered=untracked_delivered,
         target_dirty_paths=target_dirty_paths,
@@ -984,6 +1260,7 @@ def _persist(
         # the action was substituted away from approve.
         final_message=decision.final_message if final_action == "approve" else None,
         commit_sha=commit_sha,
+        published_commit_sha=published_commit_sha,
         error=error,
         decided_at=decision.decided_at,
         artifact_path=artifact_path,
@@ -1003,6 +1280,13 @@ def _persist(
         scope_disclosure=decision.scope_disclosure,
         scope_projects=decision.scope_projects,
         scope_companions=decision.scope_companions,
+        # ADR 0119 delivery-branch outcome travels with the delivered decision.
+        delivery_branch=delivery_branch,
+        pr_intent=pr_intent,
+        # ADR 0121 — typed twin of the 'PR opened' notice, from PublishResult.
+        pr_url=pr_url,
+        delivery_warnings=delivery_warnings,
+        delivery_notices=delivery_notices,
     )
 
 
@@ -1179,7 +1463,7 @@ def _verification_prompt_garbage(
     return gate.garbage_paths
 
 
-def _verification_prompt_manual_only(
+def _verification_prompt_operator(
     gate: DeliveryVerificationAssessment | None,
 ) -> tuple[str, ...]:
     """Manual/operator-only advisory line for the prompt, or empty.
@@ -1191,7 +1475,7 @@ def _verification_prompt_manual_only(
     """
     if gate is None:
         return ()
-    line = gate.manual_only_line
+    line = gate.operator_line
     return (line,) if line else ()
 
 
@@ -1398,16 +1682,39 @@ def _commit_message_strategy(cfg: Mapping[str, Any]) -> str:
     return "release_summary"
 
 
+def _will_open_pr(cfg: Mapping[str, Any]) -> bool:
+    """True when this delivery is on a publish-outward path (opens a PR).
+
+    A run publishes outward unless publication is explicitly turned off
+    (``publish=off``) or the branch policy is the ``bypass`` opt-out (commit onto
+    the current HEAD, no branch/PR intent). On that outward path the outward
+    commit message must be authored in ``content_language`` regardless of the
+    configured ``default_strategy`` — so the operator language never leaks into
+    a public commit / PR (ADR 0121).
+    """
+    publish = str(cfg.get("publish", "auto")).strip().lower()
+    if publish == "off":
+        return False
+    # Consult ``normalize_branch_policy`` through the ``delivery_branch`` module
+    # (not a direct import binding) so this stays consistent with the *actual*
+    # branch decision made by ``resolve_delivery_branch`` — including any embedder
+    # / test seam that overrides the policy. A ``bypass`` delivery commits onto
+    # the current HEAD with no branch or PR intent, so it is not publish-outward.
+    policy = _delivery_branch.normalize_branch_policy(cfg.get("branch_policy"))
+    return policy != "bypass"
+
+
 def _resolve_final_commit_message(
     decision: CommitDeliveryDecision,
     *,
     configured_strategy: str,
     generator: CommitMessageGenerator | None,
+    force_llm: bool = False,
 ) -> tuple[str, str]:
     fallback = _message_from_release_summary(
         decision.release_summary, decision.run_id,
     )
-    if configured_strategy == "llm_generate" and generator is not None:
+    if (configured_strategy == "llm_generate" or force_llm) and generator is not None:
         generated = generator(decision)
         if isinstance(generated, str) and generated.strip():
             return generated.strip(), "llm_generate"
@@ -1460,35 +1767,144 @@ def _message_from_release_summary(summary: str, run_id: str) -> str:
     return subject
 
 
-_DELIVERY_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("1", "✅", "approve",
-     "Apply the diff to the project checkout AND create a commit."),
-    ("2", "📥", "apply",
-     "Apply the diff to the project checkout, leave it uncommitted "
-     "for a later operator-owned commit."),
-    ("3", "⏭",  "skip",
-     "Don't deliver — finish the run as DONE (success). The diff stays in "
-     "the retained run artifacts; you can deliver it manually later."),
-    ("4", "🛑", "halt",
-     "Don't deliver and mark the run HALTED (not a success). Use when "
-     "something is wrong and the run should be flagged, not counted as done."),
-)
+# Destination tokens describe where an ``approve`` will actually land, so the
+# delivery menu wording matches the ADR 0119 branch policy that
+# ``apply_commit_delivery`` independently re-resolves. ``resolve_commit_delivery``
+# derives the token from a read-only ``resolve_delivery_branch`` outcome;
+# ``fallback`` is used when that read fails, so the wording never lies about a
+# publish (checkout untouched) as a plain checkout commit.
+_DESTINATION_CHECKOUT_COMMIT = "checkout_commit"
+_DESTINATION_PUBLISHED_BRANCH = "published_branch"
+_DESTINATION_BRANCH_IN_CHECKOUT = "branch_in_checkout"
+_DESTINATION_FALLBACK = "fallback"
 
-_CORRECTION_OPTIONS: tuple[tuple[str, str, str, str], ...] = (
-    ("1", "🔧", "fix",
-     "Continue with a correction follow-up in the same retained worktree."),
-    ("2", "✅", "approve",
-     "Override final acceptance, apply the diff to the project checkout, "
-     "AND create a commit."),
-    ("3", "📥", "apply",
-     "Override final acceptance, apply the diff to the project checkout, "
-     "and leave it uncommitted."),
-    ("4", "⏭", "skip",
-     "Retain artifacts and do not deliver. The run is not marked correction-ready."),
-    ("5", "🛑", "halt",
-     "Don't deliver and mark the run HALTED. Use when the run should be "
-     "flagged as wrong, not corrected."),
-)
+
+def _menu_destination(
+    *,
+    source_worktree: Path,
+    project_dir: Path,
+    run_id: str,
+    baseline_ref: str,
+    cfg: Mapping[str, Any],
+    release_summary: str,
+) -> str:
+    """Read-only classification of where an ``approve`` will land (menu wording).
+
+    Independently re-resolves the ADR 0119 delivery-branch policy for DISPLAY
+    only — ``apply_commit_delivery`` resolves it again for the real transport, so
+    this changes no behavior. ``resolve_delivery_branch`` only reads git
+    (``detect_default_branch``); it writes nothing. Any failure falls back to a
+    generic honest wording so the menu never claims a checkout commit for a
+    publish.
+    """
+    try:
+        outcome = resolve_delivery_branch(
+            source_path=source_worktree,
+            project_path=project_dir,
+            run_id=run_id,
+            base_ref=baseline_ref,
+            branch_policy=cfg.get("branch_policy"),
+            named_branch=cfg.get("branch_name"),
+            release_summary=release_summary,
+        )
+    except Exception:
+        return _DESTINATION_FALLBACK
+    if outcome.plan == "publish":
+        return _DESTINATION_PUBLISHED_BRANCH
+    if outcome.plan == "commit_on_branch":
+        return _DESTINATION_BRANCH_IN_CHECKOUT
+    return _DESTINATION_CHECKOUT_COMMIT
+
+
+def _approve_helptext(destination: str, *, correction: bool) -> str:
+    """``approve`` menu description, tailored to the resolved destination."""
+    if destination == _DESTINATION_CHECKOUT_COMMIT:
+        # Preserve the shipped bypass / commit-in-place wording byte-for-byte.
+        if correction:
+            return (
+                "Override final acceptance, apply the diff to the project "
+                "checkout, AND create a commit."
+            )
+        return "Apply the diff to the project checkout AND create a commit."
+    if destination == _DESTINATION_PUBLISHED_BRANCH:
+        body = (
+            "commit onto a delivery branch and attempt to push it and open a "
+            "pull request. If automatic publication is unavailable, the branch "
+            "remains ready for manual publication. Your project checkout is "
+            "NOT modified."
+        )
+    elif destination == _DESTINATION_BRANCH_IN_CHECKOUT:
+        body = (
+            "commit onto a local delivery branch in your project checkout. "
+            "This does not push the branch or open a pull request."
+        )
+    else:  # fallback — honest for both publish and in-place under the policy.
+        body = (
+            "commit according to the branch policy. Protected targets use a "
+            "delivery branch and may attempt publication; other targets commit "
+            "to your checkout."
+        )
+    if correction:
+        return "Override final acceptance, " + body
+    return body[0].upper() + body[1:]
+
+
+def _apply_helptext(destination: str, *, correction: bool) -> str:
+    """``apply`` menu description; clarified only for the publish destination."""
+    if destination == _DESTINATION_PUBLISHED_BRANCH:
+        if correction:
+            return (
+                "Override final acceptance, apply the diff to your project "
+                "checkout, uncommitted, for a later operator-owned commit."
+            )
+        return (
+            "Apply the diff to your project checkout, uncommitted, for a later "
+            "operator-owned commit."
+        )
+    if correction:
+        return (
+            "Override final acceptance, apply the diff to the project checkout, "
+            "and leave it uncommitted."
+        )
+    return (
+        "Apply the diff to the project checkout, leave it uncommitted "
+        "for a later operator-owned commit."
+    )
+
+
+def _delivery_menu_options(
+    *, correction: bool, destination: str,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Build the delivery / correction menu rows.
+
+    ids, glyphs, actions, and aliases are identical across destinations; only the
+    ``approve`` and ``apply`` descriptions are tailored so the menu tells the
+    truth about where the diff lands.
+    """
+    approve = _approve_helptext(destination, correction=correction)
+    apply_text = _apply_helptext(destination, correction=correction)
+    if correction:
+        return (
+            ("1", "🔧", "fix",
+             "Continue with a correction follow-up in the same retained worktree."),
+            ("2", "✅", "approve", approve),
+            ("3", "📥", "apply", apply_text),
+            ("4", "⏭", "skip",
+             "Retain artifacts and do not deliver. The run is not marked correction-ready."),
+            ("5", "🛑", "halt",
+             "Don't deliver and mark the run HALTED. Use when the run should be "
+             "flagged as wrong, not corrected."),
+        )
+    return (
+        ("1", "✅", "approve", approve),
+        ("2", "📥", "apply", apply_text),
+        ("3", "⏭",  "skip",
+         "Don't deliver — finish the run as DONE (success). The diff stays in "
+         "the retained run artifacts; you can deliver it manually later."),
+        ("4", "🛑", "halt",
+         "Don't deliver and mark the run HALTED (not a success). Use when "
+         "something is wrong and the run should be flagged, not counted as done."),
+    )
 
 _DELIVERY_ALIASES: dict[str, str] = {
     "1": "approve", "a": "approve", "approve": "approve",
@@ -1512,6 +1928,186 @@ _OUTCOME_SILENT: frozenset[str] = frozenset(
 )
 
 
+_DELIVERY_BANNER_WIDTH = 68
+
+
+def _delivery_banner(
+    headline: str,
+    rows: tuple[tuple[str, str], ...],
+    *,
+    tone: str,
+    output_fn: Callable[[str], None],
+    color: bool,
+    extra_lines: tuple[str, ...] = (),
+) -> None:
+    """Render a framed, tone-coloured delivery banner.
+
+    A ruled box (``═`` × 68) around a bold headline that names the delivery
+    disposition — PULL REQUEST OPENED / BRANCH PUSHED / COMMITTED TO YOUR
+    CHECKOUT / SKIPPED / HALTED / FAILED — so the operator cannot miss what
+    became of the run's work. ``rows`` are ``(label, value)`` pairs with the
+    labels aligned; ``extra_lines`` are already-formatted trailing lines (e.g.
+    a ``  + path`` block) shown between the rows and the closing rule.
+    """
+    rule = paint(_DELIVERY_BANNER_WIDTH * "═", tone, color=color)
+    output_fn("")
+    output_fn(rule)
+    output_fn(paint(f"  📦  DELIVERY — {headline}", tone, C.BOLD, color=color))
+    output_fn(rule)
+    label_w = max((len(label) for label, _ in rows), default=0)
+    for label, value in rows:
+        output_fn(f"   {bold(label.ljust(label_w), color=color)}   {value}")
+    for line in extra_lines:
+        output_fn(line)
+    output_fn(rule)
+
+
+def _render_published_branch(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render the ADR 0119/0121 published-branch ``committed`` outcome.
+
+    The canonical checkout is never touched here (``commit_sha is None``): the
+    run's work rides a pushed ``orcho/deliver/…`` branch. The banner headline
+    states the disposition outright — a PR was opened, or the branch is pushed
+    and still needs a PR. Degrade reasons ride on ``delivery_warnings`` and are
+    surfaced under the banner by :func:`_render_delivery_diagnostics`.
+    """
+    checkout_note = help_line(
+        "not modified — your working tree is untouched", color=color,
+    )
+    if decision.pr_url:
+        _delivery_banner(
+            "PULL REQUEST OPENED",
+            (
+                ("PR", decision.pr_url),
+                ("Branch", decision.delivery_branch or ""),
+                ("Checkout", checkout_note),
+            ),
+            tone=C.GREEN,
+            output_fn=output_fn,
+            color=color,
+        )
+    else:
+        # ``pr_url=None`` does not prove whether the provider pushed the branch:
+        # the current durable decision intentionally stores no ``pushed`` bit.
+        # Stay honest about the known state and give an ordered next action.
+        _delivery_banner(
+            "DELIVERY BRANCH READY  ·  no PR",
+            (
+                ("Branch", decision.delivery_branch or ""),
+                (
+                    "Next",
+                    "push the branch if needed, then open a pull request",
+                ),
+                ("Checkout", checkout_note),
+            ),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
+        )
+
+
+def _render_local_delivery_branch(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render an in-place protected commit on a local delivery branch."""
+    sha7 = (decision.commit_sha or "")[:7]
+    first_line = (
+        decision.final_message.splitlines()[0]
+        if decision.final_message else ""
+    )
+    _delivery_banner(
+        "COMMITTED TO LOCAL DELIVERY BRANCH",
+        (
+            ("Commit", f"{sha7}  {first_line}".rstrip()),
+            ("Branch", decision.delivery_branch or ""),
+            (
+                "Checkout",
+                help_line(
+                    "switched to the delivery branch; working tree is clean",
+                    color=color,
+                ),
+            ),
+            (
+                "Next",
+                "push the branch, then open a pull request if desired",
+            ),
+        ),
+        tone=C.GREEN,
+        output_fn=output_fn,
+        color=color,
+    )
+
+
+def _render_checkout_commit(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Render the local checkout-commit ``committed`` outcome.
+
+    A real commit landed on the canonical checkout (``commit_sha`` set, no
+    ``delivery_branch`` — the ``apply``-style / bypass local-commit path). The
+    ``  + <path>`` block follows the banner rows.
+    """
+    sha7 = (decision.commit_sha or "")[:7]
+    first_line = ""
+    if decision.final_message:
+        first_line = decision.final_message.splitlines()[0]
+    staged = list(decision.files_staged)
+    staged_set = set(decision.files_staged)
+    extras = [
+        u for u in decision.untracked_delivered if u not in staged_set
+    ]
+    _delivery_banner(
+        "COMMITTED TO YOUR CHECKOUT",
+        (
+            ("Commit", f"{sha7}  {first_line}".rstrip()),
+            ("Where", help_line(
+                "project checkout — working tree changed", color=color,
+            )),
+        ),
+        tone=C.GREEN,
+        output_fn=output_fn,
+        color=color,
+        extra_lines=tuple(f"   + {path}" for path in staged + extras),
+    )
+
+
+def _render_delivery_diagnostics(
+    decision: CommitDeliveryDecision,
+    *,
+    output_fn: Callable[[str], None],
+    color: bool,
+) -> None:
+    """Surface non-fatal delivery diagnostics on a terminal outcome.
+
+    ``delivery_warnings`` (degrade reasons: provider disabled / missing /
+    offline / failed, rebase conflicts) are always shown, one compact line
+    each, so a degraded publish is visible instead of swallowed.
+    ``delivery_notices`` are shown too, except those already represented by the
+    published-branch block: the ``PR opened:`` notice (rendered as ``→ PR
+    opened``) and the ``… is ready; open a pull request …`` notice (rendered as
+    the manual-publish fallback) are dropped to avoid double-printing.
+    """
+    for warning in decision.delivery_warnings:
+        output_fn(f"  {paint(f'⚠ {warning}', C.YELLOW, C.BOLD, color=color)}")
+    for notice in decision.delivery_notices:
+        if notice.startswith("PR opened:"):
+            continue
+        if "is ready; open a pull request" in notice:
+            continue
+        output_fn("  " + help_line(notice, color=color))
+
+
 def render_delivery_outcome(
     decision: CommitDeliveryDecision,
     *,
@@ -1523,7 +2119,13 @@ def render_delivery_outcome(
     Pre-terminal statuses (``disabled``, ``not_applicable``, ``no_diff``,
     ``pending``) are silent: the caller is still mid-flow and the next
     step owns the user-visible signal. All other statuses are terminal
-    and print exactly one block describing what happened.
+    and print one block describing what happened, followed by any
+    non-fatal delivery diagnostics (:func:`_render_delivery_diagnostics`).
+
+    The ``committed`` status has three shapes (ADR 0119/0121): a publish-path
+    branch (``delivery_branch`` set, ``commit_sha is None``), an in-place
+    protected local branch (both fields set), and a plain checkout commit
+    (``commit_sha`` set, no ``delivery_branch``). Each renders a distinct block.
     """
     status = decision.status
     if status in _OUTCOME_SILENT:
@@ -1531,89 +2133,105 @@ def render_delivery_outcome(
     color = is_color_active()
 
     if status == "committed":
-        sha7 = (decision.commit_sha or "")[:7]
-        first_line = ""
-        if decision.final_message:
-            first_line = decision.final_message.splitlines()[0]
-        head = green_bold("✓ Committed", color=color)
-        output_fn(f"{head} to project checkout {sha7}: {first_line}")
-        staged = list(decision.files_staged)
-        staged_set = set(decision.files_staged)
-        extras = [
-            u for u in decision.untracked_delivered if u not in staged_set
-        ]
-        for path in staged + extras:
-            output_fn(f"  + {path}")
-        return
-
-    if status == "applied_uncommitted":
-        head = bold("📥 Applied to project checkout (no commit)", color=color)
-        output_fn(f"{head} — operator will commit manually")
+        if decision.delivery_branch and decision.commit_sha:
+            _render_local_delivery_branch(
+                decision, output_fn=output_fn, color=color,
+            )
+        elif decision.delivery_branch:
+            _render_published_branch(
+                decision, output_fn=output_fn, color=color,
+            )
+        else:
+            _render_checkout_commit(
+                decision, output_fn=output_fn, color=color,
+            )
+    elif status == "applied_uncommitted":
         changed = list(decision.changed_paths)
         changed_set = set(decision.changed_paths)
         extras = [
             u for u in decision.untracked_delivered if u not in changed_set
         ]
-        for path in changed + extras:
-            output_fn(f"  + {path}")
-        output_fn(
-            "  "
-            + help_line(
-                f"Review with: git -C {decision.project_path} status",
-                color=color,
-            ),
+        file_lines = tuple(f"   + {path}" for path in changed + extras)
+        review = "   " + help_line(
+            f"Review with: git -C {decision.project_path} status", color=color,
         )
-        return
-
-    if status == "skipped":
+        _delivery_banner(
+            "APPLIED TO CHECKOUT  ·  no commit",
+            (("Where", help_line(
+                "project checkout — commit it manually", color=color,
+            )),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
+            extra_lines=file_lines + (review,),
+        )
+    elif status == "skipped":
         if run_dir is not None:
             location: Path | str = run_dir
         elif decision.artifact_path is not None:
             location = decision.artifact_path.parent
         else:
             location = "(unknown)"
-        head = bold("⏭ Delivery skipped", color=color)
-        output_fn(f"{head} — diff retained at {location}")
-        return
-
-    if status == "halted":
-        head = bold("🛑 Delivery halted", color=color)
-        output_fn(
-            f"{head} — run marked HALTED (halt_reason=commit_decision_halt)",
+        _delivery_banner(
+            "SKIPPED  ·  diff retained",
+            (("Diff", str(location)),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
         )
-        return
-
-    if status == "fix_requested":
-        head = bold("🔧 Correction follow-up requested", color=color)
-        output_fn(
-            f"{head} — worktree retained at {decision.source_path}",
+    elif status == "halted":
+        _delivery_banner(
+            "HALTED  ·  nothing delivered",
+            (("Reason", "commit_decision_halt"),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
         )
-        return
-
-    if status == "commit_failed":
-        head = bold("✗ Commit failed", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
-        return
-
-    if status == "apply_failed":
-        head = bold("✗ Apply failed", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
-        return
-
-    if status == "target_dirty":
-        head = bold("⚠ Delivery aborted", color=color)
+    elif status == "fix_requested":
+        _delivery_banner(
+            "CORRECTION FOLLOW-UP REQUESTED",
+            (("Worktree", str(decision.source_path)),),
+            tone=C.YELLOW,
+            output_fn=output_fn,
+            color=color,
+        )
+    elif status == "commit_failed":
+        _delivery_banner(
+            "COMMIT FAILED",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
+    elif status == "apply_failed":
+        _delivery_banner(
+            "APPLY FAILED",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
+    elif status == "target_dirty":
         sample = list(decision.target_dirty_paths[:3])
         joined = ", ".join(sample)
         suffix = "..." if len(decision.target_dirty_paths) > 3 else ""
-        output_fn(
-            f"{head} — project checkout was dirty: {joined}{suffix}",
+        _delivery_banner(
+            "ABORTED  ·  checkout was dirty",
+            (("Dirty", f"{joined}{suffix}"),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
         )
-        return
+    elif status == "verification_blocked":
+        _delivery_banner(
+            "BLOCKED  ·  verification incomplete",
+            (("Error", decision.error or ""),),
+            tone=C.RED,
+            output_fn=output_fn,
+            color=color,
+        )
 
-    if status == "verification_blocked":
-        head = bold("🛑 Delivery blocked — verification incomplete", color=color)
-        output_fn(f"{head}: {decision.error or ''}")
-        return
+    _render_delivery_diagnostics(decision, output_fn=output_fn, color=color)
 
 
 def _prompt_action(
@@ -1630,13 +2248,14 @@ def _prompt_action(
     verification_warning_lines: tuple[str, ...] = (),
     verification_suggest_hint: str = "",
     verification_garbage: tuple[str, ...] = (),
-    verification_manual_only: tuple[str, ...] = (),
+    verification_operator: tuple[str, ...] = (),
+    destination: str = _DESTINATION_CHECKOUT_COMMIT,
 ) -> str:
     color = is_color_active()
     # Either independent gate routes the operator to the correction menu (which
     # offers ``fix``); release_blocked keeps title priority when both apply.
     correction = release_blocked or verification_correction
-    options = _CORRECTION_OPTIONS if correction else _DELIVERY_OPTIONS
+    options = _delivery_menu_options(correction=correction, destination=destination)
     aliases = (
         _CORRECTION_ALIASES if correction else _DELIVERY_ALIASES
     )
@@ -1694,8 +2313,8 @@ def _prompt_action(
     # blocker, never a missing-required receipt, but always visible as
     # not-auto-run — even when they are the only gap and delivery proceeds on the
     # apply/approve default.
-    if verification_manual_only:
-        for line in verification_manual_only:
+    if verification_operator:
+        for line in verification_operator:
             output_fn(f"  {help_line(line, color=color)}")
         output_fn("")
     if release_summary:

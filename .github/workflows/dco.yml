@@ -13,16 +13,21 @@ jobs:
 
     steps:
       - name: Check out pull request head
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Fetch base commit
+      - name: Fetch base branch history
         run: |
           git remote add base "https://github.com/${{ github.repository }}.git"
-          git fetch --no-tags --depth=1 base "${{ github.event.pull_request.base.sha }}"
+          # Full history (NOT --depth=1): git needs the base branch's ancestry to
+          # tell which commits the PR actually adds. With a shallow base, the
+          # range below cannot recognise shared older ancestors as reachable from
+          # the base, so it over-reports them — any PR that is behind the base
+          # branch then fails spuriously on commits it never introduced.
+          git fetch --no-tags base "${{ github.event.pull_request.base.ref }}"
 
       - name: Check commit sign-offs
         shell: bash
@@ -30,14 +35,25 @@ jobs:
           set -euo pipefail
 
           base="${{ github.event.pull_request.base.sha }}"
+          # Check only the commits this PR introduces since it diverged from the
+          # base — merge-base(base, HEAD)..HEAD — so a branch that is behind the
+          # base branch is never blamed for older, shared, already-merged
+          # ancestors. Signoff enforcement on the PR's own commits is unchanged.
+          range_start="$(git merge-base "$base" HEAD)"
           missing=0
 
+          # --no-merges: skip merge commits. GitHub's "Update branch" button
+          # merges the base into the PR ("Merge branch 'main' into ...") and that
+          # auto-generated commit carries no Signed-off-by, which would fail DCO.
+          # Merge commits contribute no authored change and are dropped by
+          # rebase-merge before they reach the default branch, so they are
+          # exempt; only real, authored commits are checked.
           while IFS= read -r commit; do
             if ! git log -1 --format=%B "$commit" | grep -qiE '^Signed-off-by: .+ <[^>]+>$'; then
               echo "::error title=Missing DCO sign-off::Commit $commit is missing a Signed-off-by line."
               missing=1
             fi
-          done < <(git rev-list "${base}..HEAD")
+          done < <(git rev-list --no-merges "${range_start}..HEAD")
 
           if [[ "$missing" -ne 0 ]]; then
             echo "Every commit must include a Signed-off-by line."

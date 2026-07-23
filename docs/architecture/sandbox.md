@@ -49,6 +49,28 @@ L1 covers the launch-layer rows. Runtime sandbox covers the
 in-process rows. Those sets do not overlap, so L1 is additive
 rather than redundant.
 
+### Relation to the launch envelope (ADR 0122)
+
+One launch-layer concern deliberately lives *outside* the sandbox
+schema: the privilege flags the runtime CLI is started with
+(today the drivers hardcode e.g. `--permission-mode acceptEdits`
+plus the bypass flag for write phases). [ADR 0122](../adr/0122-agent-launch-envelope.md)
+owns that axis. It sets an isolation-first direction — a launch
+receipt in the run manifest (binary, privilege-relevant flags,
+worktree root, applied L1 profile), a per-runtime `native |
+bypass` launch-mode knob with preflight detection of environments
+where bypass cannot launch, and an official container envelope —
+and explicitly rejects the permission-posture / per-phase tool
+allowlist / approval-gateway alternative.
+
+Status split, so this doc stays honest: the official container
+image (the outside-in envelope around the whole orcho process)
+ships from the distribution repo; the launch-mode knob, receipt,
+and preflight are the accepted direction, not yet code. When they
+land they extend the launch envelope, not the `sandbox.mode`
+enum — L1 stays the in-process hygiene layer inside whatever
+envelope the operator chose.
+
 ### If a future backend ever lands
 
 The schema is narrow today on purpose; widening it is cheap if a
@@ -64,10 +86,13 @@ concrete trigger appears:
   Today the agents we ship route network through their own API
   calls; an HTTPS proxy with host allowlist is the right answer
   only after a real signal.
-* **Container** — if third-party `orcho.skills` plugins start
-  loading arbitrary code into the orcho process. That is an
-  in-process trust boundary, not a subprocess one, and a
-  container is the only valid answer.
+* **Container** — the trigger materialized, but outside-in: the
+  operator needs an enforcement boundary that does not depend on
+  vendor permission flags (ADR 0122), so the official container
+  image wraps the *whole* orcho process rather than adding a
+  `sandbox.mode` backend. An in-process trust boundary (e.g.
+  third-party `orcho.skills` plugins loading arbitrary code)
+  would still be the trigger for a container *backend* here.
 
 Each of these would land as its own ADR + a new enum value, not
 as the activation of a pre-reserved slot. **No monster where the
@@ -153,6 +178,20 @@ The agent and its grandchildren die when orcho dies.
 * **Windows** — Job Object's `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
   is automatic and stronger than the Unix equivalent (kernel-
   enforced on parent handle close, no signal race).
+
+The stream records this lifecycle in a private, in-memory registry keyed to
+the exact directly spawned `Popen`. Its safe handle can report `running`,
+`exited(exit_code)`, or `unavailable`; terminal settlement is memoized and the
+launcher stays retained through it. Retry is permitted only after `exited` (or
+when no prior child exists), while `running` and `unavailable` fail closed.
+
+This is a direct-child ownership boundary, not per-grandchild visibility. A
+confirmed child process group is the widest cancellation boundary; Orcho does
+not scan the host or infer ownership of nested provider tools by command name.
+The handle and its observations are never persisted to run state or evidence.
+Free-text `pgrep`/`pkill` remains a separate non-terminal guardrail diagnostic;
+typed handle poll/wait does not enter that text-classification path. See
+[ADR 0143](../adr/0143-provider-owned-child-lifecycle.md).
 
 ### Output token masking
 

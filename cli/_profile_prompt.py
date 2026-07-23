@@ -17,9 +17,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from cli._profile_menu import (
+    AUTO_DETECT_CHOICE,
     _print_profile_details,
     _render_menu,
-    format_cross_directive,
+    render_autodetect_headless,
     render_autodetect_result,
 )
 from core.io.ansi import C, get_color_enabled, is_color_active
@@ -39,19 +40,18 @@ _CROSS_CONFIDENCE_FLOOR = 0.7
 class CrossRunRequested(Exception):
     """Raised when the operator picks 'Start cross run' in the auto-detect block.
 
-    This is an explicit *terminal directive*, not a mono-run continuation: the
-    current ``orcho run`` invocation must NOT fall through into ``run_pipeline``
-    and must NOT persist a cross ``delivery_scope`` on a mono run that never
-    starts. The CLI catches it, leaves the already-printed ``orcho cross``
-    command on screen, and exits cleanly so the operator starts the cross run
-    deliberately. Carries the projected delivery projects and the ready command
-    string for callers / tests that want them.
+    This is an explicit *terminal directive* for the current mono invocation,
+    not a mono-run continuation: ``orcho run`` must NOT fall through into
+    ``run_pipeline`` and must NOT persist a cross ``delivery_scope`` on a mono
+    run that never starts. The CLI catches it and launches a *fresh* cross
+    process from the projected projects (see :mod:`cli._cross_launch`), which is
+    what keeps the mono run from ever starting (F2). Carries the projected
+    delivery-project aliases for the launcher / tests.
     """
 
-    def __init__(self, *, projects: tuple[str, ...], command: str) -> None:
+    def __init__(self, *, projects: tuple[str, ...]) -> None:
         self.projects = projects
-        self.command = command
-        super().__init__(command)
+        super().__init__(", ".join(projects))
 
 
 class ProfilePromptResult(enum.Enum):
@@ -170,9 +170,10 @@ def prompt_for_profile_if_needed(
     )
 
     count = len(ordered_names)
+    empty_hint = "empty for auto-detect" if include_auto_detect else "empty to abort"
     prompt = bold(
         f"Select profile [1-{count}] — number or name "
-        "(?N for details, empty to abort): ",
+        f"(?N for details, {empty_hint}): ",
         color=color,
     )
     invalid = 0
@@ -184,6 +185,12 @@ def prompt_for_profile_if_needed(
             return ProfilePromptResult.ABORTED
         choice = drain_paste_burst(raw, stdin=sys.stdin).strip()
         if not choice:
+            if include_auto_detect:
+                # Default choice: a bare Enter runs auto-detect (it leads the
+                # menu and carries the [default] chip). The detector then
+                # recommends a work kind / operating mode.
+                args.profile = AUTO_DETECT_CHOICE
+                return ProfilePromptResult.SELECTED
             print()  # newline for clean shell prompt
             return ProfilePromptResult.ABORTED
         if choice.startswith("?"):
@@ -218,8 +225,14 @@ def require_profile_or_exit(
     * operator declined the interactive menu (``ABORTED``) → print a brief
       cancellation note and return exit code ``0`` (clean exit);
     * the menu could not be shown (``SKIPPED`` in a non-interactive / non-TTY
-      context) → print an error with a ``--profile`` hint on stderr and
-      return exit code ``2``.
+      context):
+
+      - with ``include_auto_detect`` (the ``orcho run`` facade) → default to
+        the ``auto-detect`` selector and proceed (``None``). A headless run
+        then infers a work kind + mode from the project rather than dead-ending;
+        the downstream resolver errors clearly if detection fails.
+      - otherwise (e.g. the cross facade) → print an actionable error naming
+        ``--profile`` / ``orcho profiles list`` on stderr and return ``2``.
 
     Returns ``None`` when the caller should proceed: a profile is set, or the
     run is a ``--resume`` / ``--from-run-plan`` (profile inherits from
@@ -255,9 +268,28 @@ def require_profile_or_exit(
         print(paint("Aborted: no profile selected.", C.GREY))
         return 0
 
+    # SKIPPED: no interactive terminal to show the picker (headless / CI / MCP).
+    if include_auto_detect:
+        # The `orcho run` facade: a missing --profile is not a dead end. Default
+        # to the auto-detect selector so a headless run infers a work kind + mode
+        # from the project instead of exiting 2. The token is resolved downstream
+        # (pipeline.project.cli / auto_detect), which errors clearly if detection
+        # fails — no silent `feature` default, so profile enforcement holds.
+        args.profile = AUTO_DETECT_CHOICE
+        print(
+            paint(
+                f"No --profile given; using '{AUTO_DETECT_CHOICE}' "
+                "(work kind & mode inferred from the project).",
+                C.GREY,
+            )
+        )
+        return None
+
+    # Other facades (e.g. cross) keep explicit selection — but say why and how.
     print(
         paint(
-            "profile: provide --profile or select one interactively",
+            "profile: no --profile given and no interactive terminal to pick "
+            "one.\n  Pass --profile <name> (see `orcho profiles list`).",
             C.RED,
         ),
         file=sys.stderr,
@@ -302,9 +334,11 @@ def resolve_topology_choice(
     semantic-profile confidence at or above :data:`_CROSS_CONFIDENCE_FLOOR`.
     For such a resolution:
 
-    * **non-interactive** — the recommendation is only *recorded*: no block is
-      printed, no cross run starts, and delivery is not widened. The returned
-      ``delivery_scope`` stays ``strict_mono``;
+    * **non-interactive** — no cross run starts and delivery is not widened
+      (returned ``delivery_scope`` stays ``strict_mono``), but the
+      recommendation is *surfaced* (cross parity): a headless block echoes the
+      detected topology + the ready ``orcho cross`` directive before proceeding
+      as the safe mono default. It is never silently swallowed;
     * **interactive** — print the ``Auto-detect result`` block and the three
       choices, read the operator's pick (1/2/3), and map it to a delivery scope
       via :func:`pipeline.project.auto_detect.apply_topology_choice`.
@@ -338,14 +372,18 @@ def resolve_topology_choice(
     if confidence is None or confidence < _CROSS_CONFIDENCE_FLOOR:
         return resolution
 
-    # Non-interactive: never prompt, never start cross, never widen delivery.
-    # The cross topology is still recorded in meta via the resolution echo.
-    if not interactive:
-        return resolution
-
     if color is None:
         resolved = get_color_enabled()
         color = resolved if resolved is not None else is_color_active()
+
+    # Non-interactive: never prompt, never start cross, never widen delivery —
+    # but never SILENTLY proceed mono either (cross parity). Surface the same
+    # recommendation the interactive picker would, plus the ready `orcho cross`
+    # directive, then continue as the safe mono default. The cross topology is
+    # still recorded in meta via the resolution echo.
+    if not interactive:
+        render_autodetect_headless(resolution, color=color)
+        return resolution
 
     render_autodetect_result(resolution, color=color)
 
@@ -356,16 +394,12 @@ def resolve_topology_choice(
     choice = TopologyChoice.from_number(number)
 
     if choice is TopologyChoice.START_CROSS:
-        # Explicit terminal directive — the current mono process is NEVER
-        # converted into a cross run, and a cross ``delivery_scope`` is NEVER
-        # persisted on this mono run (F2). Print the ready command and raise so
-        # the caller stops before ``run_pipeline``; the operator starts the
-        # cross run deliberately.
-        command = format_cross_directive(resolution.delivery_projects)
-        print(bold("To start the cross run, run:", color=color))
-        print(f"  {command}")
-        raise CrossRunRequested(
-            projects=resolution.delivery_projects, command=command,
-        )
+        # Terminal directive for THIS mono process: it must not fall through
+        # into ``run_pipeline`` and must never persist a cross ``delivery_scope``
+        # on a mono run that never starts (F2). Raise so the caller stops here
+        # and launches a *fresh* cross run from the projected projects. Path
+        # resolution + launch live at the caller (``cli._cross_launch``), which
+        # has the task text and the current project path.
+        raise CrossRunRequested(projects=resolution.delivery_projects)
 
     return apply_topology_choice(resolution, choice)

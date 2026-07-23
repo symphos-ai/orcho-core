@@ -38,7 +38,7 @@ import html
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.entities import SubTask
 from agents.registry import AgentRegistry
@@ -59,6 +59,9 @@ from pipeline.subtask_attestation_repair import (
     parse_attestation_for_subtask,
     repair_subtask_attestation,
 )
+
+if TYPE_CHECKING:
+    from pipeline.prompts.types import PromptPart
 
 #: Strategy that executes one subtask turn. ``_run_subtask_dag_implement``
 #: injects a session-aware adapter (PromptTurn → ``_session_aware_invoke``);
@@ -486,6 +489,7 @@ def run_dag_sequential(
     dry_run: bool = False,
     invoke_subtask: SubtaskInvoke | None = None,
     prior_results: dict[str, SubTaskResult | PriorSubtaskContext] | None = None,
+    verification_part: PromptPart | None = None,
 ) -> DagRunResult:
     """Walk ``parsed_plan.subtasks`` in topological order and execute each.
 
@@ -514,6 +518,9 @@ def run_dag_sequential(
             whose only dependency is a prior result schedules immediately. The
             prior nodes are NOT in ``parsed_plan.subtasks`` and are never
             re-invoked or re-mutated.
+        verification_part: run-scoped verification and long-command execution
+            policy composed by the phase handler and carried into every
+            executable subtask prompt.
 
     Returns a :class:`DagRunResult` so the caller can route to the right
     post-step (final_acceptance on success, replan or repair_changes on failure) and
@@ -615,6 +622,7 @@ def run_dag_sequential(
                     change_handoff=change_handoff,
                     dry_run=dry_run,
                     invoke_subtask=invoke,
+                    verification_part=verification_part,
                 )
             except Exception as e:  # noqa: BLE001 - preserve receipt completeness
                 binding = None
@@ -636,6 +644,11 @@ def run_dag_sequential(
                     model=res.model,
                     skill=res.skill,
                     error=res.error,
+                )
+                # Close the ▶ START this subtask already printed inside
+                # ``_run_single_subtask`` before it raised.
+                _emit_subtask_summary(
+                    "incomplete", sub, reason=f"failed — {res.error}",
                 )
             if binding is not None:
                 bindings.append(binding)
@@ -712,7 +725,7 @@ def _log_attestation_detail(
     A missing/malformed attestation (``attestation is None``) shows the parse
     error instead of an empty block.
     """
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     ok = attestation_error is None
@@ -777,7 +790,7 @@ def _log_subtask_marker(
     attestation: str | None = None,
 ) -> None:
     """Write human-readable subtask progress to the live agent log."""
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     label = f"ORCHO subtask {index}/{total} {status}: {sub.id}"
@@ -844,6 +857,38 @@ def _log_subtask_marker(
         mark_phase_header_fresh()
 
 
+def _emit_subtask_summary(
+    kind: str,
+    sub: SubTask,
+    *,
+    met: int = 0,
+    total: int = 0,
+    summary: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Print one compact subtask line — summary mode only.
+
+    Additive to the durable ``ORCHO subtask`` section written by
+    :func:`_log_subtask_marker`. In live/debug that section already echoes
+    to stdout, so this branch is skipped (no double print); in summary the
+    section's stdout echo is off and only this compact line prints. The
+    ``output.log`` file sink is written identically in every mode — this
+    print never touches it. ``kind`` is ``start`` (``▶``), ``done``
+    (``✓``), or ``incomplete`` (``⚠``).
+    """
+    from core.observability.logging import get_output_mode
+    if get_output_mode() != "summary":
+        return
+    from core.io import summary_lines
+    if kind == "start":
+        line = summary_lines.subtask_start(sub.id, sub.goal)
+    elif kind == "done":
+        line = summary_lines.subtask_done(sub.id, met, total, summary)
+    else:  # "incomplete"
+        line = summary_lines.subtask_incomplete(sub.id, reason or "")
+    print(f"  {line}")
+
+
 def _run_single_subtask(
     sub: SubTask,
     plugin: PluginConfig,
@@ -862,6 +907,7 @@ def _run_single_subtask(
     change_handoff: str = "uncommitted",
     dry_run: bool,
     invoke_subtask: SubtaskInvoke,
+    verification_part: PromptPart | None = None,
 ) -> tuple[SubTaskResult, SkillBinding | None]:
     """Resolve agent, build the turn, invoke via the injected strategy.
 
@@ -896,6 +942,7 @@ def _run_single_subtask(
         dag_map=dag_map,
         upstream_receipts=upstream_receipts,
         change_handoff=change_handoff,
+        verification_part=verification_part,
     )
     prompt_chars = len(turn.text)
 
@@ -918,6 +965,7 @@ def _run_single_subtask(
         prompt_chars=prompt_chars,
         **_static_marker_facts,
     )
+    _emit_subtask_summary("start", sub)
     _events.emit(
         "subtask.start",
         subtask_id=sub.id,
@@ -945,6 +993,9 @@ def _run_single_subtask(
             duration=0.0,
             prompt_chars=prompt_chars,
             **_static_marker_facts,
+        )
+        _emit_subtask_summary(
+            "done", sub, met=0, total=len(sub.done_criteria), summary="dry run",
         )
         _events.emit(
             "subtask.end",
@@ -1081,6 +1132,24 @@ def _run_single_subtask(
         _log_attestation_detail(
             sub, attestation, attestation_error, index=index, total=total,
         )
+    # Summary arc: close this subtask's ▶ START line with ✓ (valid
+    # attestation) or ⚠ (hard failure / incomplete attestation).
+    if err is not None:
+        _emit_subtask_summary("incomplete", sub, reason=f"failed — {err}")
+    elif attestation_error is not None:
+        _emit_subtask_summary(
+            "incomplete", sub,
+            reason=f"attestation INCOMPLETE — {attestation_error}",
+        )
+    elif attestation is not None:
+        _emit_subtask_summary(
+            "done", sub,
+            met=sum(1 for c in attestation.criteria if c.met),
+            total=len(attestation.criteria),
+            summary=attestation.summary,
+        )
+    else:
+        _emit_subtask_summary("done", sub)
 
     # ``ok`` is the honest "fully succeeded" signal for event consumers
     # (dashboards, watchers): a subtask whose runtime invocation returned but

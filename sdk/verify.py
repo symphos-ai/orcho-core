@@ -9,10 +9,10 @@ run, proves the run belongs to the requested project, and loads the project's
 contract.
 
 Subject separation: the contract is always loaded from the *canonical* project
-(``{project}``), but declared commands execute in the *run worktree*
-(``{checkout}``) when ``meta['worktree']['path']`` points at a real directory —
-falling back to the project dir otherwise. Git provenance on a command-receipt
-is taken from that run-worktree subject, never from the command's working dir.
+(``{project}``), while all verification entry points resolve one fail-closed
+physical subject (`{checkout}`) from run metadata. Git provenance on a
+command-receipt is taken from that subject, never from the command's working
+directory.
 
 Boundary discipline (ADR 0021): returns a typed result, raises typed
 :class:`~sdk.errors.OrchoError` subclasses, never prints, never calls
@@ -23,10 +23,11 @@ written, so a misleading receipt can never land.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sdk.errors import OrchoError
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
@@ -46,6 +47,19 @@ class VerifyEnvError(OrchoError):
     """
 
     exit_code = 2
+
+
+SubjectSource = Literal[
+    "run_metadata", "controller_override", "canonical_non_isolated",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationSubject:
+    """The physical checkout a verification run is allowed to prove."""
+
+    checkout: str
+    source: SubjectSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +104,8 @@ class VerifyRunResult:
     run_id: str
     outcomes: list[CommandOutcome]
     all_passed: bool
+    subject_checkout: str = ""
+    subject_source: SubjectSource = "canonical_non_isolated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +114,8 @@ class VerifyListResult:
 
     run_id: str
     commands: list[dict[str, Any]]
+    subject_checkout: str = ""
+    subject_source: SubjectSource = "canonical_non_isolated"
 
 
 def _resolve_run_project_contract(
@@ -105,6 +123,7 @@ def _resolve_run_project_contract(
     project: str | None,
     run_id: str | None,
     workspace: str | None,
+    runs_dir: Path | str | None,
     cwd: Path | str | None | object = _CWD_DEFAULT,
 ) -> tuple[RunRef, Path, str, VerificationContract | None, str, dict[str, Any]]:
     """Resolve run, validate project match, load contract; raise before any write.
@@ -115,8 +134,10 @@ def _resolve_run_project_contract(
     what shape of contract it requires. Raises :class:`VerifyEnvError` for a
     project↔run mismatch or a run with no recorded project.
 
-    ``cwd`` is forwarded to :func:`find_run` for run discovery. It defaults to
-    the walk-up sentinel (unchanged behaviour for the CLI verify callers);
+    ``runs_dir`` and ``cwd`` are forwarded to :func:`find_run` for run
+    discovery. ``runs_dir`` takes the SDK's usual explicit-location priority.
+    ``cwd`` defaults to the walk-up sentinel (unchanged behaviour for the CLI
+    verify callers);
     embedders that must NOT bind to an arbitrary process cwd — the MCP server —
     pass ``cwd=None`` to disable walk-up, exactly as the other SDK read
     accessors do.
@@ -125,7 +146,7 @@ def _resolve_run_project_contract(
     from pipeline.plugins import load_plugin
     from pipeline.verification_contract import VerificationContract
 
-    ref = find_run(run_id, workspace=workspace, cwd=cwd)
+    ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     run_dir = ref.run_dir
     meta = load_meta(run_dir)
     meta_project = meta.get("project")
@@ -149,31 +170,148 @@ def _resolve_run_project_contract(
     return ref, run_dir, project_dir, contract, str(ws), meta
 
 
-def _checkout_dir_for_meta(meta: dict[str, Any], project_dir: str) -> str:
-    """Run-worktree path when ``meta['worktree']['path']`` is a real dir, else
-    the canonical ``project_dir``. This is the verification *subject* checkout."""
+def _is_readable_directory(path: Path) -> bool:
+    """Return whether ``path`` is a directory usable as a verification cwd.
+
+    Kept as a seam because permission bits are not deterministic under every
+    test runner (notably when it runs as an elevated user).
+    """
+    return path.is_dir() and os.access(path, os.R_OK | os.X_OK)
+
+
+def _same_checkout(left: Path, right: Path) -> bool:
+    """Compare checkout identities without requiring either path to exist."""
+    return left.resolve(strict=False) == right.resolve(strict=False)
+
+
+def _checked_checkout(value: str, *, label: str) -> Path:
+    path = Path(value)
+    if not _is_readable_directory(path):
+        raise VerifyEnvError(f"{label} is not a readable directory: {value!r}")
+    return path.resolve()
+
+
+def _verification_identity_meta(
+    *, run_dir: Path, meta: Mapping[str, Any], project_dir: str,
+) -> Mapping[str, Any]:
+    """Resolve retained correction identity through durable parent lineage.
+
+    A correction child can be inspected before its own session has persisted
+    the reused ``worktree`` block. In that narrow state, the child already
+    records a correction follow-up relationship, so its physical subject is
+    the nearest parent metadata carrying the retained identity. Arbitrary
+    runs and mismatched projects never inherit a parent subject.
+    """
+    current_dir = run_dir
+    current_meta = meta
+    visited = {run_dir.name}
+
+    while not isinstance(current_meta.get("worktree"), Mapping):
+        if (
+            current_meta.get("profile") != "correction"
+            or current_meta.get("resume_mode") != "followup"
+        ):
+            return current_meta
+
+        parent_id = current_meta.get("parent_run_id")
+        if not isinstance(parent_id, str) or not parent_id.strip():
+            raise VerifyEnvError(
+                "correction follow-up metadata is missing parent_run_id",
+            )
+        if Path(parent_id).name != parent_id:
+            raise VerifyEnvError("correction follow-up parent_run_id is invalid")
+        if parent_id in visited:
+            raise VerifyEnvError("correction follow-up lineage contains a cycle")
+        visited.add(parent_id)
+
+        parent_dir = current_dir.parent / parent_id
+        recorded_parent_dir = current_meta.get("parent_run_dir")
+        if (
+            isinstance(recorded_parent_dir, str)
+            and recorded_parent_dir
+            and not _same_checkout(Path(recorded_parent_dir), parent_dir)
+        ):
+            raise VerifyEnvError(
+                "correction follow-up parent_run_dir conflicts with parent_run_id",
+            )
+        if not (parent_dir / "meta.json").is_file():
+            raise VerifyEnvError(
+                f"correction follow-up parent metadata is unavailable: {parent_id}",
+            )
+        try:
+            parent_meta = load_meta(parent_dir)
+        except Exception as exc:  # noqa: BLE001 — normalise SDK read failure
+            raise VerifyEnvError(
+                f"correction follow-up parent metadata is unavailable: {parent_id}",
+            ) from exc
+
+        parent_project = parent_meta.get("project")
+        if (
+            not isinstance(parent_project, str)
+            or not _same_checkout(Path(parent_project), Path(project_dir))
+        ):
+            raise VerifyEnvError(
+                "correction follow-up parent project does not match run project",
+            )
+        current_dir = parent_dir
+        current_meta = parent_meta
+
+    return current_meta
+
+
+def resolve_verification_subject(
+    *,
+    meta: Mapping[str, Any],
+    project_dir: str,
+    subject_checkout: str | None = None,
+) -> VerificationSubject:
+    """Resolve one physical verification subject without canonical fallback.
+
+    An explicitly non-isolated run is the only metadata shape that authorises
+    the canonical project.  Recorded isolated identity must remain readable and
+    exact. Metadata without a recorded identity requires a non-canonical
+    controller override.
+    """
+    canonical = _checked_checkout(project_dir, label="canonical project")
+    override = (
+        _checked_checkout(subject_checkout, label="subject_checkout override")
+        if subject_checkout
+        else None
+    )
     worktree = meta.get("worktree")
-    if isinstance(worktree, dict):
-        path = worktree.get("path")
-        if isinstance(path, str) and path and Path(path).exists():
-            return path
-    return project_dir
+    isolation = worktree.get("isolation") if isinstance(worktree, Mapping) else None
+    recorded_path = worktree.get("path") if isinstance(worktree, Mapping) else None
 
+    if isolation == "off":
+        if override is not None and not _same_checkout(override, canonical):
+            raise VerifyEnvError(
+                "subject_checkout override conflicts with non-isolated run identity",
+            )
+        return VerificationSubject(str(canonical), "canonical_non_isolated")
 
-def _resolve_subject_checkout(
-    override: str | None, meta: dict[str, Any], project_dir: str,
-) -> str:
-    """Subject checkout for command execution: an explicit ``override`` (when it
-    is a real directory) wins over the ``meta``-derived worktree, which in turn
-    wins over the canonical ``project_dir``.
+    if isinstance(recorded_path, str) and recorded_path:
+        recorded = _checked_checkout(recorded_path, label="recorded isolated checkout")
+        if _same_checkout(recorded, canonical):
+            raise VerifyEnvError("isolated run metadata points at the canonical project")
+        if override is not None and not _same_checkout(override, recorded):
+            raise VerifyEnvError(
+                "subject_checkout override conflicts with recorded isolated checkout",
+            )
+        return VerificationSubject(str(recorded), "run_metadata")
 
-    The override is how a caller that already resolved the run's real worktree
-    (the Stage 9 auto-run materializer) pins execution to it even when
-    ``meta['worktree']`` is absent — so receipts never silently prove the
-    canonical project instead of the run's uncommitted review target."""
-    if override and Path(override).exists():
-        return override
-    return _checkout_dir_for_meta(meta, project_dir)
+    if isolation is not None:
+        raise VerifyEnvError("isolated run metadata has no recorded worktree path")
+
+    if override is None:
+        raise VerifyEnvError(
+            "run metadata does not establish a verification subject; "
+            "a non-canonical subject_checkout override is required",
+        )
+    if _same_checkout(override, canonical):
+        raise VerifyEnvError(
+            "subject_checkout override cannot turn ambiguous metadata into canonical subject",
+        )
+    return VerificationSubject(str(override), "controller_override")
 
 
 def _dependency_tags(deps: Any) -> tuple[str, ...]:
@@ -203,8 +341,8 @@ def _dependency_tags(deps: Any) -> tuple[str, ...]:
 def _baseline_head_for_meta(meta: dict[str, Any]) -> str | None:
     """The run worktree's base ref (``meta['worktree']['base_ref']``) or ``None``.
 
-    Same subject as :func:`_checkout_dir_for_meta`: a differential gate compares
-    the run worktree's HEAD against this baseline, both relative to the worktree.
+    A differential gate compares the resolved subject's HEAD against this
+    baseline, both relative to the same recorded worktree identity.
     """
     worktree = meta.get("worktree")
     if isinstance(worktree, dict):
@@ -286,6 +424,8 @@ def verify_env(
     env: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
+    subject_checkout: str | None = None,
 ) -> VerifyEnvResult:
     """Execute one verification_env's assertions and write an env-receipt.
 
@@ -293,6 +433,7 @@ def verify_env(
     below passes):
 
     1. Resolve the run (``run_id`` or newest) and load its ``meta.json``.
+       Pass ``runs_dir`` when the run is under an explicit parent directory.
     2. Determine the project. With an explicit ``project``, the run must
        belong to it: both paths are normalised via ``Path.resolve()`` and
        compared to ``meta['project']``; a missing / empty / mismatched
@@ -303,16 +444,16 @@ def verify_env(
        missing contract / no ``verification_envs`` raises.
     4. Select the env (explicit ``env`` else ``contract.default_env``); an
        empty / unknown env raises.
-    5. Build a :class:`PlaceholderContext` with ``checkout = project`` so the
-       assertions' default cwd is the declared checkout, not the CLI cwd.
-    6. Run the assertions and write the env-receipt under the run directory.
+    5. Resolve the physical subject before assertions or receipt writes.
+    6. Build a :class:`PlaceholderContext` with the resolved ``checkout``.
+    7. Run the assertions and write the env-receipt under the run directory.
     """
     from pipeline.evidence.verification_receipt import write_env_assertion_receipt
     from pipeline.verification_contract import placeholder_context_for
     from pipeline.verification_env import run_env_assertions
 
-    ref, run_dir, project_dir, contract, ws, _meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+    ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.verification_envs:
         raise VerifyEnvError(
@@ -326,10 +467,18 @@ def verify_env(
             f"verification_env {env_name!r} is not declared (known: {known!r})",
         )
     env_spec = contract.verification_envs[env_name]
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
+    subject_resolution = resolve_verification_subject(
+        meta=identity_meta,
+        project_dir=project_dir,
+        subject_checkout=subject_checkout,
+    )
 
     ctx = placeholder_context_for(
         contract,
-        checkout=project_dir,
+        checkout=subject_resolution.checkout,
         project=project_dir,
         workspace=ws,
         run_dir=str(run_dir),
@@ -343,7 +492,11 @@ def verify_env(
         run_id=ref.run_id,
         receipt_path=receipt_path,
         all_passed=bool(result.get("all_passed", False)),
-        subject=dict(result.get("subject") or {}),
+        subject={
+            **dict(result.get("subject") or {}),
+            "checkout": subject_resolution.checkout,
+            "source": subject_resolution.source,
+        },
         assertions=list(result.get("assertions") or []),
     )
 
@@ -353,15 +506,17 @@ def verify_list(
     project: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
 ) -> VerifyListResult:
     """List declared commands with their run-text placeholder-resolved.
 
     Pure projection: resolves the run/project/contract, builds a
-    :class:`PlaceholderContext` whose ``{checkout}`` is the run worktree (or the
-    project dir when no worktree) and whose ``{project}`` is the canonical
-    project, then reports each declared command's ``name`` / ``env`` /
+    :class:`PlaceholderContext` whose ``{checkout}`` is the resolved physical
+    subject and whose ``{project}`` is the canonical project, then reports each
+    declared command's ``name`` / ``env`` /
     ``run_resolved`` / ``required`` flag. Executes nothing and writes nothing.
     An undeclared / command-less contract raises :class:`VerifyEnvError`.
+    Pass ``runs_dir`` to resolve a run beneath an explicit parent directory.
     """
     from pipeline.verification_contract import (
         placeholder_context_for,
@@ -369,17 +524,23 @@ def verify_list(
     )
 
     ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.commands:
         raise VerifyEnvError(
             f"no verification commands declared for project {project_dir!r}",
         )
 
-    checkout_dir = _checkout_dir_for_meta(meta, project_dir)
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
+    subject_resolution = resolve_verification_subject(
+        meta=identity_meta,
+        project_dir=project_dir,
+    )
     ctx = placeholder_context_for(
         contract,
-        checkout=checkout_dir,
+        checkout=subject_resolution.checkout,
         project=project_dir,
         workspace=ws,
         run_dir=str(run_dir),
@@ -397,7 +558,12 @@ def verify_list(
             "required": name in contract.required,
         })
 
-    return VerifyListResult(run_id=ref.run_id, commands=commands)
+    return VerifyListResult(
+        run_id=ref.run_id,
+        commands=commands,
+        subject_checkout=subject_resolution.checkout,
+        subject_source=subject_resolution.source,
+    )
 
 
 def verify_run(
@@ -405,6 +571,7 @@ def verify_run(
     project: str | None = None,
     run_id: str | None = None,
     workspace: str | None = None,
+    runs_dir: Path | str | None = None,
     commands: list[str] | None = None,
     required_only: bool = False,
     include_manual: bool = False,
@@ -418,14 +585,11 @@ def verify_run(
     git provenance on each receipt is taken from the worktree subject with
     ``baseline_head`` drawn from ``meta['worktree']['base_ref']``.
 
-    ``subject_checkout`` overrides the verification subject checkout when the
-    caller has already resolved the run's real worktree. It takes precedence over
-    ``meta['worktree']['path']`` and is the seam the Stage 9 auto-run
-    materializer uses so gates execute against the run's *resolved* subject even
-    when ``meta['worktree']`` is absent (a correction follow-up's early meta, or
-    the foreign-worktree env leak) — without it, ``_checkout_dir_for_meta`` would
-    silently fall back to the canonical ``project`` and stamp receipts that prove
-    the wrong checkout. Ignored when it is not a real directory.
+    ``subject_checkout`` is an internal controller seam. It may confirm an
+    isolated recorded identity or establish a non-canonical subject when the
+    metadata is incomplete; it never overrides conflicting identity.
+
+    Pass ``runs_dir`` to resolve a run beneath an explicit parent directory.
 
     Command selection (resolved — and validated — *before* any execution):
 
@@ -447,7 +611,7 @@ def verify_run(
     from pipeline.verification_contract import placeholder_context_for
 
     ref, run_dir, project_dir, contract, ws, meta = _resolve_run_project_contract(
-        project=project, run_id=run_id, workspace=workspace,
+        project=project, run_id=run_id, workspace=workspace, runs_dir=runs_dir,
     )
     if contract is None or not contract.commands:
         raise VerifyEnvError(
@@ -472,11 +636,18 @@ def verify_run(
     else:
         names = _default_verify_run_names(contract, include_manual=include_manual)
 
-    checkout_dir = _resolve_subject_checkout(subject_checkout, meta, project_dir)
-    baseline_head = _baseline_head_for_meta(meta)
+    identity_meta = _verification_identity_meta(
+        run_dir=run_dir, meta=meta, project_dir=project_dir,
+    )
+    subject_resolution = resolve_verification_subject(
+        meta=identity_meta,
+        project_dir=project_dir,
+        subject_checkout=subject_checkout,
+    )
+    baseline_head = _baseline_head_for_meta(dict(identity_meta))
     ctx = placeholder_context_for(
         contract,
-        checkout=checkout_dir,
+        checkout=subject_resolution.checkout,
         project=project_dir,
         workspace=ws,
         run_dir=str(run_dir),
@@ -513,4 +684,10 @@ def verify_run(
         ))
 
     all_passed = all(o.exit_code == 0 for o in outcomes)
-    return VerifyRunResult(run_id=ref.run_id, outcomes=outcomes, all_passed=all_passed)
+    return VerifyRunResult(
+        run_id=ref.run_id,
+        outcomes=outcomes,
+        all_passed=all_passed,
+        subject_checkout=subject_resolution.checkout,
+        subject_source=subject_resolution.source,
+    )

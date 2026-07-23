@@ -16,6 +16,13 @@ Error taxonomy:
   ApiTimeoutError    — subprocess.TimeoutExpired / "timed out" in stderr
   ContextOverflowError — "context_length_exceeded" / prompt too long
   SystemResourceError — local OS resource blocker, e.g. exhausted PTY pool
+  AgentProcessKilledError — subprocess killed by a fatal signal
+                       (SIGKILL/SIGSEGV/SIGABRT), classified by exit-code shape;
+                       a SystemResourceError subclass, so it inherits the
+                       recoverable provider_runtime projection
+  AgentCancelledError — subprocess cancelled by SIGINT/SIGTERM, classified by
+                       exit-code shape; a *direct* AgentCallError subclass, not
+                       a SystemResourceError, so never retried or recoverable
   AgentCallError     — any other non-zero exit / RuntimeError from agent
 
 Recovery strategy:
@@ -26,6 +33,9 @@ Recovery strategy:
   ApiTimeoutError    → fixed backoff (2s), max 2 retries
   ContextOverflowError → truncate prompt, max 1 retry (no point repeating same)
   SystemResourceError → no retry; operator must clear the local resource blocker
+  AgentProcessKilledError → bounded retry (process_killed_max_retries, default 1);
+                       a transient kill (OOM/segfault/abort) may clear on resume
+  AgentCancelledError → no retry; an intentional interrupt/terminate, not transient
   AgentCallError     → exponential backoff, max 3 retries
 
 Usage:
@@ -48,6 +58,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import time
 import warnings
@@ -104,6 +115,33 @@ class ContextOverflowError(AgentCallError):
 
 class SystemResourceError(AgentCallError):
     """The local machine could not allocate a required OS resource."""
+
+
+class AgentProcessKilledError(SystemResourceError):
+    """The agent subprocess was killed by a fatal OS signal.
+
+    A kill-shaped signal death — SIGKILL / SIGSEGV / SIGABRT, seen as a
+    negative ``returncode`` (``-9``/``-11``/``-6``) or the shell ``128 + N``
+    convention (``137``/``139``/``134``) — is treated as transient local
+    pressure (typically the OOM killer or a crashed child) that a bounded
+    resume/retry may clear. It subclasses :class:`SystemResourceError` so it is
+    automatically included in the recoverable ``provider_runtime`` projection
+    via ``isinstance``, while carrying its own bounded retry budget; the base
+    :class:`SystemResourceError` (e.g. PTY exhaustion) still gets zero retries.
+    """
+
+
+class AgentCancelledError(AgentCallError):
+    """The agent subprocess was cancelled by an interrupt/terminate signal.
+
+    A cancel-shaped signal death — SIGINT / SIGTERM, seen as a negative
+    ``returncode`` (``-2``/``-15``) or the shell ``128 + N`` convention
+    (``130``/``143``) — is an operator or supervisor cancellation, not a
+    transient provider/runtime condition. It is a *direct* subclass of
+    :class:`AgentCallError` (deliberately NOT :class:`SystemResourceError`), so
+    it is never retried and never projected as a recoverable ``provider_runtime``
+    failure.
+    """
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -289,23 +327,122 @@ def classify_error(
                 stderr=stderr,
             )
 
+    # Unrecognized failure: no known-transient signature matched. By policy
+    # this bucket is NOT auto-retried (RUNTIME_RETRY_CONFIG pins generic
+    # max_retries=0) — an unclassified non-zero exit is usually deterministic
+    # (bad prompt, CLI misuse, a real error), so repeating it just burns
+    # tokens. That makes the MESSAGE the whole remediation surface, so lead
+    # with an actionable next step; the terminal FAILED banner only shows the
+    # first line, so the guidance must come before the raw detail (which is
+    # preserved for --output debug and the structured failure record).
     return AgentCallError(
-        f"Agent call failed: {str(exc)[:300]}",
+        "Agent call failed with an unrecognized error, so it was not retried "
+        "(only transient network / rate-limit / timeout failures auto-retry). "
+        "Re-run with --output debug for the full agent CLI output; if it looks "
+        f"transient, re-run the pipeline. Detail: {str(exc)[:300]}",
         exit_code=getattr(exc, "returncode", -1),
         stderr=stderr,
     )
+
+
+# Signal numbers whose process-death *shape* is meaningful, kept as raw ints so
+# classification stays provider- and OS-neutral (and does not depend on Windows
+# lacking e.g. ``signal.SIGKILL`` as an attribute).
+_SIG_ABRT = 6    # SIGABRT — abort()
+_SIG_KILL = 9    # SIGKILL — OOM killer / forced kill
+_SIG_SEGV = 11   # SIGSEGV — segfault
+_SIG_INT = 2     # SIGINT — interrupt (Ctrl-C)
+_SIG_TERM = 15   # SIGTERM — graceful termination request
+
+# Kill-shaped fatal signals → transient local pressure, bounded retry, and a
+# recoverable provider_runtime projection (via AgentProcessKilledError).
+_KILL_SIGNALS = frozenset({_SIG_KILL, _SIG_SEGV, _SIG_ABRT})
+# Cancel-shaped signals → intentional interrupt/terminate, never retried,
+# never recoverable (via AgentCancelledError).
+_CANCEL_SIGNALS = frozenset({_SIG_INT, _SIG_TERM})
+
+
+def _signal_name(signum: int) -> str:
+    """Return the canonical signal name (e.g. ``SIGKILL``) with a safe fallback.
+
+    ``signal.Signals`` only enumerates signals valid on the current platform, so
+    an unknown number raises ``ValueError`` — fall back to a stable label rather
+    than propagate the platform difference into the error message.
+    """
+    try:
+        return signal.Signals(signum).name
+    except (ValueError, KeyError):
+        return f"signal {signum}"
+
+
+def classify_signal_exit(exit_code: int, *, stderr: str = "") -> AgentCallError | None:
+    """Type a process-death exit code purely by its signal *shape*.
+
+    Provider-neutral: only the form of the exit code decides, never any string
+    pattern. A negative ``returncode`` of ``-N`` (Python's subprocess
+    convention) and the shell ``128 + N`` convention (``137`` == SIGKILL,
+    ``143`` == SIGTERM, …) both normalise to the same signal ``N``.
+
+    Returns:
+      * :class:`AgentProcessKilledError` for a kill-shaped fatal signal
+        (SIGKILL / SIGSEGV / SIGABRT).
+      * :class:`AgentCancelledError` for a cancel-shaped signal
+        (SIGINT / SIGTERM).
+      * ``None`` when the code is not a recognised signal death — the caller
+        keeps the generic :class:`AgentCallError`.
+
+    The message names the signal (e.g. ``agent process killed by SIGKILL
+    (exit=-9)``) so the durable failure excerpt carries the cause, not a bare
+    ``exit=-9``.
+    """
+    if exit_code < 0:
+        signum = -exit_code
+    elif 129 <= exit_code <= 192:
+        signum = exit_code - 128
+    else:
+        return None
+
+    name = _signal_name(signum)
+    if signum in _KILL_SIGNALS:
+        return AgentProcessKilledError(
+            f"agent process killed by {name} (exit={exit_code})",
+            exit_code=exit_code,
+            stderr=stderr,
+        )
+    if signum in _CANCEL_SIGNALS:
+        return AgentCancelledError(
+            f"agent process cancelled by {name} (exit={exit_code})",
+            exit_code=exit_code,
+            stderr=stderr,
+        )
+    return None
 
 
 def classify_from_exit(exit_code: int, stderr: str, stdout: str = "") -> AgentCallError | None:
     """Classify a non-zero exit code without a Python exception.
 
     Returns None if exit_code == 0 (success).
+
+    The text-based :func:`classify_error` taxonomy runs first, so any recognised
+    rate-limit / timeout / connection / access / overflow signature keeps
+    priority. Only when it falls through to a *bare* generic
+    :class:`AgentCallError` (``type(...) is AgentCallError`` — nothing matched)
+    does the exit code's *shape* get a chance: a kill/cancel signal death is
+    typed by :func:`classify_signal_exit`. Any other non-zero exit stays
+    generic. ``classify_error`` itself is left untouched — for a real exception
+    ``returncode`` defaults to the ``-1`` sentinel, which must not be read as a
+    signal death.
     """
     if exit_code == 0:
         return None
     dummy = RuntimeError(f"exit={exit_code}")
     dummy.returncode = exit_code  # type: ignore[attr-defined]
-    return classify_error(dummy, stderr=stderr, stdout=stdout)
+    classified = classify_error(dummy, stderr=stderr, stdout=stdout)
+    if type(classified) is AgentCallError:
+        signal_error = classify_signal_exit(exit_code, stderr=stderr)
+        if signal_error is not None:
+            return signal_error
+    return classified
 
 
 def provider_access_detail(exc: Exception) -> str:
@@ -555,6 +692,12 @@ class RetryConfig:
         Override max_retries specifically for ApiTimeoutError.
     context_overflow_max_retries : int
         Override max_retries for ContextOverflowError (usually 0 or 1).
+    process_killed_max_retries : int
+        Override max_retries for AgentProcessKilledError (kill-shaped signal
+        death). Bounded on purpose (default 1): a transient kill may clear on
+        one resume, but repeating indefinitely would just re-trigger the same
+        OOM/crash. Only affects the kill subclass — the base SystemResourceError
+        (e.g. PTY exhaustion) still gets 0.
     jitter : bool
         Add ±10% random jitter to delays to avoid thundering herd.
     """
@@ -567,6 +710,7 @@ class RetryConfig:
     connection_max_retries: int = 2
     timeout_max_retries: int = 2
     context_overflow_max_retries: int = 1
+    process_killed_max_retries: int = 1
     jitter: bool = True
 
     def max_retries_for(self, error: AgentCallError) -> int:
@@ -574,6 +718,12 @@ class RetryConfig:
         if isinstance(error, AgentAuthenticationError):
             return 0
         if isinstance(error, AgentAccessError):
+            return 0
+        if isinstance(error, AgentCancelledError):
+            # Cancel-shaped signal death (SIGINT/SIGTERM) — an intentional
+            # interrupt/terminate, never retried. Placed alongside auth/access
+            # (above the generic fall-through) so it stays 0 under ANY config,
+            # including DEFAULT_RETRY_CONFIG where the generic budget is 3.
             return 0
         if isinstance(error, RateLimitError):
             return self.rate_limit_max_retries
@@ -586,6 +736,11 @@ class RetryConfig:
             return self.timeout_max_retries
         if isinstance(error, ContextOverflowError):
             return self.context_overflow_max_retries
+        if isinstance(error, AgentProcessKilledError):
+            # Kill-shaped signal death (OOM/segfault/abort) — bounded retry.
+            # MUST precede the SystemResourceError branch: it is a subclass, and
+            # the base branch below pins PTY-style resource errors at 0.
+            return self.process_killed_max_retries
         if isinstance(error, SystemResourceError):
             return 0
         return self.max_retries
@@ -613,6 +768,7 @@ def call_with_retry(
     config: RetryConfig = DEFAULT_RETRY_CONFIG,
     phase: str = "",
     retry_events: list[RetryEvent] | None = None,
+    retry_admission: Callable[[AgentCallError], bool] | None = None,
     _sleep: Callable[[float], None] = time.sleep,  # injectable for tests
     **kwargs: Any,
 ) -> Any:
@@ -630,6 +786,9 @@ def call_with_retry(
         Pipeline phase name — embedded in RetryEvent for structured logging.
     retry_events : list[RetryEvent] | None
         If provided, RetryEvent records are appended here (for meta.json).
+    retry_admission : callable | None
+        Optional gate evaluated only after a typed error still has retry
+        budget and before any RetryEvent, backoff, or next invocation.
     _sleep : callable
         Overridable sleep function (swap for no-op in unit tests).
     **kwargs : Any
@@ -656,27 +815,27 @@ def call_with_retry(
             # Context overflow can't be fixed by repeating — give up after 1
             _record_and_maybe_raise(
                 exc, attempt, config.max_retries_for(exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except AgentCallError as exc:
             _record_and_maybe_raise(
                 exc, attempt, config.max_retries_for(exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except (subprocess.TimeoutExpired, TimeoutError) as exc:
             typed = ApiTimeoutError(str(exc), exit_code=-1)
             _record_and_maybe_raise(
                 typed, attempt, config.max_retries_for(typed),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
         except RuntimeError as exc:
             typed_exc = classify_error(exc)
             _record_and_maybe_raise(
                 typed_exc, attempt, config.max_retries_for(typed_exc),
-                config, phase, retry_events, _sleep,
+                config, phase, retry_events, retry_admission, _sleep,
             )
 
 
@@ -687,10 +846,19 @@ def _record_and_maybe_raise(
     config: RetryConfig,
     phase: str,
     retry_events: list[RetryEvent] | None,
+    retry_admission: Callable[[AgentCallError], bool] | None,
     _sleep: Callable[[float], None],
 ) -> None:
     """Log the retry event. Sleep before next attempt. Raise if exhausted."""
     from datetime import datetime
+
+    if attempt <= max_retries and retry_admission is not None:
+        try:
+            admitted = retry_admission(exc)
+        except Exception:
+            admitted = False
+        if not admitted:
+            raise exc
 
     error_type = _error_type_for(exc)
     delay = config.delay_for(attempt) if attempt <= max_retries else 0.0

@@ -7,14 +7,17 @@ a duck-typed run object — no real agent, worktree, or review pass.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.plugins import PluginConfig
 from pipeline.project import gate_repair
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_failure import classify_receipt
 
 
 def _contract(**verification) -> VerificationContract:
@@ -67,11 +70,17 @@ def _receipt(
     detail: str = "",
 ) -> dict:
     return {
+        "schema_version": 3,
         "exit_code": exit_code,
         "stdout_tail": "out",
         "stderr_tail": "err",
         "assertions": assertions or [],
         "detail": detail,
+        "subject": {"status": "available", "identity": {
+            "version": 1, "object_format": "sha1", "tree_oid": "a" * 40,
+            "observed_head_oid": "b" * 40, "baseline_oid": None,
+        }},
+        "dependencies": [],
     }
 
 
@@ -80,32 +89,46 @@ def test_passed_is_authoritative_not_just_exit_code() -> None:
     non-empty detail, matching the readiness/delivery rollup."""
     assert gate_repair._passed(_receipt(0)) is True
     assert gate_repair._passed(_receipt(1)) is False
-    assert gate_repair._passed(
-        _receipt(0, assertions=[{"name": "x", "passed": False}]),
-    ) is False
+    assert (
+        gate_repair._passed(
+            _receipt(0, assertions=[{"name": "x", "passed": False}]),
+        )
+        is False
+    )
     assert gate_repair._passed(_receipt(0, detail="baseline regression")) is False
 
 
-def test_exit0_failed_assertion_gate_enters_repair(monkeypatch) -> None:
+def test_exit0_failed_assertion_gate_handoffs_without_repair(monkeypatch) -> None:
     """A scheduled gate whose receipt exits 0 but fails an assertion is routed as
-    failed (enters repair), never a false-green close."""
+    failed and pauses for an operator waiver, never a false-green close or
+    agent repair."""
     contract = _contract()
     run = _run(contract)
-    calls = _patch_gate_results(monkeypatch, [
-        _receipt(0, assertions=[{"name": "no-warnings", "passed": False}]),
-        _receipt(0),
-    ])
+    calls = _patch_gate_results(
+        monkeypatch,
+        [
+            _receipt(0, assertions=[{"name": "no-warnings", "passed": False}]),
+            _receipt(0),
+        ],
+    )
     _patch_repair(monkeypatch, calls)
 
     outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
 
-    assert outcome.active and outcome.passed
-    assert outcome.rounds == 1
-    assert calls["repair"] == 1
-    # The durable routing trail recorded the first run as executed_fail.
-    events = run.state.extras[gate_repair.VERIFICATION_GATE_EVENTS_KEY]
-    decisions = [e["decision"] for e in events if e.get("command") == "test"]
-    assert "executed_fail" in decisions
+    assert outcome.active and outcome.paused
+    assert outcome.rounds == 0
+    assert calls["repair"] == 0
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.available_actions == ("continue_with_waiver", "halt")
+    finding = signal.artifacts["findings"][0]
+    assert finding["failure_kind"] == "env_failure"
+    assert "exit_code=0" in finding["body"]
+    assert "assertions=0/1 passed" in finding["body"]
+    assert signal.artifacts["short_summary"] == finding["body"]
+    assert signal.last_output
+    # This output-dir-less routing stub has no durable artifact. Artifact-backed
+    # execution-trail coverage lives in test_verification_autorun.
 
 
 def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
@@ -118,6 +141,16 @@ def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
         return queue.pop(0) if queue else results[-1]
 
     monkeypatch.setattr(gate_repair, "_run_gate_command", fake_gate)
+    # These routing tests isolate scheduling and repair behavior.  Their
+    # in-memory receipts carry an explicit v3 subject, and this seam supplies
+    # the same current subject a real checkout capture would produce.
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(
+            receipt, current_subject=subject_identity(receipt.get("subject")),
+        ),
+    )
     return calls
 
 
@@ -151,6 +184,26 @@ def test_passing_gate_closes_without_repair(monkeypatch) -> None:
     assert run.state.phase_handoff_request is None
 
 
+def test_unverifiable_gate_handoffs_without_repair_rounds(monkeypatch) -> None:
+    """Unavailable identity is fail-closed but cannot be repaired by an agent."""
+    contract = _contract()
+    run = _run(contract)
+    calls = _patch_gate_results(monkeypatch, [_receipt(0)])
+    _patch_repair(monkeypatch, calls)
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(receipt, current_subject=None),
+    )
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.active and outcome.paused
+    assert outcome.rounds == 0
+    assert calls["repair"] == 0
+    assert run.state.phase_handoff_request is not None
+
+
 def test_failed_gate_enters_repair_without_review(monkeypatch) -> None:
     contract = _contract()
     run = _run(contract)
@@ -162,18 +215,79 @@ def test_failed_gate_enters_repair_without_review(monkeypatch) -> None:
 
     assert outcome.active and outcome.passed
     assert outcome.rounds == 1
-    assert calls["repair"] == 1          # repair_changes dispatched
-    assert calls["gate"] == 2            # initial fail + passing re-check
+    assert calls["repair"] == 1  # repair_changes dispatched
+    assert calls["gate"] == 2  # initial fail + passing re-check
     # the failed command output became the critique (no reviewer pass).
     assert "Required verification gate failed" in run.state.last_critique
     assert run.state.phase_handoff_request is None
+
+
+def test_test_failure_critique_keeps_receipt_tails_for_repair(monkeypatch) -> None:
+    """Repair receives full command evidence as well as the compact summary."""
+    contract = _contract()
+    run = _run(contract)
+    receipt = _receipt(1)
+    receipt["stdout_tail"] = "FAILED tests/test_gate.py::test_expected_value"
+    receipt["stderr_tail"] = "Traceback: expected 1, got 0"
+    calls = _patch_gate_results(monkeypatch, [receipt, _receipt(0)])
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.passed
+    assert "class=test_failure" in run.state.last_test_output
+    assert "FAILED tests/test_gate.py::test_expected_value" in run.state.last_test_output
+    assert "Traceback: expected 1, got 0" in run.state.last_test_output
+    assert "stdout:\nFAILED tests/test_gate.py::test_expected_value" in run.state.last_critique
+    assert "stderr:\nTraceback: expected 1, got 0" in run.state.last_critique
+
+
+def test_exit0_import_assertion_handoff_has_provenance_evidence(monkeypatch) -> None:
+    contract = _contract()
+    run = _run(contract)
+    calls = _patch_gate_results(
+        monkeypatch,
+        [
+            _receipt(
+                0,
+                assertions=[
+                    {
+                        "name": "pipeline",
+                        "kind": "import_path_equals",
+                        "expected": "/work/pipeline/__init__.py",
+                        "actual": "/installed/pipeline/__init__.py",
+                        "passed": False,
+                    }
+                ],
+            )
+        ],
+    )
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.paused and calls["repair"] == 0
+    signal = run.state.phase_handoff_request
+    assert signal.artifacts["findings"] == [
+        {
+            "id": "verification_gate_provenance_failure",
+            "severity": "P3",
+            "title": "Verification gate provenance_failure",
+            "body": signal.artifacts["short_summary"],
+            "required_fix": "Fix the verification environment outside the agent or choose an explicit waiver.",
+            "failure_kind": "provenance_failure",
+        }
+    ]
+    assert "expected='/work/pipeline/__init__.py'" in signal.last_output
+    assert "actual='/installed/pipeline/__init__.py'" in signal.last_output
 
 
 def test_recheck_is_exit_condition_after_multiple_rounds(monkeypatch) -> None:
     contract = _contract()
     run = _run(contract, max_rounds=3)
     calls = _patch_gate_results(
-        monkeypatch, [_receipt(1), _receipt(1), _receipt(0)],
+        monkeypatch,
+        [_receipt(1), _receipt(1), _receipt(0)],
     )
     _patch_repair(monkeypatch, calls)
 
@@ -181,6 +295,40 @@ def test_recheck_is_exit_condition_after_multiple_rounds(monkeypatch) -> None:
 
     assert outcome.passed and outcome.rounds == 2
     assert run.state.phase_handoff_request is None
+
+
+def test_recheck_hygiene_failure_pauses_without_another_repair(monkeypatch) -> None:
+    """A repair recheck that becomes hygiene evidence exits to waiver handoff."""
+    contract = _contract()
+    run = _run(contract, max_rounds=3)
+    calls = _patch_gate_results(
+        monkeypatch,
+        [
+            _receipt(1),
+            _receipt(
+                0,
+                assertions=[
+                    {
+                        "name": "pipeline",
+                        "kind": "import_path_equals",
+                        "expected": "/work/pipeline/__init__.py",
+                        "actual": "/installed/pipeline/__init__.py",
+                        "passed": False,
+                    }
+                ],
+            ),
+        ],
+    )
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.active and outcome.paused and outcome.rounds == 1
+    assert calls["repair"] == 1
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.available_actions == ("continue_with_waiver", "halt")
+    assert signal.artifacts["findings"][0]["failure_kind"] == "provenance_failure"
 
 
 def test_budget_exhaustion_escalates_to_handoff(monkeypatch) -> None:
@@ -197,12 +345,12 @@ def test_budget_exhaustion_escalates_to_handoff(monkeypatch) -> None:
     assert run.state.phase_handoff_request is not None
     assert run.state.phase_handoff_request.phase == "implement"
     assert run.state.halt is True
+    assert "retry_feedback" in run.state.phase_handoff_request.available_actions
 
 
 def test_action_handoff_escalates_immediately(monkeypatch) -> None:
     contract = _contract(
-        schedule=[{"after_phase": "implement",
-                   "action": "handoff", "commands": ["test"]}],
+        schedule=[{"after_phase": "implement", "policy": "require", "action": "handoff", "commands": ["test"]}],
     )
     run = _run(contract)
     calls = _patch_gate_results(monkeypatch, [_receipt(1)])
@@ -211,14 +359,13 @@ def test_action_handoff_escalates_immediately(monkeypatch) -> None:
     outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
 
     assert outcome.active and outcome.paused
-    assert calls["repair"] == 0          # no repair attempted
+    assert calls["repair"] == 0  # no repair attempted
     assert run.state.phase_handoff_request is not None
 
 
 def test_action_abort_halts(monkeypatch) -> None:
     contract = _contract(
-        schedule=[{"after_phase": "implement",
-                   "action": "abort", "commands": ["test"]}],
+        schedule=[{"after_phase": "implement", "policy": "require", "action": "abort", "commands": ["test"]}],
     )
     run = _run(contract)
     calls = _patch_gate_results(monkeypatch, [_receipt(1)])
@@ -297,7 +444,8 @@ def test_run_gate_command_persists_receipt(monkeypatch, tmp_path) -> None:
     run = _run(contract)
     run.state.output_dir = tmp_path
     monkeypatch.setattr(
-        vc, "run_command",
+        vc,
+        "run_command",
         lambda *a, **k: _fake_command_receipt(0),
     )
 
@@ -311,7 +459,8 @@ def test_run_gate_command_persists_receipt(monkeypatch, tmp_path) -> None:
 
 
 def test_run_gate_command_overwrites_receipt_on_rerun(
-    monkeypatch, tmp_path,
+    monkeypatch,
+    tmp_path,
 ) -> None:
     import pipeline.verification_command as vc
     from pipeline.evidence.verification_receipt import load_command_receipts
@@ -322,13 +471,81 @@ def test_run_gate_command_overwrites_receipt_on_rerun(
     queue = [_fake_command_receipt(1), _fake_command_receipt(0)]
     monkeypatch.setattr(vc, "run_command", lambda *a, **k: queue.pop(0))
 
-    entry = SimpleNamespace(command="test")
+    entry = SimpleNamespace(command="test", hook="after_phase", phase="implement")
     gate_repair._run_gate_command(run, contract, entry)
     gate_repair._run_gate_command(run, contract, entry)
 
     persisted = load_command_receipts(tmp_path)
     assert len(persisted) == 1
     assert persisted[0]["exit_code"] == 0
+    evidence = sorted(
+        (tmp_path / "verification_command_receipts" / "executions").glob("*.json"),
+    )
+    assert len(evidence) == 2
+    assert [json.loads(path.read_text())["exit_code"] for path in evidence] == [1, 0]
+
+
+def test_automatic_recheck_preserves_truthful_receipt_timeline(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import pipeline.verification_command as vc
+    from pipeline.evidence.verification_receipt import load_command_receipts
+    from pipeline.project.verification_ledger_runtime import initialize
+    from pipeline.verification_ledger_store import load_ledger
+    from sdk.verification_timeline import get_verification_timeline
+
+    run_dir = tmp_path / "runs" / "20260722_automatic_retry"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps({"status": "done", "project": "/tmp/project"}),
+        encoding="utf-8",
+    )
+    contract = _contract()
+    run = _run(contract)
+    run.state.output_dir = run_dir
+    initialize(run.state)
+    queue = [_fake_command_receipt(1), _fake_command_receipt(0)]
+    monkeypatch.setattr(vc, "run_command", lambda *a, **k: queue.pop(0))
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: SimpleNamespace(
+            status="present" if receipt["exit_code"] == 0 else "absent",
+            failure_kind="test_failure",
+            exit_code=receipt["exit_code"],
+            assertions_passed=0,
+            assertions_total=0,
+            failed_assertions=(),
+        ),
+    )
+    calls = {"repair": 0}
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.passed and outcome.rounds == 1
+    executions = [
+        event for event in load_ledger(run_dir).trail if event.kind == "execution"
+    ]
+    assert [(event.outcome, event.rerun) for event in executions] == [
+        ("fail", False),
+        ("pass", True),
+    ]
+    evidence_paths = [event.receipt_evidence for event in executions]
+    assert all(evidence_paths)
+    assert evidence_paths[0] != evidence_paths[1]
+    assert [
+        json.loads((run_dir / path).read_text())["exit_code"]
+        for path in evidence_paths
+    ] == [1, 0]
+    assert [receipt["exit_code"] for receipt in load_command_receipts(run_dir)] == [0]
+
+    monkeypatch.setenv("ORCHO_RUNSPACE", str(tmp_path))
+    projected = get_verification_timeline(run_id=run_dir.name)
+    projected_executions = [event for event in projected.events if event.kind == "execution"]
+    assert [event.receipt_evidence.path for event in projected_executions] == evidence_paths
+    assert [event.receipt_evidence.rerun for event in projected_executions] == [False, True]
 
 
 def test_run_gate_command_tolerates_missing_output_dir(
@@ -340,7 +557,8 @@ def test_run_gate_command_tolerates_missing_output_dir(
     run = _run(contract)
     run.state.output_dir = None
     monkeypatch.setattr(
-        vc, "run_command",
+        vc,
+        "run_command",
         lambda *a, **k: _fake_command_receipt(0),
     )
 

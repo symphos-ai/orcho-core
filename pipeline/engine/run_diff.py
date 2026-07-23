@@ -16,13 +16,12 @@ are *not* part of the SDK/API surface. CLI and MCP must go through
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.io.ansi import C, paint
+from pipeline.verification_subject import snapshot_worktree_tree
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,9 +147,9 @@ def _snapshot_tree(git_root: Path) -> str | None:
     Builds the tree in a **temporary index** (``GIT_INDEX_FILE`` pointing
     at a throwaway path) so the real index and working tree are never
     touched — no ``git add`` against the user's index, no staged-state
-    side effects. ``git add -A`` from the empty temp index stages every
-    worktree path (tracked edits *and* new untracked files), honoring
-    ``.gitignore`` the same way ``--exclude-standard`` would, then
+    side effects. The temporary index is seeded from ``HEAD`` before
+    ``git add -A`` overlays every worktree path (tracked edits *and* new
+    untracked files), honoring ``.gitignore`` the same way ``--exclude-standard`` would, then
     ``git write-tree`` persists a tree object in the object DB.
 
     Why a tree (not ``git stash create``): ``git stash create`` silently
@@ -163,38 +162,7 @@ def _snapshot_tree(git_root: Path) -> str | None:
     snapshot fails. Never raises. The blobs/tree it writes are dangling
     objects, reclaimed by routine ``git gc``.
     """
-    if git_root is None:
-        return None
-
-    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    tmp_dir = tempfile.mkdtemp(prefix="orcho-idx-")
-    # A path that does not yet exist → git creates a fresh empty index.
-    git_env["GIT_INDEX_FILE"] = os.path.join(tmp_dir, "index")
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
-        try:
-            return subprocess.run(
-                ["git", *args],
-                cwd=str(git_root),
-                capture_output=True,
-                text=True,
-                timeout=30,
-                env=git_env,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return None
-
-    try:
-        added = _git("add", "-A")
-        if added is None or added.returncode != 0:
-            return None
-        written = _git("write-tree")
-        if written is None or written.returncode != 0:
-            return None
-        return written.stdout.strip() or None
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    return snapshot_worktree_tree(git_root)
 
 
 def snapshot_worktree(git_root: Path) -> str | None:

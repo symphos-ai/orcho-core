@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,11 @@ from pipeline.project.finalization import (
     _halt_banner,
     finalize_with_terminal_output,
 )
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 
 def _fix_halt_session(**phases: Any) -> dict[str, Any]:
@@ -1118,12 +1124,8 @@ class TestCorrectionRouteWiring:
 
         if presentation is None:
             presentation = PresentationPolicy.SILENT
-        import json
         from types import SimpleNamespace
 
-        from pipeline.evidence.verification_receipt import (
-            COMMAND_RECEIPTS_DIRNAME,
-        )
         from pipeline.project.run import _PipelineRun
         from pipeline.verification_contract import placeholder_context_for
 
@@ -1137,27 +1139,22 @@ class TestCorrectionRouteWiring:
             )
 
         def _write_receipt(command: str) -> Path:
-            rdir = run_dir / COMMAND_RECEIPTS_DIRNAME
-            rdir.mkdir(parents=True, exist_ok=True)
-            path = rdir / f"{command}.json"
-            path.write_text(
-                json.dumps({
-                    "kind": "verification_command",
+            from pipeline.evidence.verification_receipt import write_command_receipt
+            from pipeline.verification_subject import capture_verification_subject
+
+            return write_command_receipt(
+                output_dir=run_dir,
+                result={
                     "command": command,
                     "env": "core-local",
                     "exit_code": 0,
                     "assertions": [],
                     "detail": "",
-                    "git": {
-                        "checkout_head": None,
-                        "baseline_head": None,
-                        "changed_files_fingerprint": None,
-                    },
+                    "git": {},
+                    "subject": capture_verification_subject(project),
                     "dependencies": [],
-                }),
-                encoding="utf-8",
+                },
             )
-            return path
 
         def _verify_run(**kwargs):
             calls.append(("run", kwargs))
@@ -1181,6 +1178,12 @@ class TestCorrectionRouteWiring:
         run_dir.mkdir(parents=True)
         project = tmp_path / "project"
         project.mkdir()
+        (project / "base.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=project, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=project, check=True)
+        subprocess.run(["git", "add", "base.txt"], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=project, check=True)
         triage = {"kind": "gate_rerun", "summary": "stale blockers"}
         st = self._state(triage)
         st.extras["verification_contract"] = contract
@@ -1226,6 +1229,8 @@ class TestCorrectionRouteWiring:
                     "env": "core-local",
                     "run_id": "child_run",
                     "workspace": str(workspace),
+                    "runs_dir": workspace / "runspace" / "runs",
+                    "subject_checkout": str(project),
                 },
             ),
             (
@@ -1234,6 +1239,7 @@ class TestCorrectionRouteWiring:
                     "project": str(project),
                     "run_id": "child_run",
                     "workspace": str(workspace),
+                    "runs_dir": workspace / "runspace" / "runs",
                     "commands": ["env-provenance", "lint"],
                     # The resolved subject checkout is pinned through so gates
                     # execute against the run's worktree, not a meta fallback.
@@ -1268,6 +1274,7 @@ class TestCorrectionRouteWiring:
             "project": str(project),
             "run_id": "child_run",
             "workspace": str(workspace),
+            "runs_dir": workspace / "runspace" / "runs",
             "commands": ["lint"],
             "subject_checkout": str(project),
         }]
@@ -1278,8 +1285,9 @@ class TestCorrectionRouteWiring:
     @staticmethod
     def _path_selected_contract(*, manual_e2e: bool = False) -> Any:
         """Contract whose ``cli-sdk-unit`` gate is **path-selected** (``sdk/**``),
-        not in static ``verification.required``; blanket delivery-position schedule
-        entries make it a required delivery command once the gate set is selected.
+        not in static ``verification.required``; blanket delivery-position ``warn``
+        schedule entries make it an auto-materialized delivery command once the
+        gate set is selected.
         With ``manual_e2e`` a required ``e2e`` is parked manual_only."""
         from pipeline.plugins import PluginConfig
         from pipeline.verification_contract import VerificationContract
@@ -1291,8 +1299,8 @@ class TestCorrectionRouteWiring:
         gate_sets: dict[str, Any] = {"cli-sdk": {"commands": ["cli-sdk-unit"]}}
         required = ["lint"]
         schedule: list[dict[str, Any]] = [
-            {"before_delivery": True},
-            {"after_phase": "implement"},
+            {"before_delivery": True, "policy": "warn"},
+            {"after_phase": "implement", "policy": "warn"},
         ]
         if manual_e2e:
             commands["e2e"] = {"run": "true"}
@@ -1612,6 +1620,18 @@ class TestSkippedPhaseGateSuppression:
         from pipeline.project.run import _PipelineRun
 
         calls = self._record_gate_hooks(monkeypatch)
+        # This test owns only correction-route gate suppression.  The final
+        # phase now also freezes and materializes the delivery epoch; isolate
+        # that independent lifecycle seam so the intentionally minimal
+        # gate-active stub does not need a complete verification contract.
+        monkeypatch.setattr(
+            "pipeline.project.verification_autorun.select_before_delivery_epoch",
+            lambda _run: None,
+        )
+        monkeypatch.setattr(
+            "pipeline.project.run._auto_run_required_receipts_live",
+            lambda *args, **kwargs: None,
+        )
         st = self._state()
         st.phase_log["correction_triage"] = {
             "kind": "gate_rerun", "summary": "stale blockers",
@@ -1722,3 +1742,23 @@ class TestTranscriptNotProofChannelDistinction:
         assert TRANSCRIPT_NOT_PROOF_NOTE not in rendered
         # Remediation (official commands) is still surfaced for the operator.
         assert "orcho verify run test --run-id rid" in rendered
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode_for_full_transcript():
+    """Pin the full live transcript shape (T2 summary reconciliation).
+
+    ``summary`` is the default run-output mode — the compact append-only
+    arc that collapses phase headers to ``▶ <phase>`` and the review /
+    plan / implement outcome blocks to single lines. These tests assert
+    the full-fidelity transcript, so force ``live`` (rendering only; no
+    echo / verbose / trace side effects) and restore afterwards.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before

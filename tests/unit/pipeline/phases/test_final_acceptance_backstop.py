@@ -12,8 +12,11 @@ reviewer model emitted. Covers the pure gap builder
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from pipeline.evidence.verification_receipt import write_command_receipt
 from pipeline.phases.builtin import default_registry
@@ -25,6 +28,24 @@ from pipeline.verification_contract import (
     VerificationContract,
 )
 from pipeline.verification_readiness import required_receipt_gaps
+from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
+
+
+def _init_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for argv in (
+        ["git", "init", "-q"], ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(argv, cwd=path, check=True)
+    (path / "base").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=path, check=True)
 
 
 def _contract() -> VerificationContract:
@@ -44,6 +65,8 @@ def _contract() -> VerificationContract:
 
 
 def _passing_receipt(checkout: str) -> dict[str, Any]:
+    captured = capture_verification_subject(Path(checkout))
+    assert isinstance(captured, VerificationSubjectAvailable)
     return {
         "kind": "verification_command",
         "command": "test",
@@ -60,6 +83,7 @@ def _passing_receipt(checkout: str) -> dict[str, Any]:
         "log_path": None,
         "parity": "absolute",
         "detail": "",
+        "subject": captured,
         "git": {
             "checkout_head": None,
             "baseline_head": None,
@@ -178,26 +202,30 @@ class TestRequiredReceiptGaps:
         assert gap["required_check"] == "pytest -q"
 
     def test_passing_receipt_yields_no_gap(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "checkout"
+        _init_repo(checkout)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         write_command_receipt(
-            output_dir=run_dir, result=_passing_receipt(str(tmp_path)),
+            output_dir=run_dir, result=_passing_receipt(str(checkout)),
         )
         gaps = required_receipt_gaps(
             _contract(), run_dir,
-            PlaceholderContext(checkout=str(tmp_path)),
+            PlaceholderContext(checkout=str(checkout)),
         )
         assert gaps == []
 
     def test_failed_receipt_yields_gap(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "checkout"
+        _init_repo(checkout)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        receipt = _passing_receipt(str(tmp_path))
+        receipt = _passing_receipt(str(checkout))
         receipt["exit_code"] = 1
         write_command_receipt(output_dir=run_dir, result=receipt)
         gaps = required_receipt_gaps(
             _contract(), run_dir,
-            PlaceholderContext(checkout=str(tmp_path)),
+            PlaceholderContext(checkout=str(checkout)),
         )
         assert len(gaps) == 1
         assert "failed" in gaps[0]["risk"]
@@ -273,6 +301,7 @@ class TestFinalAcceptanceBackstop:
 
     def test_passing_receipt_keeps_approval(self, tmp_path: Path) -> None:
         state = _state(tmp_path, contract=_contract())
+        _init_repo(tmp_path / "wt")
         write_command_receipt(
             output_dir=state.output_dir,
             result=_passing_receipt(str(tmp_path / "wt")),
@@ -284,6 +313,32 @@ class TestFinalAcceptanceBackstop:
         assert entry["approved"] is True
         assert entry["verdict"] == "APPROVED"
         assert entry["ship_ready"] is True
+        assert "engine_backstop" not in entry
+
+    def test_provenance_receipt_is_a_hygiene_warning_not_a_backstop_gap(
+        self, tmp_path: Path,
+    ) -> None:
+        """An exit-0 provenance assertion does not override APPROVED status."""
+        state = _state(tmp_path, contract=_contract())
+        _init_repo(tmp_path / "wt")
+        receipt = _passing_receipt(str(tmp_path / "wt"))
+        receipt["assertions"] = [
+            {
+                "name": "pipeline",
+                "kind": "import_path_equals",
+                "expected": "/work/pipeline/__init__.py",
+                "actual": "/installed/pipeline/__init__.py",
+                "passed": False,
+            }
+        ]
+        write_command_receipt(output_dir=state.output_dir, result=receipt)
+
+        new = default_registry().get("final_acceptance")(state)
+
+        entry = new.phase_log["final_acceptance"]
+        assert entry["approved"] is True
+        assert entry["verdict"] == "APPROVED"
+        assert entry["verification_gaps"] == []
         assert "engine_backstop" not in entry
 
     def test_waiver_keeps_reviewer_verdict(self, tmp_path: Path) -> None:

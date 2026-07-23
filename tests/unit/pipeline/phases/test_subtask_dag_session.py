@@ -201,6 +201,33 @@ class TestBuildSubtaskPromptTurn:
         assert isinstance(turn, PromptTurn)
         assert binding is None
 
+    def test_carries_managed_command_policy_part(self) -> None:
+        from pipeline.prompts.types import (
+            PromptCacheScope,
+            PromptLayer,
+            PromptPart,
+            PromptStability,
+        )
+
+        part = PromptPart(
+            kind="verification_contract",
+            name="implement",
+            source="code-owned",
+            body="Long-command execution policy: use orcho command run",
+            id="verification_contract:implement:test",
+            layer=PromptLayer.CONTEXT,
+            stability=PromptStability.RUN,
+            cache_scope=PromptCacheScope.SESSION,
+            volatile_reason="test run-scoped command boundary",
+        )
+        turn, _ = build_subtask_prompt(
+            SubTask(id="t1", goal="g"), PluginConfig(),
+            verification_part=part,
+        )
+
+        assert "Long-command execution policy" in turn.text
+        assert "orcho command run" in turn.text
+
     def test_minimal_p2_shape_golden(self) -> None:
         # Pins the P2 wire shape for a bare subtask: executable block first,
         # then current-only execution rules, then change handoff.

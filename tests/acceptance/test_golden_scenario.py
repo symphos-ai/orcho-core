@@ -246,6 +246,9 @@ def test_golden_scenario_event_spine_carries_rea2_kinds(
     assert payload["subtask_count"] >= 1
     assert payload["has_contract"] is True
     assert payload["acceptance_criteria_count"] >= 1
+    assert isinstance(payload.get("subtasks"), list)
+    assert len(payload["subtasks"]) == payload["subtask_count"]
+    assert {"id", "goal"} <= set(payload["subtasks"][0])
 
     # Mock plan_*.md write fires artifact.created (per attempt).
     plan_artifacts = [
@@ -443,11 +446,18 @@ def test_golden_scenario_typed_plan_contract_propagates_to_phase_prompts(
     assert plan_idx is not None, "no PLAN claude.invoke captured"
 
     post_plan = captured[plan_idx + 1 :]
-    # Strip out hypothesis-validation codex invokes — they also fire before
-    # PLAN-time and don't carry the Plan Contract.
+    # Strip out codex invokes that are not phase prompts and so don't carry
+    # the Plan Contract:
+    #   * hypothesis-validation invokes fire before PLAN-time;
+    #   * the commit-message composer (content_language / ADR 0121) fires at
+    #     delivery time as a focused outward-artifact generation prompt — it
+    #     summarises the diff into a commit message and intentionally omits the
+    #     plan contract.
     post_plan_codex = [
         p for label, p in post_plan
-        if label == "codex.invoke" and "hypothesis_" not in p
+        if label == "codex.invoke"
+        and "hypothesis_" not in p
+        and "Compose a commit message" not in p
     ]
     post_plan_claude = [p for label, p in post_plan if label == "claude.invoke"]
 

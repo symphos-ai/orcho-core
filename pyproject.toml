@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orcho-core"
-version = "0.1.0"
-description = "Local-first control plane for cross-agent AI software delivery"
+version = "0.5.0"
+description = "Production harness and local-first control plane for accountable AI software delivery"
 requires-python = ">=3.12"
 readme = "README.md"
 license = "Apache-2.0"
@@ -90,6 +90,7 @@ orcho-cross = "pipeline.cross_project.cli:main"
 # break — no aliasing of legacy groups.
 [project.entry-points."orcho.agent_runtimes"]
 claude = "agents.runtimes.claude:ClaudeAgent"
+claude-glm = "agents.runtimes.claude_glm:ClaudeGlmAgent"
 codex  = "agents.runtimes.codex:CodexAgent"
 gemini = "agents.runtimes.gemini:GeminiAgent"
 
@@ -98,6 +99,14 @@ gemini = "agents.runtimes.gemini:GeminiAgent"
 # Path objects pointing at <root>/<name>/SKILL.md trees). orcho-core
 # itself ships no built-in entries — this group is purely third-party.
 [project.entry-points."orcho.skills"]
+
+# ADR 0121 — git-provider delivery publishing. A registered provider pushes an
+# approved delivery branch and opens a pull request over the existing signed
+# commit. Core resolves this group by name (or the sole registration) and never
+# shells a provider itself; any embedder can register an alternative provider
+# under the same group.
+[project.entry-points."orcho.delivery_providers"]
+github = "pipeline.engine.delivery_providers.github:GitHubDeliveryProvider"
 
 [project.entry-points."orcho.phases"]
 # Workflow-semantic phase IDs per ADR 0022.
@@ -127,6 +136,14 @@ core = [
     "_prompts/*.md",
     "_prompts/**/*.md",
     "_config/*.json",
+    "_runtime_wrappers/*.sh",
+    "_runtime_wrappers/*.cmd",
+    "_demo_assets/golden-api/.gitignore",
+    "_demo_assets/golden-api/.orcho/**/*.md",
+    "_demo_assets/golden-api/**/*.md",
+    "_demo_assets/golden-api/**/*.py",
+    "_demo_assets/golden-api/**/*.toml",
+    "_demo_assets/golden-api/**/*.txt",
 ]
 
 # ``config.local.json`` is gitignored, user-local override content

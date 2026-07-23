@@ -31,6 +31,8 @@ import dataclasses
 import json
 import os
 import sys
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -335,6 +337,9 @@ def setup_isolation(
         if output_dir is not None:
             with contextlib.suppress(Exception):
                 save_session(output_dir, session)
+        if presentation is PresentationPolicy.TERMINAL:
+            from pipeline.project.app import print_error
+            print_error(_pre_run_dirty_halt_message(_pre_run_dirty))
         return IsolationSetup(halted=True)
 
     # Cross children carry ``parent_run_id`` (the cross run id) + a stable
@@ -425,6 +430,25 @@ def setup_isolation(
         )
 
     git_cwd = str(_worktree_ctx.path)
+    # Correction follow-ups have a stronger continuity contract than generic
+    # follow-ups: they repair the retained parent change, never a newly-created
+    # checkout. Verify the resolver honoured the exact recorded subject before
+    # publishing the child worktree in durable metadata.
+    if (
+        resume_mode == "followup"
+        and getattr(v2_profile, "name", None) == "correction"
+        and _followup_decision is not None
+        and _followup_decision.diff_source == "worktree"
+    ):
+        parent_path = (followup_parent_worktree or {}).get("path")
+        try:
+            exact_parent = parent_path is not None and Path(parent_path).resolve() == _worktree_ctx.path.resolve()
+        except OSError:
+            exact_parent = False
+        if not exact_parent:
+            raise WorktreeConfigError(
+                "correction follow-up must reuse the exact retained parent worktree",
+            )
     session["worktree"] = _worktree_ctx.to_dict()
     # Persist the follow-up continuity classification into the session
     # worktree block so the chosen mode (reuse / clean HEAD) stays
@@ -530,6 +554,39 @@ def setup_isolation(
     )
 
 
+def _pre_run_dirty_halt_message(intake: Any) -> str:
+    """Build a compact operator-facing explanation for a dirty-checkout halt."""
+    reason = getattr(intake, "reason", None) or "dirty checkout requires intake"
+    details = _format_pre_run_dirty_paths(
+        "changed", getattr(intake, "changed_paths", ()),
+    )
+    details += _format_pre_run_dirty_paths(
+        "untracked", getattr(intake, "untracked_paths", ()),
+    )
+    path_details = f" Paths: {'; '.join(details)}." if details else ""
+    return (
+        f"Dirty working tree halted before worktree creation: {reason}."
+        f"{path_details} Commit or stash your changes, then rerun; or rerun "
+        "with --no-worktree-isolation."
+    )
+
+
+def _format_pre_run_dirty_paths(
+    label: str,
+    paths: tuple[str, ...],
+    *,
+    limit: int = 3,
+) -> list[str]:
+    """Return a bounded path summary suitable for one terminal line."""
+    if not paths:
+        return []
+    examples = ", ".join(paths[:limit])
+    remaining = len(paths) - limit
+    if remaining > 0:
+        examples += f", +{remaining} more"
+    return [f"{label} ({len(paths)}): {examples}"]
+
+
 def _apply_worktree_bootstrap(
     *,
     config: Any,
@@ -553,11 +610,20 @@ def _apply_worktree_bootstrap(
         run_worktree_bootstrap,
     )
     try:
-        bootstrap_result = run_worktree_bootstrap(
-            config,
-            source_root=git_root,
-            worktree_path=worktree_ctx.path,
-        )
+        if presentation is PresentationPolicy.TERMINAL:
+            reporter = _WorktreeBootstrapReporter(clock=time.monotonic)
+            bootstrap_result = run_worktree_bootstrap(
+                config,
+                source_root=git_root,
+                worktree_path=worktree_ctx.path,
+                on_step=reporter.on_step,
+            )
+        else:
+            bootstrap_result = run_worktree_bootstrap(
+                config,
+                source_root=git_root,
+                worktree_path=worktree_ctx.path,
+            )
     except WorktreeBootstrapError as exc:
         session["worktree_bootstrap"] = {
             "status": "failed",
@@ -571,8 +637,82 @@ def _apply_worktree_bootstrap(
         print_error(f"Worktree bootstrap failed: {exc}")
         sys.exit(2)
     if bootstrap_result.get("status") != "skipped":
+        if presentation is PresentationPolicy.TERMINAL:
+            reporter.finish()
         session["worktree_bootstrap"] = bootstrap_result
         _save_session_quietly(output_dir, session)
+
+
+@dataclasses.dataclass
+class _WorktreeBootstrapReporter:
+    """Render transient bootstrap progress without changing durable state."""
+
+    clock: Callable[[], float]
+    started_at: float | None = None
+    step_starts: dict[int, tuple[str, float]] = dataclasses.field(default_factory=dict)
+
+    def on_step(
+        self,
+        stage: str,
+        index: int,
+        action: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if stage == "start":
+            self._start(index, action, payload)
+        elif stage == "complete":
+            self._complete(index, payload)
+
+    def _start(self, index: int, action: str, step: Mapping[str, Any]) -> None:
+        now = self.clock()
+        if self.started_at is None:
+            from core.io.transcript import render_phase_header
+            print(render_phase_header("SETUP", "Worktree bootstrap"))
+            self.started_at = now
+        label = _bootstrap_step_label(action, step)
+        self.step_starts[index] = (label, now)
+        print(f"  {index}. {label} …")
+
+    def _complete(self, index: int, record: Mapping[str, Any]) -> None:
+        label, started_at = self.step_starts.pop(index)
+        elapsed = self.clock() - started_at
+        status = "skipped" if record.get("status") == "skipped" else "done"
+        print(f"  {index}. {label} {status} ({elapsed:.2f}s)")
+
+    def finish(self) -> None:
+        if self.started_at is not None:
+            elapsed = self.clock() - self.started_at
+            print(f"  Worktree bootstrap complete ({elapsed:.2f}s)")
+
+
+def _bootstrap_step_label(action: str, step: Mapping[str, Any]) -> str:
+    """Return a bounded, provider-neutral terminal label for one declaration."""
+    if action == "run":
+        command = step.get("run", step.get("command", step.get("cmd", "")))
+        return _bounded_bootstrap_text(_format_bootstrap_command(command))
+    if action == "copy":
+        source = step.get("from", step.get("copy", ""))
+        target = step.get("to")
+        label = f"copy {source}" if not target else f"copy {source} → {target}"
+        return _bounded_bootstrap_text(label)
+    if action == "python":
+        return _bounded_bootstrap_text(f"python {step.get('python', step.get('script', ''))}")
+    if action == "shell":
+        return _bounded_bootstrap_text(f"shell {step.get('shell', step.get('cmd', ''))}")
+    return _bounded_bootstrap_text(action)
+
+
+def _format_bootstrap_command(command: Any) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, Sequence) and not isinstance(command, bytes):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def _bounded_bootstrap_text(text: str, *, limit: int = 120) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[:limit - 1]}…"
 
 
 def _save_session_quietly(output_dir: Path | None, session: dict) -> None:

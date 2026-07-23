@@ -49,6 +49,9 @@ EXCLUDED_DIR_NAMES: frozenset[str] = frozenset({
 EXCLUDED_FILENAMES: frozenset[str] = frozenset({
     "claude.md",
     "agents.md",
+    # Guard test that enumerates the banned terms precisely to assert
+    # client-facing text (the MCP server-instructions string) avoids them.
+    "test_server_instructions.py",
 })
 
 PUBLIC_PACKAGES: tuple[str, ...] = (

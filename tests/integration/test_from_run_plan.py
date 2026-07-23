@@ -42,6 +42,24 @@ from pipeline.project_orchestrator import run_pipeline
 # ── fixtures ────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy slice.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout — so a parent run leaves its checkout clean and a follow-up
+    refuses to start on a clean HEAD. These flows predate that policy, so they
+    run under ``bypass`` (the ADR's explicit legacy opt-out). The new
+    branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 @pytest.fixture
 def project_dir(tmp_path: Path) -> str:
     """Override the global ``project_dir`` fixture: this test exercises

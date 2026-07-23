@@ -100,6 +100,26 @@ def _reset_phase_continuity() -> Iterator[None]:
         set_verbose(verbose_before)
 
 
+@pytest.fixture(autouse=True)
+def _live_transcript_mode() -> Iterator[None]:
+    """Pin the full-fidelity (live) transcript shape for this file.
+
+    The default run-output mode is ``summary`` — the compact append-only
+    arc. Every renderer pinned here (phase header, review/plan/implement
+    blocks, synthesised invocation titles) is the live/debug form, so
+    force ``live`` for the whole module and restore afterwards. The
+    summary grammar is pinned separately by the acceptance goldens.
+    """
+    from core.observability import logging as _logging
+
+    before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = before
+
+
 @pytest.fixture
 def force_color() -> Iterator[None]:
     """Opt-in: force-enable color for tests that pin raw ANSI codes."""
@@ -207,8 +227,9 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 gate="lint",
                 timing="after_implement",
                 run_mode="auto",
-                policy="warn",
+                policy="require",
                 kind="cheap",
+                when="after_implement",
             ),
             GateRowView(
                 gate="test",
@@ -216,6 +237,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 run_mode="auto",
                 policy="warn",
                 kind="unknown",
+                when="pre-final",
             ),
         ),
         policy_source="auto-derived from mode/plugin defaults",
@@ -1925,16 +1947,16 @@ class TestScheduledGateLiveBlock:
                 _decision("lint", "executed_pass", receipt_path="/r/lint.json"),
                 _decision("types", "executed_fail", receipt_path="/r/types.json"),
                 _decision("unit", "skipped_fresh"),
-                _decision("e2e", "skipped_manual"),
+                _decision("e2e", "manual_available"),
             ],
             hook_label="after_phase(implement)",
         )
         body = "\n".join(lines)
         assert lines[0] == "Verification gates — after_phase(implement)"
-        assert "lint PASS" in body
-        assert "types FAIL" in body
-        assert "unit FRESH" in body
-        assert "e2e SKIPPED MANUAL" in body
+        assert "lint executed_pass" in body
+        assert "types executed_fail" in body
+        assert "unit skipped_fresh" in body
+        assert "e2e manual_available" in body
         # Receipt paths from executed decisions are surfaced.
         assert "/r/lint.json" in body and "/r/types.json" in body
 
@@ -1979,8 +2001,8 @@ class TestScheduledGateLiveBlock:
         )
         body = "\n".join(lines)
         assert lines != ()
-        assert "unit FRESH" in body
-        assert "unit PASS" not in body
+        assert "unit skipped_fresh" in body
+        assert "unit executed_pass" not in body
 
     def test_print_emits_separate_framed_block_in_terminal(
         self, capsys,
@@ -2001,7 +2023,7 @@ class TestScheduledGateLiveBlock:
         # A standalone framed block, not merged into the transcript.
         assert "+-- Official verification gates" in out
         assert "Verification gates — after_phase(implement)" in out
-        assert "lint PASS" in out and "unit FRESH" in out
+        assert "lint executed_pass" in out and "unit skipped_fresh" in out
         assert "/r/lint.json" in out
 
     def test_print_groups_decisions_by_hook_label(self, capsys) -> None:
@@ -2069,8 +2091,8 @@ class TestScheduledGateLiveBlock:
         ])
         out = capsys.readouterr().out
         # Status tokens carry their semantic palette color.
-        assert colors["PASS"] in out
-        assert colors["FRESH"] in out
+        assert colors["executed_pass"] in out
+        assert colors["skipped_fresh"] in out
 
 
 def test_on_phase_pre_prints_scheduled_block_from_recorded_delta(
@@ -2081,15 +2103,16 @@ def test_on_phase_pre_prints_scheduled_block_from_recorded_delta(
     from pipeline.project.run import _PipelineRun
     from pipeline.project.types import PresentationPolicy
 
-    def fake_eval(run, phase):
-        run.state.extras.setdefault("verification_gate_events", []).append(
-            _decision("lint", "executed_pass", hook="before_phase", phase=phase,
-                      receipt_path="/r/lint.json"),
-        )
+    decision = _decision(
+        "lint", "executed_pass", hook="before_phase", phase="implement",
+        receipt_path="/r/lint.json",
+    )
+    reads = iter(([], [decision]))
 
     monkeypatch.setattr(
-        "pipeline.project.gate_repair.evaluate_pre_phase_gates", fake_eval,
+        "pipeline.project.gate_repair.evaluate_pre_phase_gates", lambda *_: None,
     )
+    monkeypatch.setattr("pipeline.project.run._gate_events_list", lambda _run: next(reads))
     state = SimpleNamespace(phase_log={}, extras={})
     run = SimpleNamespace(
         _presentation=PresentationPolicy.TERMINAL,
@@ -2100,7 +2123,7 @@ def test_on_phase_pre_prints_scheduled_block_from_recorded_delta(
 
     out = strip_ansi(capsys.readouterr().out)
     assert "Verification gates — before_phase(implement)" in out
-    assert "lint PASS" in out
+    assert "lint executed_pass" in out
     assert "/r/lint.json" in out
 
 

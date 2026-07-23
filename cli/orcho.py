@@ -17,17 +17,20 @@ Subcommands:
   orcho history — List recent runs
   orcho evidence— Compose run evidence bundle
   orcho repair-state — Inspect / safely apply known run-state repairs
-  orcho cost    — API-equivalent cost report
+  orcho cost    — cost-reference usage report
   orcho pricing — Show / refresh pricing table
   orcho prompts — Show prompt resolution chain
-  orcho web     — Launch the dashboard
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
+import textwrap
+from importlib import metadata
 from pathlib import Path
 
 # Bootstrap: ensure the engine root is on sys.path so `python -m cli.orcho`
@@ -45,6 +48,7 @@ guard_against_retained_worktree_install(_CORE_DIR)
 
 # ruff: noqa: E402
 
+from cli._evidence_cli import format_evidence_cli
 from cli._formatters import (
     colorize_evidence_markdown,
     format_cost_report,
@@ -57,12 +61,14 @@ from cli._formatters import (
     format_pricing,
     format_pricing_refresh_models,
     format_pricing_refresh_written,
+    format_profile_customize,
     format_prompts_list,
     format_prompts_resolution,
     format_run_diff,
     format_status,
     format_verify_env,
     format_verify_list,
+    format_verify_overview,
     format_verify_run,
     format_workspace_init,
     format_written_paths,
@@ -77,19 +83,34 @@ from cli._help import (
     print_quick_help,
     render_verbose_header,
 )
+from cli._managed_command import add_managed_command_parser
 from cli._profile_prompt import require_profile_or_exit
+from cli._quality_gates import cmd_quality_gates
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
 from core.infra import config
+from core.infra.demo_assets import (
+    DemoBootstrapError,
+    bootstrap_demo,
+    demo_names,
+    render_demo_bootstrap,
+)
+from core.infra.runtime_wrappers import (
+    RuntimeWrapperError,
+    install_runtime_wrapper,
+    runtime_wrapper_names,
+)
 from core.io import prompt_loader as _prompt_loader
 from core.io.ansi import is_color_active
 from pipeline.run_state import repair_run_state
 from sdk import (
     EvidenceInvalid,
     PricingFetchError,
+    ProfileCustomizeError,
     aggregate_cost,
     collect_evidence,
+    customize_profile,
     find_run,
     fine_tune_project,
     get_run_diff,
@@ -132,6 +153,22 @@ def _positive_int(value: str) -> int:
             f"must be a positive integer, got {n}",
         )
     return n
+
+
+def _version_string() -> str:
+    """Installed package versions for ``--version``.
+
+    orcho-core degrades to an explanatory note when package metadata is
+    absent (source checkout run without an install); orcho-mcp is listed
+    only when it is installed alongside.
+    """
+    try:
+        lines = [f"orcho-core {metadata.version('orcho-core')}"]
+    except metadata.PackageNotFoundError:
+        lines = ["orcho-core (version unknown: package metadata not found)"]
+    with contextlib.suppress(metadata.PackageNotFoundError):
+        lines.append(f"orcho-mcp {metadata.version('orcho-mcp')}")
+    return "\n".join(lines)
 
 
 def _nonempty_str(value: str) -> str:
@@ -210,6 +247,31 @@ def cmd_web(args: argparse.Namespace) -> int:
     return web_main(argv)
 
 
+def cmd_tui(args: argparse.Namespace) -> int:
+    """Delegate to the ``orcho-tui`` package, which owns the terminal UI."""
+    try:
+        from orcho_tui.cli import main as tui_main
+    except ImportError:
+        # The terminal UI is an optional component. The `tui` command is always
+        # reserved by the CLI; a selective install just needs the extra pulled in.
+        print(
+            'orcho-tui is not installed.\n'
+            'Install it with:  pip install "orcho[tui]"   (or: pip install orcho-tui)',
+            file=sys.stderr,
+        )
+        return 1
+    argv: list[str] = []
+    if getattr(args, "run_id", None):
+        argv += ["--run-id", args.run_id]
+    if getattr(args, "run_dir", None):
+        argv += ["--run-dir", args.run_dir]
+    if getattr(args, "follow", False):
+        argv.append("--follow")
+    if getattr(args, "replay", False):
+        argv.append("--replay")
+    return tui_main(argv)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Read/report handlers — route through _run_cli
 # ─────────────────────────────────────────────────────────────────────────────
@@ -247,6 +309,21 @@ def cmd_history(args: argparse.Namespace) -> int:
         ),
         format_history,
     )
+
+
+def _recent_count(value: str) -> int:
+    text = str(value).strip()
+    try:
+        count = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected a number, e.g. `-n 10`; `COUNT` is a placeholder",
+        ) from exc
+    if count < 1:
+        raise argparse.ArgumentTypeError(
+            "expected a positive number, e.g. `-n 10`",
+        )
+    return count
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
@@ -307,21 +384,88 @@ def _profile_steps(profile) -> str:
     return " -> ".join(phases)
 
 
-def _format_profile_catalog(profiles: dict) -> str:
-    lines = ["Profiles"]
-    for name in sorted(profiles):
+def _profile_scalar(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def _profile_recipe_label(profile) -> str:  # noqa: ANN001
+    recipe = getattr(profile, "recipe_kind", None)
+    if recipe:
+        return str(recipe)
+    kind = (
+        _profile_scalar(getattr(profile, "kind", None))
+        or "custom"
+    )
+    variant = getattr(profile, "variant", None)
+    return f"{kind}/{variant}" if variant else kind
+
+
+def _profile_worktree_label(profile) -> str:  # noqa: ANN001
+    isolation = getattr(profile, "worktree_isolation", None)
+    return "direct" if isolation == "off" else "isolated"
+
+
+def _wrap_profile_description(description: str) -> list[str]:
+    return textwrap.wrap(
+        description,
+        width=96,
+        break_long_words=False,
+        break_on_hyphens=False,
+    ) or [description]
+
+
+def _format_profile_catalog(
+    profiles: dict,
+    *,
+    verbose: bool = False,
+    title: str = "Profiles",
+    item_label: str = "Profile",
+    verbose_command: str = "orcho profiles list --verbose",
+) -> str:
+    lines = [title]
+    names = sorted(profiles)
+    name_width = max([len(item_label), *(len(name) for name in names)], default=12)
+    recipe_width = max(
+        [len("Recipe"), *(
+            len(_profile_recipe_label(profiles[name]))
+            for name in names
+        )],
+        default=10,
+    )
+    lines.append(
+        f"  {item_label:<{name_width}}  Mode  "
+        f"{'Recipe':<{recipe_width}}  Worktree  Phases"
+    )
+    lines.append(
+        f"  {'-' * name_width}  ----  "
+        f"{'-' * recipe_width}  --------  ------"
+    )
+    for name in names:
         profile = profiles[name]
-        kind = getattr(getattr(profile, "kind", None), "value", None) or "custom"
-        variant = getattr(profile, "variant", None) or "-"
+        mode = _profile_scalar(getattr(profile, "default_mode", None)) or "-"
+        recipe = _profile_recipe_label(profile)
+        worktree = _profile_worktree_label(profile)
         description = getattr(profile, "description", "")
         steps = _profile_steps(profile)
         # ADR 0085: internal/system profiles stay visible in the catalog
         # (the registry must show them) but carry an ``[internal]`` chip so
         # operators know they are not first-run choices.
         chip = " [internal]" if getattr(profile, "internal", False) else ""
-        lines.append(f"  {name:<12} {kind:<10} {variant:<10} {steps}{chip}")
-        if description:
-            lines.append(f"    {description}")
+        lines.append(
+            f"  {name:<{name_width}}  {mode:<4}  "
+            f"{recipe:<{recipe_width}}  {worktree:<8}  {steps}{chip}"
+        )
+        if verbose and description:
+            for wrapped in _wrap_profile_description(str(description)):
+                lines.append(f"    {wrapped}")
+    if not verbose:
+        lines.extend([
+            "",
+            f"Use `{verbose_command}` for descriptions.",
+            "Internal profiles are shown for transparency; fresh-run picker hides them.",
+        ])
     return "\n".join(lines)
 
 
@@ -333,18 +477,89 @@ def _load_profile_catalog() -> dict:
 
 
 def cmd_profiles_list(args: argparse.Namespace) -> int:
-    return _run_cli(_load_profile_catalog, _format_profile_catalog)
+    verbose = bool(getattr(args, "verbose", False))
+    return _run_cli(
+        _load_profile_catalog,
+        lambda profiles: _format_profile_catalog(profiles, verbose=verbose),
+    )
+
+
+def cmd_profile_customize(args: argparse.Namespace) -> int:
+    try:
+        result = customize_profile(
+            args.profile,
+            assignments=tuple(getattr(args, "set", ()) or ()),
+            default_mode=getattr(args, "mode", None),
+            change_handoff=getattr(args, "change_handoff", None),
+            implementation_execution=getattr(args, "implementation_execution", None),
+            worktree_isolation=getattr(args, "worktree_isolation", None),
+            phase_effort=tuple(getattr(args, "phase_effort", ()) or ()),
+            session_split=tuple(getattr(args, "session_split", ()) or ()),
+            session_continuity=tuple(getattr(args, "session_continuity", ()) or ()),
+            handoff=tuple(getattr(args, "handoff", ()) or ()),
+            scope=getattr(args, "scope", "workspace"),
+            workspace=getattr(args, "workspace", None),
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    except ProfileCustomizeError as exc:
+        print(format_error(exc), file=sys.stderr)
+        return exc.exit_code
+    print(format_profile_customize(result))
+    return 0
 
 
 def cmd_workflows_list(args: argparse.Namespace) -> int:
-    return cmd_profiles_list(args)
+    verbose = bool(getattr(args, "verbose", False))
+    return _run_cli(
+        _load_profile_catalog,
+        lambda profiles: _format_profile_catalog(
+            profiles,
+            verbose=verbose,
+            title="Workflows",
+            item_label="Workflow",
+            verbose_command="orcho workflows list --verbose",
+        ),
+    )
+
+
+def cmd_runtimes_install(args: argparse.Namespace) -> int:
+    try:
+        result = install_runtime_wrapper(
+            args.runtime,
+            destination=getattr(args, "path", None),
+            force=bool(getattr(args, "force", False)),
+        )
+    except RuntimeWrapperError as exc:
+        print(f"runtimes install: {exc}", file=sys.stderr)
+        return 2
+
+    verb = "Already installed" if result.already_current else "Installed"
+    print(f"{verb} {result.runtime} wrapper: {result.path}")
+    if not result.on_path:
+        print(
+            f"Note: {result.path.parent} is not on PATH; set "
+            f"{result.env_var}={result.path} or add that directory to PATH."
+        )
+    return 0
+
+
+def cmd_demos_bootstrap(args: argparse.Namespace) -> int:
+    try:
+        result = bootstrap_demo(args.demo, root=getattr(args, "root", None))
+    except DemoBootstrapError as exc:
+        print(f"demos {args.demos_cmd}: {exc}", file=sys.stderr)
+        return 2
+
+    print(render_demo_bootstrap(result), end="")
+    return 0
 
 
 def cmd_diff(args: argparse.Namespace) -> int:
     """Render the run's captured ``diff.patch`` artifact for stdout.
 
-    Mode default is ``full`` (the raw patch — the command name says
-    "diff"). Color is enabled for ``preview`` / ``stat`` when stdout is a
+    Mode default is ``preview`` because the command answers the operator
+    question "what changed?" first. Use ``--full`` for the raw patch. Color is
+    enabled for ``preview`` / ``stat`` when stdout is a
     TTY and ``NO_COLOR`` / ``--no-color`` are unset; ``full`` is always
     colorless so the output stays pipeable to ``git apply``.
 
@@ -352,7 +567,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
     "artifact absent but command worked". Unknown run / unresolved
     workspace exits via the SDK error → exit-code mapping in ``_run_cli``.
     """
-    mode = getattr(args, "diff_mode", "full")
+    mode = getattr(args, "diff_mode", None) or "preview"
     no_color = bool(getattr(args, "no_color", False))
     use_color = mode != "full" and not no_color and is_color_active()
 
@@ -388,7 +603,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
 
     With ``--diff[=preview|stat|full]`` the stdout output is augmented:
 
-    - ``--format md``: append a ``## Diff`` section after the bundle.
+    - ``--format cli`` / ``--format md``: append a diff section after the bundle.
     - ``--format json``: wrap the output as
       ``{"evidence": <bundle>, "diff": <record>}``. The schema-validated
       bundle inside ``"evidence"`` is byte-identical to today's output;
@@ -426,8 +641,14 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             print(format_error(exc), file=sys.stderr)
             return exc.exit_code
 
-    fmt = getattr(args, "format", "json")
-    if fmt == "md":
+    fmt = getattr(args, "format", None) or "cli"
+    if fmt == "cli":
+        debug = bool(getattr(args, "debug", False))
+        view = getattr(args, "view", "summary") or "summary"
+        sys.stdout.write(format_evidence_cli(bundle, debug=debug, view=view))
+        if diff_record is not None:
+            sys.stdout.write(_render_evidence_diff_markdown(diff_record))
+    elif fmt == "md":
         debug = bool(getattr(args, "debug", False))
         md = render_evidence_md(bundle, debug=debug) if debug else render_evidence_md(bundle)
         # The colorizer routes every ANSI insertion through paint(), so
@@ -561,8 +782,51 @@ def cmd_repair_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_delivery_setup_hints(result, project_group_root: str) -> None:
+    """Best-effort: print one delivery setup hint after ``workspace init``.
+
+    Gathers candidate project directories from the init ``result`` (detected +
+    interactively-confirmed projects, plus the group root itself when it is a
+    git repo), asks the provider-neutral
+    :func:`~pipeline.engine.delivery_publish.collect_delivery_setup_hints`
+    helper for setup advice, and prints the first non-empty hint once.
+
+    The CLI carries no provider knowledge: all remote detection and hint
+    wording live behind the helper. Every step is wrapped so a detection
+    failure prints nothing and never disturbs the init exit code — this is a
+    courtesy nudge, not part of the init contract. It only reads, so it is safe
+    on ``--dry-run`` where it surfaces the same advice in the preview.
+    """
+    try:
+        from pipeline.engine.delivery_publish import collect_delivery_setup_hints
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(path: str) -> None:
+            if path and path not in seen:
+                seen.add(path)
+                candidates.append(path)
+
+        for proj in getattr(result, "detected_projects", ()):
+            _add(getattr(proj, "path", ""))
+        for proj in getattr(result, "extra_projects", ()):
+            _add(getattr(proj, "path", ""))
+        if project_group_root and (Path(project_group_root) / ".git").exists():
+            _add(project_group_root)
+
+        for path in candidates:
+            hints = collect_delivery_setup_hints(Path(path))
+            if hints:
+                print(f"\nDelivery setup:\n  {hints[0]}")
+                return
+    except Exception:  # noqa: BLE001 — a hint must never break workspace init
+        return
+
+
 def cmd_workspace_init(args: argparse.Namespace) -> int:
     """Bootstrap an Orcho workspace under a project-group directory."""
+    from cli._workspace_runtime_gate import workspace_runtime_gate
     from sdk.workspace import (
         discover_undetected_candidates,
         preflight_workspace_target,
@@ -577,8 +841,17 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
     # Phase 0 (read-only): reject invalid targets (filesystem root, $HOME,
     # single repo-root) BEFORE any interactive discovery/prompt, so we never
     # mutate a child (e.g. `git init`) on a target we would ultimately refuse.
+    # Then gate on CLI runtime availability: zero installed runtimes stops
+    # the init (unless --force / --dry-run); a partial gap offers a switch
+    # of the workspace config to an installed runtime.
     try:
         preflight_workspace_target(project_group_root, force=force)
+        gate = workspace_runtime_gate(
+            project_group_root,
+            no_interactive=no_interactive,
+            dry_run=dry_run,
+            force=force,
+        )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
@@ -609,11 +882,13 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
             undetected_count=len(candidates) - len(extra_projects),
             interactive=interactive,
             no_scaffold=no_scaffold,
+            runtime_override=gate.runtime_override,
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
     print(format_workspace_init(result))
+    _emit_delivery_setup_hints(result, project_group_root)
     return 0
 
 
@@ -635,6 +910,24 @@ def cmd_workspace_fine_tune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_overview(args: argparse.Namespace) -> int:
+    print(format_verify_overview())
+    return 0
+
+
+def _run_verify_silencing_skill_shadow_warnings(call):
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        result = call()
+    kept_lines = [
+        line for line in captured.getvalue().splitlines()
+        if not line.startswith("  ! skills:")
+    ]
+    if kept_lines:
+        print("\n".join(kept_lines))
+    return result
+
+
 def cmd_verify_env(args: argparse.Namespace) -> int:
     """Execute declared env-assertions for a verification_env.
 
@@ -645,11 +938,13 @@ def cmd_verify_env(args: argparse.Namespace) -> int:
     written; a passing run exits 0, a failing assertion set exits 1.
     """
     try:
-        result = verify_env(
-            project=getattr(args, "project", None),
-            env=getattr(args, "env", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_env(
+                project=getattr(args, "project", None),
+                env=getattr(args, "env", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -667,10 +962,12 @@ def cmd_verify_list(args: argparse.Namespace) -> int:
     ``exit_code``; success exits 0.
     """
     try:
-        result = verify_list(
-            project=getattr(args, "project", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_list(
+                project=getattr(args, "project", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -720,13 +1017,15 @@ def cmd_verify_run(args: argparse.Namespace) -> int:
         return 2
     commands = [name] if name is not None else (positional or None)
     try:
-        result = verify_run(
-            project=getattr(args, "project", None),
-            run_id=getattr(args, "run_id", None),
-            workspace=getattr(args, "workspace", None),
-            commands=commands,
-            required_only=required,
-            include_manual=bool(getattr(args, "include_manual", False)),
+        result = _run_verify_silencing_skill_shadow_warnings(
+            lambda: verify_run(
+                project=getattr(args, "project", None),
+                run_id=getattr(args, "run_id", None),
+                workspace=getattr(args, "workspace", None),
+                commands=commands,
+                required_only=required,
+                include_manual=bool(getattr(args, "include_manual", False)),
+            )
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -800,7 +1099,14 @@ def cmd_prompts(args: argparse.Namespace) -> int:
             winner = next((lvl for lvl, _, ex in chain if ex), "unknown")
             winners[n] = winner
 
-        print(format_prompts_list(names, project_dir=project, winners=winners))
+        print(
+            format_prompts_list(
+                names,
+                project_dir=project,
+                winners=winners,
+                compact=not list_all and not name,
+            )
+        )
         return 0
 
     try:
@@ -839,6 +1145,19 @@ def cmd_prompts(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _print_group_help(subparser: argparse.ArgumentParser):
+    """Default ``func`` for a subcommand group that has no obvious bare
+    action (its subcommands all need arguments). Bare ``orcho <group>``
+    then prints that group's help and exits clean, instead of argparse's
+    ``error: the following arguments are required`` (exit 2) dead-end.
+    """
+    def _run(_args: argparse.Namespace, _p: argparse.ArgumentParser = subparser) -> int:
+        _p.print_help()
+        return 0
+
+    return _run
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orcho",
@@ -846,7 +1165,15 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=QUICK_HELP,
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_version_string(),
+        help="Show installed orcho package versions and exit",
+    )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    add_managed_command_parser(sub)
 
     p_run = sub.add_parser(
         "run",
@@ -963,7 +1290,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_cross.set_defaults(func=cmd_cross)
 
     # ── status ────────────────────────────────────────────────────────────────
-    p_status = sub.add_parser("status", help="Show status of a run")
+    p_status = sub.add_parser(
+        "status",
+        help="What is happening / what should I do next?",
+        description=(
+            "Show current run state, phase progress, attention signals, "
+            "delivery state, and paths. Use evidence for the proof record."
+        ),
+    )
     p_status.add_argument("run_id", nargs="?", default=None,
                           help="Run ID (default: last run)")
     p_status.add_argument("--verbose", "-v", action="store_true",
@@ -975,11 +1309,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_status)
 
     # ── metrics ───────────────────────────────────────────────────────────────
-    p_metrics = sub.add_parser("metrics", help="Show token/time metrics")
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="How much did it consume? Tokens and time",
+    )
     p_metrics.add_argument("run_id", nargs="?", default=None,
                            help="Run ID for single-run detail")
-    p_metrics.add_argument("--last", "-n", type=int, default=10,
-                           help="Show last N runs (default: 10)")
+    p_metrics.add_argument(
+        "--last", "-n",
+        type=_recent_count,
+        default=10,
+        metavar="COUNT",
+        help="Show the most recent COUNT runs (default: 10)",
+    )
     p_metrics.add_argument(
         "--workspace", default=None,
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
@@ -988,8 +1330,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ── history ───────────────────────────────────────────────────────────────
     p_hist = sub.add_parser("history", help="List recent runs")
-    p_hist.add_argument("--last", "-n", type=int, default=10,
-                        help="Show last N runs (default: 10)")
+    p_hist.add_argument(
+        "--last", "-n",
+        type=_recent_count,
+        default=10,
+        metavar="COUNT",
+        help="Show the most recent COUNT runs (default: 10)",
+    )
     p_hist.add_argument(
         "--workspace", default=None,
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
@@ -999,12 +1346,14 @@ def build_parser() -> argparse.ArgumentParser:
     # ── evidence ──────────────────────────────────────────────────────────────
     p_evid = sub.add_parser(
         "evidence",
-        help="Compose a run evidence bundle",
+        help="What happened / what proves it?",
         description=(
             "Read the run dir and emit a v1 evidence bundle "
             "(plan + phases + gates + commands + artifacts + "
-            "metrics + errors). Use --format md for the human "
-            "summary, --out PATH to write both files to a directory."
+            "metrics + errors). The default --format cli prints an "
+            "operator-friendly proof summary; --out PATH writes both "
+            "evidence files to a directory. Use status for current state "
+            "and next action."
         ),
     )
     p_evid.add_argument(
@@ -1012,8 +1361,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run id (default: most recent run under runs/)",
     )
     p_evid.add_argument(
-        "--format", "-f", choices=("json", "md"), default="json",
-        help="Output format on stdout (default: json)",
+        "--format", "-f", choices=("cli", "json", "md"), default="cli",
+        help="Output format on stdout (default: cli)",
+    )
+    p_evid.add_argument(
+        "--view",
+        choices=("summary", "full"),
+        default="summary",
+        help=(
+            "CLI view depth: summary keeps the operator digest; full expands "
+            "the plan contract, task/DAG shape, phase timeline, receipts, "
+            "and acceptance record."
+        ),
     )
     p_evid.add_argument(
         "--out", type=Path, default=None,
@@ -1079,12 +1438,12 @@ def build_parser() -> argparse.ArgumentParser:
     # ── diff ──────────────────────────────────────────────────────────────────
     p_diff = sub.add_parser(
         "diff",
-        help="Print the run's captured diff.patch artifact",
+        help="What changed? Print the captured diff.patch artifact",
         description=(
             "Render the run's captured ``diff.patch`` artifact (written by "
-            "the pipeline at run lifecycle time). The default is the raw "
-            "unified patch; ``--preview`` shows a grouped Claude-style "
-            "view, ``--stat`` shows a per-file +A -R table."
+            "the pipeline at run lifecycle time). The default is a grouped "
+            "Claude-style preview; ``--stat`` shows a per-file +A -R table, "
+            "and ``--full`` prints the raw unified patch."
         ),
     )
     p_diff.add_argument(
@@ -1094,17 +1453,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff_mode = p_diff.add_mutually_exclusive_group()
     p_diff_mode.add_argument(
         "--full", dest="diff_mode", action="store_const", const="full",
-        help="Raw unified patch (default).",
+        help="Raw unified patch, suitable for piping to git apply.",
     )
     p_diff_mode.add_argument(
         "--preview", dest="diff_mode", action="store_const", const="preview",
-        help="Claude-style grouped view with per-file +A -R headers.",
+        help="Claude-style grouped view with per-file +A -R headers (default).",
     )
     p_diff_mode.add_argument(
         "--stat", dest="diff_mode", action="store_const", const="stat",
         help="Per-file +A -R table only, no hunk content.",
     )
-    p_diff.set_defaults(diff_mode="full")
+    p_diff.set_defaults(diff_mode="preview")
     p_diff.add_argument(
         "--path", type=_nonempty_str, default=None, metavar="PATH",
         help=(
@@ -1131,7 +1490,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── cost ──────────────────────────────────────────────────────────────────
     p_cost = sub.add_parser(
         "cost",
-        help="API-equivalent cost report (sliding window over runs/)",
+        help="How much did it consume? Cost-reference report",
     )
     p_cost.add_argument(
         "--window", "-w", default="30d",
@@ -1139,7 +1498,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost.add_argument(
         "--top", "-n", type=int, default=5,
-        help="Show top-N most expensive runs (default: 5)",
+        help="Show top-N runs by cost reference (default: 5)",
     )
     p_cost.add_argument(
         "--workspace", default=None,
@@ -1152,7 +1511,9 @@ def build_parser() -> argparse.ArgumentParser:
         "pricing",
         help="Inspect / refresh pricing data used by ``orcho cost``",
     )
-    p_price_sub = p_price.add_subparsers(dest="action", required=True)
+    # Bare `orcho pricing` == `orcho pricing show` — print the effective table.
+    p_price.set_defaults(func=cmd_pricing_show)
+    p_price_sub = p_price.add_subparsers(dest="action")
 
     p_price_show = p_price_sub.add_parser(
         "show",
@@ -1184,32 +1545,205 @@ def build_parser() -> argparse.ArgumentParser:
         "profiles",
         help="List execution profiles",
     )
-    p_profiles_sub = p_profiles.add_subparsers(dest="profiles_cmd", required=True)
+    # Bare `orcho profiles` == `orcho profiles list` — a subcommand group whose
+    # obvious default is its only listing action should not dead-end in argparse.
+    p_profiles.set_defaults(func=cmd_profiles_list)
+    p_profiles_sub = p_profiles.add_subparsers(dest="profiles_cmd")
     p_profiles_list = p_profiles_sub.add_parser(
         "list",
         help="List available execution profiles",
     )
+    p_profiles_list.add_argument(
+        "--verbose", action="store_true",
+        help="Show full profile descriptions under each row.",
+    )
     p_profiles_list.set_defaults(func=cmd_profiles_list)
+
+    p_profile = sub.add_parser(
+        "profile",
+        help="Customize one execution profile",
+    )
+    p_profile.set_defaults(func=_print_group_help(p_profile))
+    p_profile_sub = p_profile.add_subparsers(dest="profile_cmd")
+    p_profile_customize = p_profile_sub.add_parser(
+        "customize",
+        help="Write local overrides for a built-in execution profile",
+        description=(
+            "Write a profiles_v2 overlay to config.local.json and validate it "
+            "against the built-in profile schema."
+        ),
+    )
+    p_profile_customize.add_argument(
+        "profile",
+        help="Built-in profile name to customize, e.g. feature or small_task",
+    )
+    p_profile_customize.add_argument(
+        "--scope", choices=["workspace", "user"], default="workspace",
+        help="Where to write the local config overlay",
+    )
+    p_profile_customize.add_argument(
+        "--workspace", default=None,
+        help="Workspace directory for --scope workspace",
+    )
+    p_profile_customize.add_argument(
+        "--mode", choices=["fast", "pro", "governed"], default=None,
+        help="Set the profile default verification mode",
+    )
+    p_profile_customize.add_argument(
+        "--change-handoff",
+        choices=["uncommitted", "commit", "commit_set"],
+        default=None,
+        help="Set the profile change handoff mode",
+    )
+    p_profile_customize.add_argument(
+        "--implementation-execution",
+        choices=["whole_plan", "subtask_dag"],
+        default=None,
+        help="Set how the implement phase consumes the plan",
+    )
+    p_profile_customize.add_argument(
+        "--worktree-isolation",
+        choices=["off", "per_run", "per_phase"],
+        default=None,
+        help="Set the profile worktree isolation policy",
+    )
+    p_profile_customize.add_argument(
+        "--phase-effort", action="append", default=[],
+        metavar="PHASE=EFFORT",
+        help="Set a phase effort, e.g. implement=high",
+    )
+    p_profile_customize.add_argument(
+        "--session-split", action="append", default=[],
+        metavar="PHASE=SPLIT",
+        help="Set a phase session_split value",
+    )
+    p_profile_customize.add_argument(
+        "--session-continuity", action="append", default=[],
+        metavar="PHASE=POLICY",
+        help="Set a phase session_continuity value",
+    )
+    p_profile_customize.add_argument(
+        "--handoff", action="append", default=[],
+        metavar="PHASE=TYPE",
+        help="Set a phase handoff type",
+    )
+    p_profile_customize.add_argument(
+        "--set", action="append", default=[], metavar="PATH=VALUE",
+        help=(
+            "Set an arbitrary overlay value, e.g. "
+            "validate_plan.handoff.type=human_feedback_always"
+        ),
+    )
+    p_profile_customize.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate and show the target file without writing",
+    )
+    p_profile_customize.set_defaults(func=cmd_profile_customize)
 
     p_workflows = sub.add_parser(
         "workflows",
         help="List workflow profiles",
     )
-    p_workflows_sub = p_workflows.add_subparsers(dest="workflows_cmd", required=True)
+    # Bare `orcho workflows` == `orcho workflows list`.
+    p_workflows.set_defaults(func=cmd_workflows_list)
+    p_workflows_sub = p_workflows.add_subparsers(dest="workflows_cmd")
     p_workflows_list = p_workflows_sub.add_parser(
         "list",
         help="List available workflow profiles",
     )
+    p_workflows_list.add_argument(
+        "--verbose", action="store_true",
+        help="Show full profile descriptions under each row.",
+    )
     p_workflows_list.set_defaults(func=cmd_workflows_list)
 
+    # ── runtimes ─────────────────────────────────────────────────────────────
+    p_runtimes = sub.add_parser(
+        "runtimes",
+        help="Install runtime helper wrappers",
+    )
+    p_runtimes.set_defaults(func=_print_group_help(p_runtimes))
+    p_runtimes_sub = p_runtimes.add_subparsers(dest="runtimes_cmd")
+    p_runtimes_install = p_runtimes_sub.add_parser(
+        "install",
+        help="Install a runtime helper wrapper",
+    )
+    p_runtimes_install.add_argument(
+        "runtime",
+        choices=runtime_wrapper_names(),
+        help="Runtime wrapper to install",
+    )
+    p_runtimes_install.add_argument(
+        "--path",
+        type=Path,
+        default=None,
+        help="Destination path (default: ~/.local/bin/<runtime>)",
+    )
+    p_runtimes_install.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Replace an existing destination file",
+    )
+    p_runtimes_install.set_defaults(func=cmd_runtimes_install)
+
+    # ── demos ────────────────────────────────────────────────────────────────
+    p_demos = sub.add_parser(
+        "demos",
+        help="Bootstrap packaged demo fixtures",
+    )
+    p_demos.set_defaults(func=_print_group_help(p_demos))
+    p_demos_sub = p_demos.add_subparsers(dest="demos_cmd")
+    for demos_cmd in ("bootstrap", "install"):
+        p_demos_bootstrap = p_demos_sub.add_parser(
+            demos_cmd,
+            help="Create a disposable packaged demo workspace",
+        )
+        p_demos_bootstrap.add_argument(
+            "demo",
+            choices=demo_names(),
+            help="Demo fixture to bootstrap",
+        )
+        p_demos_bootstrap.add_argument(
+            "--root",
+            type=Path,
+            default=None,
+            help="Demo root directory (default: /tmp/orcho_demo_1a)",
+        )
+        p_demos_bootstrap.set_defaults(func=cmd_demos_bootstrap)
+
+    # ── quality-gates ─────────────────────────────────────────────────────────
+    p_qg = sub.add_parser(
+        "quality-gates",
+        help="Show the declared verification gate matrix (read-only)",
+    )
+    p_qg.add_argument(
+        "--profile", default=None,
+        help="Resolve when-stage against this profile's phases (else "
+             "warn/off gates are shown profile-dependent)",
+    )
+    p_qg.add_argument(
+        "--paths", nargs="+", default=None, metavar="GLOB",
+        help="Resolve on-path activation (active/dormant) for these globs/files",
+    )
+    p_qg.add_argument(
+        "--project", default=None,
+        help="Project dir whose plugin declares the verification contract "
+             "(default: current directory)",
+    )
+    p_qg.set_defaults(func=cmd_quality_gates)
+
     # ── prompts ───────────────────────────────────────────────────────────────
-    p_prompts = sub.add_parser("prompts", help="Show prompt resolution chain")
+    p_prompts = sub.add_parser(
+        "prompts",
+        help="Inspect prompt catalog and resolution chain",
+    )
     p_prompts.add_argument("name", nargs="?", default=None,
-                           help="Prompt name (e.g. tasks/build)")
+                           help="Prompt name (e.g. tasks/plan)")
     p_prompts.add_argument("--project", default=None,
                            help="Project dir for override resolution")
     p_prompts.add_argument("--list", "-l", action="store_true",
-                           help="List all available core prompts")
+                           help="Show the full prompt catalog")
     p_prompts.add_argument("--verbose", "-v", action="store_true",
                            help="Print the contents of the resolved prompt template")
     p_prompts.set_defaults(func=cmd_prompts)
@@ -1224,7 +1758,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Subcommand `init` is the user-facing bootstrap."
         ),
     )
-    p_ws_sub = p_ws.add_subparsers(dest="workspace_cmd", required=True)
+    p_ws.set_defaults(func=_print_group_help(p_ws))
+    p_ws_sub = p_ws.add_subparsers(dest="workspace_cmd")
 
     p_ws_init = p_ws_sub.add_parser(
         "init",
@@ -1330,10 +1865,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_fine.set_defaults(func=cmd_workspace_fine_tune)
 
     # ── web ───────────────────────────────────────────────────────────────────
-    p_web = sub.add_parser("web", help="Start the Streamlit web dashboard")
+    # Hidden from help until the interface package ships on PyPI (advertising it
+    # would point users at an uninstallable ``pip install``). Still registered,
+    # so it remains callable for anyone who already has the package.
+    p_web = sub.add_parser("web", help=argparse.SUPPRESS)
     p_web.add_argument(
         "--port", "-p", type=int, default=8501,
-        help="Порт для Streamlit (по умолчанию 8501)",
+        help="Port for Streamlit (default: 8501)",
     )
     p_web.add_argument(
         "--headless", action="store_true",
@@ -1341,31 +1879,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_web.set_defaults(func=cmd_web)
 
+    # ── tui ───────────────────────────────────────────────────────────────────
+    # Hidden from help until the interface package ships on PyPI (see ``web``);
+    # still registered so an installed package stays callable.
+    p_tui = sub.add_parser("tui", help=argparse.SUPPRESS)
+    p_tui.add_argument(
+        "--run-id", help="Run id to open (resolved against the workspace)."
+    )
+    p_tui.add_argument(
+        "--run-dir", help="Path to a run directory to open."
+    )
+    p_tui_mode = p_tui.add_mutually_exclusive_group()
+    p_tui_mode.add_argument(
+        "--follow", action="store_true", help="Follow a live run."
+    )
+    p_tui_mode.add_argument(
+        "--replay", action="store_true", help="Replay a finished run."
+    )
+    p_tui.set_defaults(func=cmd_tui)
+
     # ── verify ────────────────────────────────────────────────────────────────
     p_verify = sub.add_parser(
         "verify",
         help="Execute declared verification-contract checks",
         description=(
             "Run the project's declared verification contract against a run. "
-            "Subcommand `env` executes one verification_env's assertions and "
-            "writes an env-receipt under the run directory."
+            "Use `env` for environment receipts, `list` to inspect declared "
+            "commands, and `run` to execute command receipts."
         ),
     )
-    p_verify_sub = p_verify.add_subparsers(dest="verify_cmd", required=True)
+    p_verify.set_defaults(func=cmd_verify_overview)
+    p_verify_sub = p_verify.add_subparsers(dest="verify_cmd")
     p_verify_env = p_verify_sub.add_parser(
         "env",
         help="Execute a verification_env's declared assertions",
         description=(
             "Resolve a run, confirm it belongs to the project, then run the "
-            "selected env's assertions from the declared checkout and persist "
+            "selected env's assertions from the run's recorded physical subject and persist "
             "an env-receipt under <run_dir>/verification_env_receipts/."
         ),
     )
     p_verify_env.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project; on mismatch nothing is written."
+            "Canonical project that owns the contract. It is matched against the "
+            "run's recorded project; --run-id selects the physical subject."
         ),
     )
     p_verify_env.add_argument(
@@ -1394,8 +1952,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify_list.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project."
+            "Canonical project that owns the contract. --run-id selects the "
+            "recorded physical subject."
         ),
     )
     p_verify_list.add_argument(
@@ -1447,8 +2005,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify_run.add_argument(
         "--project", "-p", default=None,
         help=(
-            "Project the run must belong to. When given, it is matched against "
-            "the run's recorded project; on mismatch nothing is written."
+            "Canonical project that owns the contract. It is matched against the "
+            "run's recorded project; --run-id selects the physical subject."
         ),
     )
     p_verify_run.add_argument(
@@ -1630,22 +2188,19 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="Override review model.",
     )
     models.add_argument(
-        "--runtime-plan", default=None, choices=["claude", "codex", "gemini"],
+        "--runtime-plan", default=None,
         help="Override plan runtime.",
     )
     models.add_argument(
         "--runtime-implement", default=None,
-        choices=["claude", "codex", "gemini"],
         help="Override implement runtime.",
     )
     models.add_argument(
         "--runtime-repair-changes", default=None,
-        choices=["claude", "codex", "gemini"],
         help="Override repair runtime.",
     )
     models.add_argument(
         "--runtime-review-changes", default=None,
-        choices=["claude", "codex", "gemini"],
         help="Override review runtime.",
     )
 
@@ -1674,6 +2229,13 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Windows consoles default to a legacy code page that cannot encode the
+    # emoji / box-drawing glyphs in Orcho's output; force UTF-8 before any
+    # rendering so the CLI does not crash on the first non-ASCII line.
+    ensure_utf8_stdio()
+
     parser = build_parser()
     args = parser.parse_args()
 

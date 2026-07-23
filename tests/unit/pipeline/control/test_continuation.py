@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from pipeline.control.continuation import (
+    ContinuationRequest,
+    resolve_continuation,
+    resolve_continuation_decision,
+)
+from sdk.run_control.continuation import preflight_continuation
+
+
+def _meta(path: Path) -> dict:
+    return {
+        "status": "halted",
+        "halt_reason": "final_acceptance_rejected",
+        "worktree": {"path": str(path), "isolation": "per_run"},
+        "phases": {"final_acceptance": {"verdict": "REJECTED"}},
+    }
+
+
+def test_rejected_retained_worktree_is_followup_only(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    # A tiny git repository proves the resolver uses the physical retained
+    # subject rather than an artifact or transcript convention.
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+    (worktree / "changed.txt").write_text("change\n")
+
+    decision = resolve_continuation_decision(
+        run_id="parent", meta=_meta(worktree), parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "retained_change"
+    assert decision.recommended_next_action == "start_followup"
+    assert decision.allowed_intents == ("followup", "exit")
+    assert decision.requires_operator_comment is True
+    assert decision.checkpoint_resumable is False
+    assert decision.diff_source == "worktree"
+    assert decision.blocked is False
+
+
+def test_artifact_only_correction_is_blocked_without_plan_fallback(tmp_path: Path) -> None:
+    (tmp_path / "diff.patch").write_text("diff --git a/a b/a\n")
+    decision = resolve_continuation_decision(
+        run_id="parent", meta=_meta(tmp_path / "missing"), parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "retained_change"
+    assert decision.blocked is True
+    assert decision.diff_source == "artifact"
+    assert decision.recommended_next_action == "start_followup"
+
+
+def test_paused_handoff_is_not_advertised_as_checkpoint_resume(tmp_path: Path) -> None:
+    meta = {"status": "awaiting_phase_handoff", "task": "t"}
+    decision = resolve_continuation_decision(
+        run_id="paused", meta=meta, parent_run_dir=tmp_path,
+    )
+
+    assert decision.checkpoint_resumable is False
+    assert decision.recommended_next_action == "none"
+    assert resolve_continuation(
+        ContinuationRequest("paused", "resume"), meta=meta, parent_run_dir=tmp_path,
+    ).operation == "blocked"
+
+
+def test_interrupted_in_flight_phase_uses_persisted_plan_not_checkpoint(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "parsed_plan.json").write_text("{}")
+    (tmp_path / "events.jsonl").write_text(
+        '{"seq":1,"kind":"phase.start","payload":{"phase":"implement"}}\n',
+    )
+    meta = {"status": "interrupted", "task": "implement"}
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted", meta=meta, parent_run_dir=tmp_path,
+    )
+    resume = resolve_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+    from_plan = resolve_continuation(
+        ContinuationRequest("interrupted", "from_run_plan"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "plan_artifact"
+    assert decision.recommended_next_action == "plan_artifact_continuation"
+    assert decision.checkpoint_resumable is False
+    assert resume.operation == "blocked"
+    assert from_plan.operation == "launch_from_run_plan"
+
+
+def test_interrupted_in_flight_phase_without_plan_is_blocked(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "events.jsonl").write_text(
+        '{"seq":1,"kind":"phase.start","payload":{"phase":"implement"}}\n',
+    )
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted",
+        meta={"status": "interrupted", "task": "implement"},
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "none"
+    assert decision.checkpoint_resumable is False
+    assert decision.blocked is True
+    assert "no persisted plan artifact" in decision.reason
+
+
+def test_interrupted_without_run_dir_keeps_legacy_checkpoint_classification() -> None:
+    decision = resolve_continuation_decision(
+        run_id="interrupted",
+        meta={"status": "interrupted", "task": "implement"},
+    )
+
+    assert decision.continuation_subject == "checkpoint"
+    assert decision.checkpoint_resumable is True
+
+
+def test_interrupted_after_phase_checkpoint_remains_resumable(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join([
+            '{"seq":1,"kind":"phase.start","payload":{"phase":"plan"}}',
+            '{"seq":2,"kind":"phase.end","payload":{"phase":"plan","outcome":"ok"}}',
+        ])
+        + "\n",
+    )
+    meta = {"status": "interrupted", "task": "implement"}
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted", meta=meta, parent_run_dir=tmp_path,
+    )
+    resume = resolve_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "checkpoint"
+    assert decision.checkpoint_resumable is True
+    assert resume.operation == "resume_checkpoint"
+
+
+def test_diagnosis_meta_seam_and_resume_preflight_share_checkpoint_readiness(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "meta.json").write_text(
+        '{"status":"running","task":"implement"}',
+    )
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join([
+            '{"seq":1,"kind":"phase.start","payload":{"phase":"plan"}}',
+            '{"seq":2,"kind":"phase.end","payload":{"phase":"plan","outcome":"ok"}}',
+        ])
+        + "\n",
+    )
+    merged = {"status": "interrupted", "task": "implement"}
+
+    result = preflight_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        parent_run_dir=tmp_path,
+        meta=merged,
+    )
+
+    assert result.parent_meta == merged
+    assert result.resolution.operation == "resume_checkpoint"
+
+
+def test_off_isolation_parent_is_blocked_even_when_source_is_dirty(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / "unrelated.txt").write_text("user change\n")
+    meta = _meta(source)
+    meta["project"] = str(source)
+    meta["worktree"]["isolation"] = "off"
+
+    decision = resolve_continuation_decision(
+        run_id="parent", meta=meta, parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "retained_change"
+    assert decision.blocked is True
+    assert decision.diff_source == "none"
+    assert "not an isolated" in decision.reason
+
+
+def test_fix_and_no_diff_are_retained_change_candidates(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+    (worktree / "changed.txt").write_text("change\n")
+
+    for reason in ("commit_decision_fix", "final_acceptance_no_diff"):
+        meta = _meta(worktree)
+        meta["halt_reason"] = reason
+        decision = resolve_continuation_decision(
+            run_id=reason, meta=meta, parent_run_dir=tmp_path,
+        )
+        assert decision.continuation_subject == "retained_change"
+        assert decision.blocked is False
+
+
+def test_clean_correction_worktree_is_blocked(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+
+    decision = resolve_continuation_decision(
+        run_id="parent", meta=_meta(worktree), parent_run_dir=tmp_path,
+    )
+
+    assert decision.blocked is True
+    assert decision.diff_source == "none"
+    assert "clean" in decision.reason
+
+
+def test_intent_matrix_selects_one_operation(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+    (worktree / "change.txt").write_text("change\n")
+    retained = _meta(worktree)
+
+    followup = resolve_continuation(
+        ContinuationRequest("parent", "followup", "fix this"),
+        meta=retained, parent_run_dir=tmp_path,
+    )
+    resume = resolve_continuation(
+        ContinuationRequest("parent", "resume"),
+        meta=retained, parent_run_dir=tmp_path,
+    )
+    (tmp_path / "parsed_plan.json").write_text("{}")
+    plan = resolve_continuation(
+        ContinuationRequest("plan", "from_run_plan"),
+        meta={"status": "failed", "task": "implement"}, parent_run_dir=tmp_path,
+    )
+
+    assert followup.operation == "start_followup"
+    assert resume.operation == "blocked"
+    assert plan.operation == "launch_from_run_plan"
+
+
+def test_from_run_plan_is_never_a_retained_change_correction(tmp_path: Path) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
+    (worktree / "change.txt").write_text("change\n")
+    (tmp_path / "parsed_plan.json").write_text("{}")
+
+    result = resolve_continuation(
+        ContinuationRequest("parent", "from_run_plan"),
+        meta=_meta(worktree), parent_run_dir=tmp_path,
+    )
+
+    assert result.operation == "blocked"
+    assert "retained-change" in (result.blocker or "")

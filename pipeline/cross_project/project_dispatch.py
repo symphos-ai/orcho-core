@@ -32,6 +32,8 @@ success / warn rendering — the driver itself does not reach back into
 from __future__ import annotations
 
 import contextlib
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -41,6 +43,13 @@ from typing import Any
 from agents.runtimes import AgentProvider, MockAgentProvider
 from core.io.ansi import C
 from pipeline.cross_project.checkpoint import write_cross_checkpoint
+from pipeline.cross_project.execution_graph_state_runtime import (
+    reduce_runtime_cross_execution_graph_state,
+)
+from pipeline.cross_project.graph_scheduler import (
+    select_first_ready_project,
+    selected_blocking_aliases,
+)
 from pipeline.cross_project.handoff import Handoff, write_handoff
 from pipeline.cross_project.handoff_payloads import (
     apply_cross_phase_handoff_pause,
@@ -60,6 +69,39 @@ from pipeline.project_orchestrator import SessionMode
 #: sourced.
 _SUB_PIPELINE_BANNER_COLOR = C.BLUE
 
+_LEADING_BRACKET_ALIAS_RE = re.compile(r"^\s*\[([^\]]+)\](.*)$")
+
+
+def _normalize_unit_declared_files(alias: str, files: Any) -> tuple[str, ...]:
+    """Make one cross-task unit's file entries relative to its child alias.
+
+    A leading ``[alias]`` tag is a cross-plan spelling and becomes a
+    child-relative path in the handoff, regardless of whether its path uses a
+    slash, whitespace, or no separator. An explicit sibling alias is a
+    boundary violation and fails before any handoff or child run is created.
+    """
+    normalized: list[str] = []
+    for entry in files or ():
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"cross task unit for alias {alias!r} has non-string file entry {entry!r}"
+            )
+        match = _LEADING_BRACKET_ALIAS_RE.match(entry)
+        if match is None:
+            normalized.append(entry)
+            continue
+        declared_alias, remainder = match.groups()
+        if declared_alias != alias:
+            raise ValueError(
+                f"cross task unit for alias {alias!r} declares sibling alias "
+                f"{declared_alias!r} in file entry {entry!r}"
+            )
+        relative_path = remainder.lstrip()
+        if relative_path.startswith("/"):
+            relative_path = relative_path[1:]
+        normalized.append(relative_path)
+    return tuple(normalized)
+
 
 @dataclass(slots=True, frozen=True)
 class DispatchPorts:
@@ -71,9 +113,10 @@ class DispatchPorts:
     and alternative embedders can pass silent or capturing
     implementations without monkey-patching the orchestrator module.
     """
-    banner: Callable[..., None]   #: ``(phase: str, title: str, color: str, **kwargs) -> None``
+
+    banner: Callable[..., None]  #: ``(phase: str, title: str, color: str, **kwargs) -> None``
     success: Callable[[str], None]
-    warn:    Callable[[str], None]
+    warn: Callable[[str], None]
 
 
 @dataclass(slots=True)
@@ -85,6 +128,7 @@ class ProjectDispatchContext:
     the driver updates in place so the caller observes the same
     side-effects the original inline block produced.
     """
+
     # Run identity / inputs
     task: str
     projects: dict[str, Path]
@@ -93,15 +137,15 @@ class ProjectDispatchContext:
     dry_run: bool
     max_rounds: int
     code_model: str
-    phase_config: Any                          # PhaseAgentConfig | None
-    child_profile: Any | None                  # Profile | None
+    phase_config: Any  # PhaseAgentConfig | None
+    child_profile: Any | None  # Profile | None
     requested_profile_name: str
     has_global_plan: bool
     provider: AgentProvider
     hypothesis_enabled: bool
     followup_session_seeds_per_alias: dict | None
     run_dir: Path
-    output_dir: Any                            # truthy → persist to disk
+    output_dir: Any  # truthy → persist to disk
     plan_output: str
     plan_review_dict: dict | None
     # Mutable shared state
@@ -124,6 +168,12 @@ class ProjectDispatchContext:
     # worktree, it does NOT create a parent worktree. ``None`` when no set was
     # threaded (older embedders / some test fixtures) → the bind is a no-op.
     participant_set: Any = None
+    # Immutable C2 graph. ``None`` preserves the narrow direct-driver test
+    # seam used by pre-graph callers; the cross coordinator always supplies it.
+    execution_graph: Any = None
+    # A single alias whose durable project-handoff decision was applied before
+    # dispatch. This is continuation routing, not a readiness assertion.
+    resolved_handoff_alias: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -138,11 +188,45 @@ class ProjectDispatchResult:
     either done, skipped, or recorded as failed) and the caller may
     proceed to ``contract_check`` and beyond.
     """
+
     paused: bool
+    #: Child aliases whose returned durable session was not a successful
+    #: terminal outcome.  This is an immutable dispatch fact: callers must not
+    #: reconstruct readiness by rereading mutable checkpoint/session state.
+    blocking_aliases: tuple[str, ...] = ()
+
+
+@contextlib.contextmanager
+def _pinned_child_run_id(alias: str):
+    """Keep one child identity separate from an ambient parent run id.
+
+    ``resolve_run_id_and_setup_logging`` gives ``ORCHO_RUN_ID`` precedence
+    over ``output_dir.name``.  A cross parent may be started with that
+    variable set, but every child needs its own alias run id so its isolated
+    worktree lands at ``wt_<alias>``.  Restore the environment immediately so
+    sibling and caller identity cannot leak.
+    """
+    previous = os.environ.get("ORCHO_RUN_ID")
+    os.environ["ORCHO_RUN_ID"] = alias
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("ORCHO_RUN_ID", None)
+        else:
+            os.environ["ORCHO_RUN_ID"] = previous
+
+
+def _run_child_pipeline(alias: str, request: ProjectRunRequest) -> Any:
+    """Run one child with its stable, per-alias worktree identity."""
+    with _pinned_child_run_id(alias):
+        return run_project_pipeline(request)
 
 
 def _bind_child_editable_checkout(
-    ctx: ProjectDispatchContext, alias: str, project_session: Any,
+    ctx: ProjectDispatchContext,
+    alias: str,
+    project_session: Any,
 ) -> None:
     """Bind ``alias``'s ``editable_checkout`` to the child's real isolated worktree.
 
@@ -168,7 +252,8 @@ def _bind_child_editable_checkout(
     # seeded per alias in run_setup) — never break the dispatch loop.
     with contextlib.suppress(KeyError):
         pset.bind_editable_checkout(
-            alias, str(path),
+            alias,
+            str(path),
             isolation=str(child_isolation) if child_isolation is not None else None,
         )
 
@@ -193,12 +278,28 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
     them.
     """
     existing_children = ctx.session.get("phases", {}).get("projects", {})
+    from pipeline.cross_project.parent_state_runtime import (
+        reduce_runtime_cross_parent_state,
+    )
+
+    state_session = (
+        ctx.session
+        if isinstance(ctx.session.get("projects"), dict)
+        else {**ctx.session, "projects": {alias: str(path) for alias, path in ctx.projects.items()}}
+    )
+    canonical_children = {
+        child.alias: child
+        for child in reduce_runtime_cross_parent_state(
+            state_session, ctx.cross_ckpt, ctx.run_dir
+        ).children
+    }
     if isinstance(existing_children, dict):
-        sub_status_map = ctx.cross_ckpt.get("sub_status") or {}
         preserved = {
             alias: child_entry
             for alias, child_entry in existing_children.items()
-            if sub_status_map.get(alias) == "done"
+            if alias in canonical_children
+            and canonical_children[alias].execution.value == "terminal"
+            and canonical_children[alias].contract_evaluable
         }
     else:
         preserved = {}
@@ -225,8 +326,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
 
     approved_plan_path = str(ctx.run_dir / "cross_plan.md")
     cross_summary = (
-        (ctx.plan_review_dict or {}).get("short_summary", "")
-        if ctx.plan_review_dict else ""
+        (ctx.plan_review_dict or {}).get("short_summary", "") if ctx.plan_review_dict else ""
     )
 
     # ADR 0054 — the approved cross plan arrives as a typed ``CrossTaskPlan``
@@ -237,9 +337,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
     # Dry runs and review-only projections carry ``task_plan=None`` → empty
     # slices and the per-alias fallback to ``ctx.task``.
     interface_contract = ctx.task_plan.interface_contract if ctx.task_plan else ""
-    implementation_order = (
-        "\n".join(ctx.task_plan.implementation_order) if ctx.task_plan else ""
-    )
+    implementation_order = "\n".join(ctx.task_plan.implementation_order) if ctx.task_plan else ""
     units_by_alias = ctx.task_plan.units_by_alias() if ctx.task_plan else {}
     # ADR 0054: the handoff's ``full_cross_plan_markdown`` field is MARKDOWN
     # (its companion ``full_cross_plan_path`` points at ``cross_plan.md``), NOT
@@ -254,8 +352,11 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
         if _md_path.exists():
             full_plan_markdown = _md_path.read_text(encoding="utf-8")
 
-    for alias, project_path in ctx.projects.items():
-        outcome = _dispatch_one_alias(
+    blocking_aliases: list[str] = []
+
+    def dispatch(alias: str) -> object:
+        project_path = ctx.projects[alias]
+        return _dispatch_one_alias(
             ctx,
             alias=alias,
             project_path=project_path,
@@ -266,9 +367,44 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
             full_plan_markdown=full_plan_markdown,
             units_by_alias=units_by_alias,
         )
+
+    if ctx.execution_graph is not None:
+        if ctx.resolved_handoff_alias is not None:
+            alias = ctx.resolved_handoff_alias
+            ctx.resolved_handoff_alias = None
+            if alias not in ctx.projects:
+                raise RuntimeError(f"resolved project handoff has unknown alias {alias!r}")
+            outcome = dispatch(alias)
+            if outcome is _DISPATCH_PAUSED:
+                return ProjectDispatchResult(paused=True)
+            if outcome is _DISPATCH_FAILURE:
+                blocking_aliases.append(alias)
+        while True:
+            state = reduce_runtime_cross_execution_graph_state(
+                ctx.execution_graph, state_session, ctx.cross_ckpt, str(ctx.run_dir)
+            )
+            selected = select_first_ready_project(state)
+            if selected is None:
+                blocking_aliases.extend(selected_blocking_aliases(state))
+                break
+            # Project aliases are structurally resolved by the graph reducer.
+            outcome = dispatch(selected.alias)
+            if outcome is _DISPATCH_PAUSED:
+                return ProjectDispatchResult(paused=True, blocking_aliases=tuple(blocking_aliases))
+            if outcome is _DISPATCH_FAILURE:
+                blocking_aliases.append(selected.alias)
+        return ProjectDispatchResult(paused=False, blocking_aliases=tuple(dict.fromkeys(blocking_aliases)))
+
+    for alias in ctx.projects:
+        outcome = dispatch(alias)
         if outcome is _DISPATCH_PAUSED:
-            return ProjectDispatchResult(paused=True)
-    return ProjectDispatchResult(paused=False)
+            return ProjectDispatchResult(
+                paused=True,
+                blocking_aliases=tuple(blocking_aliases),
+            )
+        if outcome is _DISPATCH_FAILURE:
+            blocking_aliases.append(alias)
+    return ProjectDispatchResult(paused=False, blocking_aliases=tuple(blocking_aliases))
 
 
 # ── per-alias step ──────────────────────────────────────────────────────────
@@ -279,6 +415,9 @@ _DISPATCH_PAUSED = object()
 #: Sentinel for "finished this alias (done / skipped / failed); continue
 #: to the next alias".
 _DISPATCH_CONTINUE = object()
+#: Sentinel for a returned or exceptional child failure.  The outer loop owns
+#: the ordered, immutable ``blocking_aliases`` accumulation.
+_DISPATCH_FAILURE = object()
 
 
 def _dispatch_one_alias(
@@ -296,22 +435,25 @@ def _dispatch_one_alias(
     """Single per-alias iteration. Returns one of the two module sentinels."""
     unit = (units_by_alias or {}).get(alias)
     project_task = (unit.spec if unit else "") or ctx.task
+    declared_files = _normalize_unit_declared_files(
+        alias,
+        getattr(unit, "files", ()) if unit else (),
+    )
 
     # Resume skip: alias finished previously → pass.
     # Failed mid-flight / paused on child handoff → forward
     # resume_from so the child's checkpoints.db picks up where it
     # left off.
     sub_status = ctx.cross_ckpt.get("sub_status", {}).get(alias)
-    if sub_status == "done":
+    if (
+        ctx.execution_graph is None
+        and sub_status == "done"
+        and alias in ctx.session["phases"]["projects"]
+    ):
         ctx.ports.success(f"[{alias}] already done in previous run — skipping")
         return _DISPATCH_CONTINUE
     sub_resume = (
-        alias
-        if (
-            sub_status in {"failed", "awaiting_phase_handoff"}
-            and ctx.resume_from
-        )
-        else None
+        alias if (sub_status in {"failed", "awaiting_phase_handoff"} and ctx.resume_from) else None
     )
 
     # ``▶`` arrow distinguishes the per-project sub-run header from
@@ -321,22 +463,20 @@ def _dispatch_one_alias(
     # (review-only projections).
     plan_marker = (
         "satisfied by approved cross handoff"
-        if ctx.has_global_plan else "none (review-only projection)"
+        if ctx.has_global_plan
+        else "none (review-only projection)"
     )
     ctx.ports.banner(
         f"▶ SUB-PIPELINE [{alias}]",
         f"Project: {Path(project_path).name}"
         + (" (RESUME)" if sub_resume else "")
         + f"  profile={ctx.requested_profile_name}  "
-          f"plan={plan_marker}",
+        f"plan={plan_marker}",
         _SUB_PIPELINE_BANNER_COLOR,
     )
 
     if ctx.dry_run:
-        ctx.ports.warn(
-            f"[DRY RUN] Would run pipeline for [{alias}]: "
-            f"{project_task[:80]}…"
-        )
+        ctx.ports.warn(f"[DRY RUN] Would run pipeline for [{alias}]: {project_task[:80]}…")
         ctx.session["phases"]["projects"][alias] = {"dry_run": True}
         return _DISPATCH_CONTINUE
 
@@ -353,7 +493,8 @@ def _dispatch_one_alias(
             f"## Subtask\n{project_task}\n"
         )
         (alias_artifacts / f"plan_{plan_ts}.md").write_text(
-            plan_content, encoding="utf-8",
+            plan_content,
+            encoding="utf-8",
         )
 
     # Write the handoff artifact only when the cross level actually
@@ -376,6 +517,7 @@ def _dispatch_one_alias(
             cross_validation_summary=cross_summary,
             cross_validation_verdict=dict(ctx.plan_review_dict or {}),
             project_subtask=project_task,
+            declared_files=declared_files,
             sibling_aliases=siblings,
             interface_contract=interface_contract,
             implementation_order=implementation_order,
@@ -398,13 +540,9 @@ def _dispatch_one_alias(
     # rationale: hypothesis fires on the plan agent before plan and
     # would consume the one-shot seed). Children without seeds keep
     # the cross-level ``hypothesis_enabled`` value.
-    alias_seeds: dict[str, str] | None = (
-        (ctx.followup_session_seeds_per_alias or {}).get(alias)
-    )
+    alias_seeds: dict[str, str] | None = (ctx.followup_session_seeds_per_alias or {}).get(alias)
     child_hypothesis = False if alias_seeds else ctx.hypothesis_enabled
 
-    sub_failed = False
-    sub_paused = False
     try:
         # ADR 0046 Phase D — the win condition.
         #
@@ -435,7 +573,8 @@ def _dispatch_one_alias(
         # ``run_pipeline(...)`` call. The return type is a
         # ``ProjectRunResult``; ``.session`` is the dict the surrounding
         # cross-orchestrator code expects.
-        _project_result = run_project_pipeline(
+        _project_result = _run_child_pipeline(
+            alias,
             ProjectRunRequest(
                 task=project_task,
                 project_dir=str(project_path),
@@ -460,7 +599,13 @@ def _dispatch_one_alias(
                 ),
                 phase_config=ctx.phase_config,
                 ma_artifacts_dir_override=str(alias_artifacts),
-                resume_from=alias,
+                # ``project_alias`` carries the child identity for every
+                # dispatch. ``resume_from`` is strictly checkpoint intent:
+                # a fresh child must initialize its own run artifacts,
+                # including a scheduled-gate ledger when the project declares
+                # verification. Passing ``alias`` here unconditionally makes
+                # every fresh cross child look like a checkpoint resume.
+                resume_from=sub_resume,
                 # REA-3.6: parent_run_id + project_alias let MCP /
                 # evidence reconstruct the parent → children timeline.
                 parent_run_id=ctx.run_dir.name,
@@ -471,6 +616,7 @@ def _dispatch_one_alias(
                 # invariant (see block comment above).
                 presentation=PresentationPolicy.SILENT,
                 render_phase_outputs=ctx.terminal,
+                preallocated_output_dir=True,
                 no_interactive=True,
             ),
         )
@@ -484,15 +630,37 @@ def _dispatch_one_alias(
         # isolation-off child the path equals the canonical project, so
         # editable_checkout == delivery_target and the degraded contract holds.
         _bind_child_editable_checkout(ctx, alias, project_session)
+        # The reducer is the sole child-outcome authority.  In particular a
+        # checkpoint cursor must never turn a halted/failed physical child into
+        # a skip candidate after this boundary.
+        from pipeline.cross_project.parent_state_runtime import (
+            reduce_runtime_cross_parent_state,
+        )
+
+        state_session = (
+            ctx.session
+            if isinstance(ctx.session.get("projects"), dict)
+            else {
+                **ctx.session,
+                "projects": {name: str(path) for name, path in ctx.projects.items()},
+            }
+        )
+        child_state = next(
+            child
+            for child in reduce_runtime_cross_parent_state(
+                state_session, ctx.cross_ckpt, ctx.run_dir
+            ).children
+            if child.alias == alias
+        )
         if (
-            isinstance(project_session, dict)
-            and project_session.get("status") == "awaiting_phase_handoff"
+            child_state.execution.value == "paused"
+            and child_state.pending_decision is not None
             and isinstance(project_session.get("phase_handoff"), dict)
         ):
-            sub_paused = True
             child_payload = project_session["phase_handoff"]
             parent_payload = build_project_phase_handoff_payload(
-                alias=alias, child_payload=child_payload,
+                alias=alias,
+                child_payload=child_payload,
             )
             ctx.cross_ckpt["sub_status"][alias] = "awaiting_phase_handoff"
             ctx.cross_ckpt["phase_handoff_kind"] = "project"
@@ -507,6 +675,19 @@ def _dispatch_one_alias(
                 terminal=ctx.terminal,
             )
             return _DISPATCH_PAUSED
+        if child_state.contract_evaluable:
+            ctx.cross_ckpt["sub_status"][alias] = "done"
+            write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
+            return _DISPATCH_CONTINUE
+
+        ctx.cross_ckpt["sub_status"][alias] = "failed"
+        write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
+        ctx.ports.warn(
+            f"[{alias}] child session classified as failed "
+            f"({', '.join(blocker.code for blocker in child_state.blockers)}); "
+            "continuing to later aliases."
+        )
+        return _DISPATCH_FAILURE
     except Exception as child_exc:
         # ADR 0025 Phase 3: catch child sub-pipeline exceptions into a
         # structured failed sub-session entry and continue. The cross
@@ -516,7 +697,6 @@ def _dispatch_one_alias(
         # re-raising before any gate runs. Without this, "missing /
         # crashed child" is a runner halt before the gate, not a
         # structured release-shape failure surface.
-        sub_failed = True
         ctx.cross_ckpt["sub_status"][alias] = "failed"
         write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
         ctx.session["phases"]["projects"][alias] = {
@@ -530,9 +710,4 @@ def _dispatch_one_alias(
             f"continuing to cross_final_acceptance which will "
             f"surface the crash as a release blocker."
         )
-    finally:
-        if not sub_failed and not sub_paused:
-            ctx.cross_ckpt["sub_status"][alias] = "done"
-            write_cross_checkpoint(ctx.run_dir, ctx.cross_ckpt)
-
-    return _DISPATCH_CONTINUE
+        return _DISPATCH_FAILURE

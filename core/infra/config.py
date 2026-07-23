@@ -9,6 +9,7 @@ Layered loading (last wins):
 Discovers CLI tool paths automatically (no hardcoded paths).
 Override via environment variables:
     CLAUDE_BIN   — path to claude binary
+    CLAUDE_GLM_BIN — path to claude-glm binary
     CODEX_BIN    — path to codex binary
 
 Per-phase model + runtime overrides come from environment variables
@@ -396,7 +397,7 @@ def _find_binary(name: str, candidates: list[str]) -> str:
     3. Hardcoded candidate paths (in order)
     Raises RuntimeError if not found.
     """
-    env_key = f"{name.upper()}_BIN"
+    env_key = f"{name.upper().replace('-', '_')}_BIN"
     if env_val := os.environ.get(env_key):
         if Path(env_val).exists():
             return env_val
@@ -437,6 +438,11 @@ def _wrap_windows_cmd(bin_path: str) -> list[str]:
 def get_claude_bin() -> str:
     from core.infra.platform import claude_candidates
     return _find_binary("claude", claude_candidates())
+
+
+def get_claude_glm_bin() -> str:
+    from core.infra.platform import claude_glm_candidates
+    return _find_binary("claude-glm", claude_glm_candidates())
 
 
 def get_codex_bin() -> str:
@@ -553,11 +559,13 @@ GEMINI_IDLE_TIMEOUT = _optional_timeout("GEMINI_IDLE_TIMEOUT", "gemini_idle_seco
 
 _RUNTIME_TIMEOUTS = {
     "claude": CLAUDE_TIMEOUT,
+    "claude-glm": CLAUDE_TIMEOUT,
     "codex":  CODEX_TIMEOUT,
     "gemini": GEMINI_TIMEOUT,
 }
 _RUNTIME_IDLE_TIMEOUTS = {
     "claude": CLAUDE_IDLE_TIMEOUT,
+    "claude-glm": CLAUDE_IDLE_TIMEOUT,
     "codex":  CODEX_IDLE_TIMEOUT,
     "gemini": GEMINI_IDLE_TIMEOUT,
 }
@@ -647,6 +655,8 @@ class AppConfig:
             lang["plan_language"] = v
         if v := os.environ.get("TASK_LANGUAGE"):
             lang["task_language"] = v
+        if v := os.environ.get("CONTENT_LANGUAGE"):
+            lang["content_language"] = v
 
         # Artifacts: defaults + JSON overlay + env override.
         artifacts = dict(_ARTIFACTS_DEFAULTS)
@@ -695,7 +705,24 @@ class AppConfig:
         commit_defaults: dict[str, Any] = {
             "enabled": True,
             "default_strategy": "release_summary",
-            "interactive_default": "apply",
+            # ADR 0119 — delivery never auto-commits onto the repository's
+            # default branch. ``worktree_branch`` (default) publishes an
+            # isolated run's own branch as ``orcho/deliver/<run_id>-<slug>``;
+            # an in-place run whose HEAD is the default branch gets a fresh
+            # delivery branch instead of a commit on the default. ``bypass`` is
+            # the explicit opt-out (prior "commit onto current HEAD" behavior).
+            "branch_policy": "worktree_branch",
+            # ADR 0121 — after an approved worktree_branch delivery, a
+            # registered git-provider plugin may push the published branch and
+            # open a pull request over the already-signed commit. ``auto``
+            # (default) publishes when a provider is registered and enabled;
+            # ``off`` keeps the ADR 0119 behavior (local branch only, no
+            # provider ever resolved or invoked). ``publish_provider`` names one
+            # provider when several are registered; ``None`` auto-selects the
+            # sole registration.
+            "publish": "auto",
+            "publish_provider": None,
+            "interactive_default": "approve",
             "auto_in_ci": "approve",
             # ADR 0100 — provider-neutral parking switch. ``auto`` keeps the
             # historical CLI/CI behavior byte-identical; ``defer`` parks a
@@ -821,6 +848,21 @@ class AppConfig:
         rendering is reproducible.
         """
         return self.language.get("task_language", "English")
+
+    @property
+    def content_language(self) -> str:
+        """Language for outward delivery artifacts. Default: English.
+
+        Governs the natural language of the artifacts a run publishes
+        outward — commit messages and PR title/body — independent of
+        the operator-facing task language. Workspace / project
+        configurations may override via the JSON
+        ``language.content_language`` field or the ``CONTENT_LANGUAGE``
+        env var. The engine default stays English as a fail-safe so
+        public repositories receive English delivery artifacts
+        regardless of the operator's working language.
+        """
+        return self.language.get("content_language", "English")
 
     @property
     def accounting_enabled(self) -> bool:

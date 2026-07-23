@@ -309,6 +309,7 @@ def _subtask_from_dict(t: dict) -> SubTask:
         model=(t.get("model") or None),
         depends_on=tuple(t.get("depends_on") or ()),
         done_criteria=tuple(t.get("done_criteria") or ()),
+        owned_files=tuple(t.get("owned_files") or ()),
         allowed_modifications=tuple(t.get("allowed_modifications") or ()),
     )
 

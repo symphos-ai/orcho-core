@@ -12,7 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ def run_worktree_bootstrap(
     *,
     source_root: Path,
     worktree_path: Path,
+    on_step: Callable[[str, int, str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run a plugin-declared bootstrap against ``worktree_path``.
 
@@ -54,26 +55,90 @@ def run_worktree_bootstrap(
     records: list[dict[str, Any]] = []
     for index, raw_step in enumerate(steps, start=1):
         step = _require_mapping(raw_step, index)
+        action = _action_name(step)
+        if on_step is not None:
+            on_step("start", index, action, step)
         if not _platform_matches(step):
-            records.append({
+            record = {
                 "index": index,
-                "action": _action_name(step),
+                "action": action,
                 "status": "skipped",
                 "reason": "platform mismatch",
-            })
+            }
+            records.append(record)
+            if on_step is not None:
+                on_step("complete", index, action, record)
             continue
-        records.append(
-            _run_step(
-                step,
-                index=index,
-                source_root=source_root,
-                worktree_path=worktree_path,
-            ),
+        record = _run_step(
+            step,
+            index=index,
+            source_root=source_root,
+            worktree_path=worktree_path,
         )
+        records.append(record)
+        if on_step is not None:
+            on_step("complete", index, action, record)
     return {"status": "ok", "steps": records}
 
 
-def _normalise_steps(config: Any) -> list[Any]:
+def run_worktree_teardown(
+    config: Any,
+    *,
+    source_root: Path,
+    worktree_path: Path,
+) -> dict[str, Any]:
+    """Run a plugin-declared teardown against ``worktree_path`` (ADR 0131).
+
+    Symmetric to :func:`run_worktree_bootstrap` — same step shapes — but
+    **best-effort**: this runs at run finalization when the run is already
+    terminal, so a failing step is recorded (``status="failed"``) and surfaced,
+    never raised. A teardown failure must not mask the run's real outcome.
+
+    The caller (finalization) is responsible for the lifecycle guarantee: invoke
+    this only for a terminal run (never on a resumable pause, whose worktree —
+    and external stack — must survive for resume), before the git worktree is
+    released.
+    """
+    steps = _normalise_steps(config, key="worktree_teardown")
+    if not steps:
+        return {"status": "skipped", "steps": []}
+
+    source_root = source_root.resolve()
+    worktree_path = worktree_path.resolve()
+    records: list[dict[str, Any]] = []
+    failures = 0
+    for index, raw_step in enumerate(steps, start=1):
+        try:
+            step = _require_mapping(raw_step, index)
+            if not _platform_matches(step):
+                records.append({
+                    "index": index,
+                    "action": _action_name(step),
+                    "status": "skipped",
+                    "reason": "platform mismatch",
+                })
+                continue
+            records.append(
+                _run_step(
+                    step,
+                    index=index,
+                    source_root=source_root,
+                    worktree_path=worktree_path,
+                ),
+            )
+        except WorktreeBootstrapError as exc:
+            # Best-effort: record and continue, never raise into finalization.
+            failures += 1
+            records.append({
+                "index": index,
+                "action": _action_name(raw_step) if isinstance(raw_step, Mapping) else "?",
+                "status": "failed",
+                "error": str(exc),
+            })
+    return {"status": "failed" if failures else "ok", "steps": records}
+
+
+def _normalise_steps(config: Any, *, key: str = "worktree_bootstrap") -> list[Any]:
     if config in (None, False):
         return []
     if isinstance(config, list):
@@ -87,12 +152,12 @@ def _normalise_steps(config: Any) -> list[Any]:
             steps = config["steps"]
             if not isinstance(steps, list | tuple):
                 raise WorktreeBootstrapError(
-                    "worktree_bootstrap.steps must be a list",
+                    f"{key}.steps must be a list",
                 )
             return list(steps)
         return [dict(config)]
     raise WorktreeBootstrapError(
-        "worktree_bootstrap must be a list, dict, false, or null",
+        f"{key} must be a list, dict, false, or null",
     )
 
 

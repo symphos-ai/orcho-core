@@ -18,7 +18,9 @@ function.
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import fields
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -70,7 +72,18 @@ def _make_fake_run_project_pipeline(handler):
         kwargs = _request_as_kwargs(request)
         result = handler(**kwargs)
         if isinstance(result, dict):
-            return _run_pipeline_result(result)
+            output_dir = Path(request.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            meta_path = output_dir / "meta.json"
+            if not meta_path.exists():
+                meta_path.write_text(json.dumps(result), encoding="utf-8")
+            from pipeline.project.types import ProjectRunResult
+
+            return ProjectRunResult(
+                session=result,
+                output_dir=output_dir,
+                run_id=request.project_alias or "test-run",
+            )
         return result
     return _fake
 
@@ -258,7 +271,7 @@ def test_cross_planning_usage_summary_matches_done_style(
     out = capsys.readouterr().out
     assert "✓ Usage:   Tokens: 175 (in=140 out=35)" in out
     assert "Time: 3.5s" in out
-    assert "API-equiv: $0.02" in out
+    assert "Cost ref: runtime-reported $0.02" in out
     config._reset_config()
 
 
@@ -298,7 +311,7 @@ def test_cross_checks_usage_summary_filters_terminal_check_phases(
     out = capsys.readouterr().out
     assert "✓ Cross checks usage: Tokens: 600 (in=500 out=100)" in out
     assert "Time: 6.5s" in out
-    assert "API-equiv: $0.03" in out
+    assert "Cost ref: runtime-reported $0.03" in out
     assert "10,000" not in out
     config._reset_config()
 
@@ -2266,3 +2279,23 @@ def test_cross_builders_are_reexported_at_package_level() -> None:
     assert sig.return_annotation in (PromptTurn, "PromptTurn"), (
         "cross_replan_prompt must advertise a PromptTurn return type"
     )
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode_for_full_transcript():
+    """Pin the full live transcript shape (T2 summary reconciliation).
+
+    ``summary`` is the default run-output mode — the compact append-only
+    arc that collapses phase headers to ``▶ <phase>`` and the review /
+    plan / implement outcome blocks to single lines. These tests assert
+    the full-fidelity transcript, so force ``live`` (rendering only; no
+    echo / verbose / trace side effects) and restore afterwards.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before

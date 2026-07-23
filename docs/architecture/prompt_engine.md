@@ -35,6 +35,32 @@ If those bytes are copied into a raw string and metadata is kept somewhere
 else, the two surfaces drift. Orcho avoids that by keeping every meaningful
 byte attached to a typed `PromptPart` until the final runtime boundary.
 
+## The two prompt layers
+
+The prompt stack has two layers with different owners
+(see `pipeline/prompts/modes.py`):
+
+1. **Professional prompt layer** — user-editable composable parts
+   (`core/_prompts/{roles,tasks,formats}/*.md`, plus workspace and project
+   overrides) rendered through the composer. Carries persona, professional
+   method, and presentation.
+2. **System-tail layer** — code-owned parser contracts, handoff and
+   review-target policy, language posture, and cross-project grammar.
+   Mandatory; not user-overridable.
+
+Projects tune the first layer; the engine owns the second. A project can
+reshape how a reviewer works, but it cannot delete the JSON contract the
+review parser depends on, because that contract never lived in an editable
+file.
+
+The engine also carries an **internal ablation mode**
+(`ProfessionalPromptMode`: `FULL` / `MINIMAL_WITH_FORMAT` / `MINIMAL`) that
+swaps the professional layer for short code-owned phase intents
+(`pipeline/prompts/minimal_intents.py`) while keeping the same system-tail.
+It exists so eval harnesses can measure what the professional layer is worth;
+it has no user-facing surface — no profile field, CLI flag, or MCP option —
+and every production caller stays on `FULL`.
+
 ## The four names you need
 
 | Name | What it means |
@@ -115,6 +141,23 @@ This is why that function accepts `str | PromptTurn`: it converts a review
 subject or focus turn into a new canonical runtime prompt. This is not a
 general license to pass strings around the prompt engine.
 
+## Session disposition comes first
+
+Whether an invocation continues the prior provider session at all is not a
+cache decision — it is profile policy. Each phase declares a
+`session_continuity` policy, and
+`pipeline/runtime/session_disposition.py` projects it onto a
+continue-or-fresh decision ([ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md)):
+
+- `fresh_only` — always start fresh (the context-baggage guard for phases
+  such as plan/validate rounds);
+- `loop_continue` — round 2+ of the same loop resumes, round 1 is fresh;
+- `same_zone_continue` — continue only when the follow-on writes into the
+  same physical write zone.
+
+The full-versus-delta selection below applies only after this policy has
+decided that the session continues.
+
 ## The source/effective split
 
 Session-aware rendering has two turns:
@@ -159,16 +202,18 @@ flowchart LR
     repair --> subject --> rereview
 ```
 
-The packet has two dynamic prompt parts:
+The packet is built from dynamic prompt parts:
 
-| Part | Meaning |
-| --- | --- |
-| `repair_receipt:latest` | What the repair phase claims it fixed, waived, or left open. |
-| `current_review_subject:latest` | Fresh projection of the thing being reviewed now. |
+| Part | Loop | Meaning |
+| --- | --- | --- |
+| `repair_receipt:latest` | plan and code review | What the repair phase claims it fixed, waived, or left open. |
+| `current_review_subject:latest` | plan and code review | Fresh projection of the thing being reviewed now. |
+| `verification_receipt:latest` | code review | Developer-side verification-environment digest (ADR 0076): what implement/repair actually checked, so the reviewer trusts substantiated checks instead of re-deriving the environment. |
+| `verification_readiness:final_acceptance` | final acceptance | Declared-receipt readiness digest (ADR 0082): required receipts classified present / missing / failed / stale, so the final reviewer reasons from official proof. |
 
-Both parts are `TURN` / `NONE`, so a resumed delta render must send them. The
-reviewer keeps the same session, but receives fresh evidence and the repairer's
-claim before answering again.
+Every packet part is `TURN` / `NONE`, so a resumed delta render must send
+them. The reviewer keeps the same session, but receives fresh evidence and the
+repairer's claim before answering again.
 
 The current subject is phase-owned:
 
@@ -204,4 +249,10 @@ Do not:
   `PromptTurn` became the canonical render surface.
 - [ADR 0066](../adr/0066-repair-receipt-re-review-protocol.md): why
   re-review receives repair receipts and current subjects.
+- [ADR 0067](../adr/0067-session-aware-subtask-dag-implementation.md):
+  session-aware subtask-DAG rendering (`pipeline/prompts/subtask.py`) —
+  per-subtask turns over one continued implement session.
+- [ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md):
+  the session-disposition policy that decides continue-versus-fresh before
+  any delta selection.
 - `tests/unit/pipeline/prompts/test_prompt_turn.py`: executable invariants.

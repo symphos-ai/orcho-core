@@ -143,7 +143,7 @@ def test_list_handoff_advice_projects_resolved_retry(tmp_path: Path) -> None:
     meta = {
         "status": "done",
         "phases": {
-            "rounds": [{"round": 1, "critique": "P1: broken — fix the null check"}],
+            "rounds": [{"round": 1, "critique": "P1: broken — fix the null check"}, {"round": 2, "critique": ""}],
         },
     }
     run_dir = _seed_run(runs, "20260613_100000_cccccc", meta=meta)

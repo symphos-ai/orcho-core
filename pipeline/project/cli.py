@@ -34,11 +34,13 @@ A bottom-of-file ``if __name__ == "__main__": main()`` guard makes
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from agents.protocols import SessionMode
 from core.infra import config
@@ -50,7 +52,7 @@ from core.observability.logging import (
 from pipeline.plugins import load_plugin
 from pipeline.project.app import (
     print_error,
-    run_pipeline,
+    run_project_pipeline,
 )
 from pipeline.project.auto_detect import (
     AUTO_DETECT_PROFILE_TOKEN,
@@ -71,12 +73,14 @@ from pipeline.project.correction_followup import (
 )
 from pipeline.project.followup_worktree import FollowupPlanContinuationError
 from pipeline.project.phase_config import build_phase_config_from_overrides
-from pipeline.project.profile_setup import _resolve_profile_name
+from pipeline.project.profile_setup import _resolve_profile_name, _resolve_v2_profile
 from pipeline.project.project_aliases import resolve_project_alias
+from pipeline.project.types import ProjectRunRequest
 from pipeline.project.workspace_picker import (
     WorkspaceProjectPickError,
     pick_project_for_fresh_run,
 )
+from pipeline.runtime.resume import LoopResumeBlockedError
 
 _PROJECT_GROUP_CHILD_MARKERS = (
     ".git",
@@ -95,6 +99,60 @@ _PROJECT_GROUP_EXCLUDED_CHILDREN = {
     ".idea",
     ".vscode",
 }
+
+
+def run_pipeline(**kwargs: object) -> dict:
+    """CLI patch seam that routes through the typed project boundary."""
+    request = ProjectRunRequest.from_kwargs(**kwargs)
+    return run_project_pipeline(request).session
+
+
+def _run_correction_followup_prompt(
+    *, run_id: str, meta: dict, runs_dir: Path | None,
+) -> Literal["not_correction", "exit", "started", "error"]:
+    """Render the correction-only followup/exit interaction for ``--resume``.
+
+    The explicit outcome lets :func:`main` preserve a successful exit status
+    only for an operator-selected exit or a launched child.  Invalid or
+    blocked correction decisions are operator-action errors, not successful
+    resumes.
+    """
+    from pipeline.control.continuation import resolve_continuation_decision
+    from sdk.run_control.launch import (
+        CorrectionFollowupLaunchRequest,
+        launch_correction_followup,
+    )
+
+    parent_dir = runs_dir / run_id if runs_dir is not None else None
+    decision = resolve_continuation_decision(
+        run_id=run_id, meta=meta, parent_run_dir=parent_dir,
+    )
+    if decision.continuation_subject != "retained_change":
+        return "not_correction"
+    if decision.blocked:
+        print_error(f"Correction follow-up is blocked: {decision.reason}")
+        return "error"
+
+    print(f"Run {run_id} requires a correction follow-up.")
+    choice = input("Choose [followup/exit] (followup): ").strip().lower() or "followup"
+    if choice == "exit":
+        return "exit"
+    if choice != "followup":
+        print_error("Choose exactly 'followup' or 'exit'.")
+        return "error"
+    comment = input("Operator comment (required): ").strip()
+    if not comment:
+        print_error("Operator comment is required for a correction follow-up.")
+        return "error"
+    launched = launch_correction_followup(
+        CorrectionFollowupLaunchRequest(
+            parent_run_id=run_id,
+            runs_dir=str(runs_dir) if runs_dir is not None else None,
+            operator_comment=comment,
+        ),
+    )
+    print(f"Started correction follow-up {launched.run.run_id}.")
+    return "started"
 
 
 def _looks_like_single_project(path: Path) -> bool:
@@ -339,6 +397,12 @@ def _build_mock_work_kind_detector(task: str):
 
 
 def main():
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Force UTF-8 stdio before any rendering so non-ASCII output (emoji / box
+    # drawing) does not crash on a legacy Windows console code page.
+    ensure_utf8_stdio()
+
     parser = argparse.ArgumentParser(
         description="Multi-Agent Core: Antigravity orchestrates Claude Code + Codex",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -442,10 +506,10 @@ Examples:
         "--resume", type=str, nargs="?", const="latest", default=None,
         metavar="RUN_ID",
         help="Resume from existing run_dir (skip phases that have a checkpoint). "
-             "RUN_ID должен быть basename папки в <workspace>/runspace/runs/, "
-             "например 20260504_154134. Передайте bare --resume или "
-             "--resume latest чтобы автоматически выбрать самый свежий ран "
-             "в активном workspace.",
+             "RUN_ID must be the basename of a directory under "
+             "<workspace>/runspace/runs/, for example 20260504_154134. "
+             "Pass bare --resume or --resume latest to select the newest run "
+             "in the active workspace automatically.",
     )
     parser.add_argument(
         "--from-run-plan", type=str, default=None, metavar="RUN_ID_OR_DIR",
@@ -478,21 +542,16 @@ Examples:
                         help="Override model for repair_changes (rounds 1+ and escalation)")
     parser.add_argument("--model-review-changes",  type=str, default=None,
                         help="Override model for validate_plan / review_changes / final_acceptance")
-    # Provider overrides — orthogonal to --model-*. If omitted the per-phase
-    # default provider from AppConfig is used. Use these to swap CLIs per
-    # phase (e.g. claude reviewer instead of codex reviewer).
+    # Runtime overrides — orthogonal to --model-*. If omitted the per-phase
+    # default runtime from AppConfig is used. Use these to swap CLIs per phase.
     parser.add_argument("--runtime-plan",            type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for plan phase")
+                        help="Override runtime for plan phase")
     parser.add_argument("--runtime-implement",       type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for implement phase")
+                        help="Override runtime for implement phase")
     parser.add_argument("--runtime-repair-changes",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for repair_changes (rounds 1+ and escalation)")
+                        help="Override runtime for repair_changes (rounds 1+ and escalation)")
     parser.add_argument("--runtime-review-changes",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for validate_plan / review_changes / final_acceptance")
+                        help="Override runtime for validate_plan / review_changes / final_acceptance")
     # Wave 3 + Phase 6: session selector + profile selector. Defaults
     # preserve the canonical feature pipeline while AUTO picks STATELESS
     # or CHAIN based on the model match.
@@ -673,10 +732,10 @@ Examples:
     if not args.workspace and not args.project:
         _autoderive_workspace_from_cwd()
 
-    # Workspace propagation: --workspace CLI flag wins, fallback на $ORCHO_WORKSPACE.
-    # Выставляем env переменную ДО первого config.RUNS_DIR access, чтобы единый
-    # резолвер в platform.py видел свежее значение, а не фиксированный snapshot
-    # из момента import. См. _LazyPath в config.py.
+    # Workspace propagation: --workspace wins, then $ORCHO_WORKSPACE.
+    # Set the environment variable before the first config.RUNS_DIR access so
+    # the shared resolver in platform.py observes the current value instead of
+    # a snapshot captured at import time. See _LazyPath in config.py.
     #
     # ``config.get_runs_dir()`` (used below for resume meta + output dir
     # lookup) reads ``ORCHO_RUNSPACE`` before ``ORCHO_WORKSPACE``, so an
@@ -868,6 +927,43 @@ Examples:
         fresh_default=DEFAULT_PROFILE_NAME,
     )
 
+    # Retained-change correction is a distinct control surface, not a generic
+    # task-bearing follow-up.  The CLI only renders its two core intents and
+    # delegates spawning to the detached client-neutral launch seam.
+    if (
+        args.resume
+        and _resumed is not None
+        and not args.task
+        and not args.task_file
+    ):
+        if _stdio_interactive() and not bool(getattr(args, "no_interactive", False)):
+            _correction_prompt_outcome = _run_correction_followup_prompt(
+                run_id=args.resume,
+                meta=_resumed.meta,
+                runs_dir=_resume_runs_dir,
+            )
+            if _correction_prompt_outcome == "error":
+                sys.exit(2)
+            if _correction_prompt_outcome in {"exit", "started"}:
+                sys.exit(0)
+        else:
+            from pipeline.control.continuation import resolve_continuation_decision
+
+            _continuation = resolve_continuation_decision(
+                run_id=args.resume,
+                meta=_resumed.meta,
+                parent_run_dir=(
+                    _resume_runs_dir / args.resume
+                    if _resume_runs_dir is not None else None
+                ),
+            )
+            if _continuation.continuation_subject == "retained_change":
+                print_error(
+                    "Correction follow-up requires operator input: "
+                    "followup or exit, plus a non-empty operator comment."
+                )
+                sys.exit(2)
+
     # Lineage: a newer, still-unfinished follow-up child of this parent
     # is a likely better resume target. Detected once here; offered (never
     # silently switched to) in the interactive prompt, surfaced as a
@@ -897,6 +993,30 @@ Examples:
             parent_meta=(_resumed.meta if _resumed is not None else None),
             has_new_task=False,
         )
+        if _intent_options.can_checkpoint and _resumed is not None:
+            from pipeline.project.loop_resume import inspect_checkpoint_resume
+
+            try:
+                resume_profile = _resolve_v2_profile(
+                    profile_name=args.profile,
+                    allow_env_override=False,
+                )
+                if resume_profile is None:
+                    raise LoopResumeBlockedError(
+                        f"Profile {args.profile!r} is not available."
+                    )
+                inspect_checkpoint_resume(
+                    resume_profile,
+                    run_dir=_resume_dir,
+                    run_id=args.resume,
+                )
+            except LoopResumeBlockedError as exc:
+                _intent_options = dataclasses.replace(
+                    _intent_options,
+                    can_checkpoint=False,
+                    default_mode=_ResumeMode.FOLLOWUP,
+                    checkpoint_blocked_reason=str(exc),
+                )
         _intent = _prompt_resume_intent(
             run_id=args.resume, options=_intent_options,
             active_followup=_active_followup,
@@ -1060,14 +1180,26 @@ Examples:
             _autodetect_resolution = resolve_topology_choice(
                 _autodetect_resolution, interactive=_interactive,
             )
-        except CrossRunRequested:
-            # Operator chose 'Start cross run' in the auto-detect block. This is
-            # an explicit terminal directive: do NOT convert this mono process
-            # into a cross run and do NOT persist a cross delivery_scope on a
-            # mono run that never starts. The ready ``orcho cross`` command was
-            # already printed; exit cleanly so the operator launches it
-            # deliberately.
-            sys.exit(0)
+        except CrossRunRequested as _cross_directive:
+            # Operator chose 'Start cross run' in the auto-detect block. F2 holds:
+            # this mono process never becomes a cross run in place and never
+            # persists a cross delivery_scope on a mono run that never starts.
+            # Resolve the projected aliases to repo paths and launch a *fresh*
+            # cross process, carrying the task through — replacing this process
+            # rather than mutating it is what keeps the mono run from starting.
+            from cli._cross_launch import launch_cross_from_directive
+            sys.exit(
+                launch_cross_from_directive(
+                    projects=_cross_directive.projects,
+                    task=task,
+                    current_project=str(args.project or Path.cwd()),
+                    profile=_autodetect_resolution.actual_profile.value,
+                    work_mode=_autodetect_resolution.actual_mode.value,
+                    model=getattr(args, "model", None),
+                    mock=getattr(args, "mock", False),
+                    interactive=_interactive,
+                )
+            )
         # Pin the resolved profile to what the run actually starts with. The
         # resolved ``actual_mode`` is NOT written to ORCHO_WORK_MODE here: it is
         # scoped around ``run_pipeline`` by ``scoped_autodetect_decision_env``
@@ -1090,8 +1222,8 @@ Examples:
             sys.exit(2)
         if not output_dir.is_dir():
             print_error(
-                f"--resume {args.resume!r}: run_dir не существует: {output_dir}.\n"
-                f"Доступные runs: ls {output_dir.parent}"
+                f"--resume {args.resume!r}: run_dir does not exist: {output_dir}.\n"
+                f"Available runs: ls {output_dir.parent}"
             )
             sys.exit(2)
     elif _resume_mode == _ResumeMode.FOLLOWUP:
@@ -1110,9 +1242,9 @@ Examples:
             print_error(str(exc))
             sys.exit(2)
     else:
-        # Default: <workspace>/runspace/runs/{ts}/ — атомарный folder на run.
-        # Если workspace не резолвится — get_runs_dir() raise WorkspaceNotResolvedError
-        # с подсказкой как починить.
+        # Default: <workspace>/runspace/runs/{ts}/, one atomic folder per run.
+        # If the workspace cannot be resolved, get_runs_dir() raises
+        # WorkspaceNotResolvedError with remediation guidance.
         # ``--run-id`` (or $ORCHO_RUN_ID) overrides the timestamp so external
         # supervisors that pre-create the run folder can ensure folder name
         # equals the run_id used in checkpoint/meta downstream (P2.5 contract).
@@ -1135,6 +1267,16 @@ Examples:
     # ``resume_from`` and must not rewrite the ambient env.
     if _resume_mode != _ResumeMode.CHECKPOINT:
         os.environ["ORCHO_RUN_ID"] = output_dir.name
+
+    # ADR 0131: stable per-worktree isolation namespace. v1 isolation is
+    # per-run, so this is the run/worktree identity — the documented contract a
+    # project keys external-resource isolation on (e.g.
+    # ``COMPOSE_PROJECT_NAME=orcho_$ORCHO_ISOLATION_ID`` + ephemeral ports).
+    # Set in ALL modes, including checkpoint resume (which reuses the same
+    # worktree via ``output_dir.name``), so worktree_bootstrap and gate commands
+    # target the same stack across a resume. Not stripped from gate env
+    # (RUN_SCOPED_ENV_CHANNELS), so both bootstrap and gates inherit it.
+    os.environ["ORCHO_ISOLATION_ID"] = output_dir.name
 
     # Propagate --mode (verification strictness) into ORCHO_WORK_MODE so the
     # default-mode projection at contract assembly picks it up as the explicit
@@ -1317,6 +1459,8 @@ Examples:
             else None
         ),
     }
+    if _no_interactive:
+        _stable_followup_kwargs["unattended"] = True
 
     # Scoped auto-detect env channels (T3 fixes F1+F2): for an auto-detect run
     # serialize the typed AutoDetectResolution into ORCHO_AUTODETECT_DECISION and
@@ -1406,6 +1550,9 @@ Examples:
             # contradictory-profile guard (rc=2 + clear message) rather than
             # letting the ValueError become a traceback.
             print_error(str(exc))
+            sys.exit(2)
+        except LoopResumeBlockedError as exc:
+            print_error(f"Cannot resume from checkpoint: {exc}")
             sys.exit(2)
         except KeyboardInterrupt:
             print("\nInterrupted")

@@ -10,7 +10,7 @@ Pins the focused projection point in ``pipeline.project.runtime_setup``:
   via the assembled ``SelectionContext``.
 
 The built-in profiles are loaded for real (the shipped semantic catalogue),
-so ``feature → fast`` / ``complex_feature → pro`` are checked against the
+so ``feature → pro`` / ``complex_feature → pro`` are checked against the
 actual ``default_mode`` metadata, not a hand-mirrored table. Local config is
 disabled by the suite conftest, so the load is hermetic.
 """
@@ -60,9 +60,9 @@ def _contract(work_mode: str = "") -> VerificationContract:
 # ── pure projection helper ───────────────────────────────────────────────────
 
 
-def test_feature_defaults_to_fast(profiles: dict) -> None:
+def test_feature_defaults_to_pro(profiles: dict) -> None:
     feature = profiles["feature"]
-    assert project_effective_work_mode(profile=feature) == "fast"
+    assert project_effective_work_mode(profile=feature) == "pro"
 
 
 def test_complex_feature_defaults_to_pro(profiles: dict) -> None:
@@ -72,7 +72,7 @@ def test_complex_feature_defaults_to_pro(profiles: dict) -> None:
 
 @pytest.mark.parametrize("override", ["fast", "pro", "governed"])
 def test_cli_override_wins_over_default(profiles: dict, override: str) -> None:
-    feature = profiles["feature"]  # default_mode == fast
+    feature = profiles["feature"]  # default_mode == pro
     assert (
         project_effective_work_mode(profile=feature, cli_mode=override)
         == override
@@ -81,7 +81,7 @@ def test_cli_override_wins_over_default(profiles: dict, override: str) -> None:
 
 def test_explicit_contract_work_mode_not_overridden(profiles: dict) -> None:
     # An explicit project/contract work_mode (here 'governed') must survive —
-    # the profile default (fast) does not overwrite it.
+    # the profile default (pro) does not overwrite it.
     feature = profiles["feature"]
     assert (
         project_effective_work_mode(
@@ -126,10 +126,10 @@ def test_projection_result_always_in_work_modes(profiles: dict) -> None:
 def test_apply_fills_unset_work_mode_from_default(profiles: dict) -> None:
     feature = profiles["feature"]
     projected = apply_default_mode_projection(_contract(""), profile=feature)
-    assert projected.work_mode == "fast"
+    assert projected.work_mode == "pro"
     # Observable through the assembled selection context.
     ctx = selection_context_from_extras({}, projected)
-    assert ctx.work_mode == "fast"
+    assert ctx.work_mode == "pro"
 
 
 def test_apply_preserves_explicit_contract_work_mode(profiles: dict) -> None:

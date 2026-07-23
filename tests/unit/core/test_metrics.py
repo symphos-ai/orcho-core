@@ -289,6 +289,59 @@ class TestMetricsCollector:
         assert "phase_attempts"   in d
         assert "total_rounds"     in d  # present because rounds > 0
 
+    def test_record_phase_runtime_id_written_to_phase_rollup(self) -> None:
+        # A phase that ran under a wrapper runtime (e.g. claude-glm) carries
+        # that resolved runtime id into the phase rollup, so cost aggregation
+        # can attribute it to the runtime rather than the base model.
+        m = MetricsCollector()
+        m.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            runtime="claude-glm",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        rollup = m.as_dict()["phases"]["implement"]
+        assert rollup["runtime"] == "claude-glm"
+
+    def test_record_phase_without_runtime_omits_runtime_key(self) -> None:
+        # Legacy shape: no explicit runtime and no default_runtime → the phase
+        # rollup must not carry a 'runtime' key at all (older metrics.json).
+        m = MetricsCollector()
+        m.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        rollup = m.as_dict()["phases"]["implement"]
+        assert "runtime" not in rollup
+
+    def test_runtime_id_survives_load_from_disk_roundtrip(self, tmp_path) -> None:
+        # Resume path: a phase that ran under 'claude-glm' saves metrics.json,
+        # a fresh collector rehydrates it, and re-serialising must keep the
+        # runtime id in both phase_attempts and the phase rollup. Without the
+        # rehydrate carry-through, sdk/cost would fall back to model→provider
+        # bucketing and collapse claude-glm into claude for resumed runs.
+        pre = MetricsCollector()
+        pre.record_phase(
+            "implement",
+            model="claude-sonnet-4-6",
+            runtime="claude-glm",
+            tokens_in=5000,
+            tokens_out=8000,
+            duration_s=25.0,
+        )
+        pre.save(tmp_path)
+
+        resumed = MetricsCollector()
+        resumed.load_from_disk(tmp_path / "metrics.json")
+        out = resumed.as_dict()
+        assert out["phases"]["implement"]["runtime"] == "claude-glm"
+        assert out["phase_attempts"][0]["runtime"] == "claude-glm"
+
     def test_repeated_phase_attempts_are_preserved_and_rolled_up(
         self, accounting_on,
     ) -> None:
@@ -537,11 +590,11 @@ class TestMetricsCollector:
             d = m.as_dict()
             assert "total_cost_usd_equivalent" not in d
             assert "cost_usd_equivalent" not in d["phases"]["plan"]
-            assert "API-equiv" not in m.summary_line()
+            assert "Cost ref" not in m.summary_line()
         finally:
             config._reset_config()
 
-    def test_exact_tokens_without_reported_cost_get_estimated_api_equiv(
+    def test_exact_tokens_without_reported_cost_get_estimated_cost_ref(
         self,
         accounting_on,
         monkeypatch: pytest.MonkeyPatch,
@@ -571,7 +624,7 @@ class TestMetricsCollector:
         assert d["cost_estimated"] is True
         assert d["phases"]["review_changes"]["cost_estimated"] is True
         assert d["phase_attempts"][0]["cost_estimated"] is True
-        assert "API-equiv: ~$0.15" in m.summary_line()
+        assert "Cost ref: estimated-api ~$0.15" in m.summary_line()
 
     def test_total_only_tokens_without_reported_cost_use_total_estimate(
         self,
@@ -858,12 +911,12 @@ class TestCrossRollup:
         assert "800" in out            # 500 + 300
         assert "2,000" in out          # 1500 + 500
         assert "45.5s" in out          # 30.0 + 15.5
-        assert "$0.15" in out          # 0.10 + 0.05
+        assert "runtime-reported $0.15" in out          # 0.10 + 0.05
 
     def test_table_omits_cost_column_when_no_phase_reported(self) -> None:
         per = {"api": self._metrics(tin=100, tout=200, dur=5.0)}
         out = cross_summary_table(per)
-        assert "API-equiv" not in out
+        assert "Cost ref" not in out
         assert "TOTAL" in out
 
     def test_line_aggregates_totals_and_cost(self) -> None:
@@ -876,7 +929,7 @@ class TestCrossRollup:
         assert "in=40"  in line
         assert "out=60" in line
         assert "Time: 3.0s" in line
-        assert "API-equiv: $0.03" in line
+        assert "Cost ref: runtime-reported $0.03" in line
 
     def test_tolerates_missing_or_empty_per_project_dicts(self) -> None:
         per = {"api": {}, "web": self._metrics(tin=1, tout=2, dur=0.5)}

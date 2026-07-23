@@ -38,6 +38,7 @@ from agents.command_guard import (
     ORCHO_GUARDRAIL_BLOCKED,
     blocked_agent_stream_line,
 )
+from agents.owned_child import OwnedChildRegistry
 from agents.stall_protocol import EventStallDiagnosticSink
 from agents.stream import StreamAbort
 from core.infra import config
@@ -49,7 +50,7 @@ from pipeline.runtime.steps import Attachment
 if TYPE_CHECKING:
     from agents.runtimes.identity import RuntimeIdentity
 
-_PROVIDER = "claude"
+_DEFAULT_RUNTIME = "claude"
 
 # Account-identity probe (diagnostic only). ``claude auth status`` is the
 # non-interactive, user-facing status surface the CLI already exposes; it
@@ -83,7 +84,12 @@ def _run_identity_status(cmd: list[str]) -> str | None:
     return getattr(result, "stdout", None) or None
 
 
-def _parse_claude_identity(stdout: str) -> "RuntimeIdentity":
+def _parse_claude_identity(
+    stdout: str,
+    *,
+    runtime: str = _DEFAULT_RUNTIME,
+    provider: str = "anthropic",
+) -> "RuntimeIdentity":
     """Extract the sanitized account label / email from ``claude auth status``
     JSON. Returns an unavailable identity when the output is not parseable or
     carries no user-facing account fields."""
@@ -91,9 +97,9 @@ def _parse_claude_identity(stdout: str) -> "RuntimeIdentity":
     try:
         data = json.loads(stdout)
     except (ValueError, TypeError):
-        return RuntimeIdentity.unavailable("claude", "unparsable_status")
+        return RuntimeIdentity.unavailable(runtime, "unparsable_status")
     if not isinstance(data, dict):
-        return RuntimeIdentity.unavailable("claude", "unparsable_status")
+        return RuntimeIdentity.unavailable(runtime, "unparsable_status")
     # Copy ONLY the allowlisted, user-facing fields out of the status blob.
     # Everything else (org id, auth method, subscription type, anything
     # token-shaped) is dropped here and never reaches the value object.
@@ -105,12 +111,12 @@ def _parse_claude_identity(stdout: str) -> "RuntimeIdentity":
     email = safe["email"].strip() if "email" in safe else None
     label = safe["orgName"].strip() if "orgName" in safe else None
     if not email and not label:
-        return RuntimeIdentity.unavailable("claude", "no_account_in_status")
+        return RuntimeIdentity.unavailable(runtime, "no_account_in_status")
     return RuntimeIdentity(
-        runtime="claude",
+        runtime=runtime,
         source="runtime_status",
         available=True,
-        provider="anthropic",
+        provider=provider,
         account_label=label,
         email=email,
     )
@@ -462,24 +468,32 @@ class ClaudeAgent:
     # (mono ``_synthesize_phase_config`` does) bypasses that path —
     # carrying the constant on the class makes the attribute available
     # either way.
-    runtime: str = "claude"
+    runtime: str = _DEFAULT_RUNTIME
+    identity_provider: str = "anthropic"
+
+    @staticmethod
+    def _resolve_cli_binary() -> str:
+        return config.get_claude_bin()
 
     def __init__(self, model: str = "", *, effort: str | None = None):
-        self._bin: LazyValue[str] = lazy_cli_binary("claude", config.get_claude_bin)
+        self._bin: LazyValue[str] = lazy_cli_binary(
+            self.runtime,
+            self._resolve_cli_binary,
+        )
         self.model = model or config.phase_model(
             "implement", "claude-opus-4-8[1m]",
         )
         self.effort = effort
+        self._owned_children = OwnedChildRegistry()
         self.session_id: str | None = None
         self._followup_resume_pending: bool = False
         self._last_continue_session: bool = False
         self._last_resumed_session_id: str | None = None
         self._last_followup_parent_session_id: str | None = None
         # Populated by every call from the final ``{"type":"result",…}`` line
-        # of Claude's stream-json. ``last_cost_usd`` is the API-equivalent
-        # what-if price (Claude Pro/Max subscriptions pay $0 actual; this
-        # value is what pay-as-you-go API would have charged for the same
-        # call). ``last_tokens_in/out`` are the exact API-side counts —
+        # of Claude's stream-json. ``last_cost_usd`` is a cost reference
+        # reported by the active runtime/endpoint, not a billing receipt.
+        # ``last_tokens_in/out`` are the exact API-side counts —
         # estimate_tokens() is only used as a fallback when these are None.
         self.last_cost_usd: float | None = None
         # ``last_tokens_in`` is the **total** input scope this call —
@@ -579,7 +593,7 @@ class ClaudeAgent:
         _last_turn = _take_turn()  # single take, clears slot even if debug is off
         _trace_view = _last_turn.trace_view() if _last_turn is not None else None
         print(render_agent_invocation(
-            runtime="claude",
+            runtime=self.runtime,
             model=self.model,
             effort=self.effort,
             prompt=prompt,
@@ -599,7 +613,7 @@ class ClaudeAgent:
         # cwd repetition, kept stable across the UX-line redesign so
         # existing log greps don't break.
         label = (
-            f"claude --print --model {self.model}{self._effort_label()} "
+            f"{self.runtime} --print --model {self.model}{self._effort_label()} "
             f"({mode_label})"
         )
 
@@ -652,7 +666,7 @@ class ClaudeAgent:
                 # category rides on the event for the T3 monitor/sink.
                 _events.emit(
                     "agent.guardrail",
-                    agent="claude",
+                    agent=self.runtime,
                     label="invoke",
                     guardrail=GUARDRAIL_UNSAFE_PROCESS_POLLING,
                     action="warn",
@@ -662,7 +676,7 @@ class ClaudeAgent:
                 return
             _events.emit(
                 "agent.guardrail",
-                agent="claude",
+                agent=self.runtime,
                 label="invoke",
                 guardrail="destructive_git",
                 action="abort",
@@ -691,7 +705,7 @@ class ClaudeAgent:
             attempt_call_id = f"call_{_uuid.uuid4().hex[:16]}"
             self._last_call_id = attempt_call_id
             _events.emit(
-                "agent.start", agent="claude", model=self.model,
+                "agent.start", agent=self.runtime, model=self.model,
                 label="invoke", mutates_artifacts=mutates_artifacts, cwd=cwd,
                 continue_session=bool(continue_session),
                 resumed_session_id=resumed_session_id,
@@ -699,8 +713,8 @@ class ClaudeAgent:
             )
             with active_registered_skill_names(skill_names):
                 stdout, returncode, stderr, duration = _agents._stream_run(
-                    cmd, cwd=cwd, timeout=config.agent_timeout(_PROVIDER),
-                    idle_timeout=config.agent_idle_timeout(_PROVIDER), label=label,
+                    cmd, cwd=cwd, timeout=config.agent_timeout(self.runtime),
+                    idle_timeout=config.agent_idle_timeout(self.runtime), label=label,
                     on_line=_on_line,
                     stdout_filter=format_claude_line_for_stdout,
                     log_filter=format_claude_line_for_stdout,
@@ -708,10 +722,12 @@ class ClaudeAgent:
                     sandbox_policy=_sandbox_policy,
                     stall_sink=EventStallDiagnosticSink(),
                     stall_phase=_events.current_phase() or "",
+                    owned_child_owner=self._owned_children,
+                    agent_call_id=attempt_call_id,
                 )
             stderr = elide_text_for_model(stderr)
             if returncode != 0 and stderr:
-                print(f"  ! claude stderr: {stderr[:300]}")
+                print(f"  ! {self.runtime} stderr: {stderr[:300]}")
 
             # Capture session_id for future --resume calls. Don't blank it on a
             # parse miss — a transient parsing failure shouldn't drop the bridge.
@@ -726,7 +742,7 @@ class ClaudeAgent:
             # ``agent_call_id`` mirrors the start-side id so consumers can
             # pair events without relying on order.
             _events.emit(
-                "agent.end", agent="claude",
+                "agent.end", agent=self.runtime,
                 return_code=returncode, duration=round(duration, 2),
                 captured_session_id=self.session_id,
                 agent_call_id=attempt_call_id,
@@ -743,14 +759,14 @@ class ClaudeAgent:
             # check scans only this, not stderr log noise.
             reply_text = _extract_assistant_text(stdout) or stdout
             _failures.raise_on_runtime_failure(
-                runtime="claude", model=self.model, cli=self.bin,
+                runtime=self.runtime, model=self.model, cli=self.bin,
                 returncode=returncode, stdout=stdout, stderr=stderr,
                 reply_text=reply_text,
             )
             return ("ok", reply_text, stderr)
 
         tag, reply_text, stderr = _failures.run_invoke_with_retry(
-            _attempt, runtime="claude",
+            _attempt, runtime=self.runtime, owned_children=self._owned_children,
         )
         if tag == "guardrail":
             return f"{ORCHO_GUARDRAIL_BLOCKED}\n{stderr}"
@@ -781,9 +797,13 @@ class ClaudeAgent:
         try:
             bin_path = self.bin
         except Exception:  # noqa: BLE001 — CLI not installed → unavailable, not an error
-            return RuntimeIdentity.unavailable("claude", "no_binary")
+            return RuntimeIdentity.unavailable(self.runtime, "no_binary")
         cmd = [*_wrap_windows_cmd(bin_path), "auth", "status"]
         stdout = _run_identity_status(cmd)
         if not stdout:
-            return RuntimeIdentity.unavailable("claude", "no_status_surface")
-        return _parse_claude_identity(stdout)
+            return RuntimeIdentity.unavailable(self.runtime, "no_status_surface")
+        return _parse_claude_identity(
+            stdout,
+            runtime=self.runtime,
+            provider=self.identity_provider,
+        )

@@ -77,6 +77,7 @@ def setup_run_id(
     plan_source: str,
     projected_profile: str | None,
     presentation: PresentationPolicy,
+    preallocated_output_dir: bool = False,
 ) -> str:
     """Allocate the run id, wire logging, and emit ``run.start``.
 
@@ -96,6 +97,7 @@ def setup_run_id(
         # (``set_progress_log`` / ``init_event_store``) always fire
         # regardless (ADR 0046 stop #9).
         presentation=presentation,
+        preallocated_output_dir=preallocated_output_dir,
     )
 
 
@@ -315,13 +317,30 @@ def print_pipeline_header(
         eff_map = config.AppConfig.load().phase_effort_map or {}
     except Exception:
         eff_map = {}
+    # Dispatch truth first: each row reads model/effort from the phase's
+    # actual agent slot in ``phase_config`` — the same object the run
+    # dispatches on — so a per-phase ``phase_model_map`` entry (e.g.
+    # validate_plan pinned to a different reviewer model) shows in the
+    # banner instead of the coarse plan/implement/review triple, which is
+    # only the fallback for callers that resolved no config.
+    slot_display = _phase_agent_display(phase_config)
+
+    def _agent_row(role: str, fallback_model: str) -> dict[str, str]:
+        phase = role.lower()
+        model, effort = slot_display.get(phase, (fallback_model, ""))
+        return {
+            "role": role,
+            "model": model,
+            "effort": effort or str(eff_map.get(phase) or ""),
+        }
+
     agents_block = [
-        {"role": "PLAN",   "model": plan_model,   "effort": str(eff_map.get("plan") or "")},
-        {"role": "IMPLEMENT",        "model": implement_model,  "effort": str(eff_map.get("implement") or "")},
-        {"role": "REVIEW_CHANGES",   "model": review_model, "effort": str(eff_map.get("review_changes") or "")},
-        {"role": "REPAIR_CHANGES",   "model": implement_model,  "effort": str(eff_map.get("repair_changes") or "")},
-        {"role": "VALIDATE_PLAN", "model": review_model, "effort": str(eff_map.get("validate_plan") or "")},
-        {"role": "FINAL_ACCEPTANCE", "model": review_model, "effort": str(eff_map.get("final_acceptance") or "")},
+        _agent_row("PLAN", plan_model),
+        _agent_row("IMPLEMENT", implement_model),
+        _agent_row("REVIEW_CHANGES", review_model),
+        _agent_row("REPAIR_CHANGES", implement_model),
+        _agent_row("VALIDATE_PLAN", review_model),
+        _agent_row("FINAL_ACCEPTANCE", review_model),
     ]
     # Drop agent rows whose phase isn't reachable in this profile so
     # the Agents block matches the Pipeline visualization below. When
@@ -353,7 +372,26 @@ def print_pipeline_header(
     # resolution, gate execution, or receipt access inside this SILENT-gated
     # function.
     from core.io.verification_header import build_verification_header_view
-    verification_view = build_verification_header_view(contract)
+    from pipeline.verification_contract import FINAL_PHASES
+    # Whether the active profile has a final delivery phase decides the honest
+    # ``when`` of a warn/off gate (``pre-final`` vs ``not auto-run``). Derive it
+    # from the profile's phases against the single FINAL_PHASES set (never a
+    # duplicated copy); ``None`` when the profile is unresolved so the banner
+    # marks those gates profile-dependent rather than guessing.
+    has_final_phase = (
+        bool(_profile_phase_names(profile_obj) & set(FINAL_PHASES))
+        if profile_obj is not None
+        else None
+    )
+    ledger_rows = None
+    if output_dir is not None:
+        from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+        if ledger_path(output_dir).exists():
+            ledger_rows = load_ledger(output_dir).rows
+    verification_view = build_verification_header_view(
+        contract, has_final_phase=has_final_phase, ledger_rows=ledger_rows,
+    )
     output_log = str(output_dir / "output.log") if output_dir is not None else None
     events_log = str(output_dir / "events.jsonl") if output_dir is not None else None
 
@@ -478,6 +516,32 @@ def _peek_resume_current_phase(
     if phase == "implement":
         return "implement"
     return None
+
+
+def _phase_agent_display(
+    phase_config: PhaseAgentConfig | None,
+) -> dict[str, tuple[str, str]]:
+    """Map ``phase_name -> (model, effort)`` from the actual agent slots.
+
+    The Agents banner must report what the run will dispatch on, and the
+    dispatch truth is ``phase_config`` — per-phase ``phase_model_map`` /
+    ``phase_effort_map`` entries and the ADR 0101 operator override land in
+    its slots, not in the coarse plan/implement/review model triple the
+    header args carry. Returns ``{}`` when no config is supplied (silent /
+    dry-run callers), so the header falls back to the coarse models.
+    ``effort`` is ``""`` for runtimes without the attribute; the caller
+    falls back to the configured effort map.
+    """
+    if phase_config is None:
+        return {}
+    from agents.registry import PHASE_AGENT_ATTRS
+    out: dict[str, tuple[str, str]] = {}
+    for phase, attr in PHASE_AGENT_ATTRS.items():
+        agent = getattr(phase_config, attr, None)
+        model = str(getattr(agent, "model", "") or "")
+        if model:
+            out[phase] = (model, str(getattr(agent, "effort", "") or ""))
+    return out
 
 
 def _phase_runtimes_from_config(

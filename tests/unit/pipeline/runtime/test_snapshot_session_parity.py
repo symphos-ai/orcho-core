@@ -48,6 +48,42 @@ _TOKEN_BUDGET_TOTAL_IN = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for the shape snapshots.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which changes the ``commit_delivery`` session block (a published branch +
+    ``delivery_branch`` instead of a ``commit_sha`` on the checkout). The golden
+    session-shape fixtures pin the prior block, so these runs use ``bypass`` (the
+    ADR's explicit legacy opt-out) to keep the goldens valid without regenerating
+    high-blast-radius snapshot data. The new branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_run_scoped_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop the engine's run-scoped env channels for hermetic shape snapshots.
+
+    An orchestrated gate process (or a stale interactive shell — see
+    ``pipeline/project/auto_detect.py``) can carry ``ORCHO_AUTODETECT_DECISION``
+    / ``ORCHO_WORK_MODE``; a session built under them grows an ``auto_detect``
+    block the golden fixtures do not pin, failing these tests for code that is
+    green in a clean shell. The engine-side strip lives in
+    ``pipeline.verification_env.RUN_SCOPED_ENV_CHANNELS``; this fixture keeps
+    the snapshots hermetic regardless of how pytest was launched.
+    """
+    from pipeline.verification_env import RUN_SCOPED_ENV_CHANNELS
+
+    for key in RUN_SCOPED_ENV_CHANNELS:
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_session_shape_normalizer_masks_prompt_size_estimates() -> None:
     """Shape snapshots pin prompt topology, not exact prompt prose size."""
     normalized = normalize_session({
@@ -89,6 +125,15 @@ def test_session_shape_normalizer_masks_prompt_size_estimates() -> None:
     assert normalized["context_pressure"]["context_remaining_tokens"] == "<TOKEN_COUNT>"
     assert normalized["context_pressure"]["context_used_tokens"] == "<TOKEN_COUNT>"
     assert normalized["context_pressure"]["context_window_tokens"] == "<TOKEN_COUNT>"
+
+
+def test_session_shape_normalizer_masks_explicit_base_temp_path(tmp_path: Path) -> None:
+    normalized = normalize_session(
+        {"artifact_path": str(tmp_path / "runs" / "session.json")},
+        tmp_root=str(tmp_path),
+    )
+
+    assert normalized["artifact_path"] == "<TMP>"
 
 
 def _setup_project(tmp_path: Path) -> tuple[Path, Path]:
@@ -173,7 +218,9 @@ class TestSessionShapeSnapshots:
             profile_name="task",
             max_rounds=1,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("task_mode", normalized)
 
     def test_full_mode_shape_pinned(self, tmp_path: Path) -> None:
@@ -186,7 +233,9 @@ class TestSessionShapeSnapshots:
             profile_name="feature",
             max_rounds=1,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("full_mode_single_round", normalized)
 
     def test_review_mode_shape_pinned(self, tmp_path: Path) -> None:
@@ -200,7 +249,9 @@ class TestSessionShapeSnapshots:
             profile_name="delivery_audit",
             max_rounds=0,
         )
-        normalized = normalize_session(session, project_root=str(project))
+        normalized = normalize_session(
+            session, project_root=str(project), tmp_root=str(tmp_path),
+        )
         _compare_or_regen("review_mode", normalized)
 
 

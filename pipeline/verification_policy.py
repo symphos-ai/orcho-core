@@ -6,8 +6,9 @@ policy-aware UX surfaces (readiness block, delivery banner, DONE summary). It
 answers two questions, deterministically and without side effects:
 
 1. :func:`effective_delivery_policy_by_command` — for each required delivery
-   command (the set :func:`pipeline.verification_readiness.required_delivery_commands`
-   computes), what is its *effective* delivery policy:
+   command (the receipt view from
+   :func:`pipeline.verification_readiness.resolve_delivery_selection`), what is
+   its *effective* delivery policy:
 
    * ``manual_only`` when the command is in the caller-supplied manual/operator
      set (``sdk.verify.manual_or_operator_only_commands``);
@@ -44,20 +45,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from pipeline.verification_contract import SCHEDULE_POLICIES, VerificationContract
-from pipeline.verification_readiness import required_delivery_commands
+from pipeline.verification_readiness import resolve_delivery_selection
 
 __all__ = [
-    "MANUAL_ONLY_POLICY",
     "GapEntry",
     "GapPartition",
     "effective_delivery_policy_by_command",
+    "consequence_by_command",
     "partition_gaps",
 ]
 
-# The synthetic effective-policy token for a command the caller marked
-# manual/operator-only. Distinct from the four real schedule policies so a
-# manual_only gap can never be confused with an enforced ``require`` gate.
-MANUAL_ONLY_POLICY = "manual_only"
 
 # Delivery-relevant (hook, phase) positions — a deliberate literal copy of
 # ``pipeline.verification_readiness._DELIVERY_HOOKS`` so this pure module stays
@@ -69,7 +66,7 @@ _DELIVERY_HOOKS: tuple[tuple[str, str], ...] = (
 )
 
 # Receipt statuses that constitute an unproven gap (everything but ``present``).
-_GAP_STATUSES: frozenset[str] = frozenset({"missing", "failed", "stale"})
+_GAP_STATUSES: frozenset[str] = frozenset({"missing", "failed", "stale", "unverifiable"})
 
 
 @dataclass(frozen=True)
@@ -101,7 +98,7 @@ class GapPartition:
 
     blocking: tuple[GapEntry, ...] = ()
     warning: tuple[GapEntry, ...] = ()
-    manual_only: tuple[GapEntry, ...] = ()
+    operator: tuple[GapEntry, ...] = ()
 
     @property
     def has_blocking(self) -> bool:
@@ -116,8 +113,8 @@ class GapPartition:
         return tuple(e.command for e in self.warning)
 
     @property
-    def manual_only_commands(self) -> tuple[str, ...]:
-        return tuple(e.command for e in self.manual_only)
+    def operator_commands(self) -> tuple[str, ...]:
+        return tuple(e.command for e in self.operator)
 
     @property
     def blocking_policies(self) -> tuple[str, ...]:
@@ -145,7 +142,7 @@ def effective_delivery_policy_by_command(
 ) -> dict[str, str]:
     """Effective delivery policy for each required delivery command, in order.
 
-    For every command :func:`required_delivery_commands` yields:
+    For every command in the delivery selection's receipt view:
 
     * ``manual_only`` when the command is in ``manual_set`` (the raw
       manual/operator-only set from ``sdk.verify.manual_or_operator_only_commands``);
@@ -164,18 +161,48 @@ def effective_delivery_policy_by_command(
     manual = set(manual_set or ())
     plan_policy = _delivery_policy_by_command_from_plan(plan)
     result: dict[str, str] = {}
-    for command in required_delivery_commands(contract, plan):
+    for command in resolve_delivery_selection(contract, plan).receipt_commands:
         if command in manual:
-            result[command] = MANUAL_ONLY_POLICY
+            result[command] = "manual"
             continue
         scheduled = plan_policy.get(command)
         result[command] = scheduled if scheduled else boundary_policy
     return result
 
 
+def consequence_by_command(
+    status_by_command: Mapping[str, Any],
+    declared_policy_by_command: Mapping[str, str],
+) -> dict[str, str]:
+    """Resolve post-result consequence without changing declared policy.
+
+    A typed provenance/environment failure is a hygiene warning at readiness and
+    delivery, even when its declared policy is ``require``.  This is deliberately
+    separate from execution policy: callers retain the canonical policy map for
+    rendering and audit, then use this result only for consequence routing.
+    """
+    consequences: dict[str, str] = {}
+    for command, policy in declared_policy_by_command.items():
+        if policy == "require":
+            consequence = "required_action"
+        elif policy in ("warn", "suggest"):
+            consequence = "warning"
+        else:
+            consequence = "none"
+        classification = status_by_command.get(command)
+        if getattr(classification, "failure_kind", None) in {
+            "provenance_failure",
+            "env_failure",
+        }:
+            consequence = "warning"
+        consequences[command] = consequence
+    return consequences
+
+
 def partition_gaps(
     status_by_command: Mapping[str, Any],
     policy_by_command: Mapping[str, str],
+    consequence_by_command: Mapping[str, str] | None = None,
 ) -> GapPartition:
     """Split unproven-receipt gaps into blocking / warning / manual_only buckets.
 
@@ -193,30 +220,32 @@ def partition_gaps(
     * ``warn`` / ``suggest`` → ``warning`` (delivery allowed by policy);
     * ``manual_only`` → ``manual_only`` (visible, never blocking, never missing
       required);
-    * any other policy (e.g. ``off``) → dropped (not a surfaced gap).
+    * ``manual`` → ``manual_only`` (visible, never blocking).
 
     Input order is preserved within each bucket.
     """
     blocking: list[GapEntry] = []
     warning: list[GapEntry] = []
-    manual_only: list[GapEntry] = []
+    operator: list[GapEntry] = []
     for command, raw_status in status_by_command.items():
         status = getattr(raw_status, "status", raw_status)
         if status not in _GAP_STATUSES:
             continue
         policy = policy_by_command.get(command, "")
         entry = GapEntry(command=command, status=status, policy=policy)
-        if policy == MANUAL_ONLY_POLICY:
-            manual_only.append(entry)
-        elif policy == "require":
+        consequence = (consequence_by_command or {}).get(command)
+        if policy == "manual":
+            operator.append(entry)
+        elif consequence == "required_action" or (
+            consequence is None and policy == "require"
+        ):
             blocking.append(entry)
-        elif policy in ("warn", "suggest"):
+        elif consequence == "warning" or policy in ("warn", "suggest"):
             warning.append(entry)
-        # any other policy (e.g. "off") is intentionally not surfaced as a gap.
     return GapPartition(
         blocking=tuple(blocking),
         warning=tuple(warning),
-        manual_only=tuple(manual_only),
+        operator=tuple(operator),
     )
 
 

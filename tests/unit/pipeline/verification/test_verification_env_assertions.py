@@ -13,7 +13,11 @@ import sys
 from pathlib import Path
 
 from pipeline.verification_contract import PlaceholderContext
-from pipeline.verification_env import run_env_assertions
+from pipeline.verification_env import (
+    RUN_SCOPED_ENV_CHANNELS,
+    resolve_env_runtime,
+    run_env_assertions,
+)
 
 
 def _ctx(checkout: str = "", project: str = "") -> PlaceholderContext:
@@ -137,6 +141,58 @@ class TestVersionAssertion:
         }
         a = _only(run_env_assertions("ci", spec, _ctx()))
         assert a["passed"] is False
+
+    def test_bare_python_resolves_declared_interpreter_under_stripped_path(
+        self, tmp_path: Path,
+    ) -> None:
+        # A bare ``python`` argv token resolves to the declared interpreter, so
+        # the assertion passes even when ``python`` is not on the subprocess
+        # PATH. The declared ``python`` is a real interpreter (sys.executable);
+        # PATH is overridden to an empty dir that has no ``python`` binary.
+        empty_dir = tmp_path / "empty-path"
+        empty_dir.mkdir()
+        major = str(sys.version_info[0])
+        spec = {
+            "python": sys.executable,
+            "cwd": str(tmp_path),
+            "env": {"PATH": str(empty_dir)},
+            "assertions": [
+                {"version": ["python", "--version"], "contains": major},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["kind"] == "version_contains"
+        assert a["passed"] is True
+
+    def test_bare_python_version_mismatch_still_fails(self, tmp_path: Path) -> None:
+        # Even resolved to the declared interpreter, a substring the real output
+        # never contains keeps the assertion a genuine failure.
+        spec = {
+            "python": sys.executable,
+            "cwd": str(tmp_path),
+            "assertions": [
+                {"version": ["python", "--version"], "contains": "ZZ-nope"},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["passed"] is False
+
+    def test_bare_python_nonexistent_declared_interpreter_fails(
+        self, tmp_path: Path,
+    ) -> None:
+        # A declared interpreter that does not exist is a real subprocess error,
+        # not silently neutralised by the bare-``python`` mapping.
+        major = str(sys.version_info[0])
+        spec = {
+            "python": str(tmp_path / "no-such-python"),
+            "cwd": str(tmp_path),
+            "assertions": [
+                {"version": ["python", "--version"], "contains": major},
+            ],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["passed"] is False
+        assert "subprocess error" in a["detail"]
 
 
 class TestDegradation:
@@ -276,3 +332,40 @@ def test_absolute_path_exists_ignores_cwd(tmp_path: Path) -> None:
     a = _only(run_env_assertions("ci", spec, _ctx()))
     assert a["passed"] is True
     assert a["actual"] == os.path.join(str(target))
+
+
+class TestRunScopedChannelStrip:
+    """Run-scoped engine env channels never leak into a verification
+    subprocess: the engine sets them on its own process for the duration of a
+    run, and an inherited channel changes the behavior under test (the
+    session-shape gate false-fail of run ``20260704_111547``). Declared ``env``
+    overrides are applied after the strip, so a contract can still pass one
+    explicitly; ordinary ambient host vars stay inherited."""
+
+    def test_ambient_channels_stripped(self, tmp_path: Path, monkeypatch) -> None:
+        for key in RUN_SCOPED_ENV_CHANNELS:
+            monkeypatch.setenv(key, "leaked-from-engine")
+        _, _, sub_env, overrides = resolve_env_runtime(
+            {}, _ctx(project=str(tmp_path)),
+        )
+        for key in RUN_SCOPED_ENV_CHANNELS:
+            assert key not in sub_env
+        assert overrides == {}
+
+    def test_declared_override_survives_strip(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        key = RUN_SCOPED_ENV_CHANNELS[0]
+        monkeypatch.setenv(key, "leaked-from-engine")
+        _, _, sub_env, overrides = resolve_env_runtime(
+            {"env": {key: "declared"}}, _ctx(project=str(tmp_path)),
+        )
+        assert sub_env[key] == "declared"
+        assert overrides == {key: "declared"}
+
+    def test_plain_ambient_env_still_inherited(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        monkeypatch.setenv("ORDINARY_HOST_VAR", "kept")
+        _, _, sub_env, _ = resolve_env_runtime({}, _ctx(project=str(tmp_path)))
+        assert sub_env["ORDINARY_HOST_VAR"] == "kept"

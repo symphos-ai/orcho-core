@@ -2,8 +2,8 @@
 
 Exercises every branch of the implement substance-repair handoff handler with
 a fake ``repair_pass`` (no agents): successful repair → ``repaired``;
-exhaustion → ``PhaseHandoffRequested`` pause with the full action set; eligible
-auto-waiver → in-process synthetic decision via the T9 API (no public
+exhaustion → ``PhaseHandoffRequested`` pause with the explicit action set;
+eligible auto-waiver → in-process synthetic decision via the T9 API (no public
 ``phase_handoff_decide``); ineligible flag → pause; retry-mode forcing a pass.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def test_successful_repair_marks_repaired(
         sections.append((label, content))
 
     monkeypatch.setattr(
-        "agents.stream.write_agent_log_section",
+        "agents.stream_log.write_agent_log_section",
         _record_section,
     )
 
@@ -149,6 +149,14 @@ def test_exhaustion_emits_full_signal(tmp_path: Path) -> None:
         done_context={},
         repair_pass=repair_pass,
         last_output="build log",
+        unmet_done_criteria=(
+            {
+                "subtask_id": "b",
+                "index": 2,
+                "criterion": "Functional test passes.",
+                "evidence": "PostgreSQL port 5433 is already allocated.",
+            },
+        ),
     )
     assert out.paused is True
     assert out.delivery_status == "incomplete"
@@ -161,11 +169,21 @@ def test_exhaustion_emits_full_signal(tmp_path: Path) -> None:
     assert sig.trigger == "incomplete"
     assert sig.verdict == "INCOMPLETE"
     assert sig.approved is False
-    assert set(sig.available_actions) == {
-        "continue", "retry_feedback", "continue_with_waiver", "halt",
-    }
+    assert sig.available_actions == (
+        "retry_feedback",
+        "continue_with_waiver",
+        "halt",
+    )
     assert sig.artifacts["incomplete_subtasks"] == ["b"]
     assert sig.artifacts["attestation_incomplete"] == {"b": "missing attestation"}
+    assert sig.artifacts["unmet_done_criteria"] == [
+        {
+            "subtask_id": "b",
+            "index": 2,
+            "criterion": "Functional test passes.",
+            "evidence": "PostgreSQL port 5433 is already allocated.",
+        },
+    ]
     assert sig.artifacts["findings"] == ["finding-1"]
     # No decision artifact: the public decide path was not taken.
     assert not _decisions_dir(tmp_path).exists()

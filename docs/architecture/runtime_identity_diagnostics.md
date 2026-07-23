@@ -17,7 +17,7 @@ The value behind that hint is a small provider-neutral object,
 | Field           | Meaning                                             |
 | --------------- | --------------------------------------------------- |
 | `runtime`       | backend id (e.g. `claude`)                          |
-| `source`        | where it came from (`runtime_status`, `mock`, or a miss reason) |
+| `source`        | where it came from — `runtime_status` for a real probe, `mock` for fakes, or a miss reason: `unavailable`, `no_status_surface`, `no_account_surface`, `unsupported` (runtime has no probe method), `probe_error` |
 | `available`     | whether a usable identity was resolved              |
 | `provider`      | optional vendor label                               |
 | `account_label` | optional org / account display name                 |
@@ -64,11 +64,12 @@ hint). Provider-specific extraction lives in the runtime adapters:
 - **Claude** (`agents/runtimes/claude.py`) — probes `claude auth status`, the
   non-interactive status surface the CLI already shows users, with a short
   timeout, and reads only the `email` / `orgName` fields.
-- **Codex** (`agents/runtimes/codex.py`) — returns `unavailable`. The only
-  non-interactive status surface, `codex login status`, reports the *auth
-  method* and no user-facing account / organization / email, so there is
-  nothing safe to surface. If a future CLI exposes a stable account field, parse
-  it in the adapter the same way Claude does.
+- **Codex** (`agents/runtimes/codex.py`) — returns an unavailable identity
+  with `source="no_account_surface"`. The only non-interactive status
+  surface, `codex login status`, reports the *auth method* and no
+  user-facing account / organization / email, so there is nothing safe to
+  surface. If a future CLI exposes a stable account field, parse it in the
+  adapter the same way Claude does.
 
 A third-party runtime that implements no `probe_identity` simply yields
 `unavailable` via `agents.runtimes.identity.probe_runtime_identity`; the
@@ -80,3 +81,29 @@ Identities are probed once per distinct agent **instance**, never collapsed by
 runtime name. Two phases pinned to the same runtime can still run under
 different accounts; collapsing by name would hide exactly the mismatch this
 diagnostic exists to catch, so each instance surfaces its own hint.
+
+## Not the failure-classification plane
+
+Identity answers "whose account is this runtime using?" — a header-only
+glance. The adjacent question, "why did this runtime *fail*?", lives in a
+separate machinery with the opposite persistence contract (it **does** write
+structured metadata to `meta.json`, `run.end` events, and the evidence
+bundle):
+
+- **Provider/runtime failure classification** (ADR 0118) — transient
+  provider-side failures (rate limit, timeout, connection, killed process)
+  classify as `failure_kind="provider_runtime"` with bounded retries;
+  see `core/io/retry.py` and `pipeline/run_state/provider_runtime.py`.
+- **Signal-exit classification** — `classify_signal_exit` in
+  `core/io/retry.py` splits kill-shaped exits (SIGKILL/SIGSEGV/SIGABRT →
+  recoverable `provider_runtime`) from cancel-shaped ones (SIGINT/SIGTERM →
+  immediate halt), and durable records carry `halt_reason` values like
+  `signal:<NAME>` / `abnormal_exit:<rc>`.
+- **Provider-access recovery** (ADR 0101) — access-shaped failures
+  (`AgentAccessError`) project `failure_kind="provider_access"` with typed
+  `recovery_actions` (retry / halt / replace runtime+model) via
+  `pipeline/project/provider_recovery.py` and the durable runtime override
+  in `sdk/run_control/runtime_override.py`.
+
+If you are debugging *who* the runtime was, start here; if you are debugging
+*why it died*, start there.

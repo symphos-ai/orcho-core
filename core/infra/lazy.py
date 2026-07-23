@@ -27,12 +27,12 @@ class LazyValue[T]:
 
 def lazy_cli_binary(runtime: str, resolver: Callable[[], str]) -> LazyValue[str]:
     """Return a lazy CLI binary resolver with runtime-specific errors."""
+    env_key = f"{runtime.upper().replace('-', '_')}_BIN"
 
     def resolve() -> str:
         try:
             return resolver()
         except RuntimeError as exc:
-            env_key = f"{runtime.upper()}_BIN"
             raise RuntimeError(
                 f"{runtime} runtime cannot start because its CLI binary is "
                 f"unavailable. Install the {runtime} CLI, set "

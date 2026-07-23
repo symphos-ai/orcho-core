@@ -123,10 +123,15 @@ def render_gate_live_block(
 # autorun live vocabulary (``render_gate_live_block``) and the caller's
 # status-tint table, so a scheduled block tints identically.
 _SCHEDULED_DECISION_STATUS = {
-    "executed_pass": "PASS",
-    "executed_fail": "FAIL",
-    "skipped_fresh": "FRESH",
-    "skipped_manual": "SKIPPED MANUAL",
+    "executed_pass": "executed_pass",
+    "executed_fail": "executed_fail",
+    "skipped_fresh": "skipped_fresh",
+    "manual_available": "manual_available",
+    "suggested": "suggested",
+    "not_selected": "not_selected",
+    "residual_missing": "residual_missing",
+    "residual_stale": "residual_stale",
+    "residual_failed": "residual_failed",
 }
 
 
@@ -328,6 +333,20 @@ class VerificationTimeline:
     # default empty so a directly-constructed timeline is byte-identical.
     waived: tuple[str, ...] = ()
     waived_details: tuple[tuple[str, str], ...] = ()
+    # Declared scheduled-gate dispositions (T3, ADR 0095 ledger), resolved by
+    # ledger identity against the delivery gate plan so every start-banner gate
+    # identity is closed in DONE with exactly one disposition. Each entry is a
+    # per-identity display label (a bare command name, or ``"<command>
+    # (<timing>)"`` when one command owns several scheduled identities), so a
+    # multi-identity command never collapses to a single disposition.
+    # ``not_selected_on_path`` are path-gated gates not selected under this diff;
+    # ``manual_declared`` are operator/manual gates (e.g. ``e2e``). Both default
+    # empty so a directly-constructed timeline renders byte-identically.
+    not_selected_on_path: tuple[str, ...] = ()
+    manual_declared: tuple[str, ...] = ()
+    # Durable-ledger projection.  When present this is the complete typed
+    # identity model; legacy receipt/plugin aggregation is intentionally bypassed.
+    ledger_rows: tuple[Any, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
@@ -339,6 +358,9 @@ class VerificationTimeline:
             or self.manual_only
             or self.inherited
             or self.waived
+            or self.not_selected_on_path
+            or self.manual_declared
+            or self.ledger_rows
         )
 
     def _residual_commands(self) -> tuple[str, ...]:
@@ -479,6 +501,13 @@ class _RunLevelProjection:
     searched_run_dirs: tuple[str, ...] = ()
     suggested_commands: tuple[str, ...] = ()
     policy_by_command: tuple[tuple[str, str], ...] = ()
+    # Declared scheduled-gate dispositions (ADR 0095 ledger, T3), read from the
+    # SAME resolved delivery gate plan by ledger identity (command, hook, phase):
+    # ``not_selected_on_path`` are path-gated gates whose subsystem globs did not
+    # match this diff (resolved ``dormant``); ``manual_declared`` are operator/
+    # manual gates (e.g. ``e2e``), kept out of the 'no matching path' line.
+    not_selected_on_path: tuple[str, ...] = ()
+    manual_declared: tuple[str, ...] = ()
 
 
 def _run_level_projection(
@@ -521,6 +550,7 @@ def _run_level_projection(
             classify_required_receipts,
             delivery_gate_plan,
             effective_policy_by_command,
+            resolve_delivery_selection,
             suggested_verify_commands,
         )
 
@@ -531,7 +561,7 @@ def _run_level_projection(
             plan = None
 
         # The single effective classification (ADR 0108): the shared overlay folds
-        # the ADR 0106 environment-provenance downgrade onto the base receipt
+        # the ADR 0125 environment-provenance downgrade onto the base receipt
         # classification, so this live render and the typed SDK projection consume
         # the SAME rule and can never diverge. A phase-scheduled gate whose
         # verification_environment receipt recorded a failed check arrives already
@@ -551,9 +581,19 @@ def _run_level_projection(
         # so the residual can be classified blocking vs warning and manual/
         # operator-only commands kept out of the required residual (ADR 0090).
         policy_by_command = effective_policy_by_command(contract, plan)
+        operator_commands = {
+            item.identity.command
+            for item in resolve_delivery_selection(contract, plan).identities
+            if item.executor == "operator"
+        }
 
         def _is_manual(name: str) -> bool:
-            return policy_by_command.get(name) == "manual_only"
+            # The typed delivery selection is authoritative for executor
+            # ownership, including selected ``suggest`` identities. Keep the
+            # policy fallback for legacy raw manual-set projection.
+            return name in operator_commands or policy_by_command.get(name) in {
+                "manual_only", "manual",
+            }
 
         current_run_id = run_dir.name
 
@@ -592,6 +632,16 @@ def _run_level_projection(
                 project=str(getattr(ctx, "project", "") or ""),
             )
 
+        # Declared scheduled-gate dispositions from the shared ledger, resolved by
+        # identity against the SAME ``plan`` (delivery_gate_plan) already built
+        # above — no second selection pass, no new touched-paths plumbing. A row
+        # whose (command, hook, phase) is absent from ``plan.entries`` and is
+        # path-gated is ``dormant`` (not selected under this diff); an operator/
+        # manual gate is surfaced separately and never folded into that line.
+        not_selected_on_path, manual_declared = _ledger_dispositions(
+            contract, plan, manual_only,
+        )
+
         # Only the residual commands' policies are needed downstream (the render
         # split + the finalization approved-with-warning check).
         residual_set = {*missing, *stale, *failed}
@@ -606,8 +656,72 @@ def _run_level_projection(
             policy_by_command=tuple(
                 (c, p) for c, p in policy_by_command.items() if c in residual_set
             ),
+            not_selected_on_path=not_selected_on_path,
+            manual_declared=manual_declared,
         )
     return projection
+
+
+def _ledger_dispositions(
+    contract: Any, plan: Any, manual_only: list[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Path-gated-dormant and operator/manual gate labels from the shared ledger.
+
+    Projects ``contract`` through :func:`pipeline.verification_ledger.build_gate_ledger`
+    resolved against the already-built delivery ``plan`` (so the disposition of
+    every scheduled-gate identity matches what the start banner declared, by
+    ``(command, hook, phase)`` identity — never ``plan.selected_commands``).
+    Returns ``(not_selected_on_path, manual_declared)``:
+
+    * ``not_selected_on_path`` — the path-gated (``on_path``) rows that resolved
+      ``dormant`` (their subsystem globs did not match this diff).
+    * ``manual_declared`` — the operator/manual (``operator``) rows, excluding any
+      command already listed as required ``manual_only`` so a gate is not shown
+      twice. These never appear in the 'no matching path' line.
+
+    Each entry is a per-ledger-row *display label*, NOT a bare command name, so a
+    command scheduled under several ``(hook, phase)`` identities closes each of
+    them with its own disposition instead of collapsing to one. A label is the
+    plain command name when that command owns a single scheduled identity, and is
+    disambiguated as ``"<command> (<timing>)"`` when the command owns more than
+    one identity in the ledger (the same ``timing`` the start banner shows). Order
+    follows the ledger (schedule) order.
+
+    Best-effort: any import or projection failure degrades to two empty tuples
+    (the block simply omits the disposition lines). ``plan`` may be ``None`` (a
+    contract without gate_sets / selection) — then no row resolves ``dormant`` and
+    only static operator gates, if any, surface.
+    """
+    try:
+        from pipeline.verification_ledger import build_gate_ledger
+
+        rows = build_gate_ledger(contract, plan=plan)
+    except Exception:  # noqa: BLE001 — presentation must never break finalize
+        return (), ()
+
+    # A command that maps to more than one scheduled identity must keep each
+    # identity distinguishable in the DONE dispositions, so its timing is folded
+    # into the label; a single-identity command stays a bare name (byte-identical
+    # to the common-case render / goldens).
+    from collections import Counter
+
+    identity_counts = Counter(r.gate for r in rows)
+
+    def _label(row: Any) -> str:
+        if identity_counts[row.gate] > 1:
+            return f"{row.gate} ({row.timing})"
+        return row.gate
+
+    manual_set = set(manual_only)
+    not_selected = tuple(
+        _label(r) for r in rows
+        if r.condition == "on_path" and r.resolved == "dormant"
+    )
+    manual_declared = tuple(
+        _label(r) for r in rows
+        if r.condition == "operator" and r.gate not in manual_set
+    )
+    return not_selected, manual_declared
 
 
 def build_verification_timeline(
@@ -635,6 +749,12 @@ def build_verification_timeline(
     whenever the resulting timeline is entirely empty.
     """
     run_dir = Path(run_dir)
+
+    from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+    if ledger_path(run_dir).exists():
+        ledger = load_ledger(run_dir)
+        return VerificationTimeline(ledger_rows=ledger.rows)
 
     trail = _autorun_trail_entries(extras, session)
     scheduled_records = _scheduled_gate_events(extras)
@@ -694,6 +814,8 @@ def build_verification_timeline(
         policy_by_command=projection.policy_by_command,
         waived=waived,
         waived_details=waived_details,
+        not_selected_on_path=projection.not_selected_on_path,
+        manual_declared=projection.manual_declared,
     )
     if timeline.is_empty():
         return None
@@ -774,6 +896,14 @@ def _event_line_segments(event: VerificationGateEvent) -> str:
     return ", ".join(parts)
 
 
+def _ledger_identity_label(row: Any, rows: tuple[Any, ...]) -> str:
+    """Disambiguate duplicate command identities without collapsing their rows."""
+    if sum(other.gate == row.gate for other in rows) == 1:
+        return row.gate
+    phase = f":{row.phase}" if row.phase else ""
+    return f"{row.gate} ({row.hook}{phase})"
+
+
 def render_verification_gate_done_block(
     timeline: VerificationTimeline | None,
 ) -> tuple[str, ...]:
@@ -788,13 +918,22 @@ def render_verification_gate_done_block(
     following ``note:`` legend explains that ``stale`` is a passed gate whose
     checkout fingerprint later moved (typically the delivery commit shifting
     HEAD), not a failed check — so a clean direct delivery does not read as a
-    broken gate. Examples::
+    broken gate.
+
+    Declared scheduled gates that did not run under this diff are each closed
+    with exactly one disposition so every start-banner gate identity is
+    accounted for: a ``not selected (no matching path): …`` line names the
+    path-gated gates whose subsystem globs did not match, and a ``manual
+    (operator-run): …`` line names the operator/manual gates (e.g. ``e2e``) —
+    these never fold into the 'no matching path' line. Examples::
 
         Verification gates:
           events: 2 official gate events
           after_phase(implement): 3 ran/pass
           before_delivery: 1 ran/pass, 2 skipped fresh
           receipts: lint, smoke, test
+          not selected (no matching path): run-state-unit, verification-unit, cli-sdk-unit
+          manual (operator-run): e2e
 
         Verification gates:
           events: 1 official gate events
@@ -808,6 +947,19 @@ def render_verification_gate_done_block(
     """
     if timeline is None or timeline.is_empty():
         return ()
+
+    if timeline.ledger_rows:
+        lines = ["Verification gates:"]
+        for row in timeline.ledger_rows:
+            identity = _ledger_identity_label(row, timeline.ledger_rows)
+            selection = row.selection_reason or row.condition
+            disposition = row.disposition or "open"
+            lines.append(
+                f"  {identity}: selection={selection} trigger={row.trigger or row.timing} "
+                f"executor={row.executor or 'operator'} policy={row.execution_policy} "
+                f"consequence={row.consequence} disposition={disposition}",
+            )
+        return tuple(lines)
 
     lines: list[str] = ["Verification gates:"]
     lines.append(f"  events: {len(timeline.events)} official gate events")
@@ -882,11 +1034,29 @@ def render_verification_gate_done_block(
     # Required commands intentionally NOT auto-run (manual / operator-only):
     # surfaced so an operator does not mistake them for missing auto work.
     if timeline.manual_only:
-        lines.append(f"  manual-only: {', '.join(timeline.manual_only)}")
+        lines.append(
+            f"  manual-only: {', '.join(timeline.manual_only)} "
+            "— operator available",
+        )
 
     # Present receipts carried from a parent run (distinct from current-run proof).
     if timeline.inherited:
         lines.append(f"  inherited: {', '.join(timeline.inherited)}")
+
+    # Declared scheduled gates that did NOT run under this diff, each closed with
+    # exactly one disposition so every start-banner gate identity is accounted for
+    # here. Path-gated gates whose subsystem globs did not match are 'not selected
+    # (no matching path)'; operator/manual gates (e.g. e2e) are surfaced on their
+    # own 'manual (operator-run)' line and are never folded into the path line.
+    if timeline.not_selected_on_path:
+        lines.append(
+            "  not selected (no matching path): "
+            + ", ".join(timeline.not_selected_on_path),
+        )
+    if timeline.manual_declared:
+        lines.append(
+            "  manual (operator-run): " + ", ".join(timeline.manual_declared),
+        )
 
     # Actionable remediation, gated on an open required deficit. The dirs we
     # searched and the verify hints share their source with the readiness block

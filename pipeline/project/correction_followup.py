@@ -95,6 +95,20 @@ def _final_acceptance_entry(session: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
+def _persisted_rejection_facts(session: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the durable rejection payload for every correction terminal."""
+    final_acceptance = _final_acceptance_entry(session)
+    if final_acceptance:
+        return final_acceptance
+    rejected = session.get("rejected_outcome")
+    if isinstance(rejected, Mapping):
+        return rejected
+    delivery = session.get("commit_delivery")
+    if isinstance(delivery, Mapping):
+        return delivery
+    return {}
+
+
 def _render_gaps(gaps: Any) -> str:
     """Render structured ``verification_gaps`` into a task checklist.
 
@@ -128,7 +142,7 @@ def compose_correction_context(session: Mapping[str, Any]) -> str:
     from the child run's ``task`` field so run headers, meta summaries, MCP
     cards, and follow-up lineage remain concise.
     """
-    fa = _final_acceptance_entry(session)
+    fa = _persisted_rejection_facts(session)
     parts: list[str] = ["# Correction Context"]
 
     summary = str(fa.get("short_summary") or "").strip()
@@ -142,6 +156,14 @@ def compose_correction_context(session: Mapping[str, Any]) -> str:
     critique = str(fa.get("critique") or "").strip()
     if critique:
         parts.append("## Full Final Acceptance Critique\n\n" + critique)
+
+    blockers = fa.get("release_blockers")
+    if isinstance(blockers, (list, tuple)) and blockers:
+        rendered = "\n".join(
+            f"- {item}" for item in blockers if isinstance(item, (str, Mapping))
+        )
+        if rendered:
+            parts.append("## Persisted Release Blockers\n\n" + rendered)
 
     if len(parts) == 1:
         parts.append(_GENERIC_REMEDIATION)
@@ -330,17 +352,13 @@ def _receipts_fingerprint(run_dir: Path) -> frozenset[tuple[Any, ...]] | None:
             if not isinstance(data, Mapping):
                 out.add(("", _stable_json(data)))
                 continue
-            git = data.get("git")
-            git = git if isinstance(git, Mapping) else {}
             out.add((
                 str(data.get("command")),
                 command_receipt_passed(data),
                 data.get("exit_code"),
                 _stable_json(data.get("assertions")),
                 str(data.get("detail") or ""),
-                str(git.get("changed_files_fingerprint")),
-                str(git.get("checkout_head")),
-                str(git.get("baseline_head")),
+                _stable_json(data.get("subject")),
                 _stable_json(data.get("dependencies")),
             ))
         return frozenset(out)

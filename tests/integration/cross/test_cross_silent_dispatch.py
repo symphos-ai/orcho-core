@@ -50,6 +50,7 @@ per-alias dispatch without needing a real LLM provider.
 
 from __future__ import annotations
 
+import json
 from dataclasses import fields
 from types import SimpleNamespace
 from typing import Any
@@ -134,12 +135,18 @@ def _make_capturing_run_project_pipeline(
 
     def _fake(request):
         captured_requests.append(request)
+        session = {
+            "status": "done",
+            "phases": {"rounds": [{"round": 1}]},
+        }
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        (request.output_dir / "meta.json").write_text(
+            json.dumps(session),
+            encoding="utf-8",
+        )
         return ProjectRunResult(
-            session={
-                "status": "done",
-                "phases": {"rounds": [{"round": 1}]},
-            },
-            output_dir=None,
+            session=session,
+            output_dir=request.output_dir,
             run_id="test-run",
         )
 
@@ -217,6 +224,14 @@ def test_cross_dispatch_uses_silent_presentation(
         )
         assert request.project_alias in {"api", "web"}
         assert request.plan_source == "cross"
+        assert request.resume_from is None, (
+            "a fresh cross child must not be marked as a checkpoint resume; "
+            "project_alias already carries its cross identity"
+        )
+        assert request.preallocated_output_dir is True, (
+            "cross prepares handoff artifacts before fresh child dispatch; "
+            "that directory ownership must be explicit, not encoded as resume"
+        )
 
 
 def test_cross_transcript_omits_child_banners(

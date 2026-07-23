@@ -532,6 +532,105 @@ class TestMenuRendering:
         assert "one extra plan round" not in body
 
 
+class TestScopeExpansionDigestSummary:
+    """``_print_summary`` renders the scope-delta digest for a
+    ``scope_expansion:*`` handoff — the engine-issued REJECTED must be
+    disambiguated from the (possibly APPROVED) reviewer transcript, and the
+    out-of-plan changes must be shown against the declared plan scope."""
+
+    _SCOPE_ACTIONS: tuple[str, ...] = ("continue", "halt", "continue_with_waiver")
+
+    def _scope_signal(self, **overrides: object) -> PhaseHandoffRequested:
+        kwargs: dict = dict(
+            available_actions=self._SCOPE_ACTIONS,
+            phase="final_acceptance",
+            handoff_id="final_acceptance:scope_expansion:out_of_plan:1",
+            round_n=1,
+            loop_max=1,
+            trigger="scope_expansion:out_of_plan",
+            verdict="REJECTED",
+            last_output="# Release gate\n\n**Вердикт:** APPROVED",
+            artifacts={
+                "operating_mode": "governed",
+                "handoff_paths": ["engine/verify/runner.py"],
+                "findings": [
+                    {
+                        "path": "engine/verify/runner.py",
+                        "category": "test",
+                        "status": "scope_expansion_risk",
+                        "evidence": ["gate-not-verified"],
+                    },
+                ],
+                "in_plan_patterns": ["bin/session-key.mjs"],
+            },
+        )
+        kwargs.update(overrides)
+        return _signal(**kwargs)
+
+    def test_scope_delta_precedes_reviewer_transcript(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            self._scope_signal(), stdin=_scripted_stdin("1", ""), stdout=out,
+        )
+        body = strip_ansi(out.getvalue())
+        assert "Why paused" in body
+        assert "out-of-plan scope expansion (governed mode)" in body
+        assert "Out of plan: engine/verify/runner.py" in body
+        assert "Declared scope: bin/session-key.mjs" in body
+        # Decision-first: the scope delta precedes the raw reviewer output.
+        assert body.index("Out of plan:") < body.index("Last reviewer output")
+
+    def test_verdict_annotated_as_engine_issued(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            self._scope_signal(), stdin=_scripted_stdin("1", ""), stdout=out,
+        )
+        body = strip_ansi(out.getvalue())
+        # The digest explains the provenance...
+        assert "issued by the engine scope-expansion sanction" in body
+        # ...and the Details verdict line carries the annotation in place, so
+        # REJECTED never sits unexplained above the APPROVED reviewer text.
+        assert (
+            "verdict    : REJECTED (engine scope-expansion sanction — "
+            "not the reviewer verdict)" in body
+        )
+        assert "Details:" in body
+        assert body.index("Why paused") < body.index("Details:")
+
+    def test_participant_add_trigger_uses_digest(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            self._scope_signal(
+                handoff_id=(
+                    "final_acceptance:scope_expansion:participant_add:orcho-mcp:1"
+                ),
+                trigger="scope_expansion:participant_add:orcho-mcp",
+                artifacts={
+                    "operating_mode": "governed",
+                    "participant_repo": "orcho-mcp",
+                },
+                last_output="Out-of-set repository 'orcho-mcp' was discovered.",
+            ),
+            stdin=_scripted_stdin("1", ""),
+            stdout=out,
+        )
+        body = strip_ansi(out.getvalue())
+        assert "Why paused" in body
+        assert "out-of-set repository discovered mid-run" in body
+        assert "Out of set: orcho-mcp" in body
+
+    def test_long_reviewer_output_truncated_under_details(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            self._scope_signal(last_output="LINE-" + "x" * 600),
+            stdin=_scripted_stdin("1", ""),
+            stdout=out,
+        )
+        body = strip_ansi(out.getvalue())
+        assert "..." in body
+        assert "x" * 320 not in body
+
+
 class TestImplementIncompleteDigest:
     """``_print_summary`` renders a decision-first digest for an implement
     handoff paused with ``trigger='incomplete'`` — and changes nothing for any

@@ -17,6 +17,25 @@ from pipeline.engine.commit_delivery import resolve_commit_delivery
 from sdk.run_control.delivery import decide_delivery, delivery_decision_state
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy slice.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout; ``decide_delivery`` replays under the live config. These
+    tests predate that policy and assert the prior "commit onto the checkout"
+    behavior, so they run under ``bypass`` (the ADR's explicit legacy opt-out).
+    Projecting ``delivery_branch`` / ``pr_intent`` onto the SDK decision surface
+    is T3's work; the new branch-policy behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 def _init_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
@@ -949,12 +968,12 @@ def test_state_current_rejected_still_correction_fix_or_halt(tmp_path: Path) -> 
         assert result.blocker == "release_blocked"
 
 
-# ── T1: rejected / fix-marked correction directs to a from_run_plan follow-up ─
+# ── T1: rejected / fix-marked correction directs to an ordinary follow-up ────
 #
 # After ``fix`` is accepted (status='fix_requested') — or when the run dead-ended
 # on an auto-refused rejected release (_is_rejected_release_gate) — repeating
 # ``fix`` is inert and a bare resume cannot advance the run. The state advertises
-# no inert repeat (only ``halt`` stays) and routes the client to a from_run_plan
+    # no inert repeat (only ``halt`` stays) and routes the client to an ordinary
 # follow-up via the already-mapped ``reason`` field, naming the held diff.patch.
 
 
@@ -962,7 +981,7 @@ def test_state_fix_requested_directs_to_followup(tmp_path: Path) -> None:
     runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
     fix = decide_delivery("r1", "fix", runs_dir=runs_dir, cwd=None)
     assert fix.status == "fix_requested"
-    # Stamp a held diff so the reason names the durable patch path.
+    # An artifact diff must not alter the ordinary follow-up instruction.
     (runs_dir / "r1" / "diff.patch").write_text("patch\n", encoding="utf-8")
 
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
@@ -980,11 +999,10 @@ def test_state_fix_requested_directs_to_followup(tmp_path: Path) -> None:
     assert set(state.blocked_actions) == {"fix", "approve", "apply", "skip"}
     for inert in ("approve", "apply", "skip"):
         assert inert not in state.available_actions
-    # The reason routes the client to a from_run_plan follow-up + the held diff.
+    # The reason routes the client to an ordinary follow-up; diff artifacts are
+    # not replayed as correction input.
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
-    assert "orcho_run_start" in state.reason
-    assert str(runs_dir / "r1" / "diff.patch") in state.reason
+    assert "orcho_run_resume run_id=r1" in state.reason
 
 
 def test_state_fix_requested_without_held_diff_still_points_to_followup(
@@ -999,8 +1017,8 @@ def test_state_fix_requested_without_held_diff_still_points_to_followup(
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
 
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
-    # No file → the durable patch path is omitted (patch_text is never persisted).
+    assert "orcho_run_resume run_id=r1" in state.reason
+    # Artifact presence is never part of the correction launch request.
     assert "diff.patch" not in state.reason
 
 
@@ -1022,7 +1040,7 @@ def test_state_rejected_dead_end_directs_to_followup(tmp_path: Path) -> None:
     assert state.default_action is None
     assert "fix" not in state.available_actions
     assert state.reason is not None
-    assert "from_run_plan=r1" in state.reason
+    assert "orcho_run_resume run_id=r1" in state.reason
 
 
 def test_state_approved_pending_serialization_is_byte_identical(
@@ -1051,8 +1069,10 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     tmp_path: Path,
 ) -> None:
     """The DeliveryDecisionResult of an approve on a non-rejected gate keeps its
-    exact field set and approved-path values — T1 added no field to this surface,
-    so the approved path stays byte/structure-identical to the baseline.
+    exact field set and approved-path values. ADR 0119 (T3) adds two additive
+    fields — ``delivery_branch`` and ``pr_intent`` — which are ``None`` on this
+    ``bypass`` commit-onto-checkout path, so the approved path stays otherwise
+    structure-identical to the baseline.
 
     ``commit_sha`` and ``artifact_paths`` are intrinsically volatile (a fresh sha
     / absolute run-dir paths), so they are asserted for shape/presence only; every
@@ -1064,7 +1084,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
     payload = to_jsonable(result)
 
-    # Exact key set — no field added or dropped on the approved path.
+    # Exact key set — the additive ADR 0119 fields are present, nothing dropped.
     assert set(payload) == {
         "run_id",
         "action",
@@ -1074,6 +1094,10 @@ def test_decide_approve_result_serialization_is_structurally_identical(
         "halt_reason",
         "artifact_paths",
         "commit_sha",
+        "published_commit_sha",
+        "delivery_branch",
+        "pr_intent",
+        "pr_url",
         "blocker",
         "followup_run_id",
         "scope_disclosure",
@@ -1088,6 +1112,13 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     assert payload["blocker"] is None
     assert payload["followup_run_id"] is None
     assert payload["scope_disclosure"] == []
+    # bypass commits onto the checkout: commit_sha carries the outcome, the
+    # branch-publish fields stay null.
+    assert payload["delivery_branch"] is None
+    assert payload["published_commit_sha"] is None
+    assert payload["pr_intent"] is None
+    # No PR was opened on the commit-onto-checkout path.
+    assert payload["pr_url"] is None
     # Volatile but structurally pinned.
     assert isinstance(payload["commit_sha"], str) and payload["commit_sha"]
     assert isinstance(payload["artifact_paths"], list)
@@ -1113,3 +1144,116 @@ def test_load_status_clean_done_retry_drops_stale_rejection(tmp_path: Path) -> N
     assert "delivery_override" not in extra
     assert "halt" not in extra
     assert "commit_delivery" not in extra
+
+
+# ── ADR 0119 delivery-branch projection ──────────────────────────────────────
+#
+# The autouse ``_adr0119_legacy_bypass_delivery`` fixture pins delivery to
+# ``bypass`` for the legacy slice; the worktree_branch case below overrides that
+# fixture for its own test to exercise the publish projection.
+
+
+def test_worktree_branch_publish_projects_delivery_branch_and_pr_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under ``branch_policy=worktree_branch`` an approve publishes the run
+    branch: the SDK projection carries ``delivery_branch`` + ``pr_intent`` and
+    leaves ``commit_sha`` None (nothing landed on the target checkout)."""
+    import pipeline.engine.delivery_branch as _db
+
+    # Override the module-level legacy-bypass fixture for this case.
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "worktree_branch")
+
+    runs_dir, repo, _ = _park(tmp_path)
+    old_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+
+    assert result.accepted is True
+    assert result.status == "committed"
+    assert result.terminal_outcome == "done"
+    # Pure publish: no commit landed on the canonical checkout.
+    assert result.commit_sha is None
+    assert result.published_commit_sha
+    assert subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip() == old_head
+    # delivery_branch + pr_intent carry the outcome.
+    assert result.delivery_branch is not None
+    assert result.delivery_branch.startswith("orcho/deliver/")
+    intent = result.pr_intent
+    assert intent is not None
+    assert intent.branch == result.delivery_branch
+    assert intent.base == "main"
+    assert intent.title
+    # Provider-neutral: plain git, never gh/glab.
+    assert intent.suggested_command.startswith("git push")
+    assert "gh " not in intent.suggested_command
+    assert "glab" not in intent.suggested_command
+    # Serialized projection round-trips the nested pr_intent record.
+    from sdk._jsonable import to_jsonable
+
+    payload = to_jsonable(result)
+    assert payload["commit_sha"] is None
+    assert payload["published_commit_sha"] == result.published_commit_sha
+    assert payload["delivery_branch"] == result.delivery_branch
+    assert payload["pr_intent"] == {
+        "branch": result.delivery_branch,
+        "base": "main",
+        "title": intent.title,
+        "suggested_command": intent.suggested_command,
+    }
+    # No git-provider is registered in the test env, so no PR was opened.
+    assert result.pr_url is None
+    assert payload["pr_url"] is None
+
+
+def test_worktree_branch_publish_projects_pr_url_when_pr_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a git-provider opens a PR during the publish, the SDK projection
+    carries its ``pr_url`` — sourced from the applied decision's ``pr_url``, not
+    re-parsed from the human-readable delivery notice."""
+    import pipeline.engine.commit_delivery as _cd
+    import pipeline.engine.delivery_branch as _db
+    from pipeline.engine.delivery_publish import PublishResult
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "worktree_branch")
+    pr_url = "https://example.invalid/pr/7"
+    monkeypatch.setattr(
+        _cd, "publish_delivery",
+        lambda *a, **k: PublishResult(pushed=True, pr_url=pr_url),
+    )
+
+    runs_dir, _, _ = _park(tmp_path)
+
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+
+    assert result.accepted is True
+    assert result.status == "committed"
+    assert result.pr_url == pr_url
+    from sdk._jsonable import to_jsonable
+
+    assert to_jsonable(result)["pr_url"] == pr_url
+
+
+def test_bypass_projection_carries_commit_sha_not_branch(tmp_path: Path) -> None:
+    """The documented fill rule on the legacy commit-onto-checkout path: the
+    projection carries ``commit_sha`` and leaves the branch-publish fields null."""
+    runs_dir, _, _ = _park(tmp_path)
+
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+
+    assert result.status == "committed"
+    # bypass committed onto the checkout: commit_sha populated.
+    assert result.commit_sha
+    assert result.published_commit_sha is None
+    # No branch was published, so both additive fields stay None.
+    assert result.delivery_branch is None
+    assert result.pr_intent is None
+    # No PR opened on the commit-onto-checkout path.
+    assert result.pr_url is None

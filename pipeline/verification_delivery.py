@@ -44,6 +44,7 @@ from pipeline.verification_contract import (
 )
 from pipeline.verification_policy import (
     GapEntry,
+    consequence_by_command,
     effective_delivery_policy_by_command,
     partition_gaps,
 )
@@ -79,25 +80,28 @@ def _waiver_preview(text: str | None) -> str | None:
         return stripped
     return stripped[: _WAIVER_PREVIEW_LIMIT - 1].rstrip() + "…"
 
+
 # Path components that mark a generated runtime/verification artifact rather
 # than product source. Matched component-by-component (never substring), so
 # ``src/venv_utils.py`` is NOT garbage while ``.venv/lib/...`` is. The three
 # receipts directories are imported (not literal strings) so a rename of the
 # receipt layout stays single-sourced in
 # :mod:`pipeline.evidence.verification_receipt`.
-_GARBAGE_DIR_COMPONENTS: frozenset[str] = frozenset({
-    "venv",
-    ".venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-    ".tox",
-    "node_modules",
-    RECEIPTS_DIRNAME,
-    ENV_RECEIPTS_DIRNAME,
-    COMMAND_RECEIPTS_DIRNAME,
-})
+_GARBAGE_DIR_COMPONENTS: frozenset[str] = frozenset(
+    {
+        "venv",
+        ".venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".tox",
+        "node_modules",
+        RECEIPTS_DIRNAME,
+        ENV_RECEIPTS_DIRNAME,
+        COMMAND_RECEIPTS_DIRNAME,
+    }
+)
 
 
 # The note appended to every warn/suggest receipt-blocker line: a gap under a
@@ -128,7 +132,7 @@ class WaivedGate:
 class DeliveryVerificationAssessment:
     """Typed Stage 6 delivery-gate verdict (read-only).
 
-    ``policy`` is the effective *boundary* delivery policy (off|suggest|warn|
+    ``policy`` is the effective *boundary* delivery policy (manual|suggest|warn|
     require) — :func:`resolve_delivery_policy`, unchanged. The three
     ``required_*`` tuples are the required (non-manual) delivery commands whose
     receipt is missing / failed / stale; ``garbage_paths`` are generated
@@ -139,7 +143,7 @@ class DeliveryVerificationAssessment:
     per-gate policy (from :func:`pipeline.verification_policy.effective_delivery_policy_by_command`).
     :attr:`blocking_gaps` are the gaps whose effective policy is ``require``;
     :attr:`warning_gaps` are ``warn`` / ``suggest`` gaps (delivery is allowed by
-    policy); :attr:`manual_only_gaps` are gaps on manual/operator-only commands —
+    policy); :attr:`operator_gaps` are gaps on manual/operator-only commands —
     visible, but NEVER counted as a missing-required receipt and NEVER blocking
     (ADR 0090). ``policy_by_command`` lists ``(command, policy)`` for every gap,
     render-only.
@@ -172,7 +176,7 @@ class DeliveryVerificationAssessment:
     # and the legacy ``require``-boundary blocking fallback.
     blocking_gaps: tuple[GapEntry, ...] = ()
     warning_gaps: tuple[GapEntry, ...] = ()
-    manual_only_gaps: tuple[GapEntry, ...] = ()
+    operator_gaps: tuple[GapEntry, ...] = ()
     policy_by_command: tuple[tuple[str, str], ...] = ()
     # Verification-gate waivers (T2), additive and default empty so a
     # directly-constructed assessment and the no-waiver path stay byte-identical:
@@ -186,8 +190,8 @@ class DeliveryVerificationAssessment:
     waived_gates: tuple[WaivedGate, ...] = ()
 
     @property
-    def manual_only_commands(self) -> tuple[str, ...]:
-        return tuple(e.command for e in self.manual_only_gaps)
+    def operator_commands(self) -> tuple[str, ...]:
+        return tuple(e.command for e in self.operator_gaps)
 
     @property
     def has_blockers(self) -> bool:
@@ -213,7 +217,7 @@ class DeliveryVerificationAssessment:
             return True
         if self.policy == "require" and self.garbage_paths:
             return True
-        if self.blocking_gaps or self.warning_gaps or self.manual_only_gaps:
+        if self.blocking_gaps or self.warning_gaps or self.operator_gaps:
             # Partition present and no require gap → not blocking.
             return False
         return self.policy == "require" and self.has_blockers
@@ -237,21 +241,16 @@ class DeliveryVerificationAssessment:
         return self._legacy_blocker_lines()
 
     @property
-    def manual_only_line(self) -> str | None:
+    def operator_line(self) -> str | None:
         """One advisory line naming manual/operator-only gaps, or ``None``.
 
         Manual-only gaps are visible but neither required nor blocking; the line
         states that plainly so they are never read as a missing-required receipt.
         """
-        if not self.manual_only_gaps:
+        if not self.operator_gaps:
             return None
-        names = ", ".join(
-            f"{e.command} ({e.status})" for e in self.manual_only_gaps
-        )
-        return (
-            "manual-only receipts (not auto-run, operator-run, not required): "
-            + names
-        )
+        names = ", ".join(f"{e.command} ({e.status})" for e in self.operator_gaps)
+        return "operator-available receipts (manual, not auto-run, not required): " + names
 
     @property
     def diagnostic_lines(self) -> tuple[str, ...]:
@@ -277,13 +276,12 @@ class DeliveryVerificationAssessment:
     def lines(self) -> tuple[str, ...]:
         """Render-ready warning lines (one per non-empty blocker category)."""
         out: list[str] = list(self.receipt_blocker_lines)
-        manual_line = self.manual_only_line
+        manual_line = self.operator_line
         if manual_line is not None:
             out.append(manual_line)
         if self.garbage_paths:
             out.append(
-                "generated artifacts staged for delivery: "
-                + ", ".join(self.garbage_paths),
+                "generated artifacts staged for delivery: " + ", ".join(self.garbage_paths),
             )
         out.extend(self.diagnostic_lines)
         return tuple(out)
@@ -293,7 +291,9 @@ class DeliveryVerificationAssessment:
     def _stale_detail_for(self, command: str) -> str:
         """The ``"command (reason)"`` stale detail for ``command`` (name fallback)."""
         for name, detail in zip(
-            self.required_stale, self.stale_details, strict=False,
+            self.required_stale,
+            self.stale_details,
+            strict=False,
         ):
             if name == command:
                 return detail
@@ -304,10 +304,7 @@ class DeliveryVerificationAssessment:
         # require gaps — hard blockers, worded exactly as the legacy banner.
         bm = [e.command for e in self.blocking_gaps if e.status == "missing"]
         bf = [e.command for e in self.blocking_gaps if e.status == "failed"]
-        bs = [
-            self._stale_detail_for(e.command)
-            for e in self.blocking_gaps if e.status == "stale"
-        ]
+        bs = [self._stale_detail_for(e.command) for e in self.blocking_gaps if e.status in {"stale", "unverifiable"}]
         if bm:
             out.append("missing required receipts: " + ", ".join(bm))
         if bf:
@@ -324,17 +321,17 @@ class DeliveryVerificationAssessment:
             ("missing", "missing receipts"),
             ("failed", "failed receipts"),
             ("stale", "stale receipts"),
+            ("unverifiable", "unverifiable receipts"),
         ):
             entries = [e for e in self.warning_gaps if e.status == status]
             if not entries:
                 continue
             if status == "stale":
                 names = ", ".join(
-                    f"{self._stale_detail_for(e.command)} ({e.policy})"
-                    for e in entries
+                    _warning_name(self._stale_detail_for(e.command), e.policy) for e in entries
                 )
             else:
-                names = ", ".join(f"{e.command} ({e.policy})" for e in entries)
+                names = ", ".join(_warning_name(e.command, e.policy) for e in entries)
             out.append(f"{label}: {names} — {SHIPPING_ALLOWED_NOTE}")
         return out
 
@@ -350,16 +347,15 @@ class DeliveryVerificationAssessment:
             )
         if self.required_stale:
             out.append(
-                "stale required receipts: "
-                + ", ".join(self.stale_details or self.required_stale),
+                "stale required receipts: " + ", ".join(self.stale_details or self.required_stale),
             )
         return tuple(out)
 
 
-def resolve_delivery_policy(contract: VerificationContract | None) -> str:
+def resolve_delivery_policy(contract: VerificationContract | None) -> str | None:
     """Resolve the effective Stage 6 delivery policy.
 
-    ``None`` contract → ``"off"`` (no verification contract, no gate). An explicit
+    ``None`` contract → ``None`` (no verification contract, no gate). An explicit
     ``contract.delivery_policy`` is honoured verbatim. Otherwise a contract that
     *explicitly schedules* a ``require``-policy gate at the delivery boundary
     (``before_delivery``) derives ``require``: declaring a required delivery gate
@@ -370,7 +366,7 @@ def resolve_delivery_policy(contract: VerificationContract | None) -> str:
     its own.
     """
     if contract is None:
-        return "off"
+        return None
     explicit = getattr(contract, "delivery_policy", None)
     if explicit is not None:
         return explicit
@@ -408,8 +404,7 @@ def assess_delivery_verification(
 ) -> DeliveryVerificationAssessment | None:
     """The fixed Stage 6 orchestration contract: assess delivery readiness.
 
-    Returns ``None`` when there is no contract or the effective policy is
-    ``off`` (the no-gate path stays byte-identical to prior delivery). Otherwise
+    Returns ``None`` when there is no contract. Otherwise
     reads, from ``diff_cwd`` itself:
 
     * untracked paths — ``git ls-files --others --exclude-standard``;
@@ -424,7 +419,7 @@ def assess_delivery_verification(
     not asserted).
     """
     policy = resolve_delivery_policy(contract)
-    if contract is None or policy == "off":
+    if contract is None:
         return None
 
     # Resolve the delivery plan once so receipt classification and the per-gate
@@ -437,8 +432,12 @@ def assess_delivery_verification(
     try:
         status_by_command = apply_environment_provenance(
             classify_required_receipts(
-                contract, run_dir, ctx,
-                checkout=str(diff_cwd), extras=extras, plan=plan,
+                contract,
+                run_dir,
+                ctx,
+                checkout=str(diff_cwd),
+                extras=extras,
+                plan=plan,
             ),
             contract,
             run_dir,
@@ -456,9 +455,16 @@ def assess_delivery_verification(
     except Exception:  # noqa: BLE001 — assessment must never break delivery
         manual_set = set()
     policy_by_command = effective_delivery_policy_by_command(
-        contract, plan, manual_set, boundary_policy=policy,
+        contract,
+        plan,
+        manual_set,
+        boundary_policy=policy,
     )
-    partition = partition_gaps(status_by_command, policy_by_command)
+    consequences = consequence_by_command(
+        status_by_command,
+        policy_by_command,
+    )
+    partition = partition_gaps(status_by_command, policy_by_command, consequences)
 
     # Verification-gate waivers (T2): a durable, operator-recorded
     # ``phase_handoff_waiver`` whose gate_command exactly matches a ``failed`` /
@@ -474,11 +480,7 @@ def assess_delivery_verification(
     kept_blocking: list[GapEntry] = []
     waived_gates: list[WaivedGate] = []
     for entry in partition.blocking:
-        waiver = (
-            waivers.get(entry.command)
-            if entry.status in ("failed", "missing")
-            else None
-        )
+        waiver = waivers.get(entry.command) if entry.status in ("failed", "missing") else None
         if waiver is None:
             kept_blocking.append(entry)
             continue
@@ -492,12 +494,8 @@ def assess_delivery_verification(
             )
         )
     blocking_gaps = tuple(kept_blocking)
-    waived_failed = tuple(
-        w.gate_command for w in waived_gates if w.status == "failed"
-    )
-    waived_missing = tuple(
-        w.gate_command for w in waived_gates if w.status == "missing"
-    )
+    waived_failed = tuple(w.gate_command for w in waived_gates if w.status == "failed")
+    waived_missing = tuple(w.gate_command for w in waived_gates if w.status == "missing")
 
     # Required (non-manual) gaps: the union of the *kept* require gaps +
     # warn/suggest buckets. Manual-only gaps are excluded from required_* (ADR
@@ -506,15 +504,17 @@ def assess_delivery_verification(
     required_gaps = (*blocking_gaps, *partition.warning)
     missing = tuple(e.command for e in required_gaps if e.status == "missing")
     failed = tuple(e.command for e in required_gaps if e.status == "failed")
-    stale = tuple(e.command for e in required_gaps if e.status == "stale")
+    stale = tuple(e.command for e in required_gaps if e.status in {"stale", "unverifiable"})
     stale_details = tuple(
         f"{c} ({status_by_command[c].reason})"
-        if getattr(status_by_command.get(c), "reason", "") else c
+        if getattr(status_by_command.get(c), "reason", "")
+        else c
         for c in stale
     )
 
     untracked = _git_output_lines(
-        ["ls-files", "--others", "--exclude-standard"], diff_cwd,
+        ["ls-files", "--others", "--exclude-standard"],
+        diff_cwd,
     )
     changed = _git_output_lines(["diff", "--name-only", baseline_ref], diff_cwd)
     combined: list[str] = []
@@ -541,7 +541,8 @@ def assess_delivery_verification(
         # ``orcho verify`` hint — matching the readiness block and DONE timeline,
         # which build hints over the same (missing + stale + failed) set.
         suggested_commands = suggested_verify_commands(
-            contract, (*missing, *stale, *failed),
+            contract,
+            (*missing, *stale, *failed),
             run_id=Path(run_dir).name,
             project=str(getattr(ctx, "project", "") or ""),
         )
@@ -557,7 +558,7 @@ def assess_delivery_verification(
         suggested_commands=suggested_commands,
         blocking_gaps=blocking_gaps,
         warning_gaps=partition.warning,
-        manual_only_gaps=partition.manual_only,
+        operator_gaps=partition.operator,
         policy_by_command=tuple(policy_by_command.items()),
         waived_failed=waived_failed,
         waived_missing=waived_missing,
@@ -566,6 +567,12 @@ def assess_delivery_verification(
 
 
 # ── Internals ────────────────────────────────────────────────────────────────
+
+
+def _warning_name(name: str, policy: str) -> str:
+    """Render a non-blocking gap without implying automatic execution."""
+    recommendation = "; operator recommendation" if policy == "suggest" else ""
+    return f"{name} ({policy}{recommendation})"
 
 
 def _is_generated(path: str) -> bool:
@@ -598,8 +605,4 @@ def _git_output_lines(args: list[str], cwd: Path | str) -> tuple[str, ...]:
         return ()
     if proc.returncode != 0:
         return ()
-    return tuple(
-        line.strip()
-        for line in (proc.stdout or "").splitlines()
-        if line.strip()
-    )
+    return tuple(line.strip() for line in (proc.stdout or "").splitlines() if line.strip())

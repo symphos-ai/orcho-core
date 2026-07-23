@@ -290,22 +290,16 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
     # helper is empty under dry-run, without a contract, or when an operator
     # waiver is active, so every other run is byte-identical.
     engine_gaps = _required_receipt_backstop(state, language=task_language)
-    # F2 scope-expansion sanction (ADR 0112 §5): the route each out-of-plan fact
-    # takes is mode-projected, not the old fixed ``blocker → REJECTED`` coupling.
-    # Only a genuine-safety HALT_WAIVER emits a release gap (forces REJECTED, in
-    # every mode); a HANDOFF marks a phase-handoff need without rejecting;
-    # AUTO_ALERT / AUTO_CONTINUE never block. The operator ``continue_with_waiver``
-    # disarms the whole gate (the projection returns AUTO_CONTINUE for every item),
-    # and the assessment is already empty under an active waiver. The sanction
-    # decision lives in the T1 projection + the focused routing helper; this
-    # handler keeps only the thin routing glue.
+    # Scope expansion is evidence, not a release gap: fast continues silently,
+    # pro continues with a disclosure, and governed opens a delivery handoff.
+    # The sanction decision lives in the central projection + focused routing
+    # helper; this handler keeps only the thin routing glue.
     scope_routing = _route_scope_expansion_sanction(
         scope_assessment,
         operating_mode=_operating_mode_for_state(state),
         has_active_waiver=bool(_operator_waiver_text(state)),
     )
-    scope_gaps = scope_routing.release_gaps(language=task_language)
-    all_engine_gaps = engine_gaps + scope_gaps
+    all_engine_gaps = engine_gaps
     if all_engine_gaps:
         reviewed_checks = {
             str(g.get("required_check", "")) for g in verification_gaps
@@ -322,11 +316,6 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
             body += (
                 "\n\n## Engine backstop — required verification unproven\n\n"
                 + "\n".join(f"- {g['risk']}" for g in engine_gaps)
-            )
-        if scope_gaps:
-            body += (
-                "\n\n## Scope expansion — genuine-safety halt\n\n"
-                + "\n".join(f"- {g['risk']}" for g in scope_gaps)
             )
 
     # Dual-shape phase_log entry (ADR 0025):
@@ -365,23 +354,21 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
         state.phase_log["final_acceptance"]["scope_expansion"] = (
             scope_assessment.to_dict()
         )
-        # ADR 0112 §5: the mode-projected route alongside the classifier fact, so
-        # the DONE summary / a later phase-handoff increment can read whether the
-        # run rejected (genuine-safety halt) or needs an operator handoff without
-        # re-deriving the sanction. Written only when there are out-of-plan items.
+        # The mode-projected route accompanies the classifier fact so the DONE
+        # summary can read whether governed delivery needs an operator handoff
+        # without re-deriving the sanction. Written only for out-of-plan items.
         state.phase_log["final_acceptance"]["scope_expansion_sanction"] = (
             scope_routing.to_dict()
         )
     _print_review_preview(state, "final_acceptance", "Final acceptance")
 
     # ADR 0112 §5 (T3 lifecycle wiring): a HANDOFF-routed scope expansion (a
-    # ``pro`` blocker or any ``governed`` expansion) must open a real
+    # ``governed`` expansion) must open a real
     # phase-handoff pause for operator sanction, not just record the route in
     # phase_log. Raising the signal on ``state.phase_handoff_request`` makes the
     # runner break out of the phase walk and the orchestrator pause tail persist
-    # ``meta.phase_handoff`` + ``awaiting_phase_handoff``. Genuine-safety HALT
-    # items still reject above via the release-gap path; an active waiver leaves
-    # the assessment empty so this is a no-op. Thin glue — the build/raise logic
+    # ``meta.phase_handoff`` + ``awaiting_phase_handoff``. An active waiver
+    # leaves the assessment empty so this is a no-op. Thin glue — the build/raise logic
     # lives in the focused scope_expansion_support helper (architecture fitness).
     _raise_scope_expansion_handoff(state, scope_routing, last_output=body)
 

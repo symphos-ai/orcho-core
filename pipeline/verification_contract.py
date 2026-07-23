@@ -18,6 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pipeline.verification_execution import (
+    VerificationIdentity,
+    resolve_selected_execution,
+)
+
 if TYPE_CHECKING:
     from pipeline.plugins import PluginConfig
 
@@ -31,7 +36,7 @@ class VerificationContractError(ValueError):
 
 
 # Known schedule policies — how strongly a hook's commands are surfaced.
-SCHEDULE_POLICIES: tuple[str, ...] = ("off", "suggest", "warn", "require")
+SCHEDULE_POLICIES: tuple[str, ...] = ("manual", "suggest", "warn", "require")
 
 # Known gate actions — what happens when a gate's policy is enforced. These are
 # the *declared* values; the effective action for a hook is derived later
@@ -86,8 +91,8 @@ class ScheduleEntry:
 
     ``policy`` and ``action`` are ``None`` when the entry omits them — absence is
     deliberately distinct from any explicit value (including ``"suggest"`` and
-    ``"off"``). A ``None`` policy/action means "not set; derive it later" (from
-    gate-set defaults and the work_mode transform), never "off". ``gate_sets``
+    ``"manual"``). A ``None`` policy/action means "not set; derive it later" (from
+    gate-set defaults and the work_mode transform). ``gate_sets``
     optionally restricts which declared gate sets this entry's defaults merge
     from.
     """
@@ -161,7 +166,7 @@ class VerificationContract:
     # :func:`pipeline.verification_selection.selection_context_from_extras`.
     task_kind: str = ""
     operator_sets: tuple[str, ...] = ()
-    # Stage 6 delivery-gate policy (off|suggest|warn|require) declared via
+    # Stage 6 delivery-gate policy (manual|suggest|warn|require) declared via
     # ``verification.delivery_policy``. ``None`` means "not declared" — the
     # effective policy is then derived by
     # :func:`pipeline.verification_delivery.resolve_delivery_policy` (contract
@@ -237,6 +242,7 @@ class VerificationContract:
             verification, gate_sets,
         )
         delivery_policy = _normalize_delivery_policy(verification)
+        _validate_schedule_semantics(schedule, gate_sets, selection)
 
         return cls(
             dependency_repos=norm_deps,
@@ -544,7 +550,7 @@ def _normalize_delivery_policy(verification: dict[str, Any]) -> str | None:
 
     Absence → ``None`` (derive later: contract present but unset means ``warn``).
     A present value must be one of :data:`SCHEDULE_POLICIES` (the existing
-    off|suggest|warn|require vocabulary — no new policy constants); anything else
+    manual|suggest|warn|require vocabulary); anything else
     raises :class:`VerificationContractError`.
     """
     if "delivery_policy" not in verification:
@@ -598,7 +604,7 @@ def _normalize_schedule(
             phase = ""
         # Policy and action are OPTIONAL. Absence of the key normalises to
         # ``None`` (derive later), which is deliberately distinct from any
-        # explicit value — including ``"suggest"`` and ``"off"``. Only an
+        # explicit value — including ``"suggest"`` and ``"manual"``. Only an
         # explicitly-present-but-invalid value raises.
         policy = raw.get("policy")
         if policy is not None and policy not in SCHEDULE_POLICIES:
@@ -645,6 +651,77 @@ def _normalize_schedule(
             ),
         )
     return tuple(entries)
+
+
+def _validate_schedule_semantics(
+    schedule: tuple[ScheduleEntry, ...],
+    gate_sets: dict[str, GateSet],
+    selection: tuple[SelectionRule, ...],
+) -> None:
+    """Reject unreachable automatic targets and invalid policy/action pairs."""
+    selected_sets = {name for rule in selection for name in rule.include}
+    for entry in schedule:
+        identity = entry.hook + (f"+{entry.phase}" if entry.phase else "")
+        if entry.hook != "manual_only":
+            for name in entry.gate_sets:
+                if name not in selected_sets:
+                    raise VerificationContractError(
+                        f"automatic schedule {identity} references unreachable "
+                        f"gate_set {name!r}: no selection rule includes it",
+                    )
+        effective, default_sources = _schedule_validation_sources(
+            entry, gate_sets, selected_sets,
+        )
+        if entry.hook == "manual_only" and effective not in ("manual", "suggest"):
+            raise VerificationContractError(
+                f"manual_only schedule {identity} only accepts manual or suggest "
+                f"policy, got {effective!r}",
+            )
+        has_action = entry.action is not None or any(
+            gate_sets[name].default_action is not None for name in default_sources
+        )
+        if has_action and effective != "require":
+            raise VerificationContractError(
+                f"schedule action requires policy='require' at {identity}, "
+                f"got {effective!r}",
+            )
+
+
+def _schedule_validation_sources(
+    entry: ScheduleEntry,
+    gate_sets: dict[str, GateSet],
+    selected_sets: set[str],
+) -> tuple[str, set[str]]:
+    """Resolve the declared tier and default sources used by validation.
+
+    This is the contract-time counterpart to selection's max-strictness merge:
+    an explicit tier wins, otherwise all defaults that can contribute through
+    the entry are merged. A blanket entry can cover every selectable set, so
+    their defaults are included as well. Validation intentionally does not
+    apply a work-mode projection: actions are legal only on a declared
+    ``require`` tier, irrespective of the run's mode.
+    """
+    names = set(entry.gate_sets)
+    if not names:
+        if entry.commands:
+            names = {
+                name
+                for name in selected_sets
+                if any(command in gate_sets[name].commands for command in entry.commands)
+            }
+        else:
+            names = selected_sets
+    if entry.policy is not None:
+        return entry.policy, names
+    declared = [
+        gate_sets[name].default_policy
+        for name in names
+        if gate_sets[name].default_policy is not None
+    ]
+    policy = max(declared, key=SCHEDULE_POLICIES.index) if declared else (
+        "manual" if entry.hook == "manual_only" else "suggest"
+    )
+    return policy, names
 
 
 @dataclass(frozen=True)
@@ -856,16 +933,15 @@ def render_phase_block(
     """Render the *limited* per-phase contract block, or ``None`` if empty.
 
     Only schedule entries relevant to ``phase`` (per the code-owned default
-    prompt-policy) and whose policy is not explicitly ``off`` are shown, with
-    their commands placeholder-resolved. A ``None`` policy is "not set; derive
-    later" — it is shown (rendered as ``derived``), not suppressed like ``off``.
+    prompt-policy) are shown with their commands placeholder-resolved. A ``None``
+    policy is "not set; derive later" and is rendered as ``derived``.
     The whole config is never dumped into the prompt.
     """
     if contract is None:
         return None
     relevant = [
         e for e in contract.schedule
-        if e.policy != "off" and _entry_applies(e, phase)
+        if _entry_applies(e, phase)
     ]
     if not relevant:
         return None
@@ -908,10 +984,19 @@ def _gate_line(
     cmd = contract.commands.get(entry.command, {})
     run = resolve_placeholders(str(cmd.get("run", "")), ctx)
     hook_label = entry.hook + (f"({entry_phase})" if entry_phase else "")
-    return (
-        f"  [{hook_label} {entry.policy}->{entry.action}] "
-        f"{entry.command} <{entry.primary_gate_set}>: {run}"
-    )
+    resolved = resolve_selected_execution(VerificationIdentity(
+        command=entry.command,
+        hook=entry.hook,
+        phase=entry_phase,
+        policy=entry.policy,
+    ))
+    if resolved.consequence == "required_action":
+        posture = f"require; action={entry.action}"
+    elif resolved.executor == "operator":
+        posture = "operator available" if entry.policy == "manual" else "operator recommendation"
+    else:
+        posture = "engine warning; shipping allowed"
+    return f"  [{hook_label} {posture}] {entry.command} <{entry.primary_gate_set}>: {run}"
 
 
 def render_phase_gate_block(
@@ -974,7 +1059,12 @@ def render_phase_gate_block(
     if phase == "review_changes":
         relevant = [
             (e, p) for (e, p) in annotated
-            if e.hook != "manual_only" and e.policy in ("warn", "require")
+            if resolve_selected_execution(VerificationIdentity(
+                command=e.command,
+                hook=e.hook,
+                phase=p,
+                policy=e.policy,
+            )).consequence != "none"
         ]
         if not relevant:
             return None
@@ -993,8 +1083,8 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Delivery gates — missing, failed, or stale receipts block "
-            "delivery per the policy below:",
+            "  Require gates block on missing, failed, or stale receipts; "
+            "warnings are visible and shipping-allowed.",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)

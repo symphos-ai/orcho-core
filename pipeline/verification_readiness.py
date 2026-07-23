@@ -18,16 +18,15 @@ would hide a path-selected gate that became delivery-relevant afterwards.
 
 Receipt reads go only through the tolerant loaders in
 :mod:`pipeline.evidence.verification_receipt`; git / IO failures degrade, never
-raise. Stale classification reuses the exact fingerprint helper the receipt
-writer used (:func:`pipeline.verification_dependencies.changed_files_fingerprint`),
-so a valid receipt is never falsely stale due to hash drift.
+raise. Freshness uses typed verification-subject comparison, so unavailable
+identity remains an explicit, fail-closed ``unverifiable`` status.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +39,16 @@ from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_execution import (
+    ResolvedExecution,
+    VerificationIdentity,
+    resolve_selected_execution,
+)
+from pipeline.verification_failure import (
+    ReceiptClassification,
+    classify_receipt,
+    failed_receipt_refresh_eligible,
+)
 from pipeline.verification_receipt_index import receipt_file_path
 
 __all__ = [
@@ -47,6 +56,7 @@ __all__ = [
     "ROUTING_PLANS_EXTRAS_KEY",
     "TRANSCRIPT_NOT_PROOF_NOTE",
     "ProvenanceGateFailure",
+    "DeliverySelection",
     "ReadinessSummary",
     "ReceiptClassification",
     "apply_environment_provenance",
@@ -57,7 +67,7 @@ __all__ = [
     "effective_policy_by_command",
     "environment_provenance_gate_failures",
     "render_readiness_block",
-    "required_delivery_commands",
+    "resolve_delivery_selection",
     "required_receipt_gaps",
     "suggested_verify_commands",
     "transcript_not_proof_note",
@@ -88,6 +98,7 @@ def transcript_not_proof_note() -> str:
     """
     return TRANSCRIPT_NOT_PROOF_NOTE
 
+
 # The executable routing-plans cache key — a deliberate literal copy of
 # ``pipeline.project.gate_repair.VERIFICATION_GATE_ROUTING_PLANS_KEY`` so this
 # pure module never imports the orchestration layer (locked by an equality
@@ -106,27 +117,25 @@ _DELIVERY_HOOKS: tuple[tuple[str, str], ...] = (
 
 
 @dataclass(frozen=True)
-class ReceiptClassification:
-    """One required command's receipt status plus an optional human reason.
+class DeliverySelection:
+    """Delivery receipts and uncollapsed scheduled identities for one epoch.
 
-    ``status`` is one of the fixed four (``present`` / ``missing`` / ``failed``
-    / ``stale``). ``reason`` is a short human-readable explanation, populated for
-    ``stale`` (subject fingerprint/HEAD drift, or a depended-on dependency's HEAD
-    move naming the dependency and both SHAs); empty otherwise. The status
-    vocabulary is unchanged — the reason is additive context only.
-
-    ``source_run_id`` / ``path`` are additive provenance: the run id and receipt
-    file path the classification was decided from. They are populated for every
-    classification backed by a receipt (the current run for a current-run
-    receipt, or a parent run for an inherited one) and stay empty for ``missing``
-    and for callers that do not thread provenance. Inheriting a parent receipt
-    points both at that parent run.
+    ``receipt_commands`` is deliberately command-level for receipt lookup, while
+    ``identities`` preserves every ``(command, hook, phase)`` execution identity.
+    Consumers can therefore dedupe receipt reads without losing executor or
+    consequence decisions for a command scheduled at multiple delivery hooks.
     """
 
-    status: str
-    reason: str = ""
-    source_run_id: str = ""
-    path: str = ""
+    receipt_commands: tuple[str, ...] = ()
+    identities: tuple[ResolvedExecution, ...] = ()
+
+    @property
+    def executor_identities(self) -> tuple[ResolvedExecution, ...]:
+        return tuple(item for item in self.identities if item.executor == "engine")
+
+    @property
+    def consequence_identities(self) -> tuple[ResolvedExecution, ...]:
+        return tuple(item for item in self.identities if item.consequence != "none")
 
 
 @dataclass(frozen=True)
@@ -169,12 +178,17 @@ class ReadinessSummary:
     # Per-gate policy awareness (T3, ADR 0097), additive. ``policy_by_command``
     # is the effective delivery policy (require|warn|suggest|manual_only) for
     # every required delivery command, render-only. The ``required_*`` gaps above
-    # exclude manual/operator-only commands; those land in ``manual_only_gaps``
+    # exclude manual/operator-only commands; those land in ``operator_gaps``
     # instead — visible, but never a missing-required receipt and never in
     # "Remaining before ready" (ADR 0090). Default empty so a no-blocker summary
     # renders byte-identically.
     policy_by_command: tuple[tuple[str, str], ...] = ()
-    manual_only_gaps: tuple[str, ...] = ()
+    # Post-result consequence is intentionally separate from policy: a hygiene
+    # failure can be a warning while its canonical ``require`` policy remains
+    # visible for audit. Internal prompt projection only; no durable receipt or
+    # SDK shape consumes this field.
+    consequence_by_command: tuple[tuple[str, str], ...] = ()
+    operator_gaps: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -185,7 +199,7 @@ class ReadinessSummary:
             or self.required_missing
             or self.required_failed
             or self.required_stale
-            or self.manual_only_gaps
+            or self.operator_gaps
             or self.exploratory_count
         )
 
@@ -198,7 +212,7 @@ def delivery_gate_plan(
     """Resolve the authoritative delivery gate plan, or ``None``.
 
     Returns ``None`` when the contract declares no ``gate_sets`` / ``selection``
-    (the raw-schedule fallback in :func:`required_delivery_commands` then
+    (the raw-schedule fallback in :func:`resolve_delivery_selection` then
     applies). Otherwise, in order:
 
     1. The executable routing plan cached for the ``before_delivery`` epoch
@@ -210,9 +224,7 @@ def delivery_gate_plan(
     The advisory prompt-preview plan is deliberately not consulted — it may
     predate ``implement`` and miss path-selected gates (ADR 0082 / F1).
     """
-    if not (
-        getattr(contract, "gate_sets", None) or getattr(contract, "selection", ())
-    ):
+    if not (getattr(contract, "gate_sets", None) or getattr(contract, "selection", ())):
         return None
 
     if extras is not None:
@@ -238,24 +250,27 @@ def delivery_gate_plan(
     return build_scheduled_gate_plan(
         contract,
         selection_context_from_extras(
-            extras or {}, contract, touched_paths=touched,
+            extras or {},
+            contract,
+            touched_paths=touched,
         ),
     )
 
 
-def required_delivery_commands(
-    contract: VerificationContract, plan: Any,
-) -> tuple[str, ...]:
-    """The deterministic required delivery command set, in stable order.
+def resolve_delivery_selection(
+    contract: VerificationContract,
+    plan: Any,
+) -> DeliverySelection:
+    """Resolve delivery receipt commands and each selected delivery identity.
 
-    ``contract.required`` first, then commands scheduled at the delivery
-    positions — ``after_phase(implement)`` and ``before_delivery`` — taken from
-    the resolved ``plan`` when one exists (entry order), otherwise from the raw
-    ``contract.schedule`` (an entry without explicit commands covers every
-    declared command, matching the Stage 1 projection convention). Deduped
-    preserving first occurrence.
+    ``contract.required`` remains the leading command-level receipt view.  Plan
+    entries at delivery positions are converted one-for-one into typed resolved
+    identities; the same command at multiple hooks is intentionally retained.
+    Without a plan, raw schedule commands still contribute receipt commands but
+    cannot claim an effective execution identity before selection has occurred.
     """
     ordered: list[str] = []
+    identities: list[ResolvedExecution] = []
 
     def _add(name: str) -> None:
         if name and name not in ordered:
@@ -267,22 +282,110 @@ def required_delivery_commands(
     if plan is not None:
         for entry in getattr(plan, "entries", ()) or ():
             position = (
-                getattr(entry, "hook", ""), getattr(entry, "phase", ""),
+                getattr(entry, "hook", ""),
+                getattr(entry, "phase", ""),
             )
             if position in _DELIVERY_HOOKS:
-                _add(getattr(entry, "command", ""))
-        return tuple(ordered)
+                command = getattr(entry, "command", "")
+                _add(command)
+                identities.append(resolve_selected_execution(VerificationIdentity(
+                    command=command,
+                    hook=getattr(entry, "hook", ""),
+                    phase=getattr(entry, "phase", ""),
+                    policy=getattr(entry, "policy", ""),
+                )))
+        _add_implicit_required_identities(contract, identities)
+        return DeliverySelection(tuple(ordered), tuple(identities))
 
     for entry in contract.schedule:
         if (entry.hook, entry.phase) not in _DELIVERY_HOOKS:
             continue
         for name in entry.commands or tuple(sorted(contract.commands)):
             _add(name)
-    return tuple(ordered)
+            # No selected plan is available, but a raw delivery schedule still
+            # has a complete declared identity. Apply the same work-mode policy
+            # derivation the plan builder uses so execution consumers never need
+            # their own policy fallback.
+            from pipeline.verification_selection import derive_effective_policy
+
+            policy = derive_effective_policy(
+                entry.policy,
+                contract.work_mode,
+                required=name in contract.required,
+            )
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=name,
+                hook=entry.hook,
+                phase=entry.phase,
+                policy=policy,
+            )))
+    _add_implicit_required_identities(contract, identities)
+    return DeliverySelection(tuple(ordered), tuple(identities))
+
+
+def _add_implicit_required_identities(
+    contract: VerificationContract,
+    identities: list[ResolvedExecution],
+) -> None:
+    """Fill the legacy required-receipt projection with typed identities.
+
+    ``verification.required`` predates explicit scheduled selection and remains
+    an implicit delivery gate when no delivery identity represents it. A command
+    explicitly parked behind ``manual_only`` is instead represented as an
+    operator identity. This also gives a required command scheduled only at a
+    phase hook a delivery-position refresh: otherwise delivery can enforce a
+    stale receipt without any engine identity that can regenerate it.
+    """
+    represented = {item.identity.command for item in identities}
+    manual_commands = _manual_only_schedule_commands(contract)
+    for command in contract.required:
+        if command in represented:
+            continue
+        if command in manual_commands:
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=command,
+                hook="manual_only",
+                phase="",
+                policy="manual",
+            )))
+        else:
+            identities.append(resolve_selected_execution(VerificationIdentity(
+                command=command,
+                hook="before_delivery",
+                phase="",
+                policy=_implicit_delivery_policy(contract),
+            )))
+
+
+def _implicit_delivery_policy(contract: VerificationContract) -> str:
+    """Boundary policy for a required command lacking a delivery identity.
+
+    The delivery module owns this projection. Import lazily because it imports
+    readiness for assessment, while this helper is only reached after both
+    modules finish initialization.
+    """
+    from pipeline.verification_delivery import resolve_delivery_policy
+
+    return resolve_delivery_policy(contract) or "warn"
+
+
+def _manual_only_schedule_commands(contract: VerificationContract) -> set[str]:
+    """Return commands explicitly parked behind the operator-only hook."""
+    commands: set[str] = set()
+    for entry in contract.schedule:
+        if entry.hook != "manual_only":
+            continue
+        commands.update(entry.commands)
+        for gate_set in entry.gate_sets:
+            declared = contract.gate_sets.get(gate_set)
+            if declared is not None:
+                commands.update(declared.commands)
+    return commands
 
 
 def effective_policy_by_command(
-    contract: VerificationContract, plan: Any,
+    contract: VerificationContract,
+    plan: Any,
 ) -> dict[str, str]:
     """Effective delivery policy for each required delivery command (degrade-safe).
 
@@ -310,7 +413,9 @@ def effective_policy_by_command(
         except Exception:  # noqa: BLE001 — manual-set lookup is best-effort
             manual_set = set()
         return effective_delivery_policy_by_command(
-            contract, plan, manual_set,
+            contract,
+            plan,
+            manual_set,
             boundary_policy=resolve_delivery_policy(contract),
         )
     except Exception:  # noqa: BLE001 — readiness must never raise outward
@@ -318,7 +423,8 @@ def effective_policy_by_command(
 
 
 def _distinct_command_envs(
-    contract: VerificationContract, commands: tuple[str, ...],
+    contract: VerificationContract,
+    commands: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Distinct declared envs of ``commands`` (declared env, else default_env).
 
@@ -356,10 +462,7 @@ def suggested_verify_commands(
     two surfaces print identical guidance and can never contradict each other.
     """
     envs = _distinct_command_envs(contract, commands)
-    lines = [
-        f"orcho verify env --env {env} --run-id {run_id} --project {project}"
-        for env in envs
-    ]
+    lines = [f"orcho verify env --env {env} --run-id {run_id} --project {project}" for env in envs]
     if not envs:
         lines.append(f"orcho verify env --run-id {run_id} --project {project}")
     required_set = set(contract.required)
@@ -383,7 +486,7 @@ class ProvenanceGateFailure:
     receipt recorded a failing check (e.g. ``pipeline_import``) is downgraded to
     failed regardless of its own command-receipt state — a passing command
     receipt produced by an interpreter that imported the wrong tree is not real
-    proof (ADR 0106). ``detail`` is the human-readable
+    proof (ADR 0125). ``detail`` is the human-readable
     ``"<check>: expected <X> actual <Y>"`` string; ``receipt_path`` points at the
     failing phase receipt so an operator needs no raw logs.
     """
@@ -403,7 +506,7 @@ def command_phase_schedule(contract: VerificationContract) -> dict[str, str]:
     Built from ``contract.schedule`` entries whose hook is ``before_phase`` or
     ``after_phase`` and that name a ``phase`` (an entry with no explicit commands
     covers every declared command, matching the projection convention in
-    :func:`required_delivery_commands`). A command with no phase-bound schedule is
+    :func:`resolve_delivery_selection`). A command with no phase-bound schedule is
     absent — it gets no environment-provenance link, so gates without a phase
     schedule (``before_delivery`` / ``manual_only``) keep their existing
     semantics. Shared by the SDK projection and the live render so both derive the
@@ -452,10 +555,7 @@ def environment_provenance_gate_failures(
             expected=failure.expected,
             actual=failure.actual,
             receipt_path=failure.receipt_path,
-            detail=(
-                f"{failure.check}: expected {failure.expected} "
-                f"actual {failure.actual}"
-            ),
+            detail=(f"{failure.check}: expected {failure.expected} actual {failure.actual}"),
         )
     return out
 
@@ -465,7 +565,7 @@ def apply_environment_provenance(
     contract: VerificationContract,
     run_dir: Path | str,
 ) -> dict[str, ReceiptClassification]:
-    """Overlay the ADR 0106 environment-provenance downgrade onto a classification.
+    """Overlay the ADR 0125 environment-provenance downgrade onto a classification.
 
     The single effective classification the four official surfaces share: given a
     ready ``command -> ReceiptClassification`` map from
@@ -500,13 +600,25 @@ def apply_environment_provenance(
         overlaid = dict(status_by_command)
         for command, failure in provenance.items():
             current = overlaid.get(command)
-            if current is None:
+            # Preserve an already-``failed`` receipt (notably a non-zero-exit
+            # ``test_failure``): provenance must not relabel or soften a declared
+            # blocker — that is the precedence the review required. But a
+            # ``present`` receipt (fake proof from the wrong tree) OR a
+            # ``missing`` one under a failed provenance gate both resolve to a
+            # provenance-caused ``failed``; only a real prior failure is kept.
+            if current is None or current.status == "failed":
                 continue
             overlaid[command] = ReceiptClassification(
                 status="failed",
+                failure_kind="provenance_failure",
                 reason=failure.detail,
                 source_run_id=current.source_run_id,
                 path=failure.receipt_path,
+                exit_code=current.exit_code,
+                assertions_total=current.assertions_total,
+                assertions_passed=current.assertions_passed,
+                assertions_failed=current.assertions_failed,
+                failed_assertions=current.failed_assertions,
             )
         return overlaid
     except Exception:  # noqa: BLE001 — overlay must never raise outward
@@ -526,7 +638,7 @@ def classify_required_receipts(
     """Classify each required delivery command's receipt, in required order.
 
     Returns an ordered ``command -> ReceiptClassification`` mapping over
-    :func:`required_delivery_commands`; each classification carries one of the
+    :func:`resolve_delivery_selection`; each classification carries one of the
     fixed four statuses (``present`` / ``missing`` / ``failed`` / ``stale``) plus
     an optional human ``reason`` (populated for stale) and additive
     ``source_run_id`` / ``path`` provenance. ``checkout`` is the EXPLICIT
@@ -562,21 +674,19 @@ def classify_required_receipts(
         except Exception:  # noqa: BLE001 — classification must never raise outward
             plan = None
 
-    required = required_delivery_commands(contract, plan)
-    receipts = {
-        str(r.get("command", "")): r for r in load_command_receipts(run_dir)
-    }
-    current_fingerprint, current_head = _current_checkout_identity(checkout or "")
+    required = resolve_delivery_selection(contract, plan).receipt_commands
+    receipts = {str(r.get("command", "")): r for r in load_command_receipts(run_dir)}
+    current_subject = _current_checkout_identity(checkout or "")
 
     # readiness -> dependencies is an allowed import direction (the low-level
     # module never imports back); lazy to keep the pure module's top level free
     # of the dependency capture layer, mirroring the fingerprint import below.
-    from pipeline.verification_dependencies import current_dependency_heads
+    from pipeline.verification_dependencies import current_dependency_subjects
 
     try:
-        dependency_heads = current_dependency_heads(ctx)
+        dependency_subjects = current_dependency_subjects(ctx)
     except Exception:  # noqa: BLE001 — classification must never raise outward
-        dependency_heads = {}
+        dependency_subjects = {}
 
     # readiness -> receipt_index is an allowed direction (the index never imports
     # back); lazy to keep the no-parent path free of any extra work.
@@ -592,9 +702,7 @@ def classify_required_receipts(
         if parent_runs is not None
         else parent_sources_from_extras(extras)
     )
-    parent_candidates = (
-        load_parent_candidates(sources, required) if sources else {}
-    )
+    parent_candidates = load_parent_candidates(sources, required) if sources else {}
     current_source = ReceiptSource(run_id=Path(run_dir).name, run_dir=str(run_dir))
 
     status_by_command: dict[str, ReceiptClassification] = {}
@@ -605,9 +713,8 @@ def classify_required_receipts(
             current_receipt=receipts.get(command),
             current_source=current_source,
             parent_candidates=parent_candidates.get(command, ()),
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
     return status_by_command
 
@@ -647,30 +754,42 @@ def required_receipt_gaps(
             plan = None
     status_by_command = apply_environment_provenance(
         classify_required_receipts(
-            contract, run_dir, ctx,
-            checkout=ctx.checkout or "", extras=extras, plan=plan,
+            contract,
+            run_dir,
+            ctx,
+            checkout=ctx.checkout or "",
+            extras=extras,
+            plan=plan,
         ),
         contract,
         run_dir,
     )
     policy_by_command = effective_policy_by_command(contract, plan)
+    from pipeline.verification_policy import consequence_by_command
+
+    consequences = consequence_by_command(
+        status_by_command,
+        policy_by_command,
+    )
     gaps: list[dict[str, Any]] = []
     for command, classification in status_by_command.items():
         if classification.status == "present":
             continue
         # Only an effective ``require`` gap is a release blocker; warn/suggest are
         # shipping-allowed and manual_only is never a gap (ADR 0090).
-        if policy_by_command.get(command) != "require":
+        if consequences.get(command) != "required_action":
             continue
         run_decl = (contract.commands.get(command) or {}).get("run", "")
         if isinstance(run_decl, (list, tuple)):
             run_decl = " ".join(str(a) for a in run_decl)
-        gaps.append(_required_receipt_gap_dict(
-            command,
-            classification=classification,
-            required_check=str(run_decl) or command,
-            language=language,
-        ))
+        gaps.append(
+            _required_receipt_gap_dict(
+                command,
+                classification=classification,
+                required_check=str(run_decl) or command,
+                language=language,
+            )
+        )
     return gaps
 
 
@@ -701,8 +820,7 @@ def _required_receipt_gap_dict(
     if _is_russian(language):
         return {
             "risk": (
-                f"Обязательный verification gate '{command}' не доказан: "
-                f"receipt {status}{reason}."
+                f"Обязательный verification gate '{command}' не доказан: receipt {status}{reason}."
             ),
             "missing_evidence": (
                 f"Нет проходящего command receipt для обязательного gate "
@@ -745,8 +863,12 @@ def build_final_acceptance_readiness(
 
     status_by_command = apply_environment_provenance(
         classify_required_receipts(
-            contract, run_dir, ctx,
-            checkout=ctx.checkout or "", extras=extras, plan=plan,
+            contract,
+            run_dir,
+            ctx,
+            checkout=ctx.checkout or "",
+            extras=extras,
+            plan=plan,
         ),
         contract,
         run_dir,
@@ -757,7 +879,9 @@ def build_final_acceptance_readiness(
     # receipt (ADR 0090). Required gaps keep their natural required-command order
     # (shared with the suggested-command hints), not a per-policy grouping.
     policy_by_command = effective_policy_by_command(contract, plan)
+    from pipeline.verification_policy import consequence_by_command
 
+    consequences = consequence_by_command(status_by_command, policy_by_command)
     present: list[str] = []
     missing: list[str] = []
     failed: list[str] = []
@@ -769,17 +893,17 @@ def build_final_acceptance_readiness(
         if status == "present":
             present.append(command)
             continue
-        if policy_by_command.get(command) == "manual_only":
+        if policy_by_command.get(command) in ("manual_only", "manual"):
             manual.append(command)
             continue
-        {"missing": missing, "failed": failed, "stale": stale}[status].append(
+        {"missing": missing, "failed": failed, "stale": stale, "unverifiable": stale}[status].append(
             command,
         )
-        if status == "stale":
+        if status in {"stale", "unverifiable"}:
             stale_reasons.append(
                 f"{command}: {classification.reason or 'stale'}",
             )
-    manual_only_gaps = tuple(manual)
+    operator_gaps = tuple(manual)
 
     env_statuses = tuple(
         (str(r.get("env", "")), bool(r.get("all_passed", False)))
@@ -792,8 +916,7 @@ def build_final_acceptance_readiness(
 
     exploratory_count = _count_exploratory_commands(run_dir)
     exploratory_note = (
-        "observed ad-hoc commands; exploratory only, not authoritative"
-        if exploratory_count else ""
+        "observed ad-hoc commands; exploratory only, not authoritative" if exploratory_count else ""
     )
 
     # Diagnostics (ADR 0089 / T3): the run dirs searched (current first, then
@@ -808,9 +931,7 @@ def build_final_acceptance_readiness(
     receipt_provenance = tuple(
         f"{command}: {cl.status} from run {cl.source_run_id} ({cl.path})"
         for command, cl in status_by_command.items()
-        if cl.status == "present"
-        and cl.source_run_id
-        and cl.source_run_id != current_run_id
+        if cl.status == "present" and cl.source_run_id and cl.source_run_id != current_run_id
     )
     # Searched dirs + actionable verify hints whenever a required receipt is
     # open in ANY non-present way (missing / stale / failed). suggested_commands
@@ -821,7 +942,8 @@ def build_final_acceptance_readiness(
     suggested_commands: tuple[str, ...] = ()
     if missing or stale or failed:
         suggested_commands = suggested_verify_commands(
-            contract, (*missing, *stale, *failed),
+            contract,
+            (*missing, *stale, *failed),
             run_id=current_run_id,
             project=str(getattr(ctx, "project", "") or ""),
         )
@@ -841,7 +963,8 @@ def build_final_acceptance_readiness(
         receipt_provenance=receipt_provenance,
         suggested_commands=suggested_commands,
         policy_by_command=tuple(policy_by_command.items()),
-        manual_only_gaps=manual_only_gaps,
+        consequence_by_command=tuple(consequences.items()),
+        operator_gaps=operator_gaps,
     )
 
 
@@ -854,10 +977,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
 
     lines.append("  Environments:")
     if summary.env_statuses:
-        lines.extend(
-            f"    {env}: {'pass' if ok else 'FAIL'}"
-            for env, ok in summary.env_statuses
-        )
+        lines.extend(f"    {env}: {'pass' if ok else 'FAIL'}" for env, ok in summary.env_statuses)
     else:
         lines.append("    (none recorded)")
 
@@ -883,17 +1003,24 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # the reviewer sees it is surfaced, not blocked. An empty section is
     # byte-identical ``"(none)"``.
     policy_map = dict(summary.policy_by_command)
-    _gap_section(lines, "Missing receipts", summary.required_missing, policy_map)
-    _gap_section(lines, "Failed receipts", summary.required_failed, policy_map)
+    consequence_map = dict(summary.consequence_by_command)
+    _gap_section(
+        lines, "Missing receipts", summary.required_missing, policy_map, consequence_map,
+    )
+    _gap_section(
+        lines, "Failed receipts", summary.required_failed, policy_map, consequence_map,
+    )
     # Stale receipts carry their reason (subject drift or a dependency HEAD
     # move naming both SHAs) so the reviewer sees *why* a receipt is stale.
     stale_items = list(summary.stale_reasons or summary.required_stale)
     lines.append("  Stale receipts:")
     if summary.required_stale:
         lines.extend(
-            f"    {_annotate_gap(item, policy_map.get(name, ''))}"
+            f"    {_annotate_gap(item, policy_map.get(name, ''), consequence_map.get(name))}"
             for name, item in zip(
-                summary.required_stale, stale_items, strict=False,
+                summary.required_stale,
+                stale_items,
+                strict=False,
             )
         )
     else:
@@ -902,11 +1029,11 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # Manual/operator-only receipts (ADR 0090): visible, but not auto-run and
     # never a required/blocking gap. Absent — and thus byte-identical — when
     # there are no manual-only gaps.
-    if summary.manual_only_gaps:
-        lines.append("  Manual-only receipts:")
+    if summary.operator_gaps:
+        lines.append("  Operator-available receipts:")
         lines.extend(
-            f"    {name} (manual_only) — not auto-run"
-            for name in summary.manual_only_gaps
+            f"    {name} ({policy_map.get(name, 'manual')}) — operator available, not auto-run"
+            for name in summary.operator_gaps
         )
 
     lines.append("  Exploratory commands:")
@@ -917,20 +1044,29 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     else:
         lines.append("    (none observed)")
 
-    # Only ``require``-policy gaps block readiness (ADR 0090): a warn/suggest gap
-    # is shipping-allowed by policy and a manual-only gap is not auto-run, so
-    # neither appears under "Remaining before ready".
+    # Only a required-action consequence blocks readiness. This retains the
+    # declared ``require`` policy for hygiene outcomes without falsely treating
+    # them as a release blocker (ADR 0130).
     require_missing = [
-        c for c in summary.required_missing if policy_map.get(c) == "require"
+        c for c in summary.required_missing
+        if consequence_map.get(c, "required_action" if policy_map.get(c) == "require" else "")
+        == "required_action"
     ]
     require_failed = [
-        c for c in summary.required_failed if policy_map.get(c) == "require"
+        c for c in summary.required_failed
+        if consequence_map.get(c, "required_action" if policy_map.get(c) == "require" else "")
+        == "required_action"
     ]
     require_stale = [
-        item for name, item in zip(
-            summary.required_stale, stale_items, strict=False,
+        item
+        for name, item in zip(
+            summary.required_stale,
+            stale_items,
+            strict=False,
         )
-        if policy_map.get(name) == "require"
+        if consequence_map.get(
+            name, "required_action" if policy_map.get(name) == "require" else "",
+        ) == "required_action"
     ]
     remaining = (
         [f"missing required: {c}" for c in require_missing]
@@ -944,7 +1080,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
         summary.required_missing
         or summary.required_failed
         or summary.required_stale
-        or summary.manual_only_gaps
+        or summary.operator_gaps
     ):
         # Non-require gaps remain (warn/suggest/manual): surfaced above, but
         # shipping is allowed by policy — nothing blocks readiness.
@@ -961,10 +1097,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
     # below are remediation, never evidence. Gated on observed exploratory
     # commands and on an actual missing/stale blocker, so the fully-ready block
     # (and a no-exploratory block) stays byte-identical to before.
-    if (
-        (summary.required_missing or summary.required_stale)
-        and summary.exploratory_count
-    ):
+    if (summary.required_missing or summary.required_stale) and summary.exploratory_count:
         lines.append(f"  {transcript_not_proof_note()}")
 
     # Actionable diagnostics (ADR 0089 / T3): only when a required receipt is
@@ -985,7 +1118,7 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
 # ── Internals ────────────────────────────────────────────────────────────────
 
 
-def _annotate_gap(text: str, policy: str) -> str:
+def _annotate_gap(text: str, policy: str, consequence: str | None = None) -> str:
     """Annotate one gap line with its effective per-gate policy (T3).
 
     ``require`` → ``"<text> (require)"`` (a blocker). ``warn`` / ``suggest`` →
@@ -993,10 +1126,13 @@ def _annotate_gap(text: str, policy: str) -> str:
     Any other non-empty policy is shown verbatim in parentheses; an empty policy
     leaves ``text`` unchanged.
     """
+    if consequence == "warning" and policy == "require":
+        return f"{text} ({policy}) — shipping allowed by warning consequence"
     if policy == "require":
         return f"{text} (require)"
     if policy in ("warn", "suggest"):
-        return f"{text} ({policy}) — shipping allowed by policy"
+        recommendation = " — operator recommendation" if policy == "suggest" else ""
+        return f"{text} ({policy}){recommendation} — shipping allowed by policy"
     if policy:
         return f"{text} ({policy})"
     return text
@@ -1007,6 +1143,7 @@ def _gap_section(
     title: str,
     names: tuple[str, ...],
     policy_map: Mapping[str, str],
+    consequence_map: Mapping[str, str],
 ) -> None:
     """Render a missing/failed gap section, annotating each name with its policy.
 
@@ -1018,7 +1155,8 @@ def _gap_section(
         lines.append("    (none)")
         return
     lines.extend(
-        f"    {_annotate_gap(name, policy_map.get(name, ''))}" for name in names
+        f"    {_annotate_gap(name, policy_map.get(name, ''), consequence_map.get(name))}"
+        for name in names
     )
 
 
@@ -1037,9 +1175,8 @@ def _select_classification(
     current_receipt: Mapping[str, Any] | None,
     current_source: Any,
     parent_candidates: Any,
-    current_fingerprint: str | None,
-    current_head: str | None,
-    dependency_heads: Mapping[str, str | None],
+    current_subject: Any,
+    dependency_subjects: Mapping[str, Any],
 ) -> ReceiptClassification:
     """Pick the authoritative classification for ``command`` across runs (ADR 0089).
 
@@ -1075,35 +1212,36 @@ def _select_classification(
     receipt exactly as before (only the additive provenance fields are filled).
     """
     current_cls = (
-        _classify_receipt(
+        classify_receipt(
             current_receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         if current_receipt is not None
         else None
     )
     current_path = (
-        receipt_file_path(current_source.run_dir, command)
-        if current_receipt is not None
-        else ""
+        receipt_file_path(current_source.run_dir, command) if current_receipt is not None else ""
     )
 
     # (1) current present wins outright.
     if current_cls is not None and current_cls.status == "present":
         return _with_provenance(
-            current_cls, current_source.run_id, current_path,
+            current_cls,
+            current_source.run_id,
+            current_path,
         )
 
     # (2) fresh same-diff (or unrecorded-fingerprint) failure blocks inheritance.
     if (
         current_cls is not None
         and current_cls.status == "failed"
-        and _failed_blocks_inheritance(current_receipt, current_fingerprint)
+        and _failed_blocks_inheritance(current_receipt, current_subject)
     ):
         return _with_provenance(
-            current_cls, current_source.run_id, current_path,
+            current_cls,
+            current_source.run_id,
+            current_path,
         )
 
     # Env gates eligibility: a parent from a different env is never a candidate
@@ -1114,199 +1252,111 @@ def _select_classification(
     eligible = [
         candidate
         for candidate in parent_candidates
-        if not declared_env
-        or str(candidate.receipt.get("env", "")) == declared_env
+        if not declared_env or str(candidate.receipt.get("env", "")) == declared_env
     ]
 
     # (3) degrade to the first eligible parent that is present against the subject.
     for candidate in eligible:
         candidate_cls = _classify_parent_candidate(
             candidate.receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         if candidate_cls.status == "present":
             return _with_provenance(
-                candidate_cls, candidate.source_run_id, candidate.path,
+                candidate_cls,
+                candidate.source_run_id,
+                candidate.path,
             )
 
     # (4) most informative status with its provenance.
     if current_cls is not None:
         return _with_provenance(
-            current_cls, current_source.run_id, current_path,
+            current_cls,
+            current_source.run_id,
+            current_path,
         )
     if eligible:
         first = eligible[0]
         first_cls = _classify_parent_candidate(
             first.receipt,
-            current_fingerprint=current_fingerprint,
-            current_head=current_head,
-            dependency_heads=dependency_heads,
+            current_subject=current_subject,
+            dependency_subjects=dependency_subjects,
         )
         return _with_provenance(first_cls, first.source_run_id, first.path)
 
     # (5) nothing anywhere.
-    return ReceiptClassification("missing")
+    return ReceiptClassification("missing", "missing")
 
 
 def _with_provenance(
-    classification: ReceiptClassification, source_run_id: str, path: str,
+    classification: ReceiptClassification,
+    source_run_id: str,
+    path: str,
 ) -> ReceiptClassification:
     """Return ``classification`` with provenance fields filled (status/reason kept)."""
-    return ReceiptClassification(
-        classification.status,
-        classification.reason,
+    return replace(
+        classification,
         source_run_id=source_run_id or "",
         path=path or "",
     )
 
 
 def _failed_blocks_inheritance(
-    receipt: Mapping[str, Any] | None, current_fingerprint: str | None,
-) -> bool:
-    """True when a failed current receipt must block parent inheritance.
-
-    Blocks when the receipt's recorded changed-files fingerprint matches the
-    current subject fingerprint, OR either side's fingerprint is unrecorded
-    (``None``) — an undated failure is treated as same-diff, never masked. Only a
-    failure recorded against a *different* fingerprint lets a valid parent take
-    over.
-    """
-    if receipt is None:
-        return False
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    if receipt_fingerprint is None or current_fingerprint is None:
-        return True
-    return receipt_fingerprint == current_fingerprint
-
-
-def _classify_receipt(
     receipt: Mapping[str, Any] | None,
-    *,
-    current_fingerprint: str | None,
-    current_head: str | None,
-    dependency_heads: Mapping[str, str | None],
-) -> ReceiptClassification:
-    """Classify one required command's receipt.
+    current_subject: Any,
+) -> bool:
+    """True unless a failed receipt is proved to cover different content.
 
-    ``missing`` — no receipt on disk. ``failed`` — non-zero/None exit code, any
-    failed declared assertion, or a non-empty execution ``detail``. ``stale`` —
-    the receipt is otherwise valid but its provenance no longer matches: either
-    the subject checkout's changed-files fingerprint / HEAD moved, OR (ADR 0084)
-    a depended-on dependency's HEAD moved since the receipt was written. Subject
-    drift is checked first; dependency drift only when the subject still matches.
-    When the current checkout identity is unavailable (no worktree / git failure)
-    subject staleness is not asserted; dependency staleness is independent of it.
+    A current execution failure is never masked by a parent pass when either
+    subject is unavailable or malformed.  Only a direct, usable comparison
+    which proves the subjects stale permits parent inheritance.
     """
-    if receipt is None:
-        return ReceiptClassification("missing")
-
-    if receipt.get("exit_code") != 0:
-        return ReceiptClassification("failed")
-    assertions = receipt.get("assertions")
-    if isinstance(assertions, list) and any(
-        isinstance(a, Mapping) and not a.get("passed", False) for a in assertions
-    ):
-        return ReceiptClassification("failed")
-    if str(receipt.get("detail") or "").strip():
-        return ReceiptClassification("failed")
-
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    receipt_head = git.get("checkout_head")
-    if (
-        current_fingerprint is not None
-        and receipt_fingerprint is not None
-        and receipt_fingerprint != current_fingerprint
-    ):
-        return ReceiptClassification(
-            "stale", "checkout changed-files fingerprint moved",
-        )
-    if (
-        current_head is not None
-        and receipt_head is not None
-        and receipt_head != current_head
-    ):
-        return ReceiptClassification(
-            "stale", f"checkout HEAD moved {receipt_head} -> {current_head}",
-        )
-
-    # readiness -> dependencies is an allowed direction; module is cached.
-    from pipeline.verification_dependencies import dependency_stale_reason
-
-    dep_reason = dependency_stale_reason(receipt, dependency_heads)
-    if dep_reason:
-        return ReceiptClassification("stale", dep_reason)
-    return ReceiptClassification("present")
+    return not failed_receipt_refresh_eligible(
+        receipt,
+        current_subject=current_subject,
+    )
 
 
 def _classify_parent_candidate(
     receipt: Mapping[str, Any] | None,
     *,
-    current_fingerprint: str | None,
-    current_head: str | None,
-    dependency_heads: Mapping[str, str | None],
+    current_subject: Any,
+    dependency_subjects: Mapping[str, Any],
 ) -> ReceiptClassification:
     """Classify a PARENT-run candidate under the stricter inheritance rule.
 
-    A parent receipt may be inherited as ``present`` ONLY when it provably
-    verified *this* diff: its recorded ``git.changed_files_fingerprint`` AND the
-    current subject fingerprint must both be known and equal. The base
-    :func:`_classify_receipt` (the unchanged current-run semantics) treats an
-    *unrecorded* fingerprint — on either side — as "staleness not asserted" and
-    returns ``present``; for inheritance that is not enough proof, so an
-    otherwise-present parent whose fingerprint cannot be matched against the
-    current checkout is reported ``stale`` with a fingerprint reason rather than
-    silently inherited. This keeps the "never falsely green" invariant: a parent
-    pass that does not demonstrably cover the current diff never satisfies
+    A parent receipt may be inherited as ``present`` only when its usable
+    subject and effective dependency subjects directly match the current
+    checkout.  This keeps the "never falsely green" invariant: a parent pass
+    that does not demonstrably cover the current subject never satisfies
     delivery readiness. Non-``present`` base classifications (failed / stale /
     missing) pass through unchanged.
     """
-    classification = _classify_receipt(
+    classification = classify_receipt(
         receipt,
-        current_fingerprint=current_fingerprint,
-        current_head=current_head,
-        dependency_heads=dependency_heads,
+        current_subject=current_subject,
+        dependency_subjects=dependency_subjects,
     )
     if classification.status != "present" or receipt is None:
         return classification
 
-    git = receipt.get("git")
-    git = git if isinstance(git, Mapping) else {}
-    receipt_fingerprint = git.get("changed_files_fingerprint")
-    if current_fingerprint is None or receipt_fingerprint is None:
-        return ReceiptClassification(
-            "stale",
-            "parent receipt changed-files fingerprint unverifiable against "
-            "current checkout",
-        )
-    if receipt_fingerprint != current_fingerprint:
-        # Defensive: _classify_receipt already returns stale for a recorded
-        # mismatch, so this is unreachable in practice; kept for symmetry.
-        return ReceiptClassification(
-            "stale", "checkout changed-files fingerprint moved",
-        )
     return classification
 
 
-def _current_checkout_identity(checkout: str) -> tuple[str | None, str | None]:
-    """Recompute the subject checkout's (fingerprint, head); degrade to None."""
+def _current_checkout_identity(checkout: str) -> Any:
+    """Capture the current checkout subject; unavailable stays fail-closed."""
     if not checkout:
-        return None, None
+        return None
     try:
-        from core.io.git_helpers import git_head
-        from pipeline.verification_dependencies import changed_files_fingerprint
-
-        head = git_head(checkout)
-        if head is None:
-            return None, None
-        return changed_files_fingerprint(checkout), head
+        from pipeline.verification_subject import (
+            VerificationSubjectAvailable,
+            capture_verification_subject,
+        )
+        captured = capture_verification_subject(Path(checkout))
+        return captured.identity if isinstance(captured, VerificationSubjectAvailable) else None
     except Exception:  # noqa: BLE001 — readiness must never raise outward
-        return None, None
+        return None
 
 
 def _gate_status_lines(
@@ -1348,7 +1398,8 @@ def _gate_status_lines(
 
 
 def _tested_dependency_lines(
-    run_dir: Path | str, present_commands: list[str],
+    run_dir: Path | str,
+    present_commands: list[str],
 ) -> tuple[str, ...]:
     """Compact ``"command: tested against dep@<sha>"`` lines for present receipts.
 
@@ -1359,9 +1410,7 @@ def _tested_dependency_lines(
     """
     if not present_commands:
         return ()
-    receipts = {
-        str(r.get("command", "")): r for r in load_command_receipts(run_dir)
-    }
+    receipts = {str(r.get("command", "")): r for r in load_command_receipts(run_dir)}
     lines: list[str] = []
     for command in present_commands:
         receipt = receipts.get(command)

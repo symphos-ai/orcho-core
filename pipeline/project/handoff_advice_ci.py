@@ -26,9 +26,9 @@ from pipeline.project.handoff_advice_artifact import (
     build_provenance_note,
     write_advice_artifact,
 )
+from pipeline.project.handoff_advice_assessment import assess_advice
 from pipeline.project.handoff_advice_policy import (
     build_scope,
-    evaluate_ci_gates,
     findings_fingerprint,
 )
 
@@ -81,11 +81,13 @@ def handle_ci_advice(
     → stop; (2) exhausted budget → stop ``budget_exhausted``; (3) invoke the
     read-only advisor (advisor exception / unparseable response → stop
     ``needs_operator``); (4) persist the advice artifact (the only durable
-    write); (5) apply :func:`evaluate_ci_gates` (it owns the destructive + scope
-    gates) with a repeated-finding flag derived from the fingerprint; (6)
+    write); (5) assess the contract-aware disposition with a repeated-finding
+    flag derived from the fingerprint; (6)
     proceed → a ``ci_agent`` ``retry_feedback`` decision input, else a typed stop.
     """
     available = tuple(getattr(signal, "available_actions", ()) or ())
+    if _adv.hygiene_gate_advice(signal) is not None:
+        return _stop("needs_operator", "waiver")
     if not policy.auto_retry_with_agent:
         return _stop("needs_operator", "policy_no_auto_retry")
     if "retry_feedback" not in available:
@@ -114,23 +116,19 @@ def handle_ci_advice(
     if "advice_unparseable" in advice.parse_warnings:
         return _stop("needs_operator", "advice_unparseable", **advisor_fields)
 
-    # The advice object is the ONLY durable write here — never a decision.
+    scope = build_scope(getattr(run, "state", None))
+    repeated = prev_findings_fingerprint is not None and fingerprint == prev_findings_fingerprint
+    assessment = assess_advice(
+        advice, ctx.contract_snapshot, findings=findings, scope=scope,
+        budget_remaining=budget_remaining, repeated=repeated,
+    )
     relpath = write_advice_artifact(
         run_dir, signal.handoff_id, advice, ctx, usage=result.usage,
+        assessment=assessment,
     )
+    advisor_fields["scope_unchecked"] = assessment.scope_unchecked
 
-    scope = build_scope(getattr(run, "state", None))
-    repeated = (
-        prev_findings_fingerprint is not None
-        and fingerprint == prev_findings_fingerprint
-    )
-    safety = _adv.classify_advice_safety(advice, findings)
-    decision = evaluate_ci_gates(
-        advice, safety, findings, scope, budget_remaining, repeated,
-    )
-    advisor_fields["scope_unchecked"] = decision.scope_unchecked
-
-    if decision.proceed:
+    if assessment.auto_apply_ok:
         from pipeline.control.handoff_prompt import HandoffDecisionInput
 
         decision_input = HandoffDecisionInput(
@@ -139,9 +137,15 @@ def handle_ci_advice(
             note=build_provenance_note(relpath, source="ci_agent"),
         )
         return CiAdviceOutcome(
-            outcome="retry", decision_input=decision_input, **advisor_fields,
+            outcome="retry",
+            decision_input=decision_input,
+            **advisor_fields,
         )
-    return _stop(decision.stop_state, decision.reason, **advisor_fields)
+    state = {
+        "halt": "halt", "budget_exhausted": "budget_exhausted",
+        "repeated_finding": "repeated_finding",
+    }.get(assessment.blocked_reason, "needs_operator")
+    return _stop(state, assessment.blocked_reason, **advisor_fields)
 
 
 __all__ = ["CiAdviceOutcome", "handle_ci_advice"]

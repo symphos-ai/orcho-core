@@ -10,7 +10,7 @@ frozen ADR 0042 Phase J signature.
 The fields of :class:`ProjectRunRequest` **mirror the current
 signature of** ``pipeline.project.app.run_pipeline`` modulo
 ``_REQUEST_ONLY_FIELDS`` (currently ``{"presentation",
-"render_phase_outputs"}``) — see
+"render_phase_outputs", "preallocated_output_dir"}``) — see
 ``tests/unit/pipeline/test_project_run_request.py`` for the contract
 test. The dataclass is NOT generated from ``inspect.signature`` at
 runtime; ``inspect.signature`` is the verification tool, not a
@@ -56,7 +56,8 @@ class ProjectRunRequest:
     Mirrors the current ``run_pipeline`` signature **modulo
     ``_REQUEST_ONLY_FIELDS``** (see
     ``tests/unit/pipeline/test_project_run_request.py``). Today
-    ``_REQUEST_ONLY_FIELDS = {"presentation", "render_phase_outputs"}``
+    ``_REQUEST_ONLY_FIELDS = {"presentation", "render_phase_outputs",
+    "preallocated_output_dir"}``
     — these presentation knobs live on the typed request only because
     the wide-kwarg ``run_pipeline`` back-compat surface is frozen by the
     ADR 0042 Phase J signature lock and must not grow.
@@ -116,7 +117,12 @@ class ProjectRunRequest:
     # ── request-only (NOT on the run_pipeline back-compat surface) ──
     presentation: PresentationPolicy = PresentationPolicy.TERMINAL
     render_phase_outputs: bool = False
+    # A parent coordinator may materialize handoff artifacts in this run
+    # directory before dispatching a fresh child. This permits those known
+    # artifacts without claiming checkpoint-resume semantics.
+    preallocated_output_dir: bool = False
     auto_waiver_allowed: bool = False
+    unattended: bool = False
 
     def __post_init__(self) -> None:
         """Coerce + validate the presentation field (ADR 0046).

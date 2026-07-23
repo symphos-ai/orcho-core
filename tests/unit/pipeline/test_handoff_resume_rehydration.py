@@ -19,9 +19,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.io.ansi import strip_ansi
 from core.observability import events as _events
 from pipeline.control import render_round_label
 from pipeline.plugins import PluginConfig
+from pipeline.presentation import PresentationPolicy
 from pipeline.project.handoff import (
     apply_phase_handoff_pause,
     last_validate_plan_critique as _last_validate_plan_critique,
@@ -826,6 +828,49 @@ class TestPhaseHandoffPauseSnapshot:
             signal.available_actions
         )
         assert run.session["phase_handoff"]["artifacts"] is not signal.artifacts
+
+    def test_noninteractive_incomplete_pause_explains_separate_blocker(
+        self, capsys,
+    ) -> None:
+        signal = PhaseHandoffRequested(
+            handoff_id="implement:implement_handoff:1",
+            phase="implement",
+            type=PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT,
+            trigger="incomplete",
+            verdict="INCOMPLETE",
+            approved=False,
+            round_extras_key="implement_handoff",
+            round=1,
+            loop_max_rounds=1,
+            available_actions=("retry_feedback", "continue_with_waiver", "halt"),
+            artifacts={
+                "incomplete_subtasks": ["T2-route"],
+                "attestation_incomplete": {"T2-route": "criterion 2 unverified"},
+                "unmet_done_criteria": [
+                    {
+                        "subtask_id": "T2-route",
+                        "index": 2,
+                        "criterion": "Functional route test passes.",
+                        "evidence": "PostgreSQL port 5433 is already allocated.",
+                    },
+                ],
+                "post_phase_gate_repair": {
+                    "status": "passed",
+                    "commands": ["cs"],
+                },
+            },
+        )
+        run = _pause_run(signal)
+        run._presentation = PresentationPolicy.TERMINAL
+        run.no_interactive = True
+
+        apply_phase_handoff_pause(run)
+
+        output = strip_ansi(capsys.readouterr().out)
+        assert "Gate repair passed: cs" in output
+        assert "Separate blocker remains" in output
+        assert "Functional route test passes." in output
+        assert "PostgreSQL port 5433 is already allocated." in output
 
 
 class TestRepeatRejectCoherence:

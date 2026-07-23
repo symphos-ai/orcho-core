@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.control.continuation import ContinuationDecision
 from pipeline.run_state.status_vocab import (
     RESUMABLE_TERMINAL_STATUSES,
     TERMINAL_SUCCESS_STATUSES,
@@ -79,6 +80,11 @@ class Action:
     tool: str
     args: Mapping[str, Any] = field(default_factory=dict)
     optional: bool = True
+    kind: str = "ready_call"
+    requires_operator_input: bool = False
+    choices: tuple[str, ...] = ()
+    input_schema: Mapping[str, Any] | None = None
+    context: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dict for wire transmission.
@@ -87,12 +93,26 @@ class Action:
         Defensive copies of ``args`` so caller mutations cannot reach
         the in-memory Action.
         """
-        return {
+        payload: dict[str, Any] = {
             "intent": self.intent,
             "tool": self.tool,
             "args": dict(self.args),
             "optional": self.optional,
         }
+        # Preserve the established compact wire shape for ready calls that do
+        # not require input. The readiness extension is additive: records that
+        # carry a non-default readiness fact serialize it explicitly.
+        if self.kind != "ready_call":
+            payload["kind"] = self.kind
+        if self.requires_operator_input:
+            payload["requires_operator_input"] = True
+        if self.choices:
+            payload["choices"] = list(self.choices)
+        if self.input_schema is not None:
+            payload["input_schema"] = dict(self.input_schema)
+        if self.context:
+            payload["context"] = dict(self.context)
+        return payload
 
 
 # ── compute_next_actions ────────────────────────────────────────────────────
@@ -105,6 +125,7 @@ def compute_next_actions(
     live_stall_diagnostics: Sequence[Any] | None = None,
     has_parsed_plan_artifact: bool | None = None,
     status: str | None = None,
+    continuation_decision: ContinuationDecision | None = None,
 ) -> tuple[Action, ...]:
     """Project a run's meta.json into a tuple of suggested follow-ups.
 
@@ -148,6 +169,9 @@ def compute_next_actions(
         status = meta.get("status")
     if not isinstance(status, str):
         return ()
+
+    if continuation_decision is not None and continuation_decision.continuation_subject == "retained_change":
+        return (_correction_followup_action(continuation_decision),)
 
     # Terminal success — workflow complete, nothing to suggest.
     if status in TERMINAL_SUCCESS_STATUSES:
@@ -207,7 +231,8 @@ def compute_next_actions(
         else has_parsed_plan_artifact
     )
     if status != "running" and has_plan:
-        out.append(_from_run_plan_action(run_id))
+        task = meta.get("task")
+        out.append(_from_run_plan_action(run_id, task=task if isinstance(task, str) else None))
 
     return tuple(out)
 
@@ -215,7 +240,7 @@ def compute_next_actions(
 # ── builders ────────────────────────────────────────────────────────────────
 
 
-def _from_run_plan_action(run_id: str) -> Action:
+def _from_run_plan_action(run_id: str, *, task: str | None) -> Action:
     """Suggest a plan-artifact continuation run from this run's plan.
 
     This is the durable plan-artifact continuation path: the new run loads
@@ -225,18 +250,51 @@ def _from_run_plan_action(run_id: str) -> Action:
     suggested ``profile`` is a semantic work kind with phases downstream of
     planning (``feature``); never a legacy profile name.
     """
+    args = {"from_run_plan": run_id, "profile": "feature"}
+    if task and task.strip():
+        args["task"] = task
+        return Action(
+            intent=(
+                "Start a plan artifact continuation run: inherit this run's "
+                "persisted parsed plan, skip the plan/validate_plan block, and "
+                "begin at implement on a fresh worktree."
+            ),
+            tool="orcho_run_start",
+            args=args,
+            optional=True,
+        )
     return Action(
-        intent=(
-            "Start a plan artifact continuation run: inherit this run's "
-            "persisted parsed plan, skip the plan/validate_plan block, and "
-            "begin at implement on a fresh worktree."
-        ),
+        intent="Provide the parent task before starting a plan artifact continuation.",
         tool="orcho_run_start",
-        args={
-            "from_run_plan": run_id,
-            "profile": "feature",
+        args={"from_run_plan": run_id, "profile": "feature"},
+        optional=False,
+        kind="operator_input_required",
+        requires_operator_input=True,
+        input_schema={"type": "object", "required": ["task"], "properties": {"task": {"type": "string", "minLength": 1}}},
+    )
+
+
+def _correction_followup_action(decision: ContinuationDecision) -> Action:
+    """Project the sole correction interaction without a plan fallback."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "required": ["operator_intent"],
+        "properties": {
+            "operator_intent": {"type": "string", "enum": ["followup", "exit"]},
+            "operator_comment": {"type": "string", "minLength": 1},
         },
-        optional=True,
+        "allOf": [{"if": {"properties": {"operator_intent": {"const": "followup"}}}, "then": {"required": ["operator_comment"]}}],
+    }
+    return Action(
+        intent=decision.reason,
+        tool="orcho_run_resume",
+        args={"run_id": decision.run_id},
+        optional=False,
+        kind="operator_input_required",
+        requires_operator_input=True,
+        choices=("followup", "exit"),
+        input_schema=schema,
+        context={"blocked": decision.blocked, "retained_worktree": decision.retained_worktree, "diff_source": decision.diff_source},
     )
 
 

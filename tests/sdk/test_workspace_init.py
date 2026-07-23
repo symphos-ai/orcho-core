@@ -50,6 +50,21 @@ def test_creates_workspace_layout(tmp_path: Path) -> None:
     )
 
 
+def test_task_files_readme_includes_authoring_guidance(tmp_path: Path) -> None:
+    r = init_workspace(tmp_path / "g")
+    readme = (
+        Path(r.workspace_dir) / ".orcho" / ".task-files" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Writing a good task file" in readme
+    assert "Verification is the engine's job" in readme
+    assert "targeted tests" in readme
+    assert (
+        "https://github.com/symphos-ai/orcho-core/blob/main/"
+        "docs/authoring-task-files.md"
+    ) in readme
+
+
 def test_workspace_plugin_scaffold_is_importable_empty_plugin(
     tmp_path: Path,
 ) -> None:
@@ -276,6 +291,209 @@ def test_init_attaches_detected_runtimes(tmp_path: Path, monkeypatch) -> None:
     assert isinstance(by_command["gemini"], DetectedRuntime)
 
 
+# ─── Runtime availability & switch ──────────────────────────────────────────
+
+
+def _which_only(*installed: str):
+    return lambda cmd: f"/usr/bin/{cmd}" if cmd in installed else None
+
+
+def test_init_records_missing_runtimes(tmp_path: Path, monkeypatch) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(tmp_path / "g")
+
+    assert "codex" in r.missing_runtimes
+    assert "claude" not in r.missing_runtimes
+    assert r.runtime_override is None
+    # Without an override the written config keeps the seeded runtimes.
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    assert any(
+        spec.get("runtime") == "codex" for spec in data["phases"].values()
+    )
+
+
+def test_runtime_override_remaps_fresh_config(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(tmp_path / "g", runtime_override="claude")
+
+    assert r.runtime_override == "claude"
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    phases = data["phases"]
+    # Every phase now points at an installed runtime…
+    assert all(spec["runtime"] == "claude" for spec in phases.values())
+    # …and a switched phase borrows the model of a phase that was
+    # already configured for the override runtime (models are
+    # runtime-specific — keeping the old one would be invalid).
+    assert phases["validate_plan"]["model"] == phases["plan"]["model"]
+
+
+def test_runtime_override_noop_when_nothing_missing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    monkeypatch.setattr(runtimes.shutil, "which", lambda cmd: "/x/" + cmd)
+
+    r = init_workspace(tmp_path / "g", runtime_override="claude")
+
+    assert r.missing_runtimes == ()
+    assert r.runtime_override is None
+    data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    assert any(
+        spec.get("runtime") == "codex" for spec in data["phases"].values()
+    )
+
+
+def test_runtime_override_updates_existing_config(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+
+    root = tmp_path / "g"
+    existing = root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        json.dumps({
+            "phases": {
+                "plan": {"runtime": "codex", "model": "gpt-x"},
+                "implement": {"runtime": "claude", "model": "claude-y"},
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    r = init_workspace(root, runtime_override="claude")
+
+    assert r.runtime_override == "claude"
+    data = json.loads(existing.read_text(encoding="utf-8"))
+    assert data["phases"]["plan"]["runtime"] == "claude"
+    # Donor model comes from a phase already on the override runtime.
+    assert data["phases"]["plan"]["model"] == "claude-y"
+    # Untouched phase keeps its spec verbatim.
+    assert data["phases"]["implement"] == {
+        "runtime": "claude", "model": "claude-y",
+    }
+
+
+def test_planned_phase_runtimes_merges_workspace_layer(
+    tmp_path: Path,
+) -> None:
+    from sdk.workspace import planned_phase_runtimes
+
+    root = tmp_path / "g"
+    planned_before = planned_phase_runtimes(root)
+    assert planned_before  # seeded from package defaults
+    existing = root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        json.dumps({"phases": {"plan": {"runtime": "gemini"}}}),
+        encoding="utf-8",
+    )
+
+    planned = planned_phase_runtimes(root)
+
+    assert planned["plan"] == "gemini"
+    # Other phases still come from the seed layers.
+    for phase, runtime in planned_before.items():
+        if phase != "plan":
+            assert planned[phase] == runtime
+
+
+def test_planned_phase_runtimes_ignores_corrupt_workspace_file(
+    tmp_path: Path,
+) -> None:
+    from sdk.workspace import planned_phase_runtimes
+
+    root = tmp_path / "g"
+    existing = root / "workspace-orchestrator" / ".orcho" / "config.local.json"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("{not json", encoding="utf-8")
+
+    assert planned_phase_runtimes(root) == planned_phase_runtimes(tmp_path / "other")
+
+
+def test_apply_runtime_override_skips_non_dict_specs(monkeypatch) -> None:
+    import sdk.runtimes as runtimes
+    from sdk.workspace import _apply_runtime_override
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+    phases = {
+        "plan": {"runtime": "codex", "model": "gpt-x"},
+        "bogus": "not-a-dict",
+    }
+
+    changed = _apply_runtime_override(phases, "claude")
+
+    assert changed == ("plan",)
+    assert phases["bogus"] == "not-a-dict"
+
+
+def test_override_runtimes_in_file_tolerates_bad_content(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+    from sdk.workspace import _override_runtimes_in_file
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert _override_runtimes_in_file(corrupt, "claude", dry_run=False) is False
+
+    non_object = tmp_path / "list.json"
+    non_object.write_text("[]", encoding="utf-8")
+    assert _override_runtimes_in_file(non_object, "claude", dry_run=False) is False
+
+
+def test_override_runtimes_in_file_noop_when_nothing_missing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+    from sdk.workspace import _override_runtimes_in_file
+
+    monkeypatch.setattr(runtimes.shutil, "which", lambda cmd: "/x/" + cmd)
+    cfg = tmp_path / "config.local.json"
+    cfg.write_text(
+        json.dumps({"phases": {"plan": {"runtime": "codex", "model": "m"}}}),
+        encoding="utf-8",
+    )
+
+    assert _override_runtimes_in_file(cfg, "claude", dry_run=False) is False
+    # File untouched.
+    assert json.loads(cfg.read_text(encoding="utf-8"))["phases"]["plan"][
+        "runtime"
+    ] == "codex"
+
+
+def test_override_runtimes_in_file_replaces_non_dict_phases(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    import sdk.runtimes as runtimes
+    from sdk.workspace import _override_runtimes_in_file
+
+    monkeypatch.setattr(runtimes.shutil, "which", _which_only("claude"))
+    cfg = tmp_path / "config.local.json"
+    cfg.write_text(json.dumps({"phases": "bogus"}), encoding="utf-8")
+
+    changed = _override_runtimes_in_file(cfg, "claude", dry_run=False)
+
+    assert changed is True
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    assert isinstance(data["phases"], dict)
+    assert all(
+        spec["runtime"] == "claude" for spec in data["phases"].values()
+    )
+
+
 # ─── Idempotency ────────────────────────────────────────────────────────────
 
 
@@ -298,6 +516,19 @@ def test_scaffold_does_not_overwrite_existing_files(tmp_path: Path) -> None:
 
     assert plugin.read_text(encoding="utf-8") == "PLUGIN = {'name': 'Custom'}\n"
     assert str(plugin) in r2.skipped_paths
+
+
+def test_scaffold_does_not_overwrite_existing_task_files_readme(
+    tmp_path: Path,
+) -> None:
+    r1 = init_workspace(tmp_path / "g")
+    readme = Path(r1.workspace_dir) / ".orcho" / ".task-files" / "README.md"
+    readme.write_text("# Custom task-file guidance\n", encoding="utf-8")
+
+    r2 = init_workspace(tmp_path / "g")
+
+    assert readme.read_text(encoding="utf-8") == "# Custom task-file guidance\n"
+    assert str(readme) in r2.skipped_paths
 
 
 def test_no_scaffold_skips_extension_templates(tmp_path: Path) -> None:

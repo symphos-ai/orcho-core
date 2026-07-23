@@ -6,12 +6,20 @@ Returns typed dataclasses, raises typed errors, never prints, never calls
 
 See `docs/adr/0021-public-sdk-boundary.md` and `docs/reference/sdk_api.md`.
 """
+
 from __future__ import annotations
 
 # Canonical resume/terminal classification predicates. Re-exported additively
 # from the control layer so MCP/CLI consume one source of truth. These are pure
 # predicate functions (no dataclass payload, no wire schema); the re-export
 # changes no signatures or behavior.
+from pipeline.control.continuation import (
+    ContinuationDecision,
+    ContinuationRequest,
+    ContinuationResolution,
+    resolve_continuation,
+    resolve_continuation_decision,
+)
 from pipeline.control.resume_context import (
     get_resume_intent_options,
     is_terminal_commit_decision_fix,
@@ -23,18 +31,51 @@ from pipeline.control.resume_context import (
     is_terminal_resume_parent,
     is_terminal_success,
 )
+from pipeline.run_state.cross_parent import (
+    ActiveOperation,
+    ChildExecution,
+    ChildState,
+    CrossParentState,
+    ParentClass,
+    ReleaseDisposition,
+    TerminalDisposition,
+)
 
 # Internal helpers exposed for embedders building IPC bridges
 from sdk._jsonable import to_jsonable
 from sdk.cost import aggregate_cost
+from sdk.cross_execution_graph import (
+    CrossExecutionGraph,
+    CrossExecutionGraphCompileIdentity,
+    CrossExecutionGraphExecutor,
+    CrossExecutionGraphExecutorPolicy,
+    CrossExecutionGraphNode,
+    CrossExecutionGraphNodeKind,
+    CrossExecutionGraphNodeOwner,
+    load_cross_execution_graph,
+)
+from sdk.cross_execution_graph_state import (
+    CrossExecutionGraphNodeState,
+    CrossExecutionGraphOperation,
+    CrossExecutionGraphOperationExecutor,
+    CrossExecutionGraphReason,
+    CrossExecutionGraphState,
+    CrossExecutionGraphStatus,
+    RunnerGateFact,
+    RunnerGateFacts,
+    load_cross_execution_graph_state,
+)
+from sdk.cross_parent_state import load_cross_parent_state
 
 # Errors
 from sdk.errors import (
+    CrossExecutionGraphInvalid,
     EvidenceInvalid,
     InvalidPhaseHandoffState,
     NoWorkspace,
     OrchoError,
     PricingFetchError,
+    ProfileCustomizeError,
     PromptNotFound,
     RunNotFound,
     WorkspaceInitError,
@@ -71,6 +112,7 @@ from sdk.evidence_slices import (
 )
 from sdk.fine_tune import FineTuneResult, fine_tune_project
 from sdk.handoff_advice import (
+    HandoffAdviceConflict,
     HandoffAdviceResult,
     HandoffAdviceSafety,
     request_handoff_advice,
@@ -86,7 +128,10 @@ from sdk.phase_handoff import (
     safe_handoff_id,
 )
 from sdk.pricing import refresh_pricing, show_pricing
+from sdk.profile_customize import ProfileCustomizeResult, customize_profile
+from sdk.profiles import ProfileSummary, catalogue_path, list_profiles
 from sdk.prompts import list_prompts, resolve_prompt
+from sdk.run_control.continuation import ContinuationPreflight, preflight_continuation
 
 # Run-control delivery decisions — the out-of-band post-release gate surface
 from sdk.run_control.delivery import decide_delivery, delivery_decision_state
@@ -95,6 +140,7 @@ from sdk.run_control.delivery import decide_delivery, delivery_decision_state
 # resume situation. Exported additively here; it is MCP-visible and intended
 # for consumption by the follow-up P1-mcp migration without a wire break.
 from sdk.run_control.diagnosis import run_diagnosis
+from sdk.run_control.launch import FromRunPlanLaunchRequest, launch_from_run_plan
 from sdk.run_control.recovery_lineage import recovery_lineage
 from sdk.run_control.types import (
     DeliveryDecisionCommand,
@@ -131,9 +177,11 @@ from sdk.types import (
     ArtefactRef,
     CostReport,
     EvidenceBundle,
+    GateStatus,
     PhaseBreakdown,
     PhaseStatus,
     PricingTable,
+    ProjectBreakdown,
     PromptResolution,
     RefreshResult,
     RunEvent,
@@ -144,8 +192,9 @@ from sdk.types import (
     RunSummary,
 )
 from sdk.verification_timeline import (
-    AutorunEvent,
-    GateProjection,
+    ReceiptEvidence,
+    ScheduledGateEvent,
+    ScheduledGateRow,
     VerificationTimelineProjection,
     get_verification_timeline,
 )
@@ -179,8 +228,10 @@ __all__ = [
     "PricingFetchError",
     "PromptNotFound",
     "EvidenceInvalid",
+    "CrossExecutionGraphInvalid",
     "InvalidPhaseHandoffState",
     "WorkspaceInitError",
+    "ProfileCustomizeError",
     "VerifyEnvError",
     # Serialisation
     "to_jsonable",
@@ -189,6 +240,31 @@ __all__ = [
     "find_run",
     "load_meta",
     "load_status",
+    "load_cross_parent_state",
+    "load_cross_execution_graph",
+    "load_cross_execution_graph_state",
+    "CrossExecutionGraph",
+    "CrossExecutionGraphCompileIdentity",
+    "CrossExecutionGraphNode",
+    "CrossExecutionGraphNodeKind",
+    "CrossExecutionGraphNodeOwner",
+    "CrossExecutionGraphExecutor",
+    "CrossExecutionGraphExecutorPolicy",
+    "CrossExecutionGraphState",
+    "CrossExecutionGraphNodeState",
+    "CrossExecutionGraphStatus",
+    "CrossExecutionGraphReason",
+    "CrossExecutionGraphOperation",
+    "CrossExecutionGraphOperationExecutor",
+    "RunnerGateFact",
+    "RunnerGateFacts",
+    "CrossParentState",
+    "ChildState",
+    "ActiveOperation",
+    "ChildExecution",
+    "ParentClass",
+    "ReleaseDisposition",
+    "TerminalDisposition",
     "list_history",
     "collect_evidence",
     "render_evidence_md",
@@ -198,6 +274,10 @@ __all__ = [
     "list_events",
     "list_prompts",
     "resolve_prompt",
+    "list_profiles",
+    "catalogue_path",
+    "customize_profile",
+    "ProfileCustomizeResult",
     "show_pricing",
     "refresh_pricing",
     "aggregate_cost",
@@ -211,6 +291,15 @@ __all__ = [
     "is_terminal_commit_delivery_scope_blocked",
     "is_terminal_final_acceptance_rejected",
     "get_resume_intent_options",
+    "ContinuationDecision",
+    "ContinuationPreflight",
+    "ContinuationRequest",
+    "ContinuationResolution",
+    "FromRunPlanLaunchRequest",
+    "resolve_continuation",
+    "resolve_continuation_decision",
+    "preflight_continuation",
+    "launch_from_run_plan",
     # Generic phase handoff
     "phase_handoff_decide",
     "load_active_phase_handoff",
@@ -221,6 +310,7 @@ __all__ = [
     # Read-only handoff advisory accessor (Stage 0/1 advisor)
     "request_handoff_advice",
     "HandoffAdviceResult",
+    "HandoffAdviceConflict",
     "HandoffAdviceSafety",
     # Post-release delivery decisions (ADR 0100)
     "decide_delivery",
@@ -288,14 +378,17 @@ __all__ = [
     # Verification timeline projection (read-only, durable)
     "get_verification_timeline",
     "VerificationTimelineProjection",
-    "GateProjection",
-    "AutorunEvent",
+    "ReceiptEvidence",
+    "ScheduledGateEvent",
+    "ScheduledGateRow",
     # Fine-tune
     "fine_tune_project",
     "FineTuneResult",
     # Types
+    "ProfileSummary",
     "RunRef",
     "RunMeta",
+    "GateStatus",
     "PhaseStatus",
     "RunStatus",
     "RunSummary",
@@ -304,6 +397,7 @@ __all__ = [
     "ArtefactRef",
     "PhaseBreakdown",
     "AgentBreakdown",
+    "ProjectBreakdown",
     "CostReport",
     "EvidenceBundle",
     "PromptResolution",

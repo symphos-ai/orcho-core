@@ -27,7 +27,7 @@ Important Phase 5e-5 boundaries:
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from pipeline.runtime.handoff import (
@@ -43,6 +43,7 @@ from pipeline.runtime.handoff import (
 )
 from pipeline.runtime.profile import LoopStep, PipelineProfile, Profile
 from pipeline.runtime.results import PhaseRegistry
+from pipeline.runtime.resume import LoopResumeBlockedError, LoopResumeCursor
 from pipeline.runtime.roles import PhaseHandoffType
 from pipeline.runtime.state import PipelineState
 from pipeline.runtime.steps import PhaseStep
@@ -84,6 +85,7 @@ def run_profile(
     quality_gate_registry: Any = None,
     ctx: Any = None,  # LifecycleContext — Phase 5e-5 substep 3
     completed_phases: set[str] | None = None,
+    loop_resume_cursors: Mapping[str, LoopResumeCursor] | None = None,
     phase_handoff_resolver: PhaseHandoffResolver | None = None,
     on_handoff_outcome: PhaseHandoffOutcomeCallback | None = None,
     on_phase_pre: Callable[[str, PipelineState], None] | None = None,
@@ -142,11 +144,13 @@ def run_profile(
     handler does not re-execute, but ``on_phase_start`` /
     ``on_phase_end`` still fire for trace continuity and the phase
     log records ``{"skipped": "completed earlier in this run (resumed)"}``.
-    LoopStep inner phases are NOT auto-skipped: a loop owns its own
-    iteration semantics and must replay from a coherent state, which
-    is a separate concern (see the resume brief for the loop-aware
-    follow-up). Without ``completed_phases`` this argument is inert,
-    so the fresh-run path is byte-for-byte unchanged.
+    LoopStep inner phases are skipped only through a validated
+    ``loop_resume_cursors`` entry. The cursor identifies one round and an
+    ordered committed prefix; the runner begins at the next member without
+    firing callbacks for the prefix, then executes later rounds normally.
+    A partial loop represented only by phase names remains fail-closed.
+    Without ``completed_phases`` / ``loop_resume_cursors`` these arguments
+    are inert, so the fresh-run path is unchanged.
 
     Pre-phase skip contract (``PHASE_PRE_SKIP_KEY``, ADR 0086): the
     ``on_phase_pre`` callback may mark the phase it is about to enter as
@@ -162,6 +166,7 @@ def run_profile(
     caller that does not pass ``on_phase_pre``.
     """
     _completed_phases: set[str] = set(completed_phases or ())
+    _loop_resume_cursors = dict(loop_resume_cursors or {})
     resolver: PhaseHandoffResolver = phase_handoff_resolver or pause_resolver
     # Phase 5d: Profile is the production shape. PipelineProfile remains
     # only for private inline helper dispatch / direct runtime tests.
@@ -206,7 +211,8 @@ def run_profile(
         if state.halt:
             break
         if isinstance(entry, LoopStep):
-            if _completed_phases:
+            resume_cursor = _loop_resume_cursors.get(entry.round_extras_key)
+            if resume_cursor is None and _completed_phases:
                 loop_phases = _loop_phase_names(entry)
                 completed_inside_loop = loop_phases & _completed_phases
                 if completed_inside_loop:
@@ -245,6 +251,7 @@ def run_profile(
                 phase_handoff_resolver=resolver,
                 on_handoff_outcome=on_handoff_outcome,
                 on_phase_pre=on_phase_pre,
+                resume_cursor=resume_cursor,
             )
             continue
         if isinstance(entry, PhaseStep):
@@ -576,7 +583,10 @@ def _skip_phase(
 
 
 #: Resume-skip reason (a phase already committed earlier in this run).
-_RESUME_SKIP_REASON = "completed earlier in this run (resumed)"
+#: Public so the render seam can gate the resume-summary line on this exact
+#: reason without duplicating the literal (see
+#: ``pipeline.project.profile_dispatch.emit_phase_log_end``).
+RESUME_SKIP_REASON = "completed earlier in this run (resumed)"
 
 
 def _skip_completed_phase(
@@ -592,7 +602,7 @@ def _skip_completed_phase(
     operators expect a "phase X completed (skipped on resume)" line.
     """
     _skip_phase(
-        step, state, _RESUME_SKIP_REASON,
+        step, state, RESUME_SKIP_REASON,
         on_phase_start=on_phase_start,
         on_phase_end=on_phase_end,
     )
@@ -897,6 +907,7 @@ def _run_loop_step(
     phase_handoff_resolver: PhaseHandoffResolver | None = None,
     on_handoff_outcome: PhaseHandoffOutcomeCallback | None = None,
     on_phase_pre: Callable[[str, PipelineState], None] | None = None,
+    resume_cursor: LoopResumeCursor | None = None,
 ) -> PipelineState:
     """Drive a retry loop until ``step.until`` is satisfied or ``step.max_rounds``
     iterations elapse.
@@ -932,14 +943,39 @@ def _run_loop_step(
     # resume path writes the budget here before re-entering the loop. In
     # slice 2 the value defaults to 0, so behaviour is unchanged for
     # non-resumed runs.
+    step_phases = tuple(inner.phase for inner in step.steps)
+    if (
+        resume_cursor is not None
+        and (
+            resume_cursor.loop_key != step.round_extras_key
+            or resume_cursor.loop_phases != step_phases
+            or resume_cursor.round_n < 1
+            or resume_cursor.round_n > step.max_rounds
+            or step_phases[:len(resume_cursor.completed_phases)]
+            != resume_cursor.completed_phases
+            or len(resume_cursor.completed_phases) >= len(step_phases)
+            or step_phases[len(resume_cursor.completed_phases)]
+            != resume_cursor.next_phase
+        )
+    ):
+        raise LoopResumeBlockedError(
+            f"Resume cursor for loop {step.round_extras_key!r} does not "
+            "match the active profile boundary."
+        )
+
     extra_rounds = extra_human_directed_rounds(state, step)
     total_rounds = step.max_rounds + extra_rounds
     active_key_sentinel = object()
     prev_active_key = state.extras.get("_active_loop_round_key", active_key_sentinel)
+    prev_active_phases = state.extras.get(
+        "_active_loop_phases", active_key_sentinel,
+    )
     state.extras[f"{step.round_extras_key}_max"] = step.max_rounds
     try:
         state.extras["_active_loop_round_key"] = step.round_extras_key
-        for round_n in range(1, total_rounds + 1):
+        state.extras["_active_loop_phases"] = step_phases
+        first_round = resume_cursor.round_n if resume_cursor is not None else 1
+        for round_n in range(first_round, total_rounds + 1):
             if state.halt:
                 break
             state.extras[step.round_extras_key] = round_n
@@ -950,9 +986,18 @@ def _run_loop_step(
             # all flow through ``_dispatch_via_fsm``.
             handoff_triggered = False
             deferred_handoff_signal = None
-            for inner_step in step.steps:
+            for inner_index, inner_step in enumerate(step.steps):
                 if state.halt:
                     break
+                if (
+                    resume_cursor is not None
+                    and round_n == resume_cursor.round_n
+                    and inner_index < len(resume_cursor.completed_phases)
+                ):
+                    # This phase committed before the process stopped. Do not
+                    # fire callbacks: they would duplicate completion events,
+                    # checkpoint rows, metrics, and plan artifacts.
+                    continue
                 # Pre-phase seam (ADR 0081) for loop-inner phases — see the
                 # top-level note in ``run_profile``.
                 if on_phase_pre is not None:
@@ -1123,6 +1168,10 @@ def _run_loop_step(
             state.extras.pop("_active_loop_round_key", None)
         else:
             state.extras["_active_loop_round_key"] = prev_active_key
+        if prev_active_phases is active_key_sentinel:
+            state.extras.pop("_active_loop_phases", None)
+        else:
+            state.extras["_active_loop_phases"] = prev_active_phases
         state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
     return state
 

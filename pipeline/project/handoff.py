@@ -467,6 +467,22 @@ def apply_phase_handoff_pause(run: Any) -> None:
     # structurally unreachable too — no other handoff.py site needs
     # gating.
     if getattr(run, "_presentation", PresentationPolicy.TERMINAL) is PresentationPolicy.TERMINAL:
+        if (
+            getattr(run, "no_interactive", False)
+            and signal.phase == "implement"
+            and signal.trigger == "incomplete"
+        ):
+            from pipeline.control.implement_handoff_digest import (
+                classify_implement_incomplete,
+                render_implement_incomplete_digest,
+            )
+
+            digest = classify_implement_incomplete(
+                signal.artifacts,
+                signal.last_output,
+                signal.available_actions,
+            )
+            print(render_implement_incomplete_digest(digest))
         label = render_round_label(
             phase=signal.phase,
             round=signal.round,
@@ -476,10 +492,24 @@ def apply_phase_handoff_pause(run: Any) -> None:
                 signal.round > signal.loop_max_rounds and not signal.approved
             ),
         )
-        warn(
-            f"Phase handoff requested for {label}: "
-            f"trigger={signal.trigger!r}. Pausing for human decision."
-        )
+        from core.observability.logging import get_output_mode
+        if get_output_mode() == "summary":
+            # Summary: a two-line handoff pause card via the presenter. The
+            # run parks awaiting the operator decision (no feedback yet).
+            from core.io import summary_lines
+            verdict = "APPROVED" if signal.approved else "REJECTED"
+            head = summary_lines.handoff_line(
+                signal.handoff_id, signal.trigger, verdict,
+            )
+            action = summary_lines.handoff_action_line(
+                "await decision", note="run parks awaiting_phase_handoff",
+            )
+            print(f"{head}\n  {action}")
+        else:
+            warn(
+                f"Phase handoff requested for {label}: "
+                f"trigger={signal.trigger!r}. Pausing for human decision."
+            )
     request_active_handoff(run.session, payload=payload)
     if run._ckpt:
         run._ckpt.set_status(PipelineStatus.AWAITING_PHASE_HANDOFF)
@@ -880,28 +910,7 @@ def apply_review_repair_handoff_retry(
     )
 
 
-def _synthesize_continue_waiver_text(findings: Any, note: str | None) -> str:
-    """Synthesize a waiver rationale for a bare ``continue`` on implement (§4d).
-
-    ``apply_waiver_to_state`` requires a non-empty rationale, but a bare
-    ``continue`` carries no operator verdict. Build one from the active
-    findings (the incomplete subtasks the operator chose to accept) and append
-    any operator ``note``.
-    """
-    if isinstance(findings, list) and findings:
-        findings_str = ", ".join(str(f) for f in findings)
-    else:
-        findings_str = "(no findings recorded)"
-    text = (
-        "Operator continued without explicit waiver feedback; accepted "
-        f"incomplete implement delivery: {findings_str}"
-    )
-    if note and note.strip():
-        text = f"{text}\n{note.strip()}"
-    return text
-
-
-def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
+def _mark_implement_waived(run: Any, handoff_id: str) -> None:
     """Rewrite the persisted implement delivery record incomplete → waived.
 
     On an accept resume the implement phase is skipped (it is in
@@ -909,11 +918,9 @@ def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
     paused run still reads ``delivery_status='incomplete'``. Rewrite it in
     place so evidence / status surfaces report the waived outcome.
 
-    ``action`` (``continue`` for a bare accept, ``continue_with_waiver`` for an
-    explicit operator waiver) is stamped onto the entry too: the implement
-    handler that would normally persist it via ``BuildAdapter`` does not re-run
-    on resume, so without this the evidence breadcrumb cannot tell a bare
-    continue from a waiver (see ``pipeline/evidence/collector.py``).
+    The explicit ``continue_with_waiver`` action is stamped onto the entry too:
+    the implement handler that would normally persist it via ``BuildAdapter``
+    does not re-run on resume.
     """
     phases = run.session.get("phases")
     if not isinstance(phases, dict):
@@ -924,7 +931,7 @@ def _mark_implement_waived(run: Any, handoff_id: str, action: str) -> None:
     impl["delivery_status"] = "waived"
     impl["delivery_waived"] = True
     impl["waiver_id"] = handoff_id
-    impl["action"] = action
+    impl["action"] = PhaseHandoffAction.CONTINUE_WITH_WAIVER.value
 
 
 def _build_retry_prior_context(
@@ -994,6 +1001,32 @@ def _profile_phases_through(profile, end_phase: str) -> frozenset[str]:
     if end_phase not in names:
         return frozenset({end_phase})
     return frozenset(names[: names.index(end_phase) + 1])
+
+
+def _scheduled_gate_identities(run: Any) -> tuple[Any, ...]:
+    """Load durable verification identities for legacy handoff recovery.
+
+    Historical verification handoffs recorded only ``gate_command``.  They may
+    resume only when the parent ledger resolves that command to one identity;
+    malformed ledger evidence remains a typed fail-closed blocker.
+    """
+    output_dir = getattr(run, "output_dir", None)
+    if output_dir is None:
+        return ()
+    from pipeline.control.handoff_routing import GateIdentity
+    from pipeline.verification_ledger_store import LedgerStoreError, load_ledger
+
+    ledger_path = output_dir / "scheduled_gate_ledger.json"
+    if not ledger_path.exists():
+        return ()
+    try:
+        ledger = load_ledger(output_dir)
+    except LedgerStoreError as exc:
+        raise RuntimeError(f"scheduled-gate ledger is unreadable: {exc}") from exc
+    return tuple(
+        GateIdentity(row.gate, row.hook, row.phase)
+        for row in ledger.rows
+    )
 
 
 def _apply_scope_expansion_handoff_resume(
@@ -1135,15 +1168,16 @@ def _apply_implement_handoff_resume(
 ) -> PhaseHandoffResumeOutcome:
     """Resume arm for an implement-phase handoff (ADR 0073).
 
-    ACCEPT (``continue`` / ``continue_with_waiver``): implement is a bare step,
-    so there is no loop to strip — mark it completed, apply a waiver via the T9
-    API and sync it to the session directly (implement is skipped on resume, so
-    ``_on_phase_end`` will not fire the phase-end sync), and rewrite the
-    persisted implement ``delivery_status`` to ``waived``. A bare ``continue``
-    synthesizes its waiver text from the active findings and records
-    ``action='continue'``; ``continue_with_waiver`` uses the operator verdict
-    and records ``action='continue_with_waiver'``. Both set
-    ``decided_by='operator'`` and land ``delivery_status='waived'``.
+    ACCEPT (``continue_with_waiver``): implement is a bare step, so there is no
+    loop to strip — mark it completed, apply the explicit operator waiver via
+    the T9 API and sync it to the session directly (implement is skipped on
+    resume, so ``_on_phase_end`` will not fire the phase-end sync), and rewrite
+    the persisted implement ``delivery_status`` to ``waived``.
+
+    Bare ``continue`` is not a valid action for incomplete implementation. It
+    cannot truthfully accept incomplete delivery without being a waiver, so the
+    producer does not publish it and this resume arm rejects a hand-edited or
+    stale decision artifact fail-closed.
 
     ``retry_feedback``: seed ``state.extras['implement_retry']`` with the
     incomplete ids + feedback so the re-dispatched implement re-runs ONLY those
@@ -1165,29 +1199,27 @@ def _apply_implement_handoff_resume(
     if not isinstance(critique, str):
         critique = ""
 
-    if action in ("continue", "continue_with_waiver"):
-        if action == "continue_with_waiver":
-            if not (isinstance(feedback, str) and feedback.strip()):
-                raise RuntimeError(
-                    f"Cannot resume run: continue_with_waiver decision for "
-                    f"{handoff_id!r} is missing the operator verdict "
-                    "(feedback). The waiver must record why the incomplete "
-                    "delivery is accepted."
-                )
-            waiver_text = feedback
-            resume_action = PhaseHandoffAction.CONTINUE_WITH_WAIVER.value
-            override_feedback: str | None = feedback
-        else:
-            # §4(d): bare continue — synthesize a rationale from findings.
-            waiver_text = _synthesize_continue_waiver_text(findings, note)
-            resume_action = PhaseHandoffAction.CONTINUE.value
-            override_feedback = None
+    if action == "continue":
+        raise RuntimeError(
+            f"Cannot resume incomplete implement handoff {handoff_id!r} with "
+            "bare continue. Use continue_with_waiver with a non-empty operator "
+            "verdict, retry_feedback, or halt."
+        )
+
+    if action == "continue_with_waiver":
+        if not (isinstance(feedback, str) and feedback.strip()):
+            raise RuntimeError(
+                f"Cannot resume run: continue_with_waiver decision for "
+                f"{handoff_id!r} is missing the operator verdict "
+                "(feedback). The waiver must record why the incomplete "
+                "delivery is accepted."
+            )
 
         apply_waiver_to_state(
             run.state,
             handoff_id=handoff_id,
             phase="implement",
-            waiver_text=waiver_text,
+            waiver_text=feedback,
             decided_by="operator",
             note=note,
             decided_at=decided_at,
@@ -1197,12 +1229,12 @@ def _apply_implement_handoff_resume(
         # implement is skipped on resume (it is in completed_phases) → the
         # phase-end sync never fires; mirror the waiver to the session here.
         sync_waiver_to_session(run)
-        _mark_implement_waived(run, handoff_id, resume_action)
+        _mark_implement_waived(run, handoff_id)
 
         run.state.extras["phase_handoff_override"] = build_phase_handoff_override(
             handoff_id=handoff_id,
-            action=HandoffAction(resume_action),
-            feedback=override_feedback,
+            action=HandoffAction.CONTINUE_WITH_WAIVER,
+            feedback=feedback,
             note=note,
             decided_at=decided_at,
         )
@@ -1352,7 +1384,37 @@ def apply_phase_handoff_resume(
             "halt is terminal; start a new run instead."
         )
 
-    if active.get("phase") == "implement":
+    # Trigger is the primary discriminator. In particular a verification gate
+    # may fail at final_acceptance; phase-only routing would incorrectly arm
+    # the scope-expansion sanction path. Halt deliberately precedes this
+    # classification: it can always close a persisted recovery subject.
+    from pipeline.control.handoff_routing import (
+        HandoffRouteResolution,
+        classify_handoff_route,
+    )
+
+    try:
+        ledger_identities = _scheduled_gate_identities(run)
+    except RuntimeError as exc:
+        route = HandoffRouteResolution("blocked", blocker=str(exc))
+    else:
+        route = classify_handoff_route(active, ledger_identities=ledger_identities)
+    if route.route == "blocked":
+        raise RuntimeError(f"Cannot resume handoff {handoff_id!r}: {route.blocker}")
+
+    if route.route == "verification_retry":
+        from pipeline.project.verification_handoff_retry import (
+            apply_verification_handoff_resume,
+        )
+
+        assert route.gate_identity is not None
+        return apply_verification_handoff_resume(
+            run=run, profile=profile, ctx=ctx, active=active,
+            handoff_id=handoff_id, action=action, feedback=feedback, note=note,
+            decided_at=decided_at, identity=route.gate_identity,
+        )
+
+    if route.route == "implement_incomplete":
         # ADR 0073: the implement handoff is a bare top-level step (no loop to
         # strip). Accept marks implement completed + records a waiver;
         # retry_feedback re-runs only the incomplete subtasks. Kept as thin
@@ -1368,7 +1430,7 @@ def apply_phase_handoff_resume(
             decided_at=decided_at,
         )
 
-    if active.get("phase") == SCOPE_EXPANSION_HANDOFF_PHASE:
+    if route.route == "scope_expansion":
         # ADR 0112 §5 (F1 fix): the scope-expansion sanction handoff
         # (``scope_expansion:participant_add:<repo>`` / ``scope_expansion:out_of_plan``)
         # is raised at the terminal ``final_acceptance`` seam — a bare top-level
@@ -1391,7 +1453,7 @@ def apply_phase_handoff_resume(
 
     if action == "continue":
         active_phase = active.get("phase")
-        if active_phase == "review_changes":
+        if route.route == "review_retry":
             next_profile = strip_repair_loop(profile)
             completed = frozenset({"review_changes", "repair_changes"})
         else:
@@ -1432,7 +1494,7 @@ def apply_phase_handoff_resume(
                 "findings are accepted."
             )
         active_phase = active.get("phase")
-        if active_phase == "review_changes":
+        if route.route == "review_retry":
             next_profile = strip_repair_loop(profile)
             completed = frozenset({"review_changes", "repair_changes"})
         else:
@@ -1485,7 +1547,7 @@ def apply_phase_handoff_resume(
             f"Cannot resume run: retry_feedback decision for "
             f"{handoff_id!r} is missing the feedback string."
         )
-    if active.get("phase") == "review_changes":
+    if route.route == "review_retry":
         return apply_review_repair_handoff_retry(
             run=run,
             profile=profile,
@@ -1616,6 +1678,7 @@ def apply_phase_handoff_resume(
 #: ``run.state.extras`` slot carrying the in-memory CI advisor lifecycle counters
 #: + last-advice fields. Read by the final DONE/HALTED summary (T4).
 _CI_ADVICE_AGGREGATE_KEY = "_ci_agent_advice"
+_UNATTENDED_BLOCK_KEY = "phase_handoff_unattended"
 
 
 def _ci_advice_aggregate(run: Any) -> dict[str, Any]:
@@ -1669,6 +1732,58 @@ def _persist_ci_advice_aggregate(run: Any, agg: dict[str, Any]) -> None:
     run.session[_CI_ADVICE_AGGREGATE_KEY] = dict(agg)
     if run.output_dir:
         save_session(run.output_dir, run.session)
+
+
+def _record_unattended_halt(run: Any, signal: Any, resolution: Any) -> None:
+    from pipeline.project.handoff_noninteractive import UNATTENDED_HALT_REASON
+
+    run.session[_UNATTENDED_BLOCK_KEY] = {
+        "reason": resolution.reason,
+        "note": resolution.note,
+        "handoff_id": str(getattr(signal, "handoff_id", "") or ""),
+        "phase": str(getattr(signal, "phase", "") or ""),
+        "trigger": str(getattr(signal, "trigger", "") or ""),
+    }
+    run.state.phase_handoff_request = None
+    run.state.halt = True
+    run.state.halt_reason = UNATTENDED_HALT_REASON
+    run._dispatch_active = False
+
+    if (
+        getattr(run, "_presentation", PresentationPolicy.TERMINAL)
+        is PresentationPolicy.TERMINAL
+    ):
+        run_id = str(getattr(run, "session_ts", "") or "")
+        if not run_id:
+            output_dir = getattr(run, "output_dir", None)
+            run_id = str(getattr(output_dir, "name", "") or "<unknown>")
+        warn(
+            f"{resolution.note} Run {run_id!r} is halted; resume this run "
+            "or rerun it without unattended mode to make the handoff decision."
+        )
+
+
+def _resolve_unattended_handoff(
+    run: Any,
+    signal: Any,
+    *,
+    ci_stop_state: str = "",
+    ci_stop_reason: str = "",
+) -> Any | None:
+    if not getattr(run, "unattended", False):
+        return None
+    from pipeline.control.handoff_prompt import HandoffDecisionInput
+    from pipeline.project.handoff_noninteractive import resolve_unattended_handoff
+
+    resolution = resolve_unattended_handoff(
+        signal,
+        ci_stop_state=ci_stop_state,
+        ci_stop_reason=ci_stop_reason,
+    )
+    if resolution.kind == "continue":
+        return HandoffDecisionInput(action="continue", note=resolution.note)
+    _record_unattended_halt(run, signal, resolution)
+    return None
 
 
 # ── interactive prompt loop ───────────────────────────────────────────────
@@ -1727,53 +1842,80 @@ def process_pending_phase_handoffs(
                 policy.auto_retry_with_agent
                 and _handoff_advice.advice_actions_available(signal)
             ):
-                return PhaseHandoffLoopResult(
-                    profile=profile,
-                    session=run.session,
-                    paused=True,
-                    continue_dispatch=False,
-                    halted=False,
+                # No advisor ran on this path — advice was ineligible before
+                # invocation, so the provenance note carries only the reason,
+                # not a CI stop *state*.
+                decision_input = _resolve_unattended_handoff(
+                    run,
+                    signal,
+                    ci_stop_reason="advice_ineligible",
                 )
-            from pipeline.project import handoff_advice_ci as _ci
-
-            agg = _ci_advice_aggregate(run)
-            budget_remaining = policy.max_agent_retries - int(agg["retries"])
-            ci_outcome = _ci.handle_ci_advice(
-                run, signal, policy,
-                budget_remaining=budget_remaining,
-                prev_findings_fingerprint=prev_fingerprint,
-            )
-            _record_ci_advice_fields(agg, ci_outcome)
-            if ci_outcome.findings_fingerprint:
-                prev_fingerprint = ci_outcome.findings_fingerprint
-            if ci_outcome.outcome == "stop":
-                agg["stopped"] = int(agg["stopped"]) + 1
-                _persist_ci_advice_aggregate(run, agg)
-                if ci_outcome.state == "halt":
-                    # Route the CI halt through the SAME handler-halt tail a
-                    # gate-abort uses: set ``state.halt`` + clear the pending
-                    # request and let the loop fall through to the caller's
-                    # ``run.finalize()``, which renders the HALTED summary
-                    # (including the ``Agent advice`` block) and clears the
-                    # pending handoff via ``mark_run_halted``. No parallel halt
-                    # path, no decision artifact (the advisor recommended halt).
-                    run.state.phase_handoff_request = None
-                    run.state.halt = True
-                    run.state.halt_reason = "phase_handoff_halt"
-                    run._dispatch_active = False
+                if decision_input is not None:
+                    ci_retry_active = False
+                    agg = None
+                elif getattr(run, "unattended", False):
                     continue
-                return PhaseHandoffLoopResult(
-                    profile=profile,
-                    session=run.session,
-                    paused=True,
-                    continue_dispatch=False,
-                    halted=False,
+                else:
+                    return PhaseHandoffLoopResult(
+                        profile=profile,
+                        session=run.session,
+                        paused=True,
+                        continue_dispatch=False,
+                        halted=False,
+                    )
+            else:
+                from pipeline.project import handoff_advice_ci as _ci
+
+                agg = _ci_advice_aggregate(run)
+                budget_remaining = policy.max_agent_retries - int(agg["retries"])
+                ci_outcome = _ci.handle_ci_advice(
+                    run, signal, policy,
+                    budget_remaining=budget_remaining,
+                    prev_findings_fingerprint=prev_fingerprint,
                 )
-            # proceed: count the retry and flow the ci_agent decision through the
-            # shared decide + resume path below — no parallel repair branch.
-            agg["retries"] = int(agg["retries"]) + 1
-            decision_input = ci_outcome.decision_input
-            ci_retry_active = True
+                _record_ci_advice_fields(agg, ci_outcome)
+                if ci_outcome.findings_fingerprint:
+                    prev_fingerprint = ci_outcome.findings_fingerprint
+                if ci_outcome.outcome == "stop":
+                    agg["stopped"] = int(agg["stopped"]) + 1
+                    _persist_ci_advice_aggregate(run, agg)
+                    if ci_outcome.state == "halt":
+                        # Route the CI halt through the SAME handler-halt tail a
+                        # gate-abort uses: set ``state.halt`` + clear the pending
+                        # request and let the loop fall through to the caller's
+                        # ``run.finalize()``, which renders the HALTED summary
+                        # (including the ``Agent advice`` block) and clears the
+                        # pending handoff via ``mark_run_halted``. No parallel halt
+                        # path, no decision artifact (the advisor recommended halt).
+                        run.state.phase_handoff_request = None
+                        run.state.halt = True
+                        run.state.halt_reason = "phase_handoff_halt"
+                        run._dispatch_active = False
+                        continue
+                    decision_input = _resolve_unattended_handoff(
+                        run,
+                        signal,
+                        ci_stop_state=ci_outcome.state,
+                        ci_stop_reason=ci_outcome.reason,
+                    )
+                    if decision_input is not None:
+                        ci_retry_active = False
+                    elif getattr(run, "unattended", False):
+                        continue
+                    else:
+                        return PhaseHandoffLoopResult(
+                            profile=profile,
+                            session=run.session,
+                            paused=True,
+                            continue_dispatch=False,
+                            halted=False,
+                        )
+                else:
+                    # proceed: count the retry and flow the ci_agent decision through the
+                    # shared decide + resume path below — no parallel repair branch.
+                    agg["retries"] = int(agg["retries"]) + 1
+                    decision_input = ci_outcome.decision_input
+                    ci_retry_active = True
         else:
             # Advisory eligibility is policy: computed here (trigger + verdict +
             # retry_feedback + findings/last_output), never inside the pure prompt.
@@ -1873,11 +2015,17 @@ def process_pending_phase_handoffs(
         # checkpoint/preflight resume path gets the same banners; only the
         # non-retry transition notes are printed here.
         if decision_input.action == PhaseHandoffAction.CONTINUE.value:
-            print(paint(
-                "  ↳ Continuing original profile after "
-                "manual override...",
-                C.GREY,
-            ))
+            if getattr(run, "unattended", False):
+                message = (
+                    "  ↳ Continuing original profile after unattended "
+                    "policy decision..."
+                )
+            else:
+                message = (
+                    "  ↳ Continuing original profile after "
+                    "manual override..."
+                )
+            print(paint(message, C.GREY))
         elif decision_input.action == PhaseHandoffAction.HALT.value:
             print(paint("  ↳ Halting run synchronously...", C.GREY))
 

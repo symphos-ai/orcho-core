@@ -19,6 +19,7 @@ the test would lose its meaning if either were stubbed.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -97,11 +98,11 @@ def test_prompt_block_precedes_outcome_on_skip(
     assert "What do you want to do?" in out, (
         f"prompt block missing from stdout: {out!r}"
     )
-    assert "Delivery skipped" in out, (
+    assert "DELIVERY — SKIPPED" in out, (
         f"outcome line missing from stdout: {out!r}"
     )
     assert out.index("What do you want to do?") < out.index(
-        "Delivery skipped",
+        "DELIVERY — SKIPPED",
     ), (
         "outcome printed before prompt — ordering contract violated:\n"
         f"{out!r}"
@@ -175,6 +176,7 @@ def test_pipeline_run_wires_llm_commit_message_generator(
         lambda: SimpleNamespace(
             commit={"enabled": True, "default_strategy": "llm_generate"},
             task_language="Russian",
+            content_language="English",
         ),
     )
 
@@ -204,3 +206,106 @@ def test_pipeline_run_wires_llm_commit_message_generator(
         stub.session["commit_delivery"]["final_message"]
         == "fix(delivery): generated message\n"
     )
+
+
+def test_pipeline_run_forces_content_language_authorship_on_publish_outward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REAL generator-path (T4): with ``default_strategy='release_summary'`` but
+    a publish-outward config (``publish='auto'`` + a publishable branch policy),
+    the run.py ``commit_message_generator`` closure is NOT self-disabled. The
+    *real* ``resolve_commit_delivery`` forces content_language authorship, so the
+    outward commit message is the agent's English message — never the Russian
+    operator release summary.
+
+    Unlike ``test_pipeline_run_wires_llm_commit_message_generator`` (which wraps
+    ``resolve_commit_delivery`` to call the generator by hand), this test lets
+    the real resolver run and only stubs the git-reading helpers + ``apply`` so
+    no real worktree diff / publish machinery is needed. That is what proves the
+    force_llm decision lives in ``resolve_commit_delivery`` and reaches the real
+    closure.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir(parents=True)
+
+    class _CommitMessageAgent:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def invoke(self, prompt: str, cwd: str, **kwargs: object) -> str:
+            self.calls.append({"prompt": prompt, "cwd": cwd, **kwargs})
+            return (
+                '{"subject": "fix(delivery): english outward message", '
+                '"body": "", "type": "fix", "scope": "delivery", '
+                '"breaking": false}'
+            )
+
+    agent = _CommitMessageAgent()
+
+    # Let the REAL resolve_commit_delivery run; stub only the git-reading helpers
+    # (no real diff needed) and apply (skip publish machinery — this test asserts
+    # the resolve-time authoring decision).
+    monkeypatch.setattr(cd, "stdio_interactive", lambda: False)
+    monkeypatch.setattr(
+        cd,
+        "_run_owned_patch",
+        lambda *_a, **_kw: "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    monkeypatch.setattr(cd, "_changed_paths", lambda *_a, **_kw: ("a.py",))
+    monkeypatch.setattr(cd, "_untracked_paths", lambda *_a, **_kw: ())
+    monkeypatch.setattr(
+        cd,
+        "apply_commit_delivery",
+        lambda decision, **_kwargs: replace(decision, status="committed"),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.run.config.AppConfig.load",
+        lambda: SimpleNamespace(
+            commit={
+                "enabled": True,
+                "default_strategy": "release_summary",  # NOT llm_generate
+                "publish": "auto",
+                "branch_policy": "worktree_branch",  # publishable (!= bypass)
+                "add_untracked": False,
+            },
+            task_language="Russian",
+            content_language="English",
+        ),
+    )
+
+    stub = SimpleNamespace(
+        output_dir=run_dir,
+        session={
+            "status": "done",
+            "phases": {
+                "final_acceptance": {
+                    "verdict": "APPROVED",
+                    "short_summary": "Русское операторское резюме",
+                },
+            },
+        },
+        project_path=project_dir,
+        parent_run_id=None,
+        project_alias=None,
+        no_interactive=True,
+        worktree_context=None,
+        session_ts="r1",
+        phase_config=SimpleNamespace(final_acceptance_agent=agent),
+        _commit_delivery_baseline=lambda: "HEAD",
+    )
+
+    _PipelineRun._run_commit_delivery(stub, diff_cwd=worktree)
+
+    # The real closure was invoked via the force_llm publish-outward path.
+    assert agent.calls, "generator must be called on the publish-outward path"
+    record = stub.session["commit_delivery"]
+    assert record["strategy"] == "llm_generate"
+    assert record["final_message"] == "fix(delivery): english outward message"
+    assert "Русское" not in record["final_message"]
+    # content_language (English) drove the body-language directive.
+    assert "in English" in str(agent.calls[0]["prompt"])

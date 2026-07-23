@@ -35,6 +35,7 @@ from sdk.run_control.types import (
     DeliveryDecisionActionValue,
     DeliveryDecisionResult,
     DeliveryDecisionState,
+    DeliveryPrIntent,
 )
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
 
@@ -339,7 +340,7 @@ def delivery_decision_state(
     # (``status='fix_requested'``) or that dead-ended on an auto-refused rejected
     # release (:func:`_is_rejected_release_gate`) has NO meaningful in-gate next
     # step: repeating ``fix`` is inert and a bare resume cannot advance it. The
-    # actionable path is a from_run_plan follow-up that carries the held diff, so
+    # actionable path is an ordinary follow-up against the retained worktree, so
     # advertise only ``halt`` (give up) and route the client to that follow-up
     # via ``reason`` (a field MCP already maps verbatim). The freshly defer-parked
     # rejected gate (``status='pending'`` + ``release_blocked``) is unaffected —
@@ -530,21 +531,15 @@ def _followup_correction_reason(run_id: str, run_dir: Path) -> str:
     """Next-step pointer for a fix-marked / rejected-dead-end correction gate.
 
     The actionable next step is NOT a same-run resume or a repeated ``fix`` — it
-    is a from_run_plan follow-up that carries the held diff. Names the follow-up
-    handle (``from_run_plan=<run_id>``) and, when the durable patch file is
-    present, the held ``run_dir/diff.patch`` path (the non-persisted
-    ``patch_text`` is never read here). MCP maps this ``reason`` verbatim, so the
-    typed follow-up action is expressed through an already-mapped field rather
-    than a new wire descriptor.
+    is an ordinary correction follow-up against the retained worktree. MCP maps
+    this ``reason`` verbatim; the typed launch request supplies the required
+    operator comment and does not replay ``diff.patch``.
     """
     reason = (
-        f"correction requested — next step is a from_run_plan follow-up "
-        f"(orcho_run_start from_run_plan={run_id}); a bare resume or a repeated "
+        f"correction requested — next step is an ordinary follow-up "
+        f"(orcho_run_resume run_id={run_id} with operator comment); a bare resume or a repeated "
         f"fix is inert"
     )
-    patch = run_dir / "diff.patch"
-    if patch.is_file():
-        reason = f"{reason}; held diff at {patch}"
     return reason
 
 
@@ -863,6 +858,16 @@ def _finalize(
         halt_reason=result_halt_reason,
         artifact_paths=tuple(artifact_paths),
         commit_sha=applied.commit_sha,
+        published_commit_sha=applied.published_commit_sha,
+        # ADR 0119 — additive delivery-branch projection. ``commit_sha`` above
+        # already carries the fill rule (populated for a commit onto the target
+        # checkout, ``None`` for a pure worktree_branch publish); ``delivery_branch``
+        # + ``pr_intent`` surface the published-branch outcome alongside it.
+        delivery_branch=applied.delivery_branch,
+        pr_intent=_pr_intent_projection(applied.pr_intent),
+        # ADR 0121 — provider-neutral opened-PR URL from the applied decision;
+        # ``None`` for any delivery without an opened PR.
+        pr_url=applied.pr_url,
         blocker=blocker,
         # The SDK never starts a correction follow-up synchronously
         # (``drive_correction_followups`` is TTY-only): a ``fix`` here only
@@ -871,6 +876,25 @@ def _finalize(
         # ADR 0107 / T3: enriched companion disclosure from the durable parked
         # gate, so an accepted decision still names a companion repo left behind.
         scope_disclosure=scope_disclosure,
+    )
+
+
+def _pr_intent_projection(intent: Any) -> DeliveryPrIntent | None:
+    """Project the core delivery PR-intent onto the SDK boundary type (ADR 0119).
+
+    ``intent`` is the core
+    :class:`pipeline.engine.delivery_branch.DeliveryPrIntent` carried on the
+    applied decision (``None`` on any commit-onto-checkout / ``bypass`` path).
+    Mapped field-for-field onto the public SDK :class:`DeliveryPrIntent` so the
+    wire surface owns its own typed shape rather than leaking the engine type.
+    """
+    if intent is None:
+        return None
+    return DeliveryPrIntent(
+        branch=intent.branch,
+        base=intent.base,
+        title=intent.title,
+        suggested_command=intent.suggested_command,
     )
 
 

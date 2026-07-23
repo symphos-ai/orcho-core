@@ -87,6 +87,8 @@ def render_advice_summary(
     risks: Sequence[str] = (),
     expected_files: Sequence[str] = (),
     operator_note: str = "",
+    disposition: str = "",
+    conflict_details: Sequence[str] = (),
     color: bool | None = None,
 ) -> str:
     """Render a compact one-block summary of an advisor recommendation.
@@ -112,6 +114,10 @@ def render_advice_summary(
             retry_feedback_preview, max_len=_ADVICE_SUMMARY_MAX_LEN,
         ),
     ]
+    if disposition:
+        lines.append(f"  {paint('disposition', C.CYAN, color=color)} : {disposition}")
+    if conflict_details:
+        lines.append(f"  {paint('conflicts', C.YELLOW, color=color)}   : " + sanitize_feedback_preview("; ".join(conflict_details), max_len=_ADVICE_SUMMARY_MAX_LEN))
     if risks:
         lines.append(
             f"  {paint('risks', C.YELLOW, color=color)}       : "
@@ -178,6 +184,18 @@ def render_retry_feedback_banner(
     a fresh-session fallback never moves the worktree, so the two lines are
     reported independently and in every provider-session combination.
     """
+    # Summary mode: a two-line handoff card via the presenter. The retry is
+    # a rejected-phase handoff being executed with operator feedback, so the
+    # head carries the REJECTED verdict and the action line the feedback.
+    # live/debug fall through to the full multi-line banner below.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        from core.io import summary_lines
+        head = summary_lines.handoff_line(handoff_id, rejected_phase, "REJECTED")
+        action = summary_lines.handoff_action_line(
+            "retry_feedback", feedback or None,
+        )
+        return f"{head}\n  {action}"
     kind_label = _RETRY_KIND_LABEL.get(retry_kind, f"{retry_kind} retry")
     round_label = render_round_label(
         phase=rejected_phase,
@@ -215,6 +233,22 @@ def render_retry_outcome_banner(
     outcome: RetryOutcome,
 ) -> str:
     """Render the post-retry banner for ``outcome``."""
+    # Summary mode: a two-line handoff card via the presenter — the head
+    # carries the outcome verdict, the action line the consequence note.
+    # live/debug fall through to the full multi-line banner below.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        from core.io import summary_lines
+        note = {
+            RetryOutcome.APPROVED: "handoff closed; run continues",
+            RetryOutcome.REJECTED_AGAIN: "run parks awaiting_phase_handoff",
+            RetryOutcome.PROVIDER_FALLBACK: "fresh provider session; run continues",
+        }[outcome]
+        head = summary_lines.handoff_line(
+            handoff_id, rejected_phase, outcome.value.upper(),
+        )
+        action = summary_lines.handoff_action_line(outcome.value, note=note)
+        return f"{head}\n  {action}"
     if outcome is RetryOutcome.APPROVED:
         body = (
             "approved — handoff closed; the run continues with the "

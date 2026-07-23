@@ -10,7 +10,6 @@ reads from stdin (`input()`); the prompt loop lives in
 from __future__ import annotations
 
 import textwrap
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from core.io.journey_prompt import (
@@ -236,9 +235,12 @@ def _render_menu(
     if include_auto_detect:
         number += 1
         ordered_names.append(AUTO_DETECT_CHOICE)
+        # When offered (the ``orcho run`` picker), auto-detect is the default
+        # choice: it leads the menu and carries the ``[default]`` chip, and a
+        # bare Enter selects it (see ``prompt_for_profile_if_needed``).
         print(
             f"  {bold(str(number), color=color)}) "
-            f"{bold(AUTO_DETECT_CHOICE, color=color)}"
+            f"{bold(AUTO_DETECT_CHOICE, color=color)} {default_chip(color=color)}"
         )
         print(f"     {grey(_AUTO_DETECT_SUBTITLE, color=color)}")
     for header, members in _menu_sections(names, profiles):
@@ -247,9 +249,13 @@ def _render_menu(
         for name in members:
             number += 1
             ordered_names.append(name)
+            # ``feature`` carries the default chip only in menus without
+            # auto-detect (e.g. ``orcho cross``); when auto-detect leads the
+            # menu it owns the default.
             chip = (
                 f" {default_chip(color=color)}"
-                if name == DEFAULT_PROFILE_NAME else ""
+                if name == DEFAULT_PROFILE_NAME and not include_auto_detect
+                else ""
             )
             print(f"  {bold(str(number), color=color)}) {bold(name, color=color)}{chip}")
             subtitle = _row_subtitle(profiles[name])
@@ -263,8 +269,9 @@ def _render_menu(
 
 # Provider-neutral labels for the three explicit topology choices. The order is
 # the Expected-UX order; the operator picks 1/2/3 (see
-# ``cli._profile_prompt.resolve_topology_choice``). Choice 1 never starts a
-# cross run inside the current mono process — it surfaces a directive.
+# ``cli._profile_prompt.resolve_topology_choice``). Choice 1 never converts the
+# current mono process into a cross run — it stops the mono run and launches a
+# fresh cross run (see ``cli._cross_launch``).
 _TOPOLOGY_CHOICE_LINES = (
     "1) Start cross run with these projects [recommended]",
     "2) Continue mono run and allow expanded delivery",
@@ -298,13 +305,36 @@ def render_autodetect_result(
         print(f"  {line}")
 
 
-def format_cross_directive(projects: Sequence[str]) -> str:
-    """Ready-to-edit ``orcho cross`` command for the projected ``projects``.
+def render_autodetect_headless(
+    resolution: AutoDetectResolution, *, color: bool,
+) -> None:
+    """Surface a high-confidence ``cross_recommended`` resolution in a headless
+    run (no TTY / ``--no-interactive``).
 
-    The aliases are projected by the topology heuristic; the operator supplies
-    each repo path (``<alias>:<path>``) and confirms explicitly. Mirrors the
-    existing ``orcho cross --projects … --task '…'`` hint shape and stays
-    provider-neutral.
+    Cross parity: a headless auto-detect must SHOW the recommendation the
+    interactive picker would — never silently proceed mono. There is no operator
+    to choose, so this prints the same facts block as
+    :func:`render_autodetect_result` (minus the interactive choices) and states
+    the safe default (single-project / mono run) plus the ready ``orcho cross``
+    directive. It never reads stdin and never starts a cross run.
     """
-    args = " ".join(f"{alias}:<path>" for alias in projects)
-    return f"orcho cross --projects {args} --task '...'"
+    print(title("Auto-detect result", color=color))
+    print(divider(color=color))
+    print(f"  profile     {bold(resolution.actual_profile.value, color=color)}")
+    print(f"  topology    {bold('cross recommended', color=color)}")
+    if resolution.confidence is not None:
+        print(f"  confidence  {resolution.confidence:.2f}")
+    print(f"  projects    {', '.join(resolution.delivery_projects)}")
+    if resolution.topology_reason:
+        print(f"  reason      {grey(resolution.topology_reason, color=color)}")
+    print(divider(color=color))
+    directive = (
+        "orcho cross --projects "
+        + " ".join(f"{alias}:<path>" for alias in resolution.delivery_projects)
+        + " --task '...'"
+    )
+    print(grey(
+        "Headless: proceeding as a single-project (mono) run — the safe "
+        "default. To run cross instead:", color=color,
+    ))
+    print(f"  {bold(directive, color=color)}")

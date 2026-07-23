@@ -22,10 +22,13 @@ from __future__ import annotations
 import io
 from types import SimpleNamespace
 
+from agents.entities import SubTask
 from pipeline.control.handoff_prompt import AdviceActionRequest
+from pipeline.plan_parser import ParsedPlan
 from pipeline.project import handoff as handoff_mod, handoff_advice as adv
 from pipeline.project.handoff_advice import AdvisorResult, HandoffAdvice
 from pipeline.project.handoff_advice_dispatch import _handle_advice_request
+from pipeline.project.handoff_advice_intent import parse_advice_intent
 
 # ── fixtures / helpers ─────────────────────────────────────────────────────
 
@@ -56,6 +59,20 @@ def _advice(
         operator_note="",
         parse_warnings=parse_warnings,
         raw_output="{}",
+        intent=parse_advice_intent(
+            {
+                "proposed_operations": [
+                    {"kind": "repair", "target": "recorded_findings"},
+                ],
+                "contract_effects": [
+                    {"invariant_id": "acceptance:1", "effect": "advance"},
+                    {
+                        "invariant_id": "task:repair-review:done:1",
+                        "effect": "advance",
+                    },
+                ],
+            },
+        ),
     )
 
 
@@ -84,6 +101,49 @@ def _signal(
     )
 
 
+def _hygiene_signal() -> SimpleNamespace:
+    return SimpleNamespace(
+        handoff_id="gate:test:1",
+        phase="implement",
+        type=SimpleNamespace(value="human_feedback_on_reject"),
+        trigger="verification_gate_failed",
+        verdict="REJECTED",
+        approved=False,
+        round_extras_key="repair_round",
+        round=1,
+        loop_max_rounds=2,
+        available_actions=("continue_with_waiver", "halt"),
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_provenance_failure",
+                    "failure_kind": "provenance_failure",
+                }
+            ]
+        },
+        last_output="class=provenance_failure; exit_code=0",
+    )
+
+
+def _valid_parsed_plan() -> ParsedPlan:
+    return ParsedPlan(
+        subtasks=(
+            SubTask(
+                id="repair-review",
+                goal="Repair the rejected review finding",
+                done_criteria=("The targeted regression test passes.",),
+                owned_files=("a.py",),
+            ),
+        ),
+        source="json",
+        short_summary="Repair the rejected handoff",
+        planning_context="The review finding requires a focused retry.",
+        goal="Return the rejected handoff to a verified state.",
+        acceptance_criteria=("The handoff advice retry is contract-bound.",),
+        owned_files=("a.py",),
+    )
+
+
 def _run(tmp_path) -> SimpleNamespace:
     run_dir = tmp_path / "20260613_010101_adv"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +151,10 @@ def _run(tmp_path) -> SimpleNamespace:
         output_dir=run_dir,
         git_cwd="",
         session_ts=run_dir.name,
-        state=SimpleNamespace(task="resolve the rejected change"),
+        state=SimpleNamespace(
+            task="resolve the rejected change",
+            parsed_plan=_valid_parsed_plan(),
+        ),
     )
 
 
@@ -148,7 +211,7 @@ def test_retry_with_advice_low_confidence_unconfirmed_returns_none(
     assert di is None
 
 
-def test_retry_with_advice_low_confidence_confirmed_returns_decision(
+def test_retry_with_advice_low_confidence_confirmed_returns_menu(
     tmp_path, monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -159,8 +222,7 @@ def test_retry_with_advice_low_confidence_confirmed_returns_decision(
         _run(tmp_path), _signal(), AdviceActionRequest(kind="retry_with_advice"),
         stdin=_scripted("y"), stdout=_FakeTTY(),
     )
-    assert di is not None
-    assert di.action == "retry_feedback"
+    assert di is None
 
 
 def test_retry_with_advice_unavailable_retry_returns_none(
@@ -174,6 +236,28 @@ def test_retry_with_advice_unavailable_retry_returns_none(
         stdout=_FakeTTY(),
     )
     assert di is None
+
+
+def test_hygiene_advice_is_deterministic_without_model_invocation(tmp_path, monkeypatch) -> None:
+    def _unexpected_model_call(*args, **kwargs):
+        raise AssertionError("hygiene advice must not invoke the model")
+
+    monkeypatch.setattr(adv, "invoke_advisor", _unexpected_model_call)
+    run = _run(tmp_path)
+
+    di = _handle_advice_request(
+        run,
+        _hygiene_signal(),
+        AdviceActionRequest(kind="retry_with_advice"),
+        stdout=_FakeTTY(),
+    )
+
+    assert di is None
+    artifacts = list((run.output_dir / "phase_handoff_advice").glob("*.json"))
+    assert len(artifacts) == 1
+    stored = adv.load_advice_artifact(artifacts[0])
+    assert stored is not None
+    assert stored["advice"]["recommended_action"] == "continue_with_waiver"
 
 
 # ── advice (kind=5) follow-up sub-menu ─────────────────────────────────────
@@ -398,6 +482,7 @@ def _pp_run(tmp_path, signal):
     state = PipelineState(
         task="t", project_dir=str(tmp_path), plugin=PluginConfig(),
     )
+    state.parsed_plan = _valid_parsed_plan()
     state.phase_handoff_request = signal
     return SimpleNamespace(
         output_dir=run_dir,

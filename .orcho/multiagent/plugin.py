@@ -1,4 +1,9 @@
+from core.infra.platform import venv_python_subpath
 from pipeline.skills import SkillTrustPolicy
+
+# Platform-correct venv interpreter (``.venv/Scripts/python.exe`` on Windows,
+# ``.venv/bin/python`` elsewhere); resolved on the host running verification.
+_VENV_PY = venv_python_subpath()
 
 PLUGIN = {
     "name": "orcho-core",
@@ -19,10 +24,10 @@ PLUGIN = {
     "work_mode": "pro",
     "verification_envs": {
         "core-local": {
-            "python": "{project}/.venv/bin/python",
+            "python": f"{{project}}/{_VENV_PY}",
             "cwd": "{checkout}",
             "assertions": [
-                {"file_exists": "{project}/.venv/bin/python"},
+                {"file_exists": f"{{project}}/{_VENV_PY}"},
                 {
                     "import": "pipeline",
                     "path_equals": "{checkout}/pipeline/__init__.py",
@@ -38,7 +43,7 @@ PLUGIN = {
     },
     "verification": {
         "default_env": "core-local",
-        "delivery_policy": "warn",
+        "delivery_policy": "require",
         "required": [
             "env-provenance",
             "lint",
@@ -125,9 +130,16 @@ PLUGIN = {
             },
         },
         "gate_sets": {
-            "baseline": {
-                "commands": ["env-provenance", "lint"],
-                "default_policy": "warn",
+            "provenance": {
+                "commands": ["env-provenance"],
+                "default_policy": "require",
+                "default_action": "handoff",
+                "default_cheap": True,
+            },
+            "hygiene": {
+                "commands": ["lint"],
+                "default_policy": "require",
+                "default_action": "repair_loop",
                 "default_cheap": True,
             },
             "run-state": {
@@ -157,7 +169,7 @@ PLUGIN = {
             },
         },
         "selection": [
-            {"always": ["baseline", "broad"]},
+            {"always": ["provenance", "hygiene", "broad"]},
             {
                 "paths": [
                     "pipeline/run_state/**",
@@ -203,9 +215,15 @@ PLUGIN = {
         "schedule": [
             {
                 "after_phase": "implement",
-                "gate_sets": ["baseline"],
-                "policy": "warn",
-                "action": "continue_warn",
+                "gate_sets": ["provenance"],
+                "policy": "require",
+                "action": "handoff",
+            },
+            {
+                "after_phase": "implement",
+                "gate_sets": ["hygiene"],
+                "policy": "require",
+                "action": "repair_loop",
             },
             {
                 "after_phase": "implement",

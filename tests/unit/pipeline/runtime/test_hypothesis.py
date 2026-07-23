@@ -723,3 +723,23 @@ class TestValidatePlanFilePaths:
         existing, missing = _validate_plan_file_paths(plan, project_dir)
         assert existing == ["src/real.py"]
         assert missing == ["src/missing.py"]
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode_for_full_transcript():
+    """Pin the full live transcript shape (T2 summary reconciliation).
+
+    ``summary`` is the default run-output mode — the compact append-only
+    arc that collapses phase headers to ``▶ <phase>`` and the review /
+    plan / implement outcome blocks to single lines. These tests assert
+    the full-fidelity transcript, so force ``live`` (rendering only; no
+    echo / verbose / trace side effects) and restore afterwards.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before

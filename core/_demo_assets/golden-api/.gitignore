@@ -1,0 +1,11 @@
+# orcho mock-run pollution guards.
+# The mock CLAUDE provider writes a transient artifact under src/<project>/
+# when invoked with this directory as --project. CI / acceptance tests
+# always copy the fixture into a tmp dir first, but contributors running
+# the README one-command snippet directly would otherwise dirty their
+# checkout. These entries keep the fixture clean.
+
+src/
+__pycache__/
+*.pyc
+.pytest_cache/

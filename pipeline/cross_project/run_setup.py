@@ -25,6 +25,7 @@ This module is a leaf peer: it MUST NOT import from
 :mod:`pipeline.cross_project.orchestrator`.
 """
 
+import copy
 import dataclasses
 from collections.abc import Mapping
 from datetime import datetime
@@ -37,6 +38,8 @@ from pipeline.cross_project.profile_setup import CrossProfileSetup, _gate_will_r
 from pipeline.cross_project.rendering import paint
 from pipeline.engine import save_session, setup_run_logging
 from pipeline.plugins import load_plugin
+from pipeline.run_state.cross_parent import Observation
+from pipeline.run_state.cross_parent_disk import load_declared_child_meta
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,6 +156,20 @@ def setup_cross_run(
 
     run_dir = output_dir
     run_dir.mkdir(parents=True, exist_ok=True)
+    if resume_from:
+        # The parent meta's embedded sessions are only a stale snapshot.  Child
+        # meta files are the canonical durable source, and are read in the
+        # request's declared alias order without discovering sibling paths.
+        # Missing or malformed child metadata deliberately replaces any parent
+        # copy with nothing: dispatch/reduction will retry or fail closed from
+        # the physical observation rather than treating a checkpoint as proof
+        # of completion.
+        hydrated_children = {
+            child.alias: copy.deepcopy(child.payload)
+            for child in load_declared_child_meta(run_dir, tuple(projects))
+            if child.observation is Observation.PRESENT
+        }
+        session["phases"]["projects"] = hydrated_children
     if not resume_from:
         save_session(run_dir, session)
 

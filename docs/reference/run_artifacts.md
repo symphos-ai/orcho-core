@@ -1,5 +1,26 @@
 # Run artifacts on disk
 
+## `cross_execution_graph.json`
+
+An admitted non-dry-run cross plan may create one immutable structural
+snapshot in its run directory. Its exact closed JSON shape is:
+
+```json
+{
+  "schema_version": 1,
+  "compile_identity": {"schema_version": 1, "fingerprint": "sha256"},
+  "nodes": [{"identity": "opaque", "kind": "project", "dependencies": [], "owner": "project", "executor": {"executor": "project_pipeline", "handler": null, "enabled": true, "run": null, "on_skip": null, "mode": null}, "required": true}]
+}
+```
+
+The shape is strict: unknown fields, unsupported versions, mutable lifecycle
+keys such as `status` or `ready`, invalid topology, and a mismatched fingerprint
+make the artifact invalid. The first write uses a flushed, fsynced temporary
+file and `os.replace`; an equal second write is a byte-preserving no-op, while
+a differing or malformed existing snapshot is never overwritten. It is a C1
+structural artifact only, not a scheduler ledger, checkpoint, MCP/XF3 wire
+projection, or source of dispatch/resume decisions.
+
 > Reference for what a finished `orcho` run lands in its run directory.
 > Pin-point for `meta.json`, `evidence.json`, and `metrics.json` shapes.
 > Companion to [ADR 0020](../adr/0020-run-evidence-in-core.md),
@@ -9,9 +30,28 @@
 Every run, regardless of outcome, lives in a single directory under
 `<workspace>/runspace/runs/<run_id>/`. The directory's filesystem layout is the
 canonical interchange format for post-mortem tooling, the SDK
-evidence slices, and the MCP wire surface. This page enumerates what
-files are written, what shape they carry, and what changes per
-terminal status.
+evidence slices, and the MCP wire surface. This page enumerates what files are
+written, what shape they carry, and what changes per terminal status.
+
+## Scheduled-gate ledger
+
+Runs with a verification contract persist `scheduled_gate_ledger.json`. It is
+schema version `"1"`, ordered by `(command, hook, phase)`, and contains the
+declaration/selection/execution axes plus an append-only identity trail. Each
+terminal row is exactly one of `not_selected`, `manual_available`, `suggested`,
+`skipped_fresh`, `executed_pass`, `executed_fail`, `residual_missing`,
+`residual_stale`, or `residual_failed`; non-selection preserves `paths`,
+`task_kind`, or `operator` when applicable. `manual_only` is a hook; `manual`
+is the policy. Finalization closes this artifact before evidence and DONE.
+
+Resume reuses the snapshot and epoch decisions. Evidence copies the validated
+artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
+project plugin.
+
+An exact operator-triggered gate rerun appends a second `execution` event for
+the same full identity, rather than replacing its original execution.  That
+event has `rerun: true` and the fresh command-receipt evidence path; repeating
+the identical event is idempotent.  This is the only persisted rerun trail.
 
 ---
 
@@ -102,6 +142,7 @@ recognise:
 | Value | Set by | When |
 |---|---|---|
 | `"phase_handoff_halt"` | SDK halt + interactive halt + resume halt-heal | operator chose `halt` in `phase_handoff_decide` |
+| `"phase_handoff_unattended_halt"` | CLI unattended phase-handoff policy | `orcho run --no-interactive` reached a handoff that cannot be safely auto-continued |
 | `"commit_decision_fix"` | commit-decision correction path | operator chose `fix` after a rejected release verdict; follow-up resume is the intended next step |
 | `"commit_decision_halt"` | commit-decision gate halt path | operator rejected the commit decision; see ADR 0032 |
 | `"interrupted"` | atexit hook | graceful interrupt while status was `running` |
@@ -259,16 +300,27 @@ fall back to `events.jsonl` + `meta.json` for diagnostic detail.
 | `gates` | `list[dict]` | quality gates fired, soft-validated |
 | `commands` | `list[dict]` | recorded commands, soft-validated |
 | `artifacts` | `list[dict]` | written artifacts |
-| `metrics` | `dict` | rollup; see [`metrics.json`](#metricsjson) below for shape. Carries the additive `subtasks` per-subtask usage breakdown through verbatim when `metrics.json` has it, so the durable bundle alone answers "which implement subtask was most expensive?" |
+| `metrics` | `dict` | rollup; see [`metrics.json`](#metricsjson) below for shape. Carries the additive `subtasks` per-subtask usage breakdown through verbatim when `metrics.json` has it, so the durable bundle alone answers "which implement subtask used the most tokens / cost reference?" |
 | `errors` | `list[dict]` | errors from events |
 | `prompt_render` | `list[dict]` | **closed-schema** — see [observability_surfaces.md](../architecture/observability_surfaces.md#writer-stamped-attribution-on-prompt_render-adr-0035) for the field table |
 | `raw_events_path` | `str` | absolute path to `events.jsonl` |
+
+The required `plan` object may also carry additive `subtasks: list[dict]`,
+an embedded task/DAG projection from the `plan.parsed` event when the run was
+created by a version that emitted it. Older written bundles may have
+`plan.subtask_count` without `plan.subtasks`; readers should then fall back to
+the `parsed_plan` artifact path.
 
 **Additional keys the collector always emits** (NOT in the required
 set — `validate_bundle` accepts bundles without them; consumers may
 rely on them being present in practice):
 
 * `findings: list[dict]` — review/repair findings extracted from meta.
+  Each entry carries additive lifecycle fields for evidence readers:
+  `status` (`open`, `final_rejected`, `waived`, `fixed`, or `accepted`)
+  and `status_reason`. Active findings are `open` or `final_rejected`;
+  `waived`, `fixed`, and `accepted` remain in the bundle as historical
+  proof rather than current blockers.
 * `release_summary: list[dict]` — final_acceptance gate decisions.
 * `implementation_receipts: list[dict]` — per-subtask delivery receipts for a
   `subtask_dag` run, built from `subtask.receipt` events. Empty for `whole_plan`
@@ -323,6 +375,9 @@ see the SDK reference for client-facing slices.
   finds a populated `metrics.json` to read on bundle finalize, and
   so the resume subprocess can rehydrate via
   `MetricsCollector.load_from_disk` (see [ADR 0035](../adr/0035-terminal-status-and-resume-observability.md)).
+* A human-directed verification retry snapshots the FSM-owned
+  `repair_changes` attempt before its exact gate rerun, so a fresh failed
+  handoff retains the completed repair attempt without adding a second counter.
 
 **No trigger** on generic crashes / `_record_phase_failure` /
 SIGKILL — those paths leave `metrics.json` as last-written (which
@@ -349,8 +404,11 @@ Three rollup fields are **omitted when zero** (`as_dict` at
 
 * `total_rounds: int` — only when at least one `add_round()` call fired.
 * `total_retries: int` — only when at least one phase recorded a retry.
-* `total_cost_usd_equivalent: float` — only when at least one phase
-  reported `cost_usd_equivalent`.
+* `total_cost_usd_equivalent: float` — cost reference, present only
+  when at least one phase reported `cost_usd_equivalent`.
+* `cost_estimated: bool` — `false` when the cost reference came from
+  the active runtime/endpoint; `true` when Orcho estimated it from a
+  local pricing table.
 
 Consumers must use `metrics.get("total_rounds", 0)` rather than
 `metrics["total_rounds"]`.
@@ -371,7 +429,8 @@ Consumers must use `metrics.get("total_rounds", 0)` rather than
 ```
 
 Optional per-entry keys (omitted when zero / unset):
-`tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`.
+`tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`,
+`cost_estimated`.
 
 `tokens_exact` semantics: `true` when the count came from the
 provider's API headers / CLI usage trailer; `false` when we
@@ -391,7 +450,7 @@ collapsed via summation, plus:
 
 Additive top-level key, present **only** for `subtask_dag` implement
 runs (and only from the version that introduced it — older runs and
-`whole_plan` runs do not carry it). It makes an expensive implement
+`whole_plan` runs do not carry it). It makes a high-usage implement
 phase diagnosable by attributing usage to individual subtasks:
 
 ```json
@@ -412,6 +471,7 @@ phase diagnosable by attributing usage to individual subtasks:
         "tokens_in_cache_read": 900000,
         "tokens_in_cache_create": 100000,
         "cost_usd_equivalent": 4.21,
+        "cost_estimated": false,
         "state": "done",
         "declared_files": ["pipeline/register.py"]
       }
@@ -424,8 +484,8 @@ Always-present per-record fields: `subtask_id`, `runtime`, `model`,
 `invocations`, `duration_s`, `tokens_in`, `tokens_out`,
 `total_tokens`, `tool_calls`, `tokens_exact`. The remaining fields —
 `tokens_in_cache_read`, `tokens_in_cache_create`,
-`cost_usd_equivalent`, `state`, `declared_files` — appear **only when
-known**; an unknown value is omitted, never estimated.
+`cost_usd_equivalent`, `cost_estimated`, `state`, `declared_files` —
+appear **only when known**; an unknown value is omitted.
 
 Three authority/semantics rules a consumer must honor:
 
@@ -443,9 +503,12 @@ Three authority/semantics rules a consumer must honor:
   contributes multiple invocations to one record; `state` reflects the
   latest receipt across all passes.
 
-`cost_usd_equivalent` follows the same accounting gate as
-`total_cost_usd_equivalent`: when dollar accounting is disabled it is
-scrubbed from every record.
+`cost_usd_equivalent` is a dollar-denominated cost reference, not a
+billing receipt. Runtime-reported values come from the active
+runtime/endpoint; estimated values use Orcho pricing tables.
+Subscription plans may bill differently. The field follows the same
+accounting gate as `total_cost_usd_equivalent`: when dollar accounting
+is disabled it is scrubbed from every record.
 
 ### Cross-subprocess merge (ADR 0035)
 
@@ -508,6 +571,7 @@ nested `halt={reason, phase}`.
 | `phase_handoff_decide(action="halt")` | `sdk/phase_handoff.py:285-299` | `"phase_handoff_halt"` |
 | Interactive in-process halt sync (after decide) | `project_orchestrator.py:2915-2921` | `"phase_handoff_halt"` |
 | Resume halt-heal defensive flip | `project_orchestrator.py:3310-3313` | `"phase_handoff_halt"` |
+| CLI unattended phase-handoff halt | `pipeline/project/handoff.py` | `"phase_handoff_unattended_halt"` |
 | commit-decision halt | see [ADR 0032](../adr/0032-commit-decision-gate.md) | `"commit_decision_halt"` |
 | deferred delivery parked (defer mode) | see [ADR 0099](../adr/0099-deferred-delivery-decision-gate.md) | `"commit_delivery_pending"` |
 | `decide_delivery(action="halt"/"fix")` | `sdk/run_control/delivery.py` | `"commit_decision_halt"` / `"commit_decision_fix"` |
@@ -581,7 +645,8 @@ Written by the cross delivery loop before `run.end`. Phase-scoped
     "<alias>": {
       "alias": "<alias>",
       "status": "committed | applied_uncommitted | no_diff | skipped | skipped_already_delivered | target_dirty | commit_failed | apply_failed | not_applicable | halted | disabled",
-      "commit_sha": "<sha, present for committed>",
+      "commit_sha": "<sha landed in the target checkout, when present>",
+      "published_commit_sha": "<sha created on the published delivery branch, when present>",
       "error": "<text, present on failure>",
       "release_override": {
         "original_verdict": "REJECTED",

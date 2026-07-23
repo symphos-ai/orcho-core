@@ -109,3 +109,43 @@ def test_setup_cross_run_resume_does_not_clobber_existing_meta(
     )
 
     assert json.loads(meta_path.read_text(encoding="utf-8")) == existing_meta
+
+
+def test_resume_hydrates_declared_child_sessions_in_request_order(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    projects = {"consumer": tmp_path / "consumer", "producer": tmp_path / "producer"}
+    for path in projects.values():
+        path.mkdir()
+    run_dir.mkdir()
+    producer = {
+        "status": "done",
+        "phases": {"final_acceptance": {"verdict": "APPROVED", "ship_ready": True}},
+    }
+    (run_dir / "producer").mkdir()
+    (run_dir / "producer" / "meta.json").write_text(json.dumps(producer), encoding="utf-8")
+    (run_dir / "consumer").mkdir()
+    (run_dir / "consumer" / "meta.json").write_text("{broken", encoding="utf-8")
+    profile_setup = SimpleNamespace(
+        requested_profile=SimpleNamespace(name="feature"),
+        projected_profile_name="feature#project",
+    )
+
+    setup = setup_cross_run(
+        task="resume",
+        projects=projects,
+        model="fake-model",
+        output_dir=run_dir,
+        cross_mode="full",
+        resume_from=run_dir.name,
+        resume_mode=None,
+        followup_parent_run_id=None,
+        followup_parent_run_dir=None,
+        followup_parent_status=None,
+        followup_base_task=None,
+        resumed_meta={"phases": {"projects": {"consumer": {"status": "done"}}}},
+        profile_setup=profile_setup,
+        terminal=False,
+    )
+
+    assert list(setup.session["phases"]["projects"]) == ["producer"]
+    assert setup.session["phases"]["projects"]["producer"] == producer

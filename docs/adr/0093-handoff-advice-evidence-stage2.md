@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-06-13
-- Relates to: ADR 0090 (handoff advice Stage 0 — the interactive `advice` /
+- Relates to: ADR 0124 (handoff advice Stage 0 — the interactive `advice` /
   `retry_with_advice` pseudo-actions, the durable advice artifact under
   `phase_handoff_advice/`, and the `note`-based provenance this stage reads),
   ADR 0092 (handoff advice CI Stage 1 — the `ci_agent` policy-controlled
@@ -15,7 +15,7 @@
 
 ## Context
 
-Stages 0 (ADR 0090) and 1 (ADR 0092) made an advisor recommend the smallest
+Stages 0 (ADR 0124) and 1 (ADR 0092) made an advisor recommend the smallest
 honest way forward on a rejected/incomplete handoff and flow an accepted
 recommendation through the canonical `retry_feedback` decide + resume path —
 interactively (`agent_advice`) or under CI policy (`ci_agent`). They left durable

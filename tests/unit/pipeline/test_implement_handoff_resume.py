@@ -1,10 +1,10 @@
 """Resume-arm tests for the implement-phase handoff (ADR 0073, T10).
 
 Covers ``apply_phase_handoff_resume`` for an ``implement`` active handoff:
-accept (continue / continue_with_waiver), bare-continue waiver synthesis,
-retry_feedback (incomplete-id seed + parsed-plan rehydrate), halt terminality,
-and the ``profile_dispatch`` completed_phases UNION (so an accepted implement
-is not re-executed after a checkpoint reload).
+explicit waiver acceptance, fail-closed bare-continue rejection, retry_feedback
+(incomplete-id seed + parsed-plan rehydrate), halt terminality, and the
+``profile_dispatch`` completed_phases UNION (so an accepted implement is not
+re-executed after a checkpoint reload).
 """
 from __future__ import annotations
 
@@ -112,8 +112,7 @@ def test_continue_with_waiver_marks_implement_completed_and_waived(tmp_path):
     assert impl["delivery_status"] == "waived"
     assert impl["delivery_waived"] is True
     assert impl["waiver_id"] == _HANDOFF_ID
-    # ADR 0073: the operator action is stamped onto the implement entry so the
-    # evidence breadcrumb can distinguish a waiver from a bare continue.
+    # The explicit operator waiver is stamped onto the implement entry.
     assert impl["action"] == "continue_with_waiver"
     override = state.extras["phase_handoff_override"]
     assert override["action"] == "continue_with_waiver"
@@ -133,35 +132,24 @@ def test_continue_with_waiver_requires_feedback(tmp_path):
         apply_phase_handoff_resume(run, _profile(), None)
 
 
-# ── accept: bare continue (§4d synthesis) ──────────────────────────────────
+# ── reject: bare continue ──────────────────────────────────────────────────
 
-def test_bare_continue_synthesizes_waiver_text(tmp_path):
+def test_bare_continue_is_rejected_for_incomplete_implement(tmp_path):
     from pipeline.project.handoff import apply_phase_handoff_resume
 
     run_dir = tmp_path / "20260604_120200_impl"
     run_dir.mkdir()
     _seed_decision(run_dir, handoff_id=_HANDOFF_ID, action="continue",
                    note="operator override")
-    state = _state(tmp_path)
-    run = _run(run_dir, state, impl_entry={
+    run = _run(run_dir, _state(tmp_path), impl_entry={
         "output": "build", "delivery_status": "incomplete",
     })
 
-    outcome = apply_phase_handoff_resume(run, _profile(), None)
+    with pytest.raises(RuntimeError, match="bare continue"):
+        apply_phase_handoff_resume(run, _profile(), None)
 
-    assert outcome.completed_phases == frozenset({"implement"})
-    waiver = state.extras["phase_handoff_waiver"]
-    assert waiver["decided_by"] == "operator"
-    # Synthesized from findings + appended note.
-    assert "Operator continued without explicit waiver feedback" in waiver["waiver_text"]
-    assert "t2 incomplete" in waiver["waiver_text"]
-    assert "operator override" in waiver["waiver_text"]
-    override = state.extras["phase_handoff_override"]
-    assert override["action"] == "continue"  # NOT continue_with_waiver
-    assert override["feedback"] is None
-    impl = run.session["phases"]["implement"]
-    assert impl["delivery_status"] == "waived"
-    assert impl["action"] == "continue"  # distinguishes bare continue from waiver
+    assert run.session["status"] == "awaiting_phase_handoff"
+    assert run.session["phases"]["implement"]["delivery_status"] == "incomplete"
 
 
 # ── retry_feedback ─────────────────────────────────────────────────────────
@@ -280,6 +268,9 @@ def test_completed_phases_union_keeps_implement(tmp_path, monkeypatch):
 
     fake_ckpt = SimpleNamespace(
         load=lambda ts: SimpleNamespace(completed={"plan", "validate_plan"}),
+        get_phase_records=lambda ts: (),
+        get_loop_cursors=lambda ts: (),
+        save_loop_cursors=lambda records: None,
     )
     run = SimpleNamespace(
         max_rounds=1,
@@ -385,6 +376,9 @@ def test_retry_feedback_invalidates_checkpoint_completed_downstream(
                 "final_acceptance",
             },
         ),
+        get_phase_records=lambda ts: (),
+        get_loop_cursors=lambda ts: (),
+        save_loop_cursors=lambda records: None,
     )
     run = SimpleNamespace(
         max_rounds=1,

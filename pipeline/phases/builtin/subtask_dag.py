@@ -24,6 +24,7 @@ from pipeline.phases.builtin.lifecycle import (
     _change_handoff_for,
     _ensure_lifecycle_ctx,
 )
+from pipeline.phases.builtin.prompt_parts import _verification_contract_part
 from pipeline.phases.builtin.review_support import _print_implement_summary
 from pipeline.phases.builtin.session_invoke import _session_aware_invoke
 from pipeline.phases.builtin.session_keys import (
@@ -351,6 +352,47 @@ def _build_subtask_usage_records(
     return records
 
 
+def _append_receipt_state_records(
+    records: list[dict[str, Any]],
+    latest_receipt_by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Complete the per-subtask breakdown into a full receipt state mirror.
+
+    :func:`_build_subtask_usage_records` is driven off real invocation captures,
+    so a subtask produces a record ONLY when its runtime published a usable
+    ``last_invocation_outcome``. Two classes of subtask are therefore missing
+    from it: skipped subtasks (unsatisfied dependency / stop-on-failure
+    short-circuit — no agent invocation at all), and any run subtask whose
+    runtime did not surface metered usage (unmetered failed/done invocation).
+
+    ``metrics["subtasks"]["implement"]`` is the SINGLE authoritative source the
+    finalization rollup counts completed/failed/skipped from, so it must be a
+    COMPLETE state slice — not a partial one seeded with only some states. A
+    partial slice is worse than none: its mere presence makes finalization treat
+    it as authoritative and drop the meta/receipt fallback, so a state present in
+    the receipts but absent from the slice (e.g. an unmetered ``failed``) would
+    be miscounted as ``incomplete``.
+
+    Fill every subtask the usage breakdown did not already cover with a
+    state-only marker (``{"subtask_id", "state": <receipt state>}``) carrying NO
+    usage fields — honoring the acceptance contract's honesty rule (unknown
+    values are omitted, never invented) and keeping ``sum(records) == phase
+    rollup`` intact (a stateless marker contributes zero usage). A subtask that
+    produced a real usage record keeps that record's terminal state.
+    """
+    recorded_ids = {rec.get("subtask_id") for rec in records}
+    for receipt in latest_receipt_by_id.values():
+        sid = receipt.get("subtask_id")
+        if sid in recorded_ids:
+            continue
+        state = receipt.get("state")
+        marker: dict[str, Any] = {"subtask_id": sid}
+        if state:
+            marker["state"] = str(state)
+        records.append(marker)
+        recorded_ids.add(sid)
+
+
 def _resolve_implement_handoff_policy(state: PipelineState):
     """Return the active implement step's ``PhaseHandoffPolicy`` or ``None``.
 
@@ -399,7 +441,7 @@ def _log_implement_retry_banner(
     ``ORCHO subtask 1/N START`` with a narrowed count, which looks like an
     unexplained new DAG rather than a deliberate retry of blocked subtasks.
     """
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     lines = [
@@ -779,6 +821,7 @@ def _run_subtask_dag_implement(
         dry_run=state.dry_run,
         invoke_subtask=_invoke_subtask,
         prior_results=prior_results,
+        verification_part=_verification_contract_part(state, "implement"),
     )
     state.dag_result = result
 
@@ -813,6 +856,18 @@ def _run_subtask_dag_implement(
         for r in receipts
         if r.get("state") == "incomplete"
     }
+    unmet_done_criteria = tuple(
+        {
+            "subtask_id": receipt["subtask_id"],
+            "index": criterion.get("index"),
+            "criterion": criterion.get("criterion", ""),
+            "evidence": criterion.get("evidence", ""),
+        }
+        for receipt in receipts
+        if receipt.get("state") == "incomplete"
+        for criterion in receipt.get("criteria_report", ())
+        if criterion.get("met") is False
+    )
     delivery_clean = not missing_ids and not not_done
 
     entry: dict[str, Any] = {
@@ -871,6 +926,9 @@ def _run_subtask_dag_implement(
                     dry_run=state.dry_run,
                     invoke_subtask=_invoke_subtask,
                     prior_results=prior,
+                    verification_part=_verification_contract_part(
+                        state, "implement",
+                    ),
                 )
                 # F1: overlay THIS pass's receipts immediately. The substance
                 # repair engine keeps only the final pass's receipts, so a
@@ -895,6 +953,7 @@ def _run_subtask_dag_implement(
                 done_context=done_context,
                 repair_pass=_repair_pass,
                 last_output=entry["output"],
+                unmet_done_criteria=unmet_done_criteria,
             )
             entry["delivery_status"] = outcome.delivery_status
             if outcome.delivery_status != "incomplete":
@@ -933,6 +992,16 @@ def _run_subtask_dag_implement(
         subtask_usage_captures,
         latest_receipt_by_id,
     )
+    # Complete the breakdown into a full receipt state mirror. Subtasks with no
+    # metered usage capture — skipped ones (never invoked) AND run subtasks whose
+    # runtime surfaced no usable outcome — are absent from the usage breakdown
+    # above. The metrics slice is the single authoritative source the
+    # finalization rollup counts completed/failed/skipped from, so it must carry
+    # EVERY subtask's final state (a partial slice would make finalization drop
+    # its meta/receipt fallback and miscount a missing state as incomplete).
+    # Append a state-only marker (no invented usage) per uncovered receipt id,
+    # preserving DAG (receipt) order.
+    _append_receipt_state_records(subtask_records, latest_receipt_by_id)
     if subtask_records:
         entry["subtask_metrics"] = subtask_records
 

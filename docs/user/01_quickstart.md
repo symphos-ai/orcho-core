@@ -17,18 +17,65 @@ tool (for example Claude CLI or Codex CLI). It must be a CLI tool that
 Orcho can invoke from a terminal; an IDE or a chat app is not enough by
 itself. The selected profile may need a second CLI for reviewer phases.
 
-Once the packages are published, install the core CLI with:
+For the native CLI path, install the `orcho` distribution with `pipx` (core CLI
++ MCP server). Pick your OS. Note: `pipx ensurepath` only updates `PATH` for
+**new** shells, so after it you must reopen your terminal before `pipx` and the
+installed `orcho` resolve — the `↻` line marks where.
 
 ```bash
+# macOS
+brew install pipx        # skip if pipx is already installed
+pipx ensurepath
+# ↻ reopen your terminal so the installed `orcho` is on PATH:
 pipx install orcho
 orcho --help
+```
+
+```bash
+# Linux
+python3 -m pip install --user pipx   # or: sudo apt install pipx / sudo dnf install pipx
+python3 -m pipx ensurepath
+# ↻ reopen your terminal so `pipx` (and later `orcho`) are on PATH:
+pipx install orcho
+orcho --help
+```
+
+```powershell
+# Windows (native, PowerShell — supported and exercised in CI)
+py -m pip install --user pipx
+py -m pipx ensurepath
+# ↻ IMPORTANT: close this window and open a NEW PowerShell now — `ensurepath`
+#   only updates PATH for new shells, so `pipx` is not found until you reopen.
+pipx install orcho
+orcho --help
+```
+
+Windows-specific detail (WSL2, agent-CLI paths, output streaming) lives in
+[../expert/05_windows.md](../expert/05_windows.md).
+
+For an isolated container path (OS-agnostic):
+
+```bash
+docker pull ghcr.io/symphos-ai/orcho
+alias orcho='docker run --rm -it \
+  -v "$PWD":/workspace \
+  -v ~/.orcho-auth:/agent-auth:ro \
+  ghcr.io/symphos-ai/orcho orcho'
 ```
 
 If you prefer a project-managed Python environment:
 
 ```bash
+# macOS / Linux
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install orcho
+```
+
+```powershell
+# native Windows / PowerShell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install orcho
 ```
 
@@ -42,14 +89,15 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-This gives you the core CLI. Optional MCP server, shell helpers, and MCP
-client config are described in
+The `orcho` distribution gives you both `orcho` and `orcho-mcp`. Shell helpers,
+source-checkout setup, and MCP client config are described in
 [early_adopter_install.md](early_adopter_install.md).
 
 Verify:
 
 ```bash
 orcho --help
+orcho-mcp --help
 ```
 
 ---
@@ -66,8 +114,16 @@ Create or pick a parent folder for your project:
 ```
 
 ```bash
+# macOS / Linux (and WSL2 / Git Bash on Windows)
 orcho workspace init ~/www/my-workspace
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
+```
+
+```powershell
+# native Windows / PowerShell — orcho-env.sh is bash, so set the vars directly
+orcho workspace init $HOME\www\my-workspace
+$env:ORCHO_WORKSPACE = "$HOME\www\my-workspace\workspace-orchestrator"
+$env:ORCHO_RUNSPACE  = "$env:ORCHO_WORKSPACE\runspace"
 ```
 
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`
@@ -79,6 +135,20 @@ Gemini CLI, the Claude app, and Antigravity see
 ---
 
 ## First run
+
+Start with a free dry run. `--mock` swaps the real model for a mock agent,
+so the whole plan → implement → review → repair cycle runs end-to-end
+without spending tokens or calling your code-agent CLI — the fastest way to
+see how Orcho behaves:
+
+```bash
+orcho run --mock \
+  --task "Add input validation to the login endpoint. Return 400 if email is empty." \
+  --project ~/www/my-workspace/my-project
+```
+
+Then the real run (drops `--mock`, so it calls your code-agent CLI and
+spends tokens):
 
 ```bash
 orcho run \

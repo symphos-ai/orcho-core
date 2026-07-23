@@ -1,5 +1,5 @@
 {
-  "_comment": "Default per-phase runtime+model+effort configuration. ``runtime`` selects the agent backend (claude / codex / gemini). ``effort`` (low|medium|high|xhigh|max) controls reasoning depth and is mapped to each runtime's CLI: Claude --effort, Codex -c model_reasoning_effort. Omit / null to let the CLI use its own default (e.g. ~/.codex/config.toml). Override locally via _config/config.local.json, ~/.orcho/config.local.json, $ORCHO_WORKSPACE/.orcho/config.local.json, or env vars (RUNTIME_<PHASE> / MODEL_<PHASE>).",
+  "_comment": "Default per-phase runtime+model+effort configuration. ``runtime`` selects a registered agent backend (claude / claude-glm / codex / gemini / plugin runtimes). ``effort`` (low|medium|high|xhigh|max) controls reasoning depth and is mapped to each runtime's CLI: Claude --effort, Codex -c model_reasoning_effort. Omit / null to let the CLI use its own default (e.g. ~/.codex/config.toml). Override locally via _config/config.local.json, ~/.orcho/config.local.json, $ORCHO_WORKSPACE/.orcho/config.local.json, or env vars (RUNTIME_<PHASE> / MODEL_<PHASE>).",
   "phases": {
     "plan":               {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
     "validate_plan":      {"runtime": "codex",  "model": "gpt-5.5",           "effort": "medium"},
@@ -64,23 +64,24 @@
     "output_mode": "live"
   },
   "accounting": {
-    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render API-equivalent cost fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
+    "_comment": "Dollar-denominated accounting is opt-in. When disabled, Orcho records token/time usage but does not store or render cost-reference fields. Enable locally with accounting.enabled=true or ORCHO_ACCOUNTING=1.",
     "enabled": false
   },
   "commit": {
     "_comment": "Post-release commit delivery. When enabled and the run-owned worktree has a diff after an APPROVED release verdict, Orcho can fix / approve / apply / skip / halt delivery. interactive_default is the preselected interactive action; auto_in_ci controls unattended runs. add_untracked controls delivery of non-ignored untracked files; approve also stages them. include_pre_existing_dirty and git_user_identity are reserved follow-up knobs from ADR 0032; Phase B1 keeps pre-existing dirty state user-owned and relies on the repo's configured git identity.",
     "enabled": true,
     "default_strategy": "release_summary",
-    "interactive_default": "apply",
+    "interactive_default": "approve",
     "auto_in_ci": "approve",
     "add_untracked": true,
     "include_pre_existing_dirty": false,
     "git_user_identity": null
   },
   "language": {
-    "_comment": "Engine defaults stay English so cross-machine prompt rendering is reproducible. Workspaces whose team writes tasks / plans in another natural language should override here (or via PLAN_LANGUAGE / TASK_LANGUAGE env vars).",
+    "_comment": "Engine defaults stay English so cross-machine prompt rendering is reproducible. plan_language / task_language cover operator-facing artifacts; content_language covers outward delivery artifacts (commit message, PR title/body) and stays English as a fail-safe for public repositories regardless of the operator language. Workspaces whose team writes tasks / plans in another natural language should override here (or via PLAN_LANGUAGE / TASK_LANGUAGE / CONTENT_LANGUAGE env vars).",
     "plan_language": "English",
-    "task_language": "English"
+    "task_language": "English",
+    "content_language": "English"
   },
   "artifacts": {
     "_comment": "mirror_to_project: копировать ли семантические артефакты (план, diff, review, todo) из runspace/runs/<ts>/ в <project>/<mirror_dir>/ для git-трекинга. По умолчанию выкл — все артефакты живут в runspace.",

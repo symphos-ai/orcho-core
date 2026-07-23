@@ -392,14 +392,11 @@ class _AlwaysIssuedCodex:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  orcho cost — sliding-window API-equivalent aggregator
+#  orcho cost — sliding-window cost-reference aggregator
 # ════════════════════════════════════════════════════════════════════════════
 
 class TestCostCommand:
-    """``orcho cost`` is the entry point that exposes the API-equivalent
-    cost data already in metrics.json. Retrospective-only — lives in
-    orcho-core per the open-core split (cost-data is in JSONL anyway,
-    gating CLI display would be security-by-obscurity)."""
+    """``orcho cost`` exposes cost-reference data already in metrics.json."""
 
     def test_parse_window_days_hours_and_all(self):
         from datetime import datetime, timedelta
@@ -512,15 +509,17 @@ class TestCostCommand:
         assert "$0.62" in normalised, out  # 0.42 + 0.20
         assert "230" in out                # 150 + 80 tokens
         assert "2 runs" in out
-        # Per-phase: plan dominates (0.30 + 0.20 = 0.50 of 0.62 ≈ 80.6%).
+        # Per-phase: plan dominates (0.30 + 0.20 = 0.50). % is share of the
+        # phase-breakdown sum (0.50 + 0.12 = 0.62), so plan ≈ 80.6%.
         assert "plan" in out and "$0.50" in normalised, out
-        # Top expensive: run A ($0.42) ranks above run B ($0.20).
+        # Top cost-reference run: run A ($0.42) ranks above run B ($0.20).
         idx_a = out.find("20260506_120000")
         idx_b = out.find("20260506_130000")
         assert 0 <= idx_a < idx_b, "run A should appear before run B in top-N"
-        # API-equivalent footnote is factual — no claim about user's
+        # Cost-reference footnote is factual — no claim about user's
         # subscription tier (we don't know it).
-        assert "API-equivalent" in out
+        assert "Cost reference" in out
+        assert "not a billing receipt" in out
         assert "Pro/Max" not in out, "must not speculate about user's tier"
         # Top-phase hint always renders, names phase + config key, no
         # subscription / monthly-budget projection.
@@ -529,8 +528,8 @@ class TestCostCommand:
         assert "monthly token budget" not in out, (
             "must not project window % onto unknown subscription cap"
         )
-        # Per-agent split must show claude (synthesised data uses
+        # Per-runtime/provider split must show claude (synthesised data uses
         # claude-* models everywhere). Cross-phase token sum.
-        assert "By agent" in out, out
+        assert "By runtime/provider" in out, out
         assert "claude" in out, out
         assert "230 tok" in out or "230" in out, out

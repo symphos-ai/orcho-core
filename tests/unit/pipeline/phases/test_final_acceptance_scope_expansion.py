@@ -30,8 +30,13 @@ from typing import Any
 
 import pytest
 
+from core.io.git_helpers import GitStatusParseError
+from pipeline.engine.declared_write_scope import (
+    DECLARED_WRITE_SCOPE_EXTRAS_KEY,
+    resolve_declared_write_scope,
+)
 from pipeline.evidence.verification_receipt import write_command_receipt
-from pipeline.phases.builtin import default_registry
+from pipeline.phases.builtin import default_registry, scope_expansion_support
 from pipeline.phases.builtin.review_support import _scope_expansion_assessment
 from pipeline.plan_parser import ParsedPlan
 from pipeline.plugins import PluginConfig
@@ -40,6 +45,12 @@ from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
 )
+from pipeline.verification_subject import VerificationSubjectAvailable, capture_verification_subject
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 # ── git + contract + state harness ───────────────────────────────────────────
 
@@ -76,6 +87,15 @@ def _write_untracked(repo: Path, rel: str, content: str = "x\n") -> None:
     _git(repo, "add", "-N", rel)
 
 
+def _write_untracked_without_intent_to_add(
+    repo: Path, rel: str, content: str = "x\n",
+) -> None:
+    """Create a real nested untracked file without staging any identity."""
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def _contract() -> VerificationContract:
     contract = VerificationContract.from_plugin(PluginConfig(
         work_mode="pro",
@@ -97,6 +117,8 @@ def _contract() -> VerificationContract:
 
 
 def _passing_receipt(command: str, argv: list[str], checkout: str) -> dict[str, Any]:
+    captured = capture_verification_subject(Path(checkout))
+    assert isinstance(captured, VerificationSubjectAvailable)
     return {
         "kind": "verification_command",
         "command": command,
@@ -113,6 +135,7 @@ def _passing_receipt(command: str, argv: list[str], checkout: str) -> dict[str, 
         "log_path": None,
         "parity": "absolute",
         "detail": "",
+        "subject": captured,
         "git": {
             "checkout_head": None,
             "baseline_head": None,
@@ -197,6 +220,10 @@ def _state(
     st.output_dir = run_dir
     st.dry_run = False
     st.parsed_plan = ParsedPlan(subtasks=(), source="json", owned_files=plan_owned)
+    st.extras[DECLARED_WRITE_SCOPE_EXTRAS_KEY] = resolve_declared_write_scope(
+        st.parsed_plan,
+        plugin_allowed_modifications=st.plugin.allowed_modifications,
+    )
     if implement_output:
         st.phase_log["implement"] = {"output": implement_output}
     return st
@@ -210,6 +237,47 @@ def _run(state: PipelineState) -> PipelineState:
 
 
 class TestScopeExpansionFacade:
+    def test_nested_untracked_owned_files_are_exactly_in_scope(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        owned = ("nested/a/test_one.py", "nested/b/test_two.py")
+        for path in owned:
+            _write_untracked_without_intent_to_add(repo, path)
+        state = _state(tmp_path, repo=repo, plan_owned=owned)
+
+        assert _scope_expansion_assessment(state).items == ()
+
+    def test_untracked_sibling_is_one_exact_unmatched_item(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        owned = ("nested/a/test_one.py", "nested/b/test_two.py")
+        for path in owned:
+            _write_untracked_without_intent_to_add(repo, path)
+        _write_untracked_without_intent_to_add(repo, "nested/a/test_sibling.py")
+        state = _state(tmp_path, repo=repo, plan_owned=owned)
+
+        (item,) = _scope_expansion_assessment(state).items
+
+        assert item.path == "nested/a/test_sibling.py"
+        assert item.category == "test"
+        assert item.status.value == "scope_expansion_risk"
+
+    def test_rename_declared_source_to_undeclared_destination_is_unmatched(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _commit_file(repo, "src/declared.py", "x = 1\n")
+        _git(repo, "mv", "src/declared.py", "src/destination.py")
+        state = _state(tmp_path, repo=repo, plan_owned=("src/declared.py",))
+
+        (item,) = _scope_expansion_assessment(state).items
+
+        assert item.path == "src/destination.py"
     def test_public_wire_without_alignment_is_blocker(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         _init_repo(repo)
@@ -223,6 +291,72 @@ class TestScopeExpansionFacade:
         assert blocker.path == "sdk/new_wire.py"
         assert blocker.category == "public_wire"
         assert "no-paired-alignment" in blocker.evidence
+
+    def test_declared_companion_preserves_public_wire_alignment(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_untracked(repo, "sdk/payment_wire.py", "X = 1\n")
+        _write_untracked(repo, "tests/test_payment_wire.py", "def test_x(): pass\n")
+        state = _state(
+            tmp_path,
+            repo=repo,
+            present=("schema",),
+            plan_owned=("tests/test_payment_wire.py",),
+        )
+
+        (item,) = _scope_expansion_assessment(state).items
+
+        assert item.path == "sdk/payment_wire.py"
+        assert item.status.value == "scope_expansion_risk"
+        assert "paired-alignment" in item.evidence
+        assert "no-paired-alignment" not in item.evidence
+
+    def test_planless_plugin_allowance_remains_in_scope(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_untracked(repo, "package-lock.json", "{}\n")
+        state = _state(tmp_path, repo=repo)
+        state.parsed_plan = None
+        state.plugin = PluginConfig(allowed_modifications=["package-lock.json"])
+        state.extras.pop(DECLARED_WRITE_SCOPE_EXTRAS_KEY)
+
+        assert _scope_expansion_assessment(state).items == ()
+
+    def test_malformed_git_status_surfaces_parse_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "baseline.txt").write_text("changed\n", encoding="utf-8")
+        state = _state(tmp_path, repo=repo)
+
+        def malformed(_cwd: str):
+            raise GitStatusParseError("bad porcelain")
+
+        monkeypatch.setattr(
+            scope_expansion_support, "git_changed_file_records", malformed,
+        )
+
+        with pytest.raises(GitStatusParseError, match="bad porcelain"):
+            _run(state)
+
+    def test_git_status_invocation_failure_is_empty_observation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        state = _state(tmp_path, repo=repo)
+
+        def unavailable(_cwd: str):
+            raise OSError("git unavailable")
+
+        monkeypatch.setattr(
+            scope_expansion_support, "git_changed_file_records", unavailable,
+        )
+
+        assert _scope_expansion_assessment(state).items == ()
 
     def test_persistence_out_of_plan_is_blocker(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -303,15 +437,15 @@ class TestScopeExpansionFacade:
 
 
 class TestScopeExpansionHandler:
-    @pytest.mark.parametrize("mode", ["fast", "pro", "governed"])
-    def test_genuine_safety_halts_in_every_mode(
-        self, tmp_path: Path, mode: str,
+    @pytest.mark.parametrize(
+        ("mode", "expect_handoff"),
+        [("fast", False), ("pro", False), ("governed", True)],
+    )
+    def test_safety_category_routes_by_mode_without_forced_rejection(
+        self, tmp_path: Path, mode: str, expect_handoff: bool,
     ) -> None:
-        # ADR 0112 §5: a genuine-safety class (here persistence) is HALT_WAIVER in
-        # EVERY mode, including fast — it forces REJECTED and is never silently
-        # auto-sanctioned. All required receipts present → the required-receipt
-        # backstop is inert, so the REJECTED verdict is purely the genuine-safety
-        # scope-expansion halt.
+        # The classifier keeps persistence as a blocker fact, but the selected
+        # operating mode alone decides the disposition.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "storage/cache.py", "y = 2\n")
@@ -322,37 +456,36 @@ class TestScopeExpansionHandler:
 
         entry = _run(state).phase_log["final_acceptance"]
 
-        assert entry["approved"] is False
-        assert entry["verdict"] == "REJECTED"
-        assert entry["ship_ready"] is False
-        assert any(
-            "storage/cache.py" in str(g.get("risk", ""))
-            for g in entry["verification_gaps"]
-        )
+        assert entry["approved"] is True
+        assert entry["verdict"] == "APPROVED"
+        assert entry["ship_ready"] is True
         # canonical durable evidence on the single source-of-truth path.
         scope = entry["scope_expansion"]
         assert scope["has_blocker"] is True
         assert scope["counts"]["blocker"] == 1
         assert scope["items"][0]["status"] == "scope_expansion_blocker"
-        # the mode-projected sanction is recorded and forces rejection.
+        # The mode-projected sanction is recorded without forcing rejection.
         sanction = entry["scope_expansion_sanction"]
         assert sanction["operating_mode"] == mode
-        assert sanction["forces_rejected"] is True
-        assert "storage/cache.py" in sanction["halt_paths"]
+        assert sanction["forces_rejected"] is False
+        assert sanction["needs_phase_handoff"] is expect_handoff
+        if mode == "pro":
+            assert sanction["alert_paths"] == ["storage/cache.py"]
+        if expect_handoff:
+            assert sanction["handoff_paths"] == ["storage/cache.py"]
         # scope evidence reached the reviewer prompt too.
         assert "Scope expansion blocker:" in state.phase_config.final_acceptance_agent.captured
 
     @pytest.mark.parametrize(
         ("mode", "expect_handoff"),
-        [("fast", False), ("pro", True), ("governed", True)],
+        [("fast", False), ("pro", False), ("governed", True)],
     )
     def test_benign_blocker_routes_by_mode_not_rejected(
         self, tmp_path: Path, mode: str, expect_handoff: bool,
     ) -> None:
         # A benign (non-genuine-safety) blocker — an unaligned public-wire change —
-        # must NOT hard-REJECT: fast auto-continues, pro/governed route through a
-        # phase-handoff (recorded), but the verdict stays the reviewer's APPROVED
-        # in every mode (no silent reject).
+        # must NOT hard-REJECT: fast continues, pro alerts, governed routes
+        # through a phase-handoff; the verdict stays the reviewer's APPROVED.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "sdk/new_wire.py", "X = 1\n")
@@ -427,7 +560,10 @@ class TestScopeExpansionHandler:
 
         assert entry["verdict"] == "APPROVED"
         assert "scope_expansion" not in entry
+        assert "scope_expansion_sanction" not in entry
+        assert state.phase_handoff_request is None
         assert "Scope expand" not in state.phase_config.final_acceptance_agent.captured
+        assert "Scope expansion" not in entry["output"]
 
     @pytest.mark.parametrize("mode", ["fast", "pro", "governed"])
     def test_operator_waiver_gates_scope_expansion_entirely(
@@ -435,8 +571,8 @@ class TestScopeExpansionHandler:
     ) -> None:
         # R1 + ADR 0112 §5: an active continue_with_waiver fully disarms the
         # scope-expansion gate in EVERY mode (fast/pro/governed). Even with a
-        # genuine-safety out-of-plan file that would otherwise HALT_WAIVER, the
-        # prompt/readiness must carry no scope-expansion block and no durable
+        # out-of-plan file, the prompt/readiness must carry no scope-expansion
+        # block and no durable
         # evidence may be written — byte-identical to pre-feature waiver
         # behaviour. The waiver is the single operator escape hatch.
         repo = tmp_path / "repo"
@@ -465,9 +601,7 @@ class TestScopeExpansionHandler:
 
 
 class TestScopeExpansionDogfood:
-    """The two dogfood forms that the old fixed blocker→REJECTED coupling
-    hard-rejected must now continue (or route to handoff) under fast/pro,
-    never a silent hard reject."""
+    """The old fixed blocker→REJECTED coupling must not recur under fast/pro."""
 
     @pytest.mark.parametrize("mode", ["fast", "pro"])
     def test_benign_sdk_init_export_not_hard_reject(
@@ -496,7 +630,7 @@ class TestScopeExpansionDogfood:
     ) -> None:
         # Form 2: a large companion diff (>= LARGE_DIFF_LINES) on a non
         # genuine-safety file (run_projection.py → "other") is a benign blocker;
-        # under fast/pro it continues / routes to handoff, never a hard REJECT.
+        # under fast/pro it continues, never a hard REJECT.
         repo = tmp_path / "repo"
         _init_repo(repo)
         big = "".join(f"row_{i} = {i}\n" for i in range(260))
@@ -563,11 +697,11 @@ class TestScopeExpansionHandoffEndToEnd:
     paused run: the handler is the seam that raises the signal.
     """
 
-    @pytest.mark.parametrize("mode", ["pro", "governed"])
+    @pytest.mark.parametrize("mode", ["governed"])
     def test_handler_raises_out_of_plan_handoff_request(
         self, tmp_path: Path, mode: str,
     ) -> None:
-        # A benign blocker under pro/governed: the handler must set
+        # A scope expansion under governed: the handler must set
         # state.phase_handoff_request with the out_of_plan trigger so the runner
         # breaks and the orchestrator pauses (not just record needs_phase_handoff).
         repo = tmp_path / "repo"
@@ -590,6 +724,17 @@ class TestScopeExpansionHandoffEndToEnd:
             "continue", "halt", "continue_with_waiver",
         )
         assert "retry_feedback" not in signal.available_actions
+        # The signal artifacts carry the full scope delta — the offending
+        # paths, their classification, AND the declared in-plan patterns they
+        # were judged against — so every pause surface (TTY digest, persisted
+        # meta.phase_handoff, advice) can show what the scope was and what
+        # went out of it without digging through the reviewer transcript.
+        assert signal.artifacts["handoff_paths"] == ["sdk/new_wire.py"]
+        assert signal.artifacts["in_plan_patterns"] == ["src/in_scope.py"]
+        (finding,) = signal.artifacts["findings"]
+        assert finding["path"] == "sdk/new_wire.py"
+        assert finding["category"]
+        assert finding["status"]
 
     def test_fast_benign_blocker_raises_no_handoff(self, tmp_path: Path) -> None:
         # fast auto-continues a benign blocker → no pause request raised.
@@ -605,11 +750,11 @@ class TestScopeExpansionHandoffEndToEnd:
 
         assert out.phase_handoff_request is None
 
-    def test_genuine_safety_rejects_without_raising_handoff(
+    def test_governed_safety_category_raises_handoff_without_rejection(
         self, tmp_path: Path,
     ) -> None:
-        # A genuine-safety class halts via the release-gap (REJECTED) path; it
-        # must NOT also open a phase-handoff pause (no handoff item, only halt).
+        # A safety-category fact stays visible, but governed alone makes the
+        # delivery decision blocking through the handoff lifecycle.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "storage/cache.py", "y = 2\n")
@@ -620,8 +765,8 @@ class TestScopeExpansionHandoffEndToEnd:
 
         out = _run(state)
 
-        assert out.phase_log["final_acceptance"]["verdict"] == "REJECTED"
-        assert out.phase_handoff_request is None
+        assert out.phase_log["final_acceptance"]["verdict"] == "APPROVED"
+        assert out.phase_handoff_request is not None
 
     def test_end_to_end_pause_persists_meta_and_accepts_decide_advice(
         self, tmp_path: Path,
@@ -633,13 +778,13 @@ class TestScopeExpansionHandoffEndToEnd:
             request_handoff_advice,
         )
 
-        # 1) REAL handler raises the pause for a pro benign blocker.
+        # 1) REAL handler raises the pause for a governed scope expansion.
         repo = tmp_path / "repo"
         _init_repo(repo)
         _write_untracked(repo, "sdk/new_wire.py", "X = 1\n")
         state = _state(
             tmp_path, repo=repo, present=("test", "lint", "schema"),
-            operating_mode="pro",
+            operating_mode="governed",
         )
         out = _run(state)
         assert out.phase_handoff_request is not None

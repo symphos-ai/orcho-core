@@ -41,6 +41,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline.verification_subject import (
+    VerificationSubjectAvailable,
+    VerificationSubjectIdentity,
+    VerificationSubjectUnavailable,
+    is_usable_verification_subject,
+)
+
 __all__ = [
     "COMMAND_RECEIPTS_DIRNAME",
     "COMMAND_RECEIPT_SCHEMA_VERSION",
@@ -81,13 +88,14 @@ VERIFICATION_ENV_KIND = "verification_env_assertions"
 # VERIFICATION_COMMAND_KIND never enters the evidence v1 bundle — kept out by
 # *physical location*, not by filtering. Do NOT point the collector here.
 COMMAND_RECEIPTS_DIRNAME = "verification_command_receipts"
+COMMAND_RECEIPT_EXECUTIONS_DIRNAME = "executions"
 VERIFICATION_COMMAND_KIND = "verification_command"
 # v2 adds the top-level ``dependencies`` block (per-declared-dependency
 # cross-repo provenance — name/path/head/dirty/changed_files_count/
 # changed_files_fingerprint/depends_on). This is a run-local durable artifact
 # only; it does NOT enter the evidence v1 bundle / MCP wire (the digest in
 # summarize_command_receipts deliberately omits it).
-COMMAND_RECEIPT_SCHEMA_VERSION = 2
+COMMAND_RECEIPT_SCHEMA_VERSION = 3
 
 
 def _python_identity() -> str:
@@ -104,7 +112,7 @@ def collect_environment_checks(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Probe the verification environment and return ``(checks, commands)``.
 
-    Project-aware provenance selection (ADR 0106 / 0108), in order:
+    Project-aware provenance selection (ADR 0125 / 0108), in order:
 
     (a) **Core checkout** — when ``{cwd}/pipeline/__init__.py`` exists, run the
         ``pipeline_import`` import-invariant in a subprocess from ``cwd`` (which
@@ -145,7 +153,9 @@ def collect_environment_checks(
     # unchanged.
     if expected_init.is_file():
         return _core_pipeline_import_checks(
-            cwd_path, expected_init, isolated=getattr(ctx, "isolated_source", None),
+            cwd_path,
+            expected_init,
+            isolated=getattr(ctx, "isolated_source", None),
         )
 
     # (b) non-core checkout with declared env assertions.
@@ -158,7 +168,10 @@ def collect_environment_checks(
 
 
 def _core_pipeline_import_checks(
-    cwd_path: Path, expected_init: Path, *, isolated: Any = None,
+    cwd_path: Path,
+    expected_init: Path,
+    *,
+    isolated: Any = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """The core ``pipeline_import`` probe (branch (a)), fail-closed under isolation.
 
@@ -179,30 +192,39 @@ def _core_pipeline_import_checks(
         worktree_path = str(getattr(isolated, "worktree_path", "") or "")
         if not worktree_path:
             # Declared isolation with no bindable worktree: fail closed.
-            unbound_checks: list[dict[str, Any]] = [{
-                "name": "pipeline_import",
-                "expected": "<unbound isolated worktree>",
-                "actual": None,
-                "passed": False,
-            }]
-            unbound_commands: list[dict[str, Any]] = [{
-                "argv": ["environment_provenance", "unbound-isolated-worktree"],
-                "exit_code": None,
-            }]
+            unbound_checks: list[dict[str, Any]] = [
+                {
+                    "name": "pipeline_import",
+                    "expected": "<unbound isolated worktree>",
+                    "actual": None,
+                    "passed": False,
+                }
+            ]
+            unbound_commands: list[dict[str, Any]] = [
+                {
+                    "argv": ["environment_provenance", "unbound-isolated-worktree"],
+                    "exit_code": None,
+                }
+            ]
             return unbound_checks, unbound_commands
         expected_init = Path(worktree_path) / "pipeline" / "__init__.py"
 
     expected = str(expected_init.resolve())
     argv = [
-        sys.executable, "-c",
+        sys.executable,
+        "-c",
         "import pipeline, sys; sys.stdout.write(pipeline.__file__)",
     ]
     actual: str | None = None
     exit_code: int | None = None
     try:
         proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            argv, cwd=str(cwd_path), capture_output=True, text=True,
-            timeout=60, check=False,
+            argv,
+            cwd=str(cwd_path),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
         )
         exit_code = proc.returncode
         raw = (proc.stdout or "").strip()
@@ -212,18 +234,21 @@ def _core_pipeline_import_checks(
         pass
 
     passed = actual is not None and actual == expected
-    checks: list[dict[str, Any]] = [{
-        "name": "pipeline_import",
-        "expected": expected,
-        "actual": actual,
-        "passed": passed,
-    }]
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "pipeline_import",
+            "expected": expected,
+            "actual": actual,
+            "passed": passed,
+        }
+    ]
     commands: list[dict[str, Any]] = [{"argv": argv, "exit_code": exit_code}]
     return checks, commands
 
 
 def _select_provenance_env(
-    contract: Any, envs: Mapping[str, Any],
+    contract: Any,
+    envs: Mapping[str, Any],
 ) -> str | None:
     """The env whose assertions provenance should run: default_env, else the
     single declared env, else ``None`` (ambiguous → no declared probe)."""
@@ -236,7 +261,9 @@ def _select_provenance_env(
 
 
 def _declared_env_provenance_checks(
-    cwd_path: Path, contract: Any, ctx: Any,
+    cwd_path: Path,
+    contract: Any,
+    ctx: Any,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
     """Run the declared env's assertions into ``(checks, commands)``; branch (b).
 
@@ -278,10 +305,12 @@ def _declared_env_provenance_checks(
         ]
         if not checks:
             return None
-        commands: list[dict[str, Any]] = [{
-            "argv": ["verification_env_assertions", env_name],
-            "exit_code": 0 if result.get("all_passed") else 1,
-        }]
+        commands: list[dict[str, Any]] = [
+            {
+                "argv": ["verification_env_assertions", env_name],
+                "exit_code": 0 if result.get("all_passed") else 1,
+            }
+        ]
         return checks, commands
     except Exception:  # noqa: BLE001 — provenance probe must never raise/false-fail
         return None
@@ -289,16 +318,20 @@ def _declared_env_provenance_checks(
 
 def _non_core_noop_checks() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Branch (c): one informational, non-failing check (no false provenance fail)."""
-    checks: list[dict[str, Any]] = [{
-        "name": "environment_provenance",
-        "expected": None,
-        "actual": None,
-        "passed": True,
-    }]
-    commands: list[dict[str, Any]] = [{
-        "argv": ["environment_provenance", "no-local-pipeline-or-assertions"],
-        "exit_code": 0,
-    }]
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "environment_provenance",
+            "expected": None,
+            "actual": None,
+            "passed": True,
+        }
+    ]
+    commands: list[dict[str, Any]] = [
+        {
+            "argv": ["environment_provenance", "no-local-pipeline-or-assertions"],
+            "exit_code": 0,
+        }
+    ]
     return checks, commands
 
 
@@ -334,12 +367,14 @@ def write_phase_verification_receipt(
 def _normalize_checks(checks: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in checks:
-        out.append({
-            "name": str(c.get("name", "")),
-            "expected": c.get("expected"),
-            "actual": c.get("actual"),
-            "passed": bool(c.get("passed", False)),
-        })
+        out.append(
+            {
+                "name": str(c.get("name", "")),
+                "expected": c.get("expected"),
+                "actual": c.get("actual"),
+                "passed": bool(c.get("passed", False)),
+            }
+        )
     return out
 
 
@@ -401,14 +436,16 @@ def _normalize_assertions(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for a in assertions:
-        out.append({
-            "name": str(a.get("name", "")),
-            "kind": str(a.get("kind", "")),
-            "expected": a.get("expected"),
-            "actual": a.get("actual"),
-            "passed": bool(a.get("passed", False)),
-            "detail": str(a.get("detail", "")),
-        })
+        out.append(
+            {
+                "name": str(a.get("name", "")),
+                "kind": str(a.get("kind", "")),
+                "expected": a.get("expected"),
+                "actual": a.get("actual"),
+                "passed": bool(a.get("passed", False)),
+                "detail": str(a.get("detail", "")),
+            }
+        )
     return out
 
 
@@ -429,24 +466,54 @@ def _normalize_dependencies(value: Any) -> list[dict[str, Any]]:
         if not isinstance(entry, Mapping):
             continue
         head = entry.get("head")
-        fingerprint = entry.get("changed_files_fingerprint")
         dirty = entry.get("dirty")
-        try:
-            count = int(entry.get("changed_files_count"))
-        except (TypeError, ValueError):
-            count = None
-        out.append({
-            "name": str(entry.get("name", "")),
-            "path": str(entry.get("path", "")),
-            "head": str(head) if head is not None else None,
-            "dirty": bool(dirty) if dirty is not None else None,
-            "changed_files_count": count,
-            "changed_files_fingerprint": (
-                str(fingerprint) if fingerprint is not None else None
-            ),
-            "depends_on": bool(entry.get("depends_on", False)),
-        })
+        out.append(
+            {
+                "name": str(entry.get("name", "")),
+                "path": str(entry.get("path", "")),
+                "head": str(head) if head is not None else None,
+                "dirty": bool(dirty) if dirty is not None else None,
+                "depends_on": bool(entry.get("depends_on", False)),
+                "subject": _normalize_subject(entry.get("subject")),
+            }
+        )
     return out
+
+
+def _normalize_subject(value: Any) -> dict[str, Any]:
+    """Serialize a typed capture outcome at the durable receipt boundary."""
+    # ``write_scheduled_command_receipt`` can snapshot an already persisted
+    # flat receipt.  Accept that serialized representation as well as the
+    # typed capture result used by new command executions.
+    if isinstance(value, Mapping):
+        normalized = subject_identity(value)
+        if normalized is not None:
+            value = normalized
+        elif value.get("status") == "unavailable":
+            return {"status": "unavailable", "reason": str(value.get("reason", "identity_unavailable"))}
+    if isinstance(value, VerificationSubjectAvailable):
+        value = value.identity
+    if isinstance(value, VerificationSubjectIdentity) and is_usable_verification_subject(value):
+        return {"status": "available", "identity": {
+            "version": value.version, "object_format": value.object_format,
+            "tree_oid": value.tree_oid, "observed_head_oid": value.observed_head_oid,
+            "baseline_oid": value.baseline_oid,
+        }}
+    reason = value.reason if isinstance(value, VerificationSubjectUnavailable) else "identity_unavailable"
+    return {"status": "unavailable", "reason": str(reason)}
+
+
+def subject_identity(value: Any) -> VerificationSubjectIdentity | None:
+    """Tolerantly parse a serialized available subject; malformed is unusable."""
+    raw = value.get("identity") if isinstance(value, Mapping) and value.get("status") == "available" else None
+    if not isinstance(raw, Mapping):
+        return None
+    identity = VerificationSubjectIdentity(
+        version=raw.get("version"), object_format=raw.get("object_format"),
+        tree_oid=raw.get("tree_oid"), observed_head_oid=raw.get("observed_head_oid"),
+        baseline_oid=raw.get("baseline_oid"),
+    )
+    return identity if is_usable_verification_subject(identity) else None
 
 
 def _sanitize_filename_stem(value: str) -> str:
@@ -485,14 +552,14 @@ def write_env_assertion_receipt(
     }
     env_name = str(subject_raw.get("env", "")) or "env"
     overrides_raw = result.get("env_overrides") or {}
-    env_overrides = {
-        str(k): str(v) for k, v in overrides_raw.items()
-    } if isinstance(overrides_raw, Mapping) else {}
+    env_overrides = (
+        {str(k): str(v) for k, v in overrides_raw.items()}
+        if isinstance(overrides_raw, Mapping)
+        else {}
+    )
     assertions_raw = result.get("assertions") or []
     assertions = (
-        _normalize_assertions(assertions_raw)
-        if isinstance(assertions_raw, (list, tuple))
-        else []
+        _normalize_assertions(assertions_raw) if isinstance(assertions_raw, (list, tuple)) else []
     )
 
     receipt = {
@@ -620,14 +687,16 @@ def environment_provenance_failures(
                     continue
                 expected = check.get("expected")
                 actual = check.get("actual")
-                failures.append(EnvProvenanceFailure(
-                    phase=phase,
-                    round=round_n,
-                    check=str(check.get("name", "")),
-                    expected=str(expected) if expected is not None else None,
-                    actual=str(actual) if actual is not None else None,
-                    receipt_path=receipt_path,
-                ))
+                failures.append(
+                    EnvProvenanceFailure(
+                        phase=phase,
+                        round=round_n,
+                        check=str(check.get("name", "")),
+                        expected=str(expected) if expected is not None else None,
+                        actual=str(actual) if actual is not None else None,
+                        receipt_path=receipt_path,
+                    )
+                )
         return tuple(failures)
     except (OSError, ValueError, TypeError):
         return ()
@@ -658,28 +727,28 @@ def write_command_receipt(
     command = str(result.get("command", "")) or "command"
 
     placeholders_raw = result.get("placeholders")
-    placeholders = {
-        "checkout": str(placeholders_raw.get("checkout", "")),
-        "project": str(placeholders_raw.get("project", "")),
-    } if isinstance(placeholders_raw, Mapping) else {"checkout": "", "project": ""}
-
-    argv_raw = result.get("argv")
-    argv = (
-        [str(a) for a in argv_raw]
-        if isinstance(argv_raw, (list, tuple))
-        else []
+    placeholders = (
+        {
+            "checkout": str(placeholders_raw.get("checkout", "")),
+            "project": str(placeholders_raw.get("project", "")),
+        }
+        if isinstance(placeholders_raw, Mapping)
+        else {"checkout": "", "project": ""}
     )
 
+    argv_raw = result.get("argv")
+    argv = [str(a) for a in argv_raw] if isinstance(argv_raw, (list, tuple)) else []
+
     overrides_raw = result.get("env_overrides")
-    env_overrides = {
-        str(k): str(v) for k, v in overrides_raw.items()
-    } if isinstance(overrides_raw, Mapping) else {}
+    env_overrides = (
+        {str(k): str(v) for k, v in overrides_raw.items()}
+        if isinstance(overrides_raw, Mapping)
+        else {}
+    )
 
     assertions_raw = result.get("assertions")
     assertions = (
-        _normalize_assertions(assertions_raw)
-        if isinstance(assertions_raw, (list, tuple))
-        else []
+        _normalize_assertions(assertions_raw) if isinstance(assertions_raw, (list, tuple)) else []
     )
 
     git_raw = result.get("git")
@@ -687,7 +756,6 @@ def write_command_receipt(
     git = {
         "checkout_head": git_raw.get("checkout_head"),
         "baseline_head": git_raw.get("baseline_head"),
-        "changed_files_fingerprint": git_raw.get("changed_files_fingerprint"),
     }
 
     log_path = result.get("log_path")
@@ -710,6 +778,7 @@ def write_command_receipt(
         "parity": str(result.get("parity", "absolute")),
         "detail": str(result.get("detail", "")),
         "git": git,
+        "subject": _normalize_subject(result.get("subject")),
         "dependencies": _normalize_dependencies(result.get("dependencies")),
     }
 
@@ -718,6 +787,44 @@ def write_command_receipt(
     path = receipts_dir / f"{_sanitize_filename_stem(command)}.json"
     path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
     return path
+
+
+def write_scheduled_command_receipt(
+    *,
+    output_dir: Path | str | None,
+    result: Mapping[str, Any],
+    hook: str,
+    phase: str,
+) -> Path | None:
+    """Write the latest receipt and one immutable scheduled-execution copy.
+
+    The flat ``<command>.json`` receipt remains the sole authoritative input to
+    readiness and delivery. The nested execution copy exists only for the
+    scheduled-gate ledger to reference; command-receipt loaders deliberately do
+    not recurse into this directory.
+    """
+    latest = write_command_receipt(output_dir=output_dir, result=result)
+    if latest is None:
+        return None
+
+    command = str(result.get("command", "")) or "command"
+    identity = "--".join(
+        _sanitize_filename_stem(value)
+        for value in (command, hook, phase or "none")
+    )
+    executions_dir = latest.parent / COMMAND_RECEIPT_EXECUTIONS_DIRNAME
+    executions_dir.mkdir(parents=True, exist_ok=True)
+    encoded = latest.read_text(encoding="utf-8")
+    attempt = 1
+    while True:
+        evidence = executions_dir / f"{identity}--{attempt:04d}.json"
+        try:
+            with evidence.open("x", encoding="utf-8") as stream:
+                stream.write(encoded)
+        except FileExistsError:
+            attempt += 1
+            continue
+        return evidence
 
 
 def load_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:
@@ -746,27 +853,18 @@ def load_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:
 
 
 def command_receipt_passed(receipt: Mapping[str, Any] | None) -> bool:
-    """Authoritative pass rollup for one command receipt.
+    """Return the execution pass rollup for one command receipt.
 
-    A receipt passes iff its exit code is ``0`` AND every declared assertion
-    passed AND its execution ``detail`` is empty. This is the same rollup
-    :func:`pipeline.verification_readiness._classify_receipt` uses to decide
-    ``failed`` (it just omits staleness, which is a provenance concern, not a
-    pass/fail one), so every surface that renders or routes on receipt status —
-    readiness, the delivery gate, the scheduled gate recorder, and the auto-run
-    materializer — agrees on what "passed" means and a non-zero/None exit, a
-    failed assertion, or a non-empty detail can never read as green.
+    This is deliberately not a freshness verdict.  It reports a command whose
+    execution and assertions passed even if its identity is ``unverifiable``;
+    callers that need freshness must use :func:`classify_receipt` with current
+    subject and dependency identities.  This preserves execution-event and
+    evidence-summary semantics without allowing unavailable proof to satisfy a
+    readiness or routing decision.
     """
-    if not isinstance(receipt, Mapping):
-        return False
-    if receipt.get("exit_code") != 0:
-        return False
-    assertions = receipt.get("assertions")
-    if isinstance(assertions, list) and any(
-        isinstance(a, Mapping) and not a.get("passed", False) for a in assertions
-    ):
-        return False
-    return not str(receipt.get("detail") or "").strip()
+    from pipeline.verification_failure import classify_receipt
+
+    return classify_receipt(receipt).status in {"present", "unverifiable"}
 
 
 def summarize_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:
@@ -782,14 +880,16 @@ def summarize_command_receipts(run_dir: Path | str) -> list[dict[str, Any]]:
         passed = command_receipt_passed(receipt)
         git = receipt.get("git") or {}
         git = git if isinstance(git, dict) else {}
-        summaries.append({
-            "command": receipt.get("command"),
-            "env": receipt.get("env"),
-            "exit_code": receipt.get("exit_code"),
-            "parity": receipt.get("parity", "absolute"),
-            "passed": passed,
-            "has_baseline": bool(git.get("baseline_head")),
-        })
+        summaries.append(
+            {
+                "command": receipt.get("command"),
+                "env": receipt.get("env"),
+                "exit_code": receipt.get("exit_code"),
+                "parity": receipt.get("parity", "absolute"),
+                "passed": passed,
+                "has_baseline": bool(git.get("baseline_head")),
+            }
+        )
     return summaries
 
 
@@ -807,16 +907,18 @@ def summarize_verification_receipts(run_dir: Path | str) -> list[dict[str, Any]]
         passed = sum(1 for c in checks if isinstance(c, dict) and c.get("passed"))
         commands = receipt.get("commands") or []
         commands = commands if isinstance(commands, list) else []
-        summaries.append({
-            "phase": receipt.get("phase"),
-            "round": receipt.get("round"),
-            "kind": receipt.get("kind", VERIFICATION_RECEIPT_KIND),
-            "checks_total": len(checks),
-            "checks_passed": passed,
-            "all_passed": len(checks) == passed,
-            "commands_run": len(commands),
-            "temp_env_outside_checkout": bool(
-                receipt.get("temp_env_outside_checkout", True),
-            ),
-        })
+        summaries.append(
+            {
+                "phase": receipt.get("phase"),
+                "round": receipt.get("round"),
+                "kind": receipt.get("kind", VERIFICATION_RECEIPT_KIND),
+                "checks_total": len(checks),
+                "checks_passed": passed,
+                "all_passed": len(checks) == passed,
+                "commands_run": len(commands),
+                "temp_env_outside_checkout": bool(
+                    receipt.get("temp_env_outside_checkout", True),
+                ),
+            }
+        )
     return summaries

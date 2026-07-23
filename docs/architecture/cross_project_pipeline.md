@@ -69,10 +69,107 @@ at least one global `plan` / `validate_plan` step to produce a handoff;
 the `task` scoped profile is rejected for cross mode.
 
 `contract_check` is **not** a profile step. The cross runner appends it
-as a cross-only per-alias gate after all project pipelines finish; mono
-runs never invoke it. Contract-check verdicts are recorded in
-`session.phases.contract_check[alias]` and feed into the system
-release gate below.
+as a cross-only per-alias gate only after canonical parent-state reduction;
+mono runs never invoke it.
+
+### C1 structural execution graph
+
+After a schema-valid cross plan is admitted, `session_run.py` invokes the
+pure compiler in `pipeline.cross_project.execution_graph` and atomically
+persists `cross_execution_graph.json`. The artifact is an immutable topology:
+global declarations, project dependency edges, and runner-owned gate policy.
+It has no lifecycle ledger, status, readiness, retry, or completion fields.
+
+The C2 scheduler and resume path load this immutable graph and combine it with
+canonical durable facts to select one ready structural node at a time. Derived
+state is never persisted as a mutable graph ledger. Child phases and scheduled
+gates remain nested, child-owned observations; the checkpoint is routing-only.
+MCP/XF3 projection and parallel scheduling remain deferred.
+
+## Canonical parent-state reduction
+
+`pipeline.run_state.cross_parent.reduce_cross_parent_state` is the single
+authority for parent and child state meaning. It is a pure reducer: immutable
+facts in, immutable `CrossParentState` out, with no I/O or mutation. Runtime
+and durable reads use separate adapters, but both pass their facts through this
+same reducer.
+
+| Concern | Authority |
+| --- | --- |
+| Declared aliases and order | parent `meta.json.projects` |
+| Physical child outcome | exact `<parent-run>/<alias>/meta.json` path |
+| Embedded live child snapshot | runtime adapter observation; cannot override a conflicting physical result |
+| Active normal phase and scheduled gate | typed lifecycle events; gates must also appear in `scheduled_gate_ledger.json` |
+| Pending decision | active handoff payload, checked against explicit checkpoint routing fields |
+| Parent / child classification | canonical reducer only |
+
+Every declared alias becomes exactly one child projection. A child exposes
+separate dimensions: execution, active operations, `contract_evaluable`,
+release disposition, `release_ready`, exact pending decision, and blockers.
+There is intentionally no shared child `ready` boolean. A completed rejected
+release remains contract-evaluable with `release_disposition="rejected"`, but
+is not release-ready. Missing, malformed, failed, interrupted, unknown, and
+non-decision pauses fail closed; `checkpoint.sub_status="done"` never changes
+that physical classification.
+
+The reducer classifies the parent as running, awaiting operator, blocked,
+ready, terminal success/failure/halted, or inconsistent. Conflicting embedded
+and physical observations, invalid handoff correspondence, and terminal
+metadata that conflicts with active or non-ready facts are consistency
+violations rather than successful completion.
+
+### Transition boundaries
+
+Cross dispatch reduces before preserving or skipping a child: the checkpoint
+is only a resume cursor, never success evidence. The cross contract provider
+is called only when reduced required children are contract-evaluable; otherwise
+the existing per-alias `NOT_EVALUABLE` precondition is recorded:
+
+```json
+{
+  "approved": false,
+  "verdict": "NOT_EVALUABLE",
+  "not_evaluable": true,
+  "source": "precondition",
+  "reason": "child_readiness",
+  "child_status": "halted",
+  "child_reason": "operator requested stop",
+  "findings": [],
+  "risks": [],
+  "checks": []
+}
+```
+
+The runner reduces again immediately before cross final acceptance and again
+before delivery/finalization. CFA consumes canonical child projections:
+non-evaluable children become `CFA_MISSING_CHILD_<alias>`; a rejected child
+release becomes `CFA_CHILD_REJECTED_<alias>` while still allowing contract
+evidence to be considered. Delivery and terminal finalization reject active,
+pending, non-release-ready, or inconsistent state. Existing gate skip policy,
+CFA override, and delivery aggregation remain separate policy layers.
+
+### Durable adapter scope
+
+The disk adapter reads only the parent run, each declared alias's exact child
+path, typed event streams, and `scheduled_gate_ledger.json`. It does not parse
+transcripts, infer identifiers from prefixes, discover child directories, or
+write a derived reducer artifact.
+
+On resume, the physical child `meta.json` files are the canonical source for
+the parent session's `phases.projects` payloads. Checkpoint sub-status remains
+only a routing cursor: it cannot manufacture a completed child or a release
+verdict. Missing, malformed, or incomplete physical release payloads therefore
+remain fail-closed rather than being replaced with a stale embedded snapshot.
+Completed contract and approved CFA results are reused from the durable parent
+session; the snapshot immediately before delivery contains those gate results
+and the hydrated child payloads, so an interruption at delivery resumes with
+the same reduction inputs and without re-invoking either gate.
+
+`NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
+policy applies, and it is not an interface-compatibility verdict.
+Resume treats it as incomplete evidence and re-runs contract evaluation
+after a successful child retry. Real `APPROVED`, `REJECTED`, and explicit
+`SKIPPED` entries retain their normal resume-cache behavior.
 
 `cross_final_acceptance` is the **system release
 gate**: a single cross-only terminal step that runs once after
@@ -85,8 +182,11 @@ matching. It runs in two paths:
   release verdict when any upstream signal blocks ship: missing /
   crashed child sub-pipeline, missing per-project release verdict,
   per-project `final_acceptance.ship_ready == false`, contract_check
-  REJECTED, or parse error upstream. Each violation produces one
-  release blocker with a `CFA_*` id prefix.
+  REJECTED, or parse error upstream. A `NOT_EVALUABLE` child-readiness
+  entry becomes `CFA_MISSING_CHILD_<alias>` with its exact child status
+  and halt/error reason; it does not become `CFA_CONTRACT_REJECTED` and
+  synthesizes `contract_status.interfaces=not_applicable`. Each
+  violation produces one release blocker with a `CFA_*` id prefix.
 * **Agent path** — preconditions pass → invokes the cross reviewer
   with the cross plan + per-project release verdicts + contract check
   results, parses via `parse_release` (Phase 1 contract).
@@ -130,9 +230,12 @@ flowchart TD
   L --> M["write implementation_handoff.{json,md} (JSON canonical)"]
   M --> N["run_pipeline(profile_obj, plan_source='cross', handoff_path=…json)"]
   N --> O["project_steps: implement / review / repair / final"]
-  O --> P["contract_check (per-alias, cross-only)"]
-  P --> R["cross_final_acceptance (system release gate, cross-only)"]
-  R --> Q["run.end (status=done | failed)"]
+  O --> P{"all children ready?"}
+  P -->|yes| R["contract_check (per-alias, cross-only)"]
+  P -->|no| S["persist NOT_EVALUABLE child_readiness evidence"]
+  R --> T["cross_final_acceptance (system release gate, cross-only)"]
+  S --> T
+  T --> Q["run.end (status=done | failed)"]
 ```
 
 `cross_final_acceptance` is the single terminal step that writes
@@ -146,6 +249,11 @@ with `CFA_*` ids:
 | `CFA_CHILD_REJECTED_<alias>` | per-project `final_acceptance.ship_ready == false` |
 | `CFA_CONTRACT_REJECTED_<alias>` | `contract_check[alias].verdict == "REJECTED"` |
 | `CFA_PARSE_ERROR_<alias>` | parse error in upstream `final_acceptance` or `contract_check` |
+
+`CFA_MISSING_CHILD_<alias>` also represents dispatch-readiness failures
+such as a durable child `halted`, `interrupted`, or unknown status. Its
+body carries the persisted child status plus halt reason/error; it is a
+readiness blocker, not proof that an interface is broken.
 
 Event identity:
 
@@ -187,7 +295,13 @@ prepend that body (read from `state.extras["cross_handoff"]`) before the
 existing plan contract via the pure builders' `handoff_contract`
 parameter. The handoff requirement is keyed on phase presence: required
 when the projected profile contains `implement` or `repair_changes`;
-review-only profiles run without one. v1 handoffs carry
+review-only profiles run without one. Handoffs additionally carry a
+control-only `declared_files` JSON array: dispatch alias-normalizes
+`[current]/path` to `path` and rejects sibling aliases before writing the
+artifact or launching a child. The child hydrates that tuple into its
+engine-owned declared-write scope, together with plugin allowances; it is
+never rendered into handoff markdown, agent instructions, captain data, or an
+MCP wire field. v1 handoffs carry
 `full_cross_plan_markdown`, `project_subtask`, `cross_validation_summary`,
 and `sibling_aliases`; the source `project_path` is retained in the JSON
 for audit only and is never rendered into the runtime body — the
@@ -262,6 +376,28 @@ contract review surfaces as a structured object in
 contract; `raw_response` preserves the model's JSON for re-validation.
 Malformed structured output is downgraded to `REJECTED` with a
 `parse_error` field — the contract is the gate, not prose heuristics.
+When child readiness blocks admission, the separate `NOT_EVALUABLE`
+precondition shape above is persisted instead; consumers must not render
+it as a rejected compatibility verdict.
+
+## After the gate: cross delivery and resume (pointers)
+
+Two shipped mechanisms sit after `cross_final_acceptance` and are documented
+by their ADRs rather than re-narrated here:
+
+- **Cross delivery** ([ADR 0119](../adr/0119-delivery-branch-policy.md);
+  `pipeline/cross_project/cross_delivery.py`) — runs only on the
+  CFA-approved/override path, delivers per alias with a
+  continue-on-failure loop, and aggregates to an overall outcome that
+  finalization maps onto the terminal status (`ok`/`disabled` → `done`,
+  `partial` → `cross_delivery_partial`, `failed` → `cross_delivery_failed`,
+  `halted` → `halted`).
+- **CFA pause/resume** (ADR 0038 cross parity; `cfa_gate.py`) — the gate
+  outcome is a typed enum (`approved_terminal` / `paused` /
+  `override_continue` / `halted` / `retry_consumed`); a paused resume
+  preserves the operator override marker, and settle-time clears the
+  `pending_gate` residue through the single run-state eviction point
+  (ADR 0115).
 
 ## Improvement Plan
 

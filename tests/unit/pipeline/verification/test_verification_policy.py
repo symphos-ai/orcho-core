@@ -19,15 +19,18 @@ import ast
 from pathlib import Path
 
 import pipeline.verification_policy as verification_policy
+import pipeline.verification_readiness as verification_readiness
 from pipeline.plugins import PluginConfig
-from pipeline.verification_contract import VerificationContract
+from pipeline.verification_contract import VerificationContract, placeholder_context_for
+from pipeline.verification_failure import ReceiptClassification
 from pipeline.verification_policy import (
-    MANUAL_ONLY_POLICY,
     GapEntry,
     GapPartition,
+    consequence_by_command,
     effective_delivery_policy_by_command,
     partition_gaps,
 )
+from pipeline.verification_readiness import resolve_delivery_selection
 from pipeline.verification_selection import ScheduledGateEntry, ScheduledGatePlan
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,7 +119,7 @@ def test_manual_only_command_resolves_to_manual_only_token() -> None:
     policies = effective_delivery_policy_by_command(
         contract, plan, manual_set={"audit"}, boundary_policy="warn",
     )
-    assert policies["audit"] == MANUAL_ONLY_POLICY
+    assert policies["audit"] == "manual"
     assert policies["test"] == "require"
 
 
@@ -159,6 +162,25 @@ def test_non_delivery_hook_gate_is_ignored_for_policy() -> None:
     assert policies["test"] == "warn"
 
 
+def test_required_phase_only_gate_gets_implicit_delivery_executor() -> None:
+    """A delivery-enforced phase gate retains an engine refresh identity.
+
+    Without this identity a stale receipt would remain delivery-blocking even
+    though neither pre-final materialization nor the delivery hook could refresh
+    it.
+    """
+    contract = _contract(delivery_policy="require")
+    plan = _plan(_entry("test", "before_phase", "implement", "require"))
+
+    selection = resolve_delivery_selection(contract, plan)
+
+    assert selection.receipt_commands == ("test",)
+    assert [(item.identity.hook, item.identity.phase, item.identity.policy,
+             item.executor) for item in selection.identities] == [
+        ("before_delivery", "", "require", "engine"),
+    ]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # partition_gaps
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +192,7 @@ def test_partition_require_gap_is_blocking() -> None:
     )
     assert part.blocking == (GapEntry("test", "missing", "require"),)
     assert part.warning == ()
-    assert part.manual_only == ()
+    assert part.operator == ()
     assert part.has_blocking is True
     assert part.blocking_commands == ("test",)
     assert part.commands_with_status("missing") == ("test",)
@@ -189,10 +211,10 @@ def test_partition_warn_and_suggest_gaps_are_warnings_not_blocking() -> None:
 def test_partition_manual_only_gap_is_separate_bucket_never_blocking() -> None:
     part = partition_gaps(
         {"test": "missing", "audit": "missing"},
-        {"test": "require", "audit": MANUAL_ONLY_POLICY},
+        {"test": "require", "audit": "manual"},
     )
     assert part.blocking_commands == ("test",)
-    assert part.manual_only_commands == ("audit",)
+    assert part.operator_commands == ("audit",)
     # The manual_only gap is NOT counted among blocking/required gaps.
     assert "audit" not in part.blocking_commands
 
@@ -215,9 +237,9 @@ def test_partition_accepts_classification_like_objects() -> None:
     assert part.blocking == (GapEntry("test", "failed", "require"),)
 
 
-def test_partition_off_policy_gap_is_dropped() -> None:
-    part = partition_gaps({"test": "missing"}, {"test": "off"})
-    assert part == GapPartition()
+def test_partition_manual_policy_gap_is_visible_as_manual_only() -> None:
+    part = partition_gaps({"test": "missing"}, {"test": "manual"})
+    assert part.operator == (GapEntry("test", "missing", "manual"),)
 
 
 def test_partition_preserves_input_order() -> None:
@@ -225,6 +247,121 @@ def test_partition_preserves_input_order() -> None:
     policy = {"c": "require", "a": "require", "b": "require"}
     part = partition_gaps(status, policy)
     assert part.blocking_commands == ("c", "a", "b")
+
+
+def test_hygiene_failure_softens_consequence_without_rewriting_require_policy() -> None:
+    policies = {"provenance": "require", "environment": "require", "test": "require"}
+    statuses = {
+        "provenance": ReceiptClassification("failed", "provenance_failure"),
+        "environment": ReceiptClassification("failed", "env_failure"),
+        "test": ReceiptClassification("failed", "test_failure"),
+    }
+
+    consequences = consequence_by_command(statuses, policies)
+
+    assert policies == {"provenance": "require", "environment": "require", "test": "require"}
+    assert consequences == {
+        "provenance": "warning",
+        "environment": "warning",
+        "test": "required_action",
+    }
+    partition = partition_gaps(statuses, policies, consequences)
+    assert partition.blocking_commands == ("test",)
+    assert partition.warning_commands == ("provenance", "environment")
+
+
+def test_delivery_selection_keeps_identities_but_dedupes_receipt_commands() -> None:
+    contract = _contract(required=["test"])
+    plan = _plan(
+        _entry("test", "after_phase", "implement", "manual"),
+        _entry("test", "before_delivery", "", "warn"),
+    )
+
+    selection = resolve_delivery_selection(contract, plan)
+
+    assert selection.receipt_commands == ("test",)
+    assert tuple(item.identity.hook for item in selection.identities) == (
+        "after_phase", "before_delivery",
+    )
+    assert tuple(item.executor for item in selection.executor_identities) == ("engine",)
+    assert tuple(item.consequence for item in selection.consequence_identities) == ("warning",)
+
+
+def test_delivery_selection_resolves_legacy_required_and_manual_only_identities() -> None:
+    contract = _contract(
+        required=["lint", "manual"],
+        commands={"lint": {"run": "x"}, "manual": {"run": "x"}},
+        gate_sets={"operator": {"commands": ["manual"]}},
+        schedule=[{"manual_only": True, "gate_sets": ["operator"]}],
+    )
+
+    selection = resolve_delivery_selection(contract, None)
+
+    assert selection.receipt_commands == ("lint", "manual")
+    assert [(item.identity.command, item.identity.hook, item.executor) for item in selection.identities] == [
+        ("lint", "before_delivery", "engine"),
+        ("manual", "manual_only", "operator"),
+    ]
+
+
+def test_delivery_selection_without_plan_keeps_gate_set_schedule_fail_closed() -> None:
+    """A plan-resolution failure must not erase scheduled delivery proof."""
+    contract = _contract(
+        commands={"smoke": {"run": "x"}},
+        required=[],
+        gate_sets={"smoke": {"commands": ["smoke"]}},
+        selection=[{"always": ["smoke"]}],
+        schedule=[{
+            "before_delivery": True,
+            "gate_sets": ["smoke"],
+            "policy": "require",
+        }],
+    )
+
+    selection = resolve_delivery_selection(contract, None)
+
+    assert selection.receipt_commands == ("smoke",)
+    assert [(item.identity.command, item.identity.hook, item.executor) for item in selection.identities] == [
+        ("smoke", "before_delivery", "engine"),
+    ]
+
+
+def test_classification_keeps_gate_set_schedule_when_plan_build_fails(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The never-raise plan-build path remains fail-closed for delivery."""
+    contract = _contract(
+        commands={"smoke": {"run": "x"}},
+        required=[],
+        gate_sets={"smoke": {"commands": ["smoke"]}},
+        selection=[{"always": ["smoke"]}],
+        schedule=[{
+            "before_delivery": True,
+            "gate_sets": ["smoke"],
+            "policy": "require",
+        }],
+    )
+    monkeypatch.setattr(
+        verification_readiness,
+        "delivery_gate_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("plan failed")),
+    )
+    ctx = placeholder_context_for(
+        contract,
+        checkout=str(tmp_path),
+        project=str(tmp_path),
+        workspace=str(tmp_path),
+        run_dir=str(tmp_path / "run"),
+    )
+
+    statuses = verification_readiness.classify_required_receipts(
+        contract,
+        tmp_path / "run",
+        ctx,
+        checkout=str(tmp_path),
+    )
+
+    assert statuses["smoke"].status == "missing"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

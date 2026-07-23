@@ -14,11 +14,13 @@ from agents.runtimes._strategy import (
     make_provider,
 )
 from agents.runtimes.claude import ClaudeAgent
+from agents.runtimes.claude_glm import ClaudeGlmAgent
 from agents.runtimes.codex import CodexAgent
 from agents.runtimes.identity import RuntimeIdentity, probe_runtime_identity
 
 __all__ = [
     "ClaudeAgent",
+    "ClaudeGlmAgent",
     "CodexAgent",
     "AgentProvider",
     "RealAgentProvider",
@@ -29,4 +31,3 @@ __all__ = [
     "RuntimeIdentity",
     "probe_runtime_identity",
 ]
-

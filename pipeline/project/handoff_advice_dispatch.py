@@ -26,6 +26,7 @@ from pipeline.project.handoff_advice_artifact import (
     build_provenance_note,
     write_advice_artifact,
 )
+from pipeline.project.handoff_advice_assessment import assess_advice
 
 
 def _handle_advice_request(
@@ -53,7 +54,6 @@ def _handle_advice_request(
         AdviceFollowup,
         HandoffDecisionInput,
         prompt_advice_followup,
-        prompt_confirm,
     )
 
     out = stdout or sys.stdout
@@ -63,30 +63,37 @@ def _handle_advice_request(
         return None
 
     ctx = _adv.build_advice_context(run, signal)
-    try:
-        result = _adv.invoke_advisor(run, ctx)
-    except Exception as exc:  # advisor invocation must never break the loop
-        warn(f"Advisor invocation failed ({exc}); returning to menu.")
-        return None
-    advice = result.advice
-    if "advice_unparseable" in advice.parse_warnings:
-        warn("Advisor response could not be parsed; returning to menu.")
-        return None
+    advice = _adv.hygiene_gate_advice(signal)
+    usage: dict[str, Any] = {}
+    if advice is None:
+        try:
+            result = _adv.invoke_advisor(run, ctx)
+        except Exception as exc:  # advisor invocation must never break the loop
+            warn(f"Advisor invocation failed ({exc}); returning to menu.")
+            return None
+        advice = result.advice
+        usage = result.usage
+        if "advice_unparseable" in advice.parse_warnings:
+            warn("Advisor response could not be parsed; returning to menu.")
+            return None
 
+    assessment = assess_advice(advice, ctx.contract_snapshot)
     # The advice object is the only durable write here — never a decision.
     relpath = write_advice_artifact(
-        run_dir, signal.handoff_id, advice, ctx, usage=result.usage,
+        run_dir, signal.handoff_id, advice, ctx, usage=usage, assessment=assessment,
     )
     available = tuple(getattr(signal, "available_actions", ()) or ())
 
     if getattr(request, "kind", "") == "retry_with_advice":
-        if advice.recommended_action != "retry_feedback":
+        if not assessment.auto_apply_ok:
             print(render_advice_summary(
                 recommended_action=advice.recommended_action,
                 confidence=advice.confidence, rationale=advice.rationale,
                 retry_feedback_preview=advice.retry_feedback, risks=advice.risks,
                 expected_files=advice.expected_files,
                 operator_note=advice.operator_note,
+                disposition=assessment.disposition,
+                conflict_details=assessment.conflict_details,
             ), file=out)
             warn(
                 f"Advisor recommended {advice.recommended_action!r}, not a "
@@ -95,11 +102,6 @@ def _handle_advice_request(
             return None
         if "retry_feedback" not in available:  # defensive: menu shouldn't show
             warn("retry_feedback is not available for this handoff; cannot retry.")
-            return None
-        if advice.confidence == "low" and prompt_confirm(
-            "Advisor confidence is low — generate a retry from this advice?",
-            stdin=stdin, stdout=stdout,
-        ) is not True:
             return None
         return HandoffDecisionInput(
             action="retry_feedback", feedback=advice.retry_feedback,
@@ -112,6 +114,7 @@ def _handle_advice_request(
         confidence=advice.confidence, rationale=advice.rationale,
         retry_feedback_preview=advice.retry_feedback, risks=advice.risks,
         expected_files=advice.expected_files, operator_note=advice.operator_note,
+        disposition=assessment.disposition, conflict_details=assessment.conflict_details,
         stdin=stdin, stdout=stdout,
     )
     if not isinstance(followup, AdviceFollowup):
@@ -130,21 +133,12 @@ def _handle_advice_request(
     # recording any decision. Gating on the recommendation here guarantees a
     # low-confidence confirmation can never upgrade a non-retry recommendation
     # into a retry_feedback decision.
-    if advice.recommended_action != "retry_feedback":
+    if not assessment.auto_apply_ok:
         warn(
             f"Advisor recommended {advice.recommended_action!r}, not a retry; "
             "no decision recorded. Returning to menu."
         )
         return None
-    # For a retry_feedback recommendation ``auto_apply_ok`` is False only when
-    # confidence is low; require an explicit operator confirmation in that case.
-    safety = _adv.classify_advice_safety(advice)
-    if safety.needs_confirmation and prompt_confirm(
-        "Advisor confidence is low — apply this retry anyway?",
-        stdin=stdin, stdout=stdout,
-    ) is not True:
-        return None
-
     if followup.feedback is not None:
         # Operator edited the feedback. The note must point at an advice
         # artifact whose retry_feedback IS the applied text, so persist a
@@ -152,7 +146,7 @@ def _handle_advice_request(
         relpath = write_advice_artifact(
             run_dir, signal.handoff_id,
             replace(advice, retry_feedback=followup.feedback), ctx,
-            usage=result.usage,
+            usage=usage, assessment=assessment,
         )
         feedback = followup.feedback
     else:

@@ -104,20 +104,30 @@ _RUN_ID_RE = re.compile(r"\d{8}_\d{6}(?:_[a-f0-9]+)?")
 _ISO_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?")
 
 
-def normalize_session(session: dict, *, project_root: str | None = None) -> dict:
+def normalize_session(
+    session: dict,
+    *,
+    project_root: str | None = None,
+    tmp_root: str | None = None,
+) -> dict:
     """Strip volatile fields from a session dict in-place-friendly clone.
 
     - Run IDs / timestamps → ``"<RUN_ID>"`` / ``"<TIMESTAMP>"``
     - ``ts`` / ``started_at`` / ``ended_at`` / ``duration_*`` → ``"<DURATION>"``
     - Absolute paths under ``project_root`` → ``"<PROJECT>/..."``
-    - Other absolute paths under tmpdir → ``"<TMP>/..."``
+    - Other absolute paths under ``tmp_root`` → ``"<TMP>/..."``
 
     Returns a fresh dict; does not mutate input.
     """
-    return _normalize(session, project_root=project_root)
+    return _normalize(session, project_root=project_root, tmp_root=tmp_root)
 
 
-def normalize_events(lines: list[str], *, project_root: str | None = None) -> list[dict]:
+def normalize_events(
+    lines: list[str],
+    *,
+    project_root: str | None = None,
+    tmp_root: str | None = None,
+) -> list[dict]:
     """Parse events.jsonl lines, normalize each, return list of dicts.
     Events with volatile fields stripped per the same rules as
     sessions; ordering preserved exactly (golden file pins order)."""
@@ -127,11 +137,19 @@ def normalize_events(lines: list[str], *, project_root: str | None = None) -> li
         s = raw.strip()
         if not s:
             continue
-        out.append(_normalize(_json.loads(s), project_root=project_root))
+        out.append(
+            _normalize(_json.loads(s), project_root=project_root, tmp_root=tmp_root)
+        )
     return out
 
 
-def _normalize(value: Any, *, project_root: str | None, path: tuple[str, ...] = ()) -> Any:
+def _normalize(
+    value: Any,
+    *,
+    project_root: str | None,
+    tmp_root: str | None,
+    path: tuple[str, ...] = (),
+) -> Any:
     if isinstance(value, dict):
         result: dict = {}
         for k, v in value.items():
@@ -146,16 +164,29 @@ def _normalize(value: Any, *, project_root: str | None, path: tuple[str, ...] = 
             elif isinstance(k, str) and k in _TOKEN_COUNT_KEYS:
                 result[k] = "<TOKEN_COUNT>"
             else:
-                result[k] = _normalize(v, project_root=project_root, path=child_path)
+                result[k] = _normalize(
+                    v,
+                    project_root=project_root,
+                    tmp_root=tmp_root,
+                    path=child_path,
+                )
         return result
     if isinstance(value, list):
-        return [_normalize(v, project_root=project_root, path=path) for v in value]
+        return [
+            _normalize(v, project_root=project_root, tmp_root=tmp_root, path=path)
+            for v in value
+        ]
     if isinstance(value, str):
-        return _normalize_str(value, project_root=project_root)
+        return _normalize_str(value, project_root=project_root, tmp_root=tmp_root)
     return value
 
 
-def _normalize_str(s: str, *, project_root: str | None) -> str:
+def _normalize_str(
+    s: str,
+    *,
+    project_root: str | None,
+    tmp_root: str | None,
+) -> str:
     # Hermetic snapshot tests use ``snapshot_run`` when no earlier run-state
     # global has supplied a generated run id; in the full suite the same shape
     # can carry a timestamp-style run id. Both are run identity, not shape.
@@ -169,6 +200,10 @@ def _normalize_str(s: str, *, project_root: str | None) -> str:
         proj = str(Path(project_root).resolve())
         if proj in s:
             s = s.replace(proj, "<PROJECT>")
+    if tmp_root:
+        root = str(Path(tmp_root).resolve())
+        if root in s:
+            s = re.sub(re.escape(root) + r"[^\s\"']*", "<TMP>", s)
     # Pytest tmp paths — scrub the whole absolute path to ``<TMP>``.
     # The directory layout *before* the ``pytest-of-<user>`` segment
     # varies by platform and by ``TMPDIR``:

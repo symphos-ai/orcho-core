@@ -57,7 +57,7 @@ from core.io.retry import (
 )
 from core.observability.logging import warn
 from core.observability.metrics import MetricsCollector
-from pipeline.checkpoint import CheckpointStore, PipelineStatus
+from pipeline.checkpoint import CheckpointStore, LoopCursorRecord, PipelineStatus
 from pipeline.engine import save_session
 from pipeline.plugins import PluginConfig
 from pipeline.project import provider_recovery
@@ -92,11 +92,15 @@ from pipeline.verification_delivery import assess_delivery_verification
 # presentation: the line *content* is built by verification_timeline; this only
 # overlays the house color style (neutral header, never success-green).
 _GATE_STATUS_COLORS: tuple[tuple[str, str], ...] = (
-    ("SKIPPED MANUAL", C.YELLOW),
-    ("MISSING/STALE", C.RED),
-    ("FRESH", C.CYAN),
-    ("FAIL", C.RED),
-    ("PASS", C.GREEN),
+    ("residual_failed", C.RED),
+    ("residual_stale", C.RED),
+    ("residual_missing", C.RED),
+    ("executed_fail", C.RED),
+    ("manual_available", C.YELLOW),
+    ("suggested", C.YELLOW),
+    ("skipped_fresh", C.CYAN),
+    ("executed_pass", C.GREEN),
+    ("not_selected", C.GREY),
 )
 
 
@@ -112,9 +116,17 @@ def _print_gate_live_block(lines: tuple[str, ...]) -> None:
     """
     if not lines:
         return
-    from agents.stream import append_agent_log_section
+    from agents.stream_log import append_agent_log_section
 
     append_agent_log_section(lines[0], "\n".join(lines[1:]))
+    # Summary mode: collapse the framed block to a single presenter line.
+    # The durable ``output.log`` mirror above runs in every mode, so this
+    # is purely a stdout substitution; live/debug keep the multi-line block
+    # below byte-identical. Branch strictly on ``get_output_mode``.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        print(_gate_summary_line(lines))
+        return
     print()
     print(paint("+-- Official verification gates", C.CYAN, C.BOLD))
     print(paint(f"| {lines[0]}", C.CYAN, C.BOLD))
@@ -127,12 +139,115 @@ def _print_gate_live_block(lines: tuple[str, ...]) -> None:
     print()
 
 
+def _gate_summary_line(lines: tuple[str, ...]) -> str:
+    """Collapse one gate live block into a single presenter line.
+
+    Parses the pre-rendered block: the header carries the timing/hook
+    label, each ``envs:`` / ``commands:`` body line carries the
+    ``name PASS|FAIL`` gate tokens, and an optional ``receipts:`` line
+    carries the durable receipt paths (whose parent is the run's receipts
+    directory). Gate names, verdicts, and the receipts path are structured
+    tokens — the presenter never truncates them. ``ok`` drives the
+    ``✓``/``✗`` glyph and is false when any gate token is unsuccessful
+    (``FAIL`` or a residual ``MISSING/STALE``) or when the pass captured
+    executor errors (an ``errors: N`` body line). On success the presenter
+    shows the
+    receipts *directory*; on failure this collapses to the *specific*
+    failing receipt file when it can be matched by gate name, so a
+    ``✗ gates … · receipt → <path>`` line points at the real failing proof
+    rather than only its parent directory.
+    """
+    from core.io import summary_lines
+
+    header = lines[0]
+    timing = header.removeprefix("Verification gates").lstrip(" —-") or header
+    result_parts: list[str] = []
+    receipt_paths: list[str] = []
+    failing_names: list[str] = []
+    has_errors = False
+    for line in lines[1:]:
+        if line.startswith("receipts: "):
+            receipt_paths.extend(
+                p for p in line[len("receipts: "):].split(" · ") if p
+            )
+            continue
+        if line.startswith("errors: "):
+            has_errors = True
+            result_parts.append(line)
+            continue
+        body = line
+        for prefix in ("envs: ", "commands: "):
+            if line.startswith(prefix):
+                body = line[len(prefix):]
+                break
+        result_parts.append(body)
+        failing_names.extend(_failing_gate_names(body))
+    results = " · ".join(result_parts)
+    ok = not failing_names and not has_errors
+    receipts_path = _gate_receipts_reference(receipt_paths, failing_names, ok=ok)
+    return summary_lines.gates_line(timing, results, receipts_path, ok)
+
+
+# Gate-token statuses that mean the gate did not succeed. ``FAIL`` is an
+# executed failure; ``MISSING/STALE`` is a residual required receipt that was
+# never satisfied — both must break the summary ``✓`` glyph. ``FRESH``,
+# ``PASS`` and ``SKIPPED MANUAL`` are not failures.
+_FAILING_GATE_STATUSES: frozenset[str] = frozenset({"FAIL", "MISSING/STALE"})
+
+
+def _failing_gate_names(body: str) -> list[str]:
+    """Extract the ``name`` of each unsuccessful ``name STATUS`` gate token.
+
+    Gate tokens are ``·``-joined ``name STATUS`` pairs; ``STATUS`` is the
+    final whitespace-delimited word (``PASS``/``FAIL``/``MISSING/STALE``/…)
+    and everything before it is the gate name (which itself may contain
+    spaces). A token counts as failing when its status is in
+    :data:`_FAILING_GATE_STATUSES` (``FAIL`` or a residual ``MISSING/STALE``).
+    """
+    names: list[str] = []
+    for token in body.split(" · "):
+        parts = token.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1] in _FAILING_GATE_STATUSES:
+            names.append(parts[0].strip())
+    return names
+
+
+def _gate_receipts_reference(
+    receipt_paths: list[str], failing_names: list[str], *, ok: bool,
+) -> str:
+    """Pick the receipts reference for the summary gate line.
+
+    On success (or when no receipt paths are known) return the receipts
+    *directory* — the parent of the first receipt path. On failure, try to
+    match a failing gate name to its specific receipt file (by sanitized
+    filename stem, covering both command receipts ``<stem>.json`` and env
+    receipts ``verify_env_<stem>.json``) and return that concrete file so
+    the operator lands on the real failing proof; fall back to the
+    directory when no path matches.
+    """
+    if not receipt_paths:
+        return ""
+    receipts_dir = str(Path(receipt_paths[0]).parent)
+    if ok:
+        return receipts_dir
+    from pipeline.evidence.verification_receipt import _sanitize_filename_stem
+
+    for name in failing_names:
+        stem = _sanitize_filename_stem(name)
+        candidates = {stem, f"verify_env_{stem}"}
+        for path in receipt_paths:
+            if Path(path).stem in candidates:
+                return path
+    return receipts_dir
+
+
 def _auto_run_required_receipts_live(
     run: Any,
     phase: str,
     *,
     reason: str,
     hook_label: str,
+    delivery_plan: Any | None = None,
 ) -> None:
     """Materialize required receipts and render the official live block.
 
@@ -143,7 +258,12 @@ def _auto_run_required_receipts_live(
     """
     from pipeline.project.verification_autorun import auto_run_required_receipts
 
-    autorun_result = auto_run_required_receipts(run, phase, reason=reason)
+    if delivery_plan is None:
+        autorun_result = auto_run_required_receipts(run, phase, reason=reason)
+    else:
+        autorun_result = auto_run_required_receipts(
+            run, phase, reason=reason, delivery_plan=delivery_plan,
+        )
     if getattr(run, "_presentation", None) is PresentationPolicy.TERMINAL:
         from pipeline.project.verification_timeline import render_gate_live_block
 
@@ -153,12 +273,25 @@ def _auto_run_required_receipts_live(
 
 
 def _gate_events_list(run: Any) -> list:
-    """Read-only view of the durable scheduled-gate decision trail (or [])."""
-    from pipeline.project.gate_repair import VERIFICATION_GATE_EVENTS_KEY
+    """Read-only projection of the durable scheduled-gate ledger trail."""
+    from pipeline.project.verification_ledger_runtime import live_delta
 
-    extras = getattr(getattr(run, "state", None), "extras", None)
-    events = extras.get(VERIFICATION_GATE_EVENTS_KEY) if isinstance(extras, dict) else None
-    return events if isinstance(events, list) else []
+    decisions = {
+        ("execution", "pass"): "executed_pass",
+        ("execution", "fail"): "executed_fail",
+        ("reuse", "fresh"): "skipped_fresh",
+    }
+    return [
+        {
+            "command": event.command,
+            "hook": event.hook,
+            "phase": event.phase,
+            "decision": decisions[(event.kind, event.outcome)],
+            "receipt_path": event.receipt_evidence,
+        }
+        for event in live_delta(run)
+        if (event.kind, event.outcome) in decisions
+    ]
 
 
 def _print_scheduled_gate_live_blocks(
@@ -166,9 +299,8 @@ def _print_scheduled_gate_live_blocks(
 ) -> None:
     """Print one framed live block per hook for scheduled gate decisions (F2).
 
-    ``new_records`` is the *delta* of ``extras['verification_gate_events']``
-    recorded across a single gate seam (the gate_repair recorder appends its
-    routing decisions there). This is purely READ-ONLY over that recorded
+    ``new_records`` is the *delta* of the durable scheduled-gate ledger
+    recorded across a single gate seam. This is purely READ-ONLY over that recorded
     evidence — it never re-runs a gate or re-reads the receipt directory; a
     fresh-but-unexecuted gate surfaces from its ``skipped_fresh`` decision, not
     from the on-disk receipt. No-op outside TERMINAL or with no decisions. The
@@ -582,6 +714,7 @@ class _PipelineRun:
     # ``False`` so test fixtures that construct ``_PipelineRun``
     # directly don't have to track yet another field.
     no_interactive: bool = False
+    unattended: bool = False
 
     # Populated during the run
     research_hypothesis: str | None = None
@@ -671,6 +804,30 @@ class _PipelineRun:
         if name in {"implement", "repair_changes"}:
             return self.implement_model
         return self.review_model
+
+    def _runtime_for_phase(self, name: str) -> str:
+        """Resolve the registered agent-runtime id a phase executed under.
+
+        The authoritative source is the *actual* phase agent from
+        ``state.phase_config`` — its ``runtime`` attribute reflects the runtime
+        that really executed, including a resume ``runtime_override`` or an
+        explicitly supplied ``phase_config`` that diverges from the global
+        config. The global ``AppConfig.phase_runtime_map`` is only a per-phase
+        default and can be stale relative to the resolved slot, so it is used
+        strictly as a fallback when no agent slot is available. Returns ``""``
+        when neither yields a known id, so old/unknown runtimes keep bucketing
+        by model downstream and the legacy ``metrics.json`` shape is preserved.
+        """
+        agent = self._agent_for_phase(name)
+        rt = str(getattr(agent, "runtime", "") or "").strip()
+        if rt and rt != "unknown":
+            return rt
+        try:
+            rt_map = config.AppConfig.load().phase_runtime_map
+        except Exception:  # noqa: BLE001 — a config read must never break metrics
+            rt_map = {}
+        rt = str(rt_map.get(name, "") or "").strip()
+        return "" if rt in {"", "unknown"} else rt
 
     def _agent_for_phase(self, name: str):
         """Resolve which phase_config slot drove the just-finished phase.
@@ -775,11 +932,17 @@ class _PipelineRun:
         # fresh evidence from disk. Side-effect-free under dry-run / no-contract;
         # all logic (guards, context, evidence) lives in the autorun module.
         if name in FINAL_PHASES:
+            # Freeze delivery selection against the repaired run worktree before
+            # the materializer invokes sdk.verify.
+            from pipeline.project.verification_autorun import select_before_delivery_epoch
+
+            delivery_plan = select_before_delivery_epoch(self)
             _auto_run_required_receipts_live(
                 self,
                 name,
                 reason="pre-final_acceptance required-receipt materialization",
                 hook_label="pre-final auto-run",
+                delivery_plan=delivery_plan,
             )
 
         # ADR 0112 §3: isolated-source provenance preflight. Before ``implement``
@@ -807,6 +970,7 @@ class _PipelineRun:
             emit_phase_log_end(
                 name, st,
                 terminal=self._presentation is PresentationPolicy.TERMINAL,
+                phases=self.session.get("phases"),
             )
 
     def _on_phase_end(self, name: str, st: PipelineState) -> None:
@@ -908,6 +1072,7 @@ class _PipelineRun:
         emit_phase_log_end(
             name, st,
             terminal=self._presentation is PresentationPolicy.TERMINAL,
+            phases=self.session.get("phases"),
         )
 
         # Legacy mock plan_*.md fallback. The PLAN handler now renders the
@@ -1068,6 +1233,7 @@ class _PipelineRun:
             tool_calls=tool_calls,
             cost_usd=cost_usd,
             tokens_exact=tokens_exact_override,
+            runtime=self._runtime_for_phase(name),
             # Outcome carries a normalized provider total that may exceed the
             # in/out split (e.g. Codex reasoning tokens). Honor it so the
             # recorded total matches the outcome; the last_* fallback path
@@ -1106,7 +1272,35 @@ class _PipelineRun:
         if name not in self.session.get("phases", {}):
             return
         try:
-            self._ckpt.save_phase(name, self.session["phases"][name])
+            loop_cursor = None
+            loop_key = st.extras.get("_active_loop_round_key")
+            loop_phases = st.extras.get("_active_loop_phases")
+            round_n = st.extras.get(loop_key) if isinstance(loop_key, str) else None
+            if (
+                isinstance(loop_key, str)
+                and isinstance(loop_phases, tuple)
+                and all(isinstance(phase, str) for phase in loop_phases)
+                and name in loop_phases
+                and isinstance(round_n, int)
+                and round_n >= 1
+            ):
+                phase_index = loop_phases.index(name)
+                loop_cursor = LoopCursorRecord(
+                    loop_key=loop_key,
+                    loop_phases=loop_phases,
+                    round_n=round_n,
+                    completed_phase=name,
+                    next_phase=(
+                        loop_phases[phase_index + 1]
+                        if phase_index + 1 < len(loop_phases)
+                        else None
+                    ),
+                )
+            self._ckpt.save_phase(
+                name,
+                self.session["phases"][name],
+                loop_cursor=loop_cursor,
+            )
         except Exception as exc:  # pragma: no cover — defensive
             # ADR 0046 Phase C (site 17): defensive observability —
             # checkpoint save_phase failure is rare but real. Under
@@ -1305,14 +1499,16 @@ class _PipelineRun:
         app_cfg = config.AppConfig.load()
 
         def commit_message_generator(decision):
-            if app_cfg.commit.get("default_strategy") != "llm_generate":
-                return None
+            # Strategy is decided upstream by ``resolve_commit_delivery`` /
+            # ``_resolve_final_commit_message`` (configured llm_generate OR a
+            # forced publish-outward path); the generator no longer self-disables
+            # on ``default_strategy`` — it only needs an available agent.
             agent = getattr(self.phase_config, "final_acceptance_agent", None)
             if agent is None:
                 return None
             prompt = render_commit_message_prompt(
                 decision,
-                body_language=app_cfg.task_language,
+                body_language=app_cfg.content_language,
             )
             try:
                 raw = agent.invoke(
@@ -1438,9 +1634,28 @@ class _PipelineRun:
             self, "_presentation", PresentationPolicy.TERMINAL,
         )
         if presentation is PresentationPolicy.TERMINAL:
-            render_delivery_outcome(
-                decision, output_fn=print, run_dir=self.output_dir,
-            )
+            from core.observability.logging import get_output_mode
+
+            if (
+                get_output_mode() == "summary"
+                and decision.status == "committed"
+            ):
+                # Summary mode collapses the multi-line committed outcome to
+                # the presenter's one-line ``✓ delivery · committed <sha>``.
+                # live/debug keep ``render_delivery_outcome`` byte-identical;
+                # non-committed terminal statuses fall through to it in every
+                # mode (they carry no summary grammar line).
+                from core.io import summary_lines
+
+                print(summary_lines.delivery_line(
+                    (decision.commit_sha or "")[:7],
+                    decision.delivery_branch or None,
+                    pr_url=decision.pr_url,
+                ))
+            else:
+                render_delivery_outcome(
+                    decision, output_fn=print, run_dir=self.output_dir,
+                )
 
     # ── Phase blocks ────────────────────────────────────────────────────────
     # Phase execution happens declaratively via ``dispatch_via_v2_profile`` →

@@ -57,6 +57,8 @@ from agents.command_guard import (
     ORCHO_GUARDRAIL_BLOCKED,
     blocked_agent_stream_line,
 )
+from agents.owned_child import OwnedChildRegistry
+from agents.runtimes.codex_skills import CodexSkillScope
 from agents.runtimes.codex_telemetry import load_codex_telemetry
 from agents.stall_protocol import EventStallDiagnosticSink
 from agents.stream import StreamAbort
@@ -327,6 +329,8 @@ class CodexAgent:
         self._bin: LazyValue[str] = lazy_cli_binary("codex", config.get_codex_bin)
         self.model = model
         self.effort = effort
+        self._owned_children = OwnedChildRegistry()
+        self._skill_scope = CodexSkillScope()
         self.session_id: str | None = None
         self._followup_resume_pending: bool = False
         self._last_continue_session: bool = False
@@ -368,11 +372,18 @@ class CodexAgent:
     def bin(self, value: str) -> None:
         self._bin.set(value)
 
+    def configure_skill_scope(self, *, include_user_skills: bool) -> None:
+        """Project Orcho's source scope onto Codex-native discovery."""
+        self._skill_scope = CodexSkillScope(
+            include_user_skills=include_user_skills,
+        )
+
     def _config_args(self) -> list[str]:
         """Build common Codex config overrides."""
         cmd = ["-c", f'model="{self.model}"']
         if self.effort:
             cmd += ["-c", f'model_reasoning_effort="{self.effort}"']
+        cmd += self._skill_scope.config_args()
         return cmd
 
     def _exec_cmd(self, *, mutates_artifacts: bool, resume: bool = False) -> list[str]:
@@ -680,6 +691,8 @@ class CodexAgent:
                         sandbox_policy=_sandbox_policy,
                         stall_sink=EventStallDiagnosticSink(),
                         stall_phase=_events.current_phase() or "",
+                        owned_child_owner=self._owned_children,
+                        agent_call_id=attempt_call_id,
                     )
                 stderr = elide_text_for_model(stderr)
                 new_sid = _extract_codex_session_id(stdout)
@@ -716,7 +729,7 @@ class CodexAgent:
                 return ("ok", reply_text, stderr)
 
             tag, reply_text, stderr = _failures.run_invoke_with_retry(
-                _attempt, runtime="codex",
+                _attempt, runtime="codex", owned_children=self._owned_children,
             )
             if tag == "guardrail":
                 return f"{ORCHO_GUARDRAIL_BLOCKED}\n{stderr}"

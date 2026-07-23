@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 
+import pytest
+
 from core.io.ansi import strip_ansi
 from pipeline.control.handoff_banners import (
     RetryOutcome,
@@ -14,6 +16,25 @@ from pipeline.control.handoff_banners import (
     render_retry_outcome_banner,
     sanitize_feedback_preview,
 )
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode():
+    """Pin the full multi-line banner shape.
+
+    ``summary`` (the default run-output mode) collapses these retry banners
+    to a two-line handoff card via the presenter; this file pins the full
+    banner, so force ``live`` and restore. The summary card is pinned
+    separately by the presenter's own unit tests.
+    """
+    from core.observability import logging as _logging
+
+    _before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = _before
 
 
 class TestPreBanner:

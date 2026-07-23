@@ -74,6 +74,9 @@ class Handoff:
     cross_validation_summary: str
     cross_validation_verdict: dict
     project_subtask: str
+    # Control-only child write declarations. They are deliberately absent from
+    # the rendered audit/runtime markdown body.
+    declared_files: tuple[str, ...] = field(default_factory=tuple)
     sibling_aliases: tuple[str, ...] = field(default_factory=tuple)
     # ADR 0052 — structured slices of the approved cross plan. Surfaced
     # in the rendered body in place of the full plan dump when present;
@@ -162,6 +165,13 @@ def validate_handoff(h: Handoff) -> None:
             f"cross handoff for alias {h.alias!r} is missing required "
             f"field(s): {', '.join(missing)}"
         )
+    if not isinstance(h.declared_files, tuple) or any(
+        not isinstance(path, str) for path in h.declared_files
+    ):
+        raise ValueError(
+            f"cross handoff for alias {h.alias!r} has invalid declared_files; "
+            "expected a tuple of strings"
+        )
     rendered = render_handoff_markdown(h)
     src = h.project_path.strip()
     if src and src in rendered:
@@ -206,6 +216,14 @@ def load_handoff(json_path: Path) -> Handoff:
             f"cross handoff JSON is missing field(s) {sorted(missing_keys)}: "
             f"{json_path}"
         )
+    declared_files = payload["declared_files"]
+    if not isinstance(declared_files, list) or any(
+        not isinstance(path, str) for path in declared_files
+    ):
+        raise ValueError(
+            f"cross handoff JSON declared_files must be a list of strings: "
+            f"{json_path}"
+        )
     h = Handoff(
         parent_run_id=payload["parent_run_id"],
         profile=payload["profile"],
@@ -217,6 +235,7 @@ def load_handoff(json_path: Path) -> Handoff:
         cross_validation_summary=payload["cross_validation_summary"],
         cross_validation_verdict=dict(payload["cross_validation_verdict"] or {}),
         project_subtask=payload["project_subtask"],
+        declared_files=tuple(declared_files),
         sibling_aliases=tuple(payload.get("sibling_aliases", ()) or ()),
         interface_contract=payload.get("interface_contract", "") or "",
         implementation_order=payload.get("implementation_order", "") or "",
@@ -238,6 +257,7 @@ def write_handoff(h: Handoff, alias_dir: Path) -> Path:
     json_path = alias_dir / "implementation_handoff.json"
     md_path = alias_dir / "implementation_handoff.md"
     payload = asdict(h)
+    payload["declared_files"] = list(payload["declared_files"])
     payload["sibling_aliases"] = list(payload["sibling_aliases"])
     json_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False),

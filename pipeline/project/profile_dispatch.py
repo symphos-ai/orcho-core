@@ -57,9 +57,12 @@ from pipeline.engine import maybe_run_hypothesis, save_session
 from pipeline.project.correction_route_display import (
     format_correction_route_decision,
 )
+from pipeline.project.resume_phase_summary import format_resume_phase_summary
 from pipeline.project.types import PresentationPolicy
 from pipeline.runtime import PipelineState
 from pipeline.runtime.handoff import HandoffOutcome, HandoffOutcomeKind
+from pipeline.runtime.resume import LoopResumeBlockedError
+from pipeline.runtime.runner import RESUME_SKIP_REASON
 
 # ── follow-up role mapping ────────────────────────────────────────────────
 
@@ -443,6 +446,7 @@ def followup_banner_suffix(name: str, st: PipelineState) -> str:
 
 def emit_phase_log_end(
     name: str, st: PipelineState, *, terminal: bool = True,
+    phases: Mapping[str, Any] | None = None,
 ) -> None:
     """Phase 5d-fixup: emit progress-log END entry paired with banner.
     Acceptance tests assert START + END pairs around each phase header.
@@ -470,7 +474,25 @@ def emit_phase_log_end(
         # ADR 0046 Phase C (site 9): the grey "↳ skipped: …" line is a
         # CLI courtesy chip; the structural signal is the skip_reason
         # mirrored into the ``phase.end`` event via ``outcome`` below.
-        print(paint(f"  ↳ skipped: {skipped_reason}", C.GREY))
+        #
+        # Resume-skip enrichment: when (and only when) the skip is the
+        # resume reason, replace the bare chip with a per-phase summary
+        # derived from the already-rehydrated ``session['phases']`` — the
+        # operator lost the live output, so surface what the phase produced.
+        # Strictly gated on ``RESUME_SKIP_REASON`` (every other skip line
+        # stays byte-identical) and best-effort (missing/partial/unknown →
+        # the summary is ``None`` and we fall back to the bare chip).
+        summary = (
+            format_resume_phase_summary(name, phases)
+            if skipped_reason == RESUME_SKIP_REASON
+            else None
+        )
+        if summary is not None:
+            print(paint(
+                f"  ↳ {name} — {summary}  (skipped on resume)", C.GREY,
+            ))
+        else:
+            print(paint(f"  ↳ skipped: {skipped_reason}", C.GREY))
     # Outcome string: shape inspected by tests but free-form. Keep the
     # minimal "ok" for completed phases and surface skip reasons for
     # intentionally empty banners.
@@ -824,6 +846,7 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
     # a no-op for fresh dispatch. See ``run_profile``'s
     # ``completed_phases`` contract for the dispatch-side semantics.
     completed_phases: set[str] = set(resume_outcome.completed_phases)
+    loop_resume_cursors = {}
 
     try:
         if run._ckpt is not None:
@@ -844,6 +867,26 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
                     prior_completed
                     | set(resume_outcome.completed_phases)
                 )
+                if getattr(run, "checkpoint_resume", False):
+                    from pipeline.project.loop_resume import (
+                        resolve_loop_resume_from_store,
+                    )
+
+                    loop_resume = resolve_loop_resume_from_store(
+                        profile,
+                        store=run._ckpt,
+                        run_id=run.session_ts,
+                        run_dir=getattr(run, "output_dir", None),
+                        completed_phases=frozenset(completed_phases),
+                    )
+                    # Legacy runs pre-date the cursor table. Persist the pure,
+                    # validated migration before any phase dispatch so a
+                    # second interruption resumes from the same boundary.
+                    if loop_resume.migrated:
+                        run._ckpt.save_loop_cursors(loop_resume.migrated)
+                    loop_resume_cursors = loop_resume.by_loop_key
+            except LoopResumeBlockedError:
+                raise
             except Exception as exc:
                 raise RuntimeError(
                     "Cannot safely resume: checkpoint state could not be "
@@ -897,11 +940,18 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
             on_round_end=_on_round_end,
             ctx=ctx,
             completed_phases=completed_phases,
+            loop_resume_cursors=loop_resume_cursors,
             on_handoff_outcome=_on_handoff_outcome,
             # ``getattr`` keeps duck-typed run stand-ins (runtime tests) working:
             # without ``_on_phase_pre`` the pre-phase seam is simply inert.
             on_phase_pre=getattr(run, "_on_phase_pre", None),
         )
+    except LoopResumeBlockedError:
+        # Capability refusal is not a new phase failure. Preserve the original
+        # causal failure in meta/checkpoint and let the transport render the
+        # typed resume diagnostic.
+        run._dispatch_active = False
+        raise
     except Exception as exc:
         # Phase 5d-fixup: preserve legacy ``_safe_phase`` behaviour —
         # any handler exception that propagated out of dispatch must

@@ -38,7 +38,7 @@ from pipeline.verification_readiness import (
     build_final_acceptance_readiness,
     delivery_gate_plan,
     render_readiness_block,
-    required_delivery_commands,
+    resolve_delivery_selection,
 )
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
@@ -92,6 +92,11 @@ def _selection_contract() -> VerificationContract:
             {"always": ["core"]},
             {"paths": ["src/*"], "include": ["pathset"]},
         ],
+        schedule=[
+            {"after_phase": "implement", "commands": ["lint"]},
+            {"before_delivery": True, "policy": "require",
+             "gate_sets": ["pathset"]},
+        ],
     )
 
 
@@ -128,6 +133,21 @@ def _receipt(
     checkout_head: str | None = None,
     dependencies: list | None = None,
 ) -> None:
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        VerificationSubjectIdentity,
+        capture_verification_subject,
+    )
+    candidate = run_dir.parent / "checkout"
+    captured = capture_verification_subject(candidate) if candidate.is_dir() else None
+    subject = captured if isinstance(captured, VerificationSubjectAvailable) else None
+    if subject is not None and fingerprint is not None and fingerprint != changed_files_fingerprint(str(candidate)):
+        identity = subject.identity
+        tree = "0" * len(identity.tree_oid) if identity.tree_oid != "0" * len(identity.tree_oid) else "1" * len(identity.tree_oid)
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(identity.version, identity.object_format, tree, identity.observed_head_oid, identity.baseline_oid))
+    if subject is not None and checkout_head is not None and checkout_head != subject.identity.observed_head_oid:
+        identity = subject.identity
+        subject = VerificationSubjectAvailable(VerificationSubjectIdentity(identity.version, identity.object_format, identity.tree_oid, checkout_head, identity.baseline_oid))
     write_command_receipt(output_dir=run_dir, result={
         "command": command,
         "env": "ci",
@@ -144,6 +164,7 @@ def _receipt(
             "baseline_head": None,
             "changed_files_fingerprint": fingerprint,
         },
+        "subject": subject,
         "dependencies": dependencies or [],
     })
 
@@ -175,6 +196,8 @@ def _dep_record(
     name: str, path: Path, head: str, *, depends_on: bool = True,
     dirty: bool = False,
 ) -> dict:
+    from pipeline.verification_subject import capture_verification_subject
+
     return {
         "name": name,
         "path": str(path),
@@ -183,6 +206,7 @@ def _dep_record(
         "changed_files_count": 1 if dirty else 0,
         "changed_files_fingerprint": "f" if dirty else "e",
         "depends_on": depends_on,
+        "subject": capture_verification_subject(path),
     }
 
 
@@ -196,7 +220,7 @@ class TestRequiredDeliveryCommands:
         contract = _contract()
         # contract.required first, then after_phase(implement), then
         # before_delivery — deduped, deterministic.
-        assert required_delivery_commands(contract, None) == (
+        assert resolve_delivery_selection(contract, None).receipt_commands == (
             "test", "lint", "smoke",
         )
 
@@ -206,7 +230,7 @@ class TestRequiredDeliveryCommands:
             contract,
             SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
         )
-        commands = required_delivery_commands(contract, plan)
+        commands = resolve_delivery_selection(contract, plan).receipt_commands
         assert commands[0] == "test"
         assert "smoke" in commands and "lint" in commands
 
@@ -215,7 +239,7 @@ class TestRequiredDeliveryCommands:
         plan = build_scheduled_gate_plan(
             contract, SelectionContext(work_mode="governed"),
         )
-        assert "smoke" not in required_delivery_commands(contract, plan)
+        assert "smoke" not in resolve_delivery_selection(contract, plan).receipt_commands
 
     def test_blanket_schedule_entry_covers_all_declared_commands(self) -> None:
         contract = VerificationContract.from_plugin(PluginConfig(
@@ -227,7 +251,7 @@ class TestRequiredDeliveryCommands:
             },
         ))
         assert contract is not None
-        assert required_delivery_commands(contract, None) == ("a", "b")
+        assert resolve_delivery_selection(contract, None).receipt_commands == ("a", "b")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,7 +319,7 @@ class TestClassification:
         )
         assert set(summary.required_failed) == {"test", "lint"}
 
-    def test_no_checkout_degrades_to_present_not_stale(
+    def test_no_checkout_is_unverifiable(
         self, tmp_path: Path,
     ) -> None:
         run_dir = tmp_path / "run"
@@ -306,8 +330,7 @@ class TestClassification:
         summary = build_final_acceptance_readiness(
             contract, run_dir, PlaceholderContext(checkout=""),
         )
-        assert summary.required_present == ("test",)
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -318,12 +341,13 @@ class TestClassification:
 @pytest.mark.git_worktree
 class TestDependencyStaleClassification:
     """A depended-on dependency's HEAD move marks the receipt stale with a
-    reason; the four negatives never do. Subject identity is left unset
-    (checkout="") so these tests isolate the dependency dimension."""
+    reason. Each receipt has a usable checkout subject so these tests isolate
+    the dependency dimension."""
 
     def test_dependency_head_move_marks_stale_with_reason(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -332,29 +356,25 @@ class TestDependencyStaleClassification:
             run_dir, "test",
             dependencies=[_dep_record("shared", dep, old, depends_on=True)],
         )
-        new = _dep_new_commit(dep)  # HEAD moves AFTER the receipt is written
+        _dep_new_commit(dep)  # HEAD moves AFTER the receipt is written
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
             PlaceholderContext(
-                checkout="", dependencies={"shared": str(dep)},
+                checkout=str(co), dependencies={"shared": str(dep)},
             ),
         )
 
         assert summary.required_stale == ("test",)
         assert summary.stale_reasons == (
-            f"test: dependency shared HEAD moved {old} -> {new}",
+            "test: dependency shared: observed_head_changed",
         )
         rendered = render_readiness_block(summary)
         assert rendered is not None
-        assert "dependency shared HEAD moved" in rendered
-        assert old in rendered and new in rendered
-        assert (
-            f"stale required: test: dependency shared HEAD moved {old} -> {new}"
-            in rendered
-        )
+        assert "dependency shared: observed_head_changed" in rendered
 
     def test_depends_on_false_is_not_stale(self, tmp_path: Path) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -367,7 +387,7 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present
@@ -376,6 +396,7 @@ class TestDependencyStaleClassification:
     def test_receipt_without_dependencies_block_is_not_stale(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -385,15 +406,16 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present
         assert not summary.required_stale
 
-    def test_dependency_path_not_git_does_not_assert_stale(
+    def test_dependency_path_not_git_is_unverifiable(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         plain = tmp_path / "plain"
         plain.mkdir()  # not a git repo → current HEAD unavailable
         run_dir = tmp_path / "run"
@@ -407,13 +429,16 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(plain)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(plain)}),
         )
 
-        assert "test" in summary.required_present
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
+        assert summary.stale_reasons == (
+            "test: dependency shared: usable_subject_identity_unavailable",
+        )
 
-    def test_dirty_only_dependency_is_not_stale(self, tmp_path: Path) -> None:
+    def test_dirty_only_dependency_is_stale(self, tmp_path: Path) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -427,15 +452,18 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
-        assert "test" in summary.required_present
-        assert not summary.required_stale
+        assert summary.required_stale == ("test",)
+        assert summary.stale_reasons == (
+            "test: dependency shared: worktree_tree_changed",
+        )
 
     def test_present_receipt_surfaces_tested_dependency_commit(
         self, tmp_path: Path,
     ) -> None:
+        co = _git_checkout(tmp_path)
         dep = tmp_path / "dep"
         old = _dep_repo(dep)
         run_dir = tmp_path / "run"
@@ -448,7 +476,7 @@ class TestDependencyStaleClassification:
 
         summary = build_final_acceptance_readiness(
             _contract(), run_dir,
-            PlaceholderContext(checkout="", dependencies={"shared": str(dep)}),
+            PlaceholderContext(checkout=str(co), dependencies={"shared": str(dep)}),
         )
 
         assert "test" in summary.required_present
@@ -474,13 +502,19 @@ class TestDeliveryGatePlanSource:
 
         assert ROUTING_PLANS_EXTRAS_KEY == VERIFICATION_GATE_ROUTING_PLANS_KEY
 
-    def test_prefers_executable_before_delivery_epoch(self) -> None:
+    def test_prefers_executable_before_delivery_epoch(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         contract = _selection_contract()
         routed = build_scheduled_gate_plan(
             contract,
             SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
         )
         extras = {ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": routed}}
+        monkeypatch.setattr(
+            "pipeline.verification_selection.build_scheduled_gate_plan",
+            lambda *_args: pytest.fail("readiness rebuilt recorded delivery epoch"),
+        )
         plan = delivery_gate_plan(contract, extras, checkout="")
         assert plan is routed
 
@@ -515,6 +549,38 @@ class TestDeliveryGatePlanSource:
         assert rendered is not None
         # smoke is scheduled require at before_delivery → a require gap.
         assert "missing required: smoke" in rendered
+
+    @pytest.mark.git_worktree
+    def test_recorded_epoch_wins_over_stale_prompt_preview(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A preview is advisory even when it disagrees with the durable plan."""
+        contract = _selection_contract()
+        co = _git_checkout(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        stale_preview = build_scheduled_gate_plan(
+            contract, SelectionContext(work_mode="governed"),
+        )
+        recorded = build_scheduled_gate_plan(
+            contract, SelectionContext(touched_paths=("src/x.py",), work_mode="governed"),
+        )
+        assert "smoke" not in stale_preview.selected_commands
+        assert "smoke" in recorded.selected_commands
+        extras = {
+            "verification_gate_prompt_preview": stale_preview,
+            ROUTING_PLANS_EXTRAS_KEY: {"before_delivery:": recorded},
+        }
+        monkeypatch.setattr(
+            "pipeline.verification_selection.build_scheduled_gate_plan",
+            lambda *_args: pytest.fail("readiness rebuilt recorded delivery epoch"),
+        )
+
+        summary = build_final_acceptance_readiness(
+            contract, run_dir, PlaceholderContext(checkout=str(co)), extras=extras,
+        )
+
+        assert "smoke" in summary.required_missing
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -704,14 +770,57 @@ class TestPolicyAwareReadiness:
         assert "audit" not in summary.required_missing
         assert "audit" not in summary.required_failed
         assert "audit" not in summary.required_stale
-        assert summary.manual_only_gaps == ("audit",)
+        assert summary.operator_gaps == ("audit",)
         assert "test" in summary.required_missing
         rendered = render_readiness_block(summary)
         assert rendered is not None
         # Visible, marked not auto-run, and never in Remaining before ready.
-        assert "audit (manual_only) — not auto-run" in rendered
+        assert "audit (manual) — operator available, not auto-run" in rendered
         remaining = rendered.split("Remaining before ready:", 1)[1]
         assert "audit" not in remaining
+
+    @pytest.mark.parametrize(
+        ("policy", "expected_fragment", "operator_owned"),
+        (
+            ("manual", "operator available, not auto-run", True),
+            ("suggest", "operator recommendation", False),
+        ),
+    )
+    def test_selected_operator_owned_delivery_policies_are_not_required_residuals(
+        self,
+        tmp_path: Path,
+        policy: str,
+        expected_fragment: str,
+        operator_owned: bool,
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        contract = _contract(
+            commands={"test": {"run": "pytest -q {checkout}", "env": "ci"}},
+            required=["test"],
+            gate_sets={"delivery": {"commands": ["test"]}},
+            selection=[{"always": ["delivery"]}],
+            schedule=[{
+                "before_delivery": True,
+                "policy": policy,
+                "commands": ["test"],
+            }],
+            delivery_policy="require",
+        )
+        plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="governed"))
+
+        summary = build_final_acceptance_readiness(
+            contract, run_dir, PlaceholderContext(), plan=plan,
+        )
+        rendered = render_readiness_block(summary)
+
+        assert rendered is not None
+        assert expected_fragment in rendered
+        if operator_owned:
+            assert summary.operator_gaps == ("test",)
+        else:
+            assert summary.required_missing == ("test",)
+        assert "missing required: test" not in rendered
 
     def test_no_blocker_block_is_byte_identical_to_legacy(
         self, tmp_path: Path,

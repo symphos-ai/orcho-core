@@ -58,6 +58,10 @@ from core.io.ansi import C, paint
 from core.observability import (
     logging as _logging,
 )
+from core.observability.accounting_display import (
+    ACCOUNTING_REFERENCE_NOTE,
+    format_cost_reference_key_value,
+)
 from core.observability.logging import log_phase
 from pipeline.checkpoint import PipelineStatus
 from pipeline.engine import save_session
@@ -65,6 +69,12 @@ from pipeline.project.correction_route_display import (
     format_correction_route_summary,
 )
 from pipeline.project.handoff_advice_evidence import collect_handoff_advice
+from pipeline.project.terminal_delivery import (
+    TerminalDeliveryDisposition,
+    TerminalDeliveryOutcome,
+    project_terminal_delivery,
+    render_delivery_destination_lines,
+)
 from pipeline.run_state.release_verdict import (
     is_approved,
     is_rejected,
@@ -309,37 +319,103 @@ def _format_count_map(counts: Mapping[str, int], order: tuple[str, ...]) -> str:
     return ", ".join(parts) if parts else "none"
 
 
-def _task_counts(phases: Mapping[str, Any]) -> tuple[int, int, int, int, int]:
+def _subtask_state_records(metrics: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    """Return the ``metrics["subtasks"]["implement"]`` per-subtask records.
+
+    This is the cross-segment deduped slice: ``record_subtask_usage`` merges by
+    ``subtask_id`` across every resume segment, so each subtask appears once with
+    its accumulated usage and its final ``state``. Returns ``[]`` for whole-plan /
+    non-subtask runs (no ``subtasks`` key) so the caller falls back to meta.
+    """
+    if not isinstance(metrics, Mapping):
+        return []
+    subtasks = metrics.get("subtasks")
+    if not isinstance(subtasks, Mapping):
+        return []
+    rows = subtasks.get("implement")
+    if not isinstance(rows, list):
+        return []
+    return [rec for rec in rows if isinstance(rec, Mapping)]
+
+
+def _task_counts(
+    phases: Mapping[str, Any],
+    metrics: Mapping[str, Any] | None = None,
+) -> tuple[int, int, int, int, int]:
     implement = phases.get("implement")
     impl = implement if isinstance(implement, Mapping) else {}
     meta = impl.get("meta")
     if not isinstance(meta, Mapping):
         meta = {}
-    planned = _as_int(meta.get("subtask_count"))
-    completed = _as_int(meta.get("completed_count"))
-    failed = _as_int(meta.get("failed_count"))
-    skipped = _as_int(meta.get("skipped_count"))
-    receipts = impl.get("implementation_receipts")
-    incomplete = (
-        sum(
-            1 for item in receipts
-            if isinstance(item, Mapping) and item.get("state") != "done"
-        )
-        if isinstance(receipts, list)
-        else 0
-    )
 
+    # planned: the plan total is authoritative and survives resume segmentation
+    # (``_latest_mapping`` normalizes a list-of-attempts plan to its last
+    # attempt). ``meta.subtask_count`` — the last implement wave only — is just
+    # the fallback for whole-plan / non-subtask runs that carry no plan total.
+    plan = _latest_mapping(phases.get("plan"))
+    planned = _as_int(plan.get("total_atomic_tasks"))
     if planned == 0:
-        plan = _latest_mapping(phases.get("plan"))
-        planned = _as_int(plan.get("total_atomic_tasks"))
+        planned = _as_int(meta.get("subtask_count"))
 
-    # A direct (whole-plan) implement carries no subtask-DAG meta, so its
-    # completed/failed counters never populate. When such an implement
-    # succeeded (output present, no guardrail_blocked/failed/error), the planned
-    # task is delivered: count it as completed so Tasks/ROI read 1/1, not 0/1.
-    # A stopped/failed whole-plan implement keeps the zeroed counters.
-    if planned and _implement_whole_plan_delivered(phases):
-        completed, failed, skipped, incomplete = planned, 0, 0, 0
+    # completed/failed/skipped: the cross-segment deduped subtask slice is the
+    # SINGLE authoritative source. ``metrics["subtasks"]["implement"]`` carries
+    # one final record per subtask across ALL resume segments (merged by
+    # subtask_id), so counting it by final ``state`` reports honest N/M
+    # regardless of how many resume waves ran — not just the last wave's meta
+    # counters. Skipped subtasks (no agent invocation, no usage) are folded into
+    # this slice upstream as state-only records (see subtask_dag
+    # ``_append_skipped_subtask_records``), so completed/failed/skipped ALL come
+    # from the slice — the raw ``implementation_receipts`` are never consulted as
+    # a second source here (that could show skipped beyond the deduped slice and
+    # push the bucket sum past ``planned``). Records without a terminal state
+    # (e.g. an incomplete subtask that never produced a done/failed receipt) are
+    # folded into ``incomplete``.
+    records = _subtask_state_records(metrics)
+    if records:
+        # A non-empty subtask slice is authoritative: presence of the list — not
+        # of a terminal state — selects this path. Records without a terminal
+        # done/failed/skipped state are honest incomplete work, not a reason to
+        # drop back to meta.
+        state_by_id: dict[Any, str] = {}
+        for rec in records:
+            # Defensive re-dedup: the slice is merged-by-id upstream, but if a
+            # raw retry pair (failed then done for one subtask_id) ever reaches
+            # here, last record wins so a retried subtask is counted once by
+            # final state.
+            state_by_id[rec.get("subtask_id")] = str(rec.get("state") or "")
+        states = list(state_by_id.values())
+        completed = sum(1 for state in states if state == "done")
+        failed = sum(1 for state in states if state == "failed")
+        skipped = sum(1 for state in states if state == "skipped")
+        # incomplete = plan tasks without a terminal done/failed/skipped state,
+        # clamped ≥0 so the four buckets never exceed the accounted work.
+        accounted = max(planned, len(states))
+        incomplete = max(accounted - completed - failed - skipped, 0)
+    else:
+        # No subtask slice (whole-plan / non-subtask run): fall back to the
+        # last-wave meta counters and the implement receipts.
+        completed = _as_int(meta.get("completed_count"))
+        failed = _as_int(meta.get("failed_count"))
+        skipped = _as_int(meta.get("skipped_count"))
+        receipts = impl.get("implementation_receipts")
+        incomplete = (
+            sum(
+                1 for item in receipts
+                if isinstance(item, Mapping) and item.get("state") != "done"
+            )
+            if isinstance(receipts, list)
+            else 0
+        )
+
+        # A direct (whole-plan) implement carries no subtask-DAG meta, so its
+        # completed/failed counters never populate. When such an implement
+        # succeeded (output present, no guardrail_blocked/failed/error), the
+        # planned task is delivered: count it as completed so Tasks/ROI read
+        # 1/1, not 0/1. A stopped/failed whole-plan implement keeps the zeroed
+        # counters. This collapse is scoped to the no-slice branch: an
+        # authoritative subtask slice must never be overwritten by planned/0/0/0.
+        if planned and _implement_whole_plan_delivered(phases):
+            completed, failed, skipped, incomplete = planned, 0, 0, 0
 
     return planned, completed, failed, skipped, incomplete
 
@@ -413,7 +489,10 @@ def _approved_with_only_verification_warnings(
 
 
 def _release_outcome_line(
-    session: Mapping[str, Any], phases: Mapping[str, Any],
+    session: Mapping[str, Any],
+    phases: Mapping[str, Any],
+    *,
+    terminal_delivery: TerminalDeliveryOutcome | None = None,
 ) -> str | None:
     outcome = _release_outcome_token(phases)
     if outcome == "none":
@@ -431,15 +510,36 @@ def _release_outcome_line(
             action = " -> halted by operator"
         elif session.get("status") == "halted":
             action = " -> halted"
-        else:
-            # Terminal ``done`` with a rejected release and no operator
-            # commit-decision halt: the run finished but delivery never
-            # happened. Make the blocked delivery explicit so the line does
-            # not read as a bare, ambiguous "rejected".
+        elif (
+            (terminal_delivery or project_terminal_delivery(session)).disposition
+            is TerminalDeliveryDisposition.NOT_DELIVERED
+        ):
+            # Delivery wording is driven solely by the durable delivery
+            # disposition.  An override remains a rejected release, but must
+            # never be described as blocked delivery.
             action = " -> delivery blocked"
         return f"  Release: rejected{action}"
 
     return None
+
+
+def _release_blocker_lines(phases: Mapping[str, Any]) -> tuple[str, ...]:
+    """Render the latest authoritative release blockers for terminal evidence."""
+    _phase, record = _release_record(phases)
+    blockers = record.get("release_blockers")
+    if not isinstance(blockers, list) or not blockers:
+        return ()
+
+    lines = [f"  Release blockers: {len(blockers)}"]
+    for blocker in blockers:
+        if not isinstance(blocker, Mapping):
+            continue
+        identifier = str(blocker.get("id") or "?")
+        title = str(blocker.get("title") or blocker.get("detail") or "untitled")
+        why = str(blocker.get("why_blocks_release") or "").strip()
+        detail = f" — {why}" if why else ""
+        lines.append(f"    - {identifier}: {title}{detail}")
+    return tuple(lines)
 
 
 def _correction_kind(phases: Mapping[str, Any]) -> str:
@@ -834,7 +934,12 @@ def _scope_expansion_summary_lines(phases: Mapping[str, Any]) -> tuple[str, ...]
     return tuple(f"  {line}" for line in render_scope_expansion_lines(evidence))
 
 
-def _render_evidence_summary(session: Mapping[str, Any]) -> tuple[str, ...]:
+def _render_evidence_summary(
+    session: Mapping[str, Any],
+    metrics: Mapping[str, Any] | None = None,
+    *,
+    terminal_delivery: TerminalDeliveryOutcome | None = None,
+) -> tuple[str, ...]:
     """Return compact end-of-run evidence summary lines.
 
     This is deliberately a light terminal/reporting projection, not a new gate.
@@ -842,13 +947,18 @@ def _render_evidence_summary(session: Mapping[str, Any]) -> tuple[str, ...]:
     attempt for its phase. In normal repair loops that corresponds to fixed;
     in operator-accepted paths it may mean waived/accepted, so the label stays
     slightly broader than "fixed".
+
+    ``metrics`` is the run metrics dict; its cross-segment
+    ``subtasks.implement`` slice drives the honest per-subtask task counts. It
+    is optional (defaults to no slice) so session-only callers — which carry no
+    subtask-DAG breakdown — keep reading the meta fallback path unchanged.
     """
     auto_detect_line = _auto_detect_summary_line(session.get("auto_detect"))
     phases = session.get("phases")
     if not isinstance(phases, Mapping):
         return (auto_detect_line,) if auto_detect_line else ()
 
-    planned, completed, failed, skipped, incomplete = _task_counts(phases)
+    planned, completed, failed, skipped, incomplete = _task_counts(phases, metrics)
     correction_kind = _correction_kind(phases)
     if correction_kind and planned == completed == failed == skipped == incomplete == 0:
         task_line = "  Tasks: correction follow-up (no subtask plan)"
@@ -875,9 +985,14 @@ def _render_evidence_summary(session: Mapping[str, Any]) -> tuple[str, ...]:
     correction_line = _correction_outcome_line(phases)
     if correction_line:
         lines.append(correction_line)
-    release_line = _release_outcome_line(session, phases)
+    release_line = _release_outcome_line(
+        session,
+        phases,
+        terminal_delivery=terminal_delivery,
+    )
     if release_line:
         lines.append(release_line)
+    lines.extend(_release_blocker_lines(phases))
     lines.extend(_non_convergence_lines(session))
 
     if review.total:
@@ -956,13 +1071,13 @@ def _render_roi_summary(
 ) -> str:
     """Return the end-of-run ROI line.
 
-    Token ROI is always meaningful; dollar ROI is appended only when
-    accounting/API-equivalent cost is explicitly available.
+    Token ROI is always meaningful; dollar-denominated cost reference is
+    appended only when accounting data is explicitly available.
     """
     phases = session.get("phases")
     if not isinstance(phases, Mapping):
         phases = {}
-    planned, completed, _failed, _skipped, _incomplete = _task_counts(phases)
+    planned, completed, _failed, _skipped, _incomplete = _task_counts(phases, metrics)
     review_findings, _active_review_findings = _finding_totals(phases)
     run_findings = _run_finding_summary(session, phases)
     tokens_in = _as_int(metrics.get("total_tokens_in"))
@@ -997,8 +1112,12 @@ def _render_roi_summary(
         and not isinstance(cost, bool)
         and isinstance(cost, (int, float))
     ):
-        prefix = "API-equiv~$" if metrics.get("cost_estimated") is True else "API-equiv=$"
-        parts.append(f"{prefix}{float(cost):.2f}")
+        parts.append(
+            format_cost_reference_key_value(
+                float(cost),
+                estimated=metrics.get("cost_estimated") is True,
+            )
+        )
     outcome_bits = [task_part]
     if release_part:
         outcome_bits.append(release_part)
@@ -1050,11 +1169,13 @@ def _phase_usage_rows(
         if any_cost:
             cost = raw.get("cost_usd_equivalent")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                marker = "~$" if raw.get("cost_estimated") is True else "$"
-                cost_part = f"{marker}{float(cost):.2f}"
+                cost_part = format_cost_reference_key_value(
+                    float(cost),
+                    estimated=raw.get("cost_estimated") is True,
+                )
             else:
-                cost_part = "—"
-            line += f" api-equiv={cost_part}"
+                cost_part = "cost_ref=—"
+            line += f" {cost_part}"
         rows.append(line)
     return tuple(rows) if len(rows) > 1 else ()
 
@@ -1068,8 +1189,8 @@ def _subtask_usage_rows(
 
     Mirrors :func:`_phase_usage_rows`, but reads the additive
     ``metrics["subtasks"]["implement"]`` breakdown so an operator can see —
-    at a glance, from the summary alone — which subtask consumed the budget
-    on an expensive ``subtask_dag`` run. Returns an empty tuple when no
+    at a glance, from the summary alone — which subtask produced the usage
+    on a high-usage ``subtask_dag`` run. Returns an empty tuple when no
     records exist (whole_plan / non-subtask runs), so no hollow header or
     misleading empty warning is ever rendered. Order follows the record list,
     which is DAG execution order. This is analytical evidence, not a verdict:
@@ -1092,6 +1213,14 @@ def _subtask_usage_rows(
     for rec in rows_data:
         if not isinstance(rec, Mapping):
             continue
+        # State-only markers (skipped subtasks, or run subtasks whose runtime
+        # surfaced no metered usage) ride in the slice so the rollup can count
+        # their final state, but they carry no usage fields the operator can
+        # attribute — they never belong in the usage-attribution block.
+        if not any(
+            key in rec for key in ("tokens_in", "tokens_out", "total_tokens")
+        ):
+            continue
         sid = str(rec.get("subtask_id", "?"))
         tokens_in = _as_int(rec.get("tokens_in"))
         tokens_out = _as_int(rec.get("tokens_out"))
@@ -1110,7 +1239,10 @@ def _subtask_usage_rows(
         if any_cost:
             cost = rec.get("cost_usd_equivalent")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
-                line += f" api-equiv=${float(cost):.2f}"
+                line += " " + format_cost_reference_key_value(
+                    float(cost),
+                    estimated=rec.get("cost_estimated") is True,
+                )
         line += f" time={duration_s} tools={tool_calls}"
         declared = rec.get("declared_files")
         if isinstance(declared, list) and declared:
@@ -1174,7 +1306,7 @@ def _format_agent_advice_block(
     Counts come straight from the normalizer's ``summary`` so they match the
     evidence section. A per-source breakdown line is added when any call records
     a ``feedback_source``. The usage line is observe-only: tokens always, the
-    ``api-equiv`` cost ONLY when accounting is available AND the digest carried a
+    cost reference ONLY when accounting is available AND the digest carried a
     cost — never invented, and never folded into the run ROI / totals.
     """
     def _count(key: str) -> int:
@@ -1220,7 +1352,12 @@ def _format_agent_advice_block(
             and isinstance(cost, (int, float))
             and not isinstance(cost, bool)
         ):
-            usage_bits.append(f"api-equiv=${float(cost):.2f}")
+            usage_bits.append(
+                format_cost_reference_key_value(
+                    float(cost),
+                    estimated=usage.get("cost_estimated") is True,
+                )
+            )
         lines.append("  usage: " + " ".join(usage_bits))
 
     return "\n".join(lines)
@@ -1397,6 +1534,20 @@ class FinalizationResult:
     # the run produced no out-of-plan scope evidence. Defaulted so existing
     # construction sites and tests are unaffected.
     scope_expansion_lines: tuple[str, ...] = ()
+    # Compact 'Delivery: ...' destination line for the DONE tail, rendered from
+    # the terminal ``commit_delivery`` audit record. One scannable line naming
+    # where the diff landed (delivery branch + PR / checkout commit /
+    # applied uncommitted / skipped / not delivered). Empty tuple when the run
+    # carries no terminal delivery record. Defaulted so existing construction
+    # sites and tests are unaffected.
+    delivery_summary_lines: tuple[str, ...] = ()
+    # Computed once from post-reconcile durable facts; terminal presentation
+    # consumes this without re-running delivery policy.
+    terminal_delivery: TerminalDeliveryOutcome = field(
+        default_factory=lambda: TerminalDeliveryOutcome(
+            TerminalDeliveryDisposition.UNKNOWN,
+        ),
+    )
 
 
 # ── companion delivery caveat (T2) ────────────────────────────────────────
@@ -1544,6 +1695,9 @@ _HALT_BANNER_LABELS: dict[str, tuple[str, str]] = {
     "correction_not_converging": (
         "Run halted — correction not converging", C.YELLOW,
     ),
+    "phase_handoff_unattended_halt": (
+        "Run halted — unattended phase handoff", C.YELLOW,
+    ),
 }
 
 
@@ -1630,7 +1784,7 @@ def _apply_no_diff_final_acceptance_outcome(
     apply_no_diff_terminal(run.session, diff_path=diff_path)
 
 
-# Delivery executor outcomes that settle a from_run_plan follow-up as
+# Delivery executor outcomes that settle an ordinary correction follow-up as
 # successfully resolved (delivered or deliberately skipped). Reaching one of
 # these closes out (supersedes) a rejected-FA / correction parent — see
 # :func:`_supersede_parent_correction_after_followup`.
@@ -1805,7 +1959,7 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
 
     The cross-run analogue of :func:`_supersede_stale_rejection_residue` (which
     reconciles a single run on its own approved retry). When THIS run is a
-    ``--from-run-plan`` follow-up of a parent that dead-ended on a rejected final
+    ordinary correction follow-up of a parent that dead-ended on a rejected final
     acceptance (``final_acceptance_rejected`` / ``final_acceptance_no_diff``) or a
     marked correction (``commit_decision_fix``), AND this child actually delivered
     (``commit_delivery.status`` in ``committed`` / ``applied_uncommitted`` /
@@ -1822,20 +1976,30 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
       marker referencing this child, so the delivery gate, diagnose, and live
       status all read the parent as superseded/closed rather than active.
 
-    Idempotent and guarded: a no-op unless a valid ``from_run_plan`` parent id is
-    present (``state.extras['plan_source_run_id']``), this child's delivery
-    succeeded, and the parent is genuinely a rejected-FA / fix terminal. A re-run
+    Idempotent and guarded: a no-op unless this is a valid ordinary correction
+    child (follow-up lineage, correction profile, and correction context), this
+    child's delivery succeeded, and the parent is genuinely a rejected-FA / fix
+    terminal. A re-run
     finds the parent already settled to ``done`` (no longer a rejected/fix
     terminal) and returns without change. Best-effort: any lookup / read / write
     failure degrades to a no-op and never breaks the child's own finalization. The
     same-run approved-retry path (:func:`_supersede_stale_rejection_residue`) is
-    untouched — this only fires for a distinct ``from_run_plan`` child.
+    untouched — this only fires for a distinct correction child.
     """
     if not run.output_dir:
         return
-    extras = getattr(getattr(run, "state", None), "extras", None)
-    parent_run_id = extras.get("plan_source_run_id") if isinstance(extras, Mapping) else None
+    parent_run_id = run.session.get("parent_run_id")
     if not isinstance(parent_run_id, str) or not parent_run_id:
+        extras = getattr(getattr(run, "state", None), "extras", None)
+        if isinstance(extras, Mapping):
+            parent_run_id = extras.get("parent_run_id")
+    if not isinstance(parent_run_id, str) or not parent_run_id:
+        return
+    if (
+        run.session.get("resume_mode") != "followup"
+        or run.session.get("profile") != "correction"
+        or not (Path(run.output_dir) / "correction_context.md").is_file()
+    ):
         return
     delivery = run.session.get("commit_delivery")
     delivery_status = (
@@ -1883,6 +2047,54 @@ def _supersede_parent_correction_after_followup(run: Any) -> None:
         return
 
 
+def _run_plugin_worktree_teardown(run: Any) -> None:
+    """Best-effort ADR 0131 plugin ``worktree_teardown`` at run finalization.
+
+    Runs the plugin's declared teardown steps in the worktree cwd before the git
+    worktree is released — but only for a **terminal** run. A run paused awaiting
+    a phase-handoff decision keeps its worktree AND its external stack for
+    resume, so teardown is skipped there.
+
+    Wholly best-effort: the run is already terminal, so any failure (import,
+    config shape, a failing ``docker compose down``) is swallowed here — the
+    engine step-runner itself also never raises — so cleanup can never mask the
+    run's real outcome.
+    """
+    # Resumable pause: the worktree (and its stack) must survive for resume.
+    if run.session.get("status") == "awaiting_phase_handoff":
+        return
+    steps = getattr(getattr(run, "plugin", None), "worktree_teardown", None)
+    if not steps:
+        return
+    ctx = run.worktree_context
+    try:
+        from pipeline.engine.worktree_bootstrap import run_worktree_teardown
+        run_worktree_teardown(
+            steps,
+            source_root=ctx.project_dir,
+            worktree_path=ctx.path,
+        )
+    except Exception:  # noqa: BLE001 — terminal-run cleanup must never raise
+        pass
+
+
+def _teardown_worktree_for_finalization(run: Any) -> str | None:
+    """Tear down an actual isolated worktree and describe the disposition.
+
+    ``WorktreeContext(mode="off")`` is a real context object but represents the
+    canonical checkout, not a disposable worktree. Its teardown is therefore
+    not applicable and must not be rendered as ``removed``.
+    """
+    ctx = run.worktree_context
+    if ctx is None or getattr(ctx, "mode", None) == "off":
+        return None
+    _run_plugin_worktree_teardown(run)
+    from pipeline.engine.worktree import teardown_worktree
+
+    result = teardown_worktree(ctx, retain=True)
+    return result.error or "removed"
+
+
 def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
     """Silent structured finalization. No terminal output.
 
@@ -1910,6 +2122,12 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
 
     run = ctx.run
 
+    # Close the scheduled-gate artifact before any evidence/DONE consumer can
+    # inspect the run, so every terminal surface sees one durable disposition.
+    from pipeline.project.verification_ledger_runtime import finalize as finalize_ledger
+
+    finalize_ledger(run)
+
     # 1) Status from state.halt + profile_name (pre-delivery).
     _resolve_terminal_status(run)
 
@@ -1933,10 +2151,14 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         run._run_commit_delivery(effective_diff_cwd)
         _apply_no_diff_final_acceptance_outcome(run, diff_path=diff_path)
         _apply_rejected_release_terminal_outcome(run)
-        # Cross-run reconcile: a successful from_run_plan follow-up closes out
+        # Cross-run reconcile: a successful ordinary correction follow-up closes out
         # the rejected-FA / correction parent it was launched to fix, so the
         # parent stops reading as an active correction candidate everywhere.
         _supersede_parent_correction_after_followup(run)
+
+    # Pure projection after delivery and rejected-release reconciliation.  The
+    # terminal wrapper must consume this result rather than re-read session.
+    terminal_delivery = project_terminal_delivery(run.session)
 
     # 3) DONE-banner log entry (file + event; no stdout). Mirrors the
     # legacy ``banner("DONE", ...)`` event-side: writes a "DONE
@@ -2078,13 +2300,10 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
             mirror_error = str(exc)
 
     # 9) Worktree teardown (ADR 0033) + ContextVar resets.
-    worktree_teardown_message: str | None = None
-    if run.worktree_context is not None:
-        from pipeline.engine.worktree import teardown_worktree
-        td = teardown_worktree(run.worktree_context, retain=True)
-        # retain=True: ``td.error`` carries the "retained at <path>"
-        # note. Falsy ``td.error`` = clean removal.
-        worktree_teardown_message = td.error or "removed"
+    # ADR 0131: plugin-declared external-resource teardown runs before an
+    # isolated git worktree is released. Off-mode contexts are canonical
+    # checkouts, so cleanup/presentation is not applicable to them.
+    worktree_teardown_message = _teardown_worktree_for_finalization(run)
     if run._worktree_cvar_token is not None:
         from pipeline.engine.worktree import reset_active_worktree_checkout
         reset_active_worktree_checkout(run._worktree_cvar_token)
@@ -2151,7 +2370,11 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         no_change_outcome=run.session.get("no_change_outcome")
         if isinstance(run.session.get("no_change_outcome"), Mapping)
         else None,
-        evidence_summary_lines=_render_evidence_summary(run.session),
+        evidence_summary_lines=_render_evidence_summary(
+            run.session,
+            metrics_dict,
+            terminal_delivery=terminal_delivery,
+        ),
         roi_summary_line=_render_roi_summary(
             run.session,
             metrics_dict,
@@ -2168,7 +2391,7 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         # Advice cost is gated on accounting availability ALONE — not phase
         # cost presence. The advice digest can carry a real
         # ``usage.cost_usd_equivalent`` even when no phase reported an
-        # api-equivalent cost (e.g. an operator/CI stop with no following
+        # cost reference (e.g. an operator/CI stop with no following
         # phase), so reusing ``has_api_equivalent_cost`` (phase-cost driven)
         # would wrongly suppress it. The digest-cost-presence check inside
         # ``_format_agent_advice_block`` still ensures cost renders iff the
@@ -2196,6 +2419,10 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
             if isinstance(run.session.get("phases"), Mapping)
             else {}
         ),
+        # Compact 'Delivery: ...' destination line, read from the terminal
+        # ``commit_delivery`` audit record; empty when the run carries none.
+        delivery_summary_lines=render_delivery_destination_lines(run.session),
+        terminal_delivery=terminal_delivery,
     )
 
 
@@ -2250,17 +2477,32 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
         # seen here are delivery-driven or quality-gate halts.
         label, header_color = _halt_banner(result.halt_reason)
         print(render_phase_header("HALTED", label, color=header_color))
-    elif result.release_outcome == "rejected":
-        # The run reached a terminal non-halted ``done`` status, but the
-        # release gate REJECTED the delivery (correction requested / blocked).
-        # A green "Pipeline complete" would read as a successful delivery —
-        # render an honest amber banner instead. The phase chips below still
-        # carry the genuine per-phase outcomes (final_acceptance=reject is a
-        # release outcome, not a phase failure); only the headline changes.
-        # approved/pending/none never enter here and keep the green header.
+    elif (
+        result.terminal_delivery.disposition
+        is TerminalDeliveryDisposition.DELIVERED_BY_OPERATOR_OVERRIDE
+    ):
+        print(render_phase_header(
+            "DELIVERED BY OPERATOR OVERRIDE",
+            "Release rejected; delivery was explicitly completed by operator override",
+            color=C.YELLOW,
+        ))
+    elif (
+        result.release_outcome == "rejected"
+        and result.terminal_delivery.disposition
+        is TerminalDeliveryDisposition.NOT_DELIVERED
+    ):
         print(render_phase_header(
             "DELIVERY BLOCKED",
             "Release rejected — pipeline ran, delivery did not happen",
+            color=C.YELLOW,
+        ))
+    elif result.release_outcome == "rejected":
+        # A rejected release is never green.  ``UNKNOWN`` deliberately does
+        # not claim delivery did not happen; a delivered record without the
+        # corroborating override marker is likewise not a clean success.
+        print(render_phase_header(
+            "DELIVERY BLOCKED",
+            "Release rejected — delivery disposition requires attention",
             color=C.YELLOW,
         ))
     elif result.companion_caveat is not None:
@@ -2328,6 +2570,13 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
     for line in result.evidence_summary_lines:
         _done_line(line, color=C.MAGENTA, icon="•", icon_color=C.MAGENTA)
 
+    # Delivery destination line: where the diff actually landed (delivery
+    # branch + PR / checkout commit / applied uncommitted / skipped / not
+    # delivered). Neutral cyan — a factual destination report, not a verdict.
+    # Empty tuple -> nothing (no terminal delivery record for this run).
+    for line in result.delivery_summary_lines:
+        _done_line(line, color=C.CYAN, icon="•", icon_color=C.CYAN)
+
     # Verification gates block (T3): the official auto-run / gate_rerun outcome,
     # sourced from durable receipt evidence. Neutral cyan header + grey detail
     # rows — never success-green (a neutral pass/fresh/stale report, not a
@@ -2345,7 +2594,7 @@ def finalize_with_terminal_output(ctx: FinalizationContext) -> FinalizationResul
             _done_line(f"Usage:   {run._metrics.summary_line()}", color=C.CYAN, icon="•", icon_color=C.CYAN)
             if result.has_api_equivalent_cost:
                 print(
-                    f"           {paint('↳ API-equivalent: what pay-as-you-go API would have charged for these calls.', C.GREY)}"
+                    f"           {paint('↳ ' + ACCOUNTING_REFERENCE_NOTE, C.GREY)}"
                 )
             if result.roi_summary_line:
                 _done_line(result.roi_summary_line, color=C.YELLOW, icon="•", icon_color=C.YELLOW)

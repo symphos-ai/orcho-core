@@ -18,6 +18,27 @@ The pipeline's run output is captured in two complementary stores:
 `SessionAdapterRegistry` (Phase 7 ships `orcho.session_adapters`
 entry_points for plugin extension).
 
+## Which "session" this is
+
+Three distinct mechanisms share the word; this doc covers only the first:
+
+1. **`session.json`** — the durable run-summary store (this document).
+2. **The provider agent session** — whether a phase invocation *continues*
+   the prior provider session or starts fresh. That is profile policy
+   (`session_continuity`: `fresh_only` / `loop_continue` /
+   `same_zone_continue`), projected by
+   `pipeline/runtime/session_disposition.py`
+   ([ADR 0113](../adr/0113-session-disposition-policy-and-context-baggage-guard.md));
+   see [Prompt Engine](prompt_engine.md) for where that decision sits.
+3. **Prompt-session reuse** — how prompt parts are grouped for delta
+   rendering inside a continued session (`PromptSessionSplit`:
+   `STATELESS` / `PER_PHASE` / `PER_ROLE` / `COMMON`,
+   `pipeline/prompts/session.py`).
+
+Adapters here run regardless of those two: whatever the disposition and
+delta decisions were, the phase's durable summary lands in `session.json`
+the same way.
+
 ## Why the split
 
 `SessionAdapter` decouples session-shape ceremony from phase-handler
@@ -43,9 +64,10 @@ network sockets — adapters are deterministic shape translators only.
 |---------|------------|-------------|-------------|
 | `PlanAdapter` | `plan` | `session["phases"]["plan"]` | list (per-round attempts) |
 | `ValidatePlanAdapter` | `validate_plan` | `session["phases"]["validate_plan"]` | list (per-round attempts) |
-| `ImplementAdapter` | `implement` | `session["phases"]["implement"]` | dict (single) |
-| `RoundAdapter` | `rounds` | `session["phases"]["rounds"]` | list (per review_changes↔repair_changes round) |
+| `BuildAdapter` | `implement` | `session["phases"]["implement"]` | dict (single) |
+| `RoundAdapter` | `rounds` (+ `repair_changes` v2-dispatch alias) | `session["phases"]["rounds"]` | list (per review_changes↔repair_changes round) |
 | `FinalAcceptanceAdapter` | `final_acceptance` | `session["phases"]["final_acceptance"]` | dict (single) |
+| `CorrectionTriageAdapter` | `correction_triage` | `session["phases"]["correction_triage"]` | dict (single; ADR 0085 correction profile triage verdict) |
 | `HypothesisAdapter` | `hypothesis` | `session["phases"]["hypothesis"]` | dict (single, optional) |
 
 ## Per-round invocation pattern
@@ -99,9 +121,13 @@ computed per-round derived data (`parsed_plan.file_paths`,
 the adapter fired.
 
 Phase 5d deleted those loop methods. The derived data moved into
-handlers / callbacks, and `_PipelineRun._on_phase_end` now auto-fires
-the registered adapter when v2 dispatch is active. Direct adapter calls
-remain only for special pre-profile helpers such as hypothesis.
+handlers / callbacks, and the lifecycle FSM now auto-fires the registered
+adapter in its `adapter` stage
+(`PhaseLifecycle._fire_adapter` in `pipeline/lifecycle.py` — stage 8,
+after the handler and gates, before the checkpoint write);
+`_PipelineRun._on_phase_end` keeps only timer/banner duties and the
+legacy fallback. Direct adapter calls remain only for special
+pre-profile helpers such as hypothesis.
 
 ## Plugin override semantics
 

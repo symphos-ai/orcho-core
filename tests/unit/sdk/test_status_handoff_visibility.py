@@ -25,9 +25,11 @@ from pathlib import Path
 import pytest
 
 from cli._formatters import format_status
+from core.io.ansi import set_color_enabled, strip_ansi
 from sdk.errors import InvalidPhaseHandoffState
 from sdk.phase_handoff import phase_handoff_decide, safe_handoff_id
 from sdk.status import load_status
+from sdk.types import GateStatus, PhaseStatus, RunMeta, RunRef, RunStatus
 
 _PHASE = "review_changes"
 
@@ -129,6 +131,409 @@ def test_cli_status_omits_pending_line_for_running_run(tmp_path: Path) -> None:
     status = load_status("20260612_running", runs_dir=runs, cwd=None)
     rendered = format_status(status)
     assert "Pending handoff" not in rendered
+
+
+def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+    config._reset_config()
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260612_done"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "ship cost status",
+                "project": "/repo/orcho-core",
+                "profile": "feature",
+                "timestamp": "2026-06-12T10:00:00",
+                "status": "done",
+                "phases": {"plan": {}, "implement": {}},
+                "commit_delivery": {
+                    "action": "approve",
+                    "status": "committed",
+                    "release_verdict": "APPROVED",
+                    "release_summary": "Ready after verification receipt review.",
+                    "verification_missing": ["lint"],
+                    "pr_url": "https://example.test/pr/1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 300,
+                "total_tokens_in": 250,
+                "total_tokens_out": 50,
+                "total_duration_s": 12.5,
+                "total_rounds": 2,
+                "total_cost_usd_equivalent": 12.34,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "claude-opus-4-8",
+                        "attempts": 1,
+                        "total_tokens": 100,
+                        "duration_s": 3.0,
+                        "cost_usd_equivalent": 1.0,
+                    },
+                    "review_changes": {
+                        "model": "gpt-5.5",
+                        "attempts": 2,
+                        "total_tokens": 200,
+                        "duration_s": 9.5,
+                        "cost_usd_equivalent": 2.0,
+                        "cost_estimated": True,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "run_id": "20260612_done",
+                "status": "done",
+                "gates": [
+                    {
+                        "name": "lint",
+                        "kind": "computational",
+                        "outcome": "passed",
+                        "duration_s": 1.25,
+                    },
+                    {
+                        "name": "tests",
+                        "kind": "computational",
+                        "outcome": "skipped",
+                        "duration_s": 0.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in ("commit_decisions", "phase_handoff_advice", "phases"):
+        (run_dir / name).mkdir()
+
+    try:
+        status = load_status("20260612_done", runs_dir=runs, cwd=None)
+        rendered = format_status(status)
+    finally:
+        config._reset_config()
+
+    assert "Projects:" not in rendered
+    assert "Cost ref: estimated-api ~$12.34" in rendered
+    assert "review_changes" in rendered
+    assert "runtime-reported $1.00" in rendered
+    assert "estimated-api ~$2.00" in rendered
+    assert [gate.name for gate in status.quality_gates] == ["lint", "tests"]
+    assert "Gates:" in rendered
+    assert "passed x1" in rendered
+    assert "skipped x1" in rendered
+    assert "tests                  skipped             0.00s computational" in rendered
+    assert "lint                   passed" not in rendered
+    assert "Delivery:" in rendered
+    assert "Status: committed (approve)" in rendered
+    assert "Verification missing: lint" in rendered
+    assert "PR: https://example.test/pr/1" in rendered
+    assert "Run dir:" in rendered
+
+
+def test_status_uses_workspace_accounting_config_without_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+    monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+    config._reset_config()
+
+    workspace = tmp_path / "workspace-orchestrator"
+    runs = workspace / "runspace" / "runs"
+    run_dir = runs / "20260612_accounting"
+    run_dir.mkdir(parents=True)
+    (workspace / ".orcho").mkdir()
+    (workspace / ".orcho" / "config.local.json").write_text(
+        json.dumps({"accounting": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "workspace accounting status",
+                "project": "/repo/orcho-core",
+                "status": "done",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+                "phases": {
+                    "plan": {
+                        "model": "claude-opus-4-8",
+                        "total_tokens": 10,
+                        "cost_usd_equivalent": 1.23,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        status = load_status("20260612_accounting", workspace=workspace)
+        rendered = format_status(status)
+    finally:
+        config._reset_config()
+
+    assert "Cost ref: runtime-reported $1.23" in rendered
+    assert "runtime-reported $1.23" in rendered
+
+
+def test_cli_status_color_can_be_forced_without_changing_plain_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+    config._reset_config()
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260612_color"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "color status",
+                "project": "/repo/orcho-core",
+                "status": "done",
+                "commit_delivery": {
+                    "status": "committed",
+                    "release_verdict": "APPROVED",
+                    "verification_missing": ["lint"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_duration_s": 1.0,
+                "total_cost_usd_equivalent": 1.23,
+                "cost_estimated": True,
+                "phases": {
+                    "plan": {
+                        "model": "gpt-5.5",
+                        "total_tokens": 10,
+                        "duration_s": 1.0,
+                        "cost_usd_equivalent": 1.23,
+                        "cost_estimated": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        status = load_status("20260612_color", runs_dir=runs, cwd=None)
+        set_color_enabled(True)
+        rendered = format_status(status)
+    finally:
+        set_color_enabled(None)
+        config._reset_config()
+
+    assert "\x1b[" in rendered
+    plain = strip_ansi(rendered)
+    assert "Status:  done" in plain
+    assert "Cost ref: estimated-api ~$1.23" in plain
+    assert "Verification missing: lint" in plain
+
+
+def test_cli_status_handles_invalid_metrics_empty_delivery_and_path_context(
+    tmp_path: Path,
+) -> None:
+    runs = tmp_path / "runs"
+    run_dir = runs / "20260612_running"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "task": "status edge cases",
+                "project": "/repo/orcho-core",
+                "profile": "feature",
+                "timestamp": "2026-06-12T10:00:00",
+                "status": "awaiting_phase_handoff",
+                "phase_handoff": {"id": 42},
+                "phases": {"plan": {}, "implement": {}},
+                "commit_delivery": {},
+                "worktree": {"path": "/tmp/worktree"},
+                "parent_run_id": "20260611_parent",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(
+            {
+                "total_tokens": 10,
+                "total_tokens_in": 7,
+                "total_tokens_out": 3,
+                "total_duration_s": 1.5,
+                "total_retries": 2,
+                "total_cost_usd_equivalent": "not-a-number",
+                "cost_estimated": "unknown",
+                "phases": [
+                    "not a phase mapping",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    status = load_status("20260612_running", runs_dir=runs, cwd=None)
+    rendered = format_status(status)
+
+    assert "Pending handoff" not in rendered
+    assert "Cost ref:" not in rendered
+    assert "Retries: 2" in rendered
+    assert "Phases completed: plan, implement" in rendered
+    assert "Delivery:" not in rendered
+    assert "Worktree: /tmp/worktree" in rendered
+    assert "Parent:   20260611_parent" in rendered
+
+
+def test_cli_status_renders_cross_projects_subprojects_verbose_and_clips_text(
+    tmp_path: Path,
+) -> None:
+    status = RunStatus(
+        run_ref=RunRef(
+            run_id="20260612_cross",
+            run_dir=tmp_path / "runs" / "20260612_cross",
+        ),
+        meta=RunMeta(
+            project=None,
+            task="x" * 120,
+            status="running",
+            profile="cross",
+            timestamp="2026-06-12T10:00:00",
+            projects=("api", "web"),
+        ),
+        total_tokens=1_234,
+        total_tokens_in=1_000,
+        total_tokens_out=234,
+        total_duration_s=3.5,
+        total_rounds=1,
+        raw_meta={"note": "verbose payload"},
+        raw_metrics={
+            "total_tokens": 1_234,
+            "total_tokens_in": 1_000,
+            "total_tokens_out": 234,
+            "total_duration_s": 3.5,
+            "total_rounds": 1,
+            "total_cost_usd_equivalent": 1.5,
+            "cost_estimated": "unknown",
+            "phases": {
+                "plan": {
+                    "attempts": "bad",
+                    "total_tokens": "bad",
+                    "duration_s": "bad",
+                    "model": "claude-model-name-that-is-long-enough-to-clip",
+                    "cost_usd_equivalent": "bad",
+                }
+            },
+        },
+        sub_projects=(
+            PhaseStatus(name="api", status="done"),
+            PhaseStatus(name="web", status=None),
+        ),
+    )
+
+    rendered = format_status(status, verbose=True)
+
+    assert "Project: [cross] api, web" in rendered
+    assert "Task:    " + ("x" * 80) in rendered
+    assert "Projects:" in rendered
+    assert "[api]  status=done" in rendered
+    assert "[web]  status=?" in rendered
+    assert "attempts=?" in rendered
+    assert "claude-model-name-that-..." in rendered
+    assert "Rounds:  1" in rendered
+    assert "Detailed Meta:" in rendered
+    assert '"note": "verbose payload"' in rendered
+
+    no_phase_map = RunStatus(
+        run_ref=RunRef(
+            run_id="20260612_no_phase_map",
+            run_dir=tmp_path / "runs" / "20260612_no_phase_map",
+        ),
+        meta=None,
+        total_tokens=1,
+        total_duration_s=1.0,
+        raw_metrics={
+            "total_cost_usd_equivalent": 2.0,
+            "cost_estimated": "unknown",
+            "phases": [],
+        },
+    )
+    rendered_no_phase_map = format_status(no_phase_map)
+    assert "Cost ref: runtime-reported $2.00" in rendered_no_phase_map
+
+
+def test_cli_status_verbose_renders_all_quality_gates(tmp_path: Path) -> None:
+    status = RunStatus(
+        run_ref=RunRef(
+            run_id="20260612_gates",
+            run_dir=tmp_path / "runs" / "20260612_gates",
+        ),
+        meta=RunMeta(
+            project="/repo/demo",
+            task="gate visibility",
+            status="done",
+            profile="feature",
+            timestamp="2026-06-12T10:00:00",
+        ),
+        quality_gates=(
+            GateStatus(
+                name="lint",
+                kind="computational",
+                outcome="passed",
+                duration_s=1.25,
+            ),
+            GateStatus(
+                name="tests",
+                kind="computational",
+                outcome="skipped",
+                duration_s=0.0,
+            ),
+        ),
+    )
+
+    rendered = format_status(status, verbose=True)
+
+    assert "Gates:" in rendered
+    assert "passed x1" in rendered
+    assert "skipped x1" in rendered
+    assert "lint                   passed              1.25s computational" in rendered
+    assert "tests                  skipped             0.00s computational" in rendered
 
 
 # ── id progression + per-id idempotency ────────────────────────────────────

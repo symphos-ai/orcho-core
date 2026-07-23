@@ -214,3 +214,52 @@ class TestReExports:
         s = io.StringIO()
         s.isatty = lambda: True  # type: ignore[method-assign]
         return s
+
+
+# ── ask_yn ────────────────────────────────────────────────────────────
+
+
+class TestAskYn:
+    """The shared yes/no prompt used by `orcho workspace init` flows."""
+
+    def _ask(self, text: str, *, default_yes: bool = True):
+        stdin = io.StringIO(text)
+        return journey_prompt.ask_yn(
+            "Proceed?", default_yes=default_yes,
+            stdin=stdin, stdout=io.StringIO(), color=False,
+        )
+
+    def test_yes_variants(self) -> None:
+        assert self._ask("y\n") is True
+        assert self._ask("YES\n") is True
+
+    def test_no(self) -> None:
+        assert self._ask("n\n") is False
+
+    def test_empty_line_returns_default(self) -> None:
+        assert self._ask("\n", default_yes=True) is True
+        assert self._ask("\n", default_yes=False) is False
+
+    def test_eof_returns_none(self) -> None:
+        assert self._ask("") is None
+
+    def test_keyboard_interrupt_returns_none(self) -> None:
+        class _CtrlCStdin:
+            def readline(self):
+                raise KeyboardInterrupt
+
+        out = io.StringIO()
+        result = journey_prompt.ask_yn(
+            "Proceed?", default_yes=True,
+            stdin=_CtrlCStdin(), stdout=out, color=False,
+        )
+        assert result is None
+        assert out.getvalue().endswith("\n")
+
+    def test_hint_reflects_default(self) -> None:
+        out = io.StringIO()
+        journey_prompt.ask_yn(
+            "Proceed?", default_yes=False,
+            stdin=io.StringIO("\n"), stdout=out, color=False,
+        )
+        assert "[y/N]" in out.getvalue()

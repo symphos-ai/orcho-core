@@ -224,6 +224,12 @@ def _resolve_cross_resume_latest(
 
 
 def main():
+    from core.io.encoding import ensure_utf8_stdio
+
+    # Force UTF-8 stdio before any rendering so non-ASCII output (emoji / box
+    # drawing) does not crash on a legacy Windows console code page.
+    ensure_utf8_stdio()
+
     parser = argparse.ArgumentParser(
         description="Cross-Project Multi-Agent Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -329,19 +335,15 @@ Examples:
                         help="Override model for repair_changes phase")
     parser.add_argument("--model-review",  type=str, default=None,
                         help="Override model for validate_plan / review_changes / final_acceptance / contract check")
-    # Provider overrides — orthogonal to --model-* (see project_orchestrator.py).
+    # Runtime overrides — orthogonal to --model-*.
     parser.add_argument("--runtime-plan",   type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for PLAN phase")
+                        help="Override runtime for PLAN phase")
     parser.add_argument("--runtime-build",  type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for implement phase")
+                        help="Override runtime for implement phase")
     parser.add_argument("--runtime-fix",    type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for repair_changes phase")
+                        help="Override runtime for repair_changes phase")
     parser.add_argument("--runtime-review", type=str, default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override provider for validate_plan / review_changes / final_acceptance / contract check")
+                        help="Override runtime for validate_plan / review_changes / final_acceptance / contract check")
     # Cross-mode: "full" runs plan → implement → review_changes for all
     # projects; "plan" generates cross_plan.json (canonical) + cross_plan.md
     # (audit render) and stops for human review. Per-project ``--profile``
@@ -363,13 +365,15 @@ Examples:
     parser.add_argument(
         "--workspace", "-w", type=str, default=None,
         help="Path to workspace-orchestrator dir. Required (or set $ORCHO_WORKSPACE) "
-             "так что run-артефакты пишутся в <workspace>/runspace/runs/<ts>/.",
+             "so run artifacts are written under "
+             "<workspace>/runspace/runs/<ts>/.",
     )
     parser.add_argument(
         "--resume", type=str, nargs="?", const="latest", default=None,
         metavar="RUN_ID",
         help="Resume cross-run by RUN_ID (basename in runspace/runs/). "
-             "Cross-checkpoint.json + per-alias checkpoints.db решают что пропустить. "
+             "Cross-checkpoint.json and per-alias checkpoints.db determine "
+             "which work can be skipped. "
              "Pass bare --resume or --resume latest to auto-select the newest "
              "cross run in the active workspace.",
     )
@@ -536,7 +540,7 @@ Examples:
         )
         sys.exit(0)
 
-    # См. project_orchestrator.main(): выставляем env ДО первого config.RUNS_DIR.
+    # See project_orchestrator.main(): set env before the first config.RUNS_DIR access.
     try:
         task = _resolve_task(
             explicit_task=args.task,
@@ -611,7 +615,7 @@ Examples:
             sys.exit(2)
         if not output_dir.is_dir():
             print_error(
-                f"--resume {args.resume!r}: cross run_dir не существует: {output_dir}"
+                f"--resume {args.resume!r}: cross run_dir does not exist: {output_dir}"
             )
             sys.exit(2)
     else:

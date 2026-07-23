@@ -12,7 +12,11 @@ lives in :mod:`core.io.retry` as typed subclasses of
   model API (refused / DNS / mid-stream disconnect).
 * :class:`~core.io.retry.ApiTimeoutError` — request timed out.
 * :class:`~core.io.retry.SystemResourceError` — local OS resource blocker
-  (e.g. an exhausted PTY pool).
+  (e.g. an exhausted PTY pool). Its :class:`~core.io.retry.AgentProcessKilledError`
+  subclass (kill-shaped signal death — SIGKILL/SIGSEGV/SIGABRT) is therefore
+  automatically included here via ``isinstance`` and projected as recoverable,
+  while cancel-shaped :class:`~core.io.retry.AgentCancelledError` (a direct
+  ``AgentCallError``, not a ``SystemResourceError``) is excluded.
 
 When one of those escalates past the retry budget the run is terminal, but the
 *next* safe operator/captain action is to resume or retry the same phase once

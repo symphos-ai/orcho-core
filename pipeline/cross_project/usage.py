@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from core.infra import config
+from core.observability.accounting_display import format_cost_reference_key_value
 from pipeline.cross_project.rendering import C, paint, success, warn
 
 # Process-local memo of unpriced models we've already warned about, so
@@ -28,7 +29,7 @@ def _warn_unpriced_model(
     seen.add(model)
     emit = _default_warn if warn_fn is None else warn_fn
     emit(
-        f"No pricing for model {model!r} — API-equivalent cost will be "
+        f"No pricing for model {model!r} — cost reference will be "
         f"blank for this model's invokes. Fix: run "
         f"'orcho pricing refresh', or add an entry to "
         f"~/.orcho/pricing.local.toml."
@@ -218,11 +219,19 @@ def format_usage_snapshot(phase_label: str, usage: Mapping[str, Any]) -> str:
     if not config.accounting_enabled():
         cost_part = ""
     elif cost is None:
-        cost_part = "api-equiv=-"
+        cost_part = "cost_ref=-"
     elif cost_est:
-        cost_part = f"api-equiv~${float(cost):,.2f}"
+        cost_part = format_cost_reference_key_value(
+            float(cost),
+            estimated=True,
+            thousands=True,
+        )
     else:
-        cost_part = f"api-equiv=${float(cost):,.2f}"
+        cost_part = format_cost_reference_key_value(
+            float(cost),
+            estimated=False,
+            thousands=True,
+        )
     return (
         f"  usage: {phase_label}  "
         f"total={total:,}  "

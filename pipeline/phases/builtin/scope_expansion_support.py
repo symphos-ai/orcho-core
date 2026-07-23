@@ -13,10 +13,11 @@ responsibility (durable-artefact gathering for scope expansion) gets a focused
 home, and ``review_support`` keeps only the thin facade aliases the handler and
 tests import.
 
-Every durable source degrades softly: a missing git repo, unreadable plan
-artefact, or absent receipt collapses to the conservative signal (``verified``
-False, ``has_explanation`` False, …) so a gap never silently upgrades an
-out-of-plan file toward ``notice``, and a failure never breaks delivery.
+Every durable source degrades softly: a missing git repo or absent receipt
+collapses to the conservative signal (``verified`` False, ``has_explanation``
+False, …) so a gap never silently upgrades an out-of-plan file toward
+``notice``, and a failure never breaks delivery. A malformed successful Git
+porcelain response is instead surfaced as a contract violation.
 """
 
 from __future__ import annotations
@@ -27,21 +28,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from core.io.git_helpers import _run_git, git_changed_files
+from core.io.git_helpers import (
+    GitStatusParseError,
+    _run_git,
+    git_changed_file_records,
+)
+from pipeline.engine.declared_write_scope import (
+    DECLARED_WRITE_SCOPE_EXTRAS_KEY,
+    DeclaredWriteScope,
+    resolve_declared_write_scope,
+)
 from pipeline.engine.scope_expansion import (
     CATEGORY_BUILD,
     CATEGORY_FIXTURE,
     CATEGORY_IMPORT_WIRING,
-    CATEGORY_PERSISTENCE,
     CATEGORY_PUBLIC_WIRE,
     CATEGORY_SCHEMA,
-    CATEGORY_SECURITY,
     ScopeExpansionAssessment,
     ScopeExpansionItem,
     build_scope_expansion_assessment,
     build_scope_expansion_signals,
     categorize_file,
-    derive_in_plan_patterns,
     render_scope_expansion_lines,
 )
 from pipeline.phases.builtin.lifecycle import _agent_project_dir
@@ -223,17 +230,40 @@ def _sdk_flags_by_file(
     return flags
 
 
-def _in_plan_patterns(state: PipelineState, output_dir: Path) -> tuple[str, ...]:
-    """Glob patterns the durable plan + project allowed-modifications declare."""
-    from pipeline.plan_artifacts import load_parsed_plan_artifact
+def _declared_write_scope(state: PipelineState) -> DeclaredWriteScope:
+    """Return the canonical scope, retaining typed plugin allowances plan-less.
 
-    plan: Any = None
-    try:
-        plan = load_parsed_plan_artifact(Path(output_dir))
-    except Exception:  # noqa: BLE001 — fall back to the in-memory plan
-        plan = getattr(state, "parsed_plan", None)
-    project_allowed = getattr(getattr(state, "plugin", None), "allowed_modifications", None)
-    return derive_in_plan_patterns(plan, project_allowed or ())
+    A missing scope still fails closed for plan ownership.  Plugin allowances
+    are an independent typed project declaration, however, and plan-less
+    profiles have no materialization seam that would otherwise stamp them.
+    """
+    scope = state.extras.get(DECLARED_WRITE_SCOPE_EXTRAS_KEY)
+    if isinstance(scope, DeclaredWriteScope):
+        return scope
+    plugin_allowed = getattr(getattr(state, "plugin", None), "allowed_modifications", ())
+    return resolve_declared_write_scope(plugin_allowed_modifications=plugin_allowed)
+
+
+def _scope_identities(
+    state: PipelineState, cwd: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Collect all exact status identities and their unmatched subset.
+
+    A rename/copy intentionally contributes both source and destination.  The
+    insertion-ordered map gives deterministic de-duplication without
+    reducing untracked nested paths to their parent directory.  The full set
+    is retained as classifier context so an in-plan companion can supply
+    paired alignment to an unmatched public-wire change.
+    """
+    scope = _declared_write_scope(state)
+    identities: dict[str, None] = {}
+    for record in git_changed_file_records(cwd):
+        for path in record.scope_identities:
+            if path:
+                identities.setdefault(path, None)
+    all_identities = tuple(identities)
+    unmatched = tuple(path for path in all_identities if not scope.matches(path))
+    return all_identities, unmatched
 
 
 def _explained_files(state: PipelineState, changed: list[str]) -> set[str]:
@@ -295,7 +325,10 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
     Empty (no items) under dry-run, without a verification contract or run dir,
     when an operator waiver is active, or when the working tree has no
     out-of-plan change — so the prompt and verdict stay byte-identical for an
-    ordinary in-scope diff and for the pre-feature waiver path. Never raises.
+    ordinary in-scope diff and for the pre-feature waiver path.
+
+    Raises :class:`GitStatusParseError` when a successful git invocation emits
+    malformed porcelain; invocation failures remain a soft empty observation.
     """
     if getattr(state, "dry_run", False):
         return ScopeExpansionAssessment()
@@ -313,7 +346,12 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
 
     cwd = _agent_project_dir(state)
     try:
-        changed = [f for f in git_changed_files(cwd) if f]
+        changed_file_set, changed = _scope_identities(state, cwd)
+    except GitStatusParseError:
+        # A successful git invocation with malformed porcelain is not a clean
+        # observation; surface its contract violation instead of silently
+        # suppressing a potentially out-of-plan tree.
+        raise
     except Exception:  # noqa: BLE001
         changed = []
     if not changed:
@@ -323,8 +361,11 @@ def scope_expansion_assessment(state: PipelineState) -> ScopeExpansionAssessment
     gate_status = _gate_status_by_category(state, contract, Path(output_dir))
     signals = build_scope_expansion_signals(
         changed_files=changed,
-        changed_file_set=changed,
-        in_plan_patterns=_in_plan_patterns(state, Path(output_dir)),
+        changed_file_set=changed_file_set,
+        # ``changed`` is already filtered through the single canonical scope.
+        # Do not make the pure builder independently reload or reinterpret a
+        # plan; it receives only unmatched identities.
+        in_plan_patterns=(),
         diff_stats_by_file=_diff_stats_by_file(diffs),
         gate_status_by_category=gate_status,
         explained_files=_explained_files(state, changed),
@@ -344,57 +385,6 @@ def scope_expansion_text(state: PipelineState) -> str:
     return render_scope_expansion_text(scope_expansion_assessment(state))
 
 
-def _is_russian(language: str | None) -> bool:
-    return bool(language and str(language).strip().lower().startswith("rus"))
-
-
-def _scope_gap_dict(item: Any, *, language: str | None) -> dict[str, str]:
-    evidence = "; ".join(item.evidence) or "no supporting evidence"
-    if _is_russian(language):
-        return {
-            "risk": (
-                f"Out-of-plan {item.category} файл '{item.path}' — "
-                "scope-expansion blocker."
-            ),
-            "missing_evidence": f"Сигналы scope-expansion: {evidence}.",
-            "required_check": (
-                f"Обоснуй парным alignment/тестом или откати out-of-plan "
-                f"изменение {item.path}."
-            ),
-        }
-    return {
-        "risk": (
-            f"Out-of-plan {item.category} change '{item.path}' is a "
-            "scope-expansion blocker."
-        ),
-        "missing_evidence": f"Scope-expansion signals: {evidence}.",
-        "required_check": (
-            f"Justify with paired alignment/tests or revert the out-of-plan "
-            f"change to {item.path}."
-        ),
-    }
-
-
-# Genuine-safety classes (ADR 0112 §5): the only ones whose sanction stays hard
-# (default halt + waiver) in every mode. ``security`` / ``persistence`` are
-# categories; ``destructive_delete`` surfaces as a per-file evidence token.
-_GENUINE_SAFETY_CATEGORIES = frozenset({CATEGORY_SECURITY, CATEGORY_PERSISTENCE})
-_DESTRUCTIVE_DELETE_EVIDENCE = "destructive-delete"
-
-
-def _item_is_genuine_safety(item: ScopeExpansionItem) -> bool:
-    """True for a genuine-safety item (security / persistence / destructive delete).
-
-    Derived from the classifier's durable fact only — the category and the
-    pure-fact evidence tokens — so the classifier is not re-run or re-coupled to
-    a verdict here.
-    """
-    return (
-        item.category in _GENUINE_SAFETY_CATEGORIES
-        or _DESTRUCTIVE_DELETE_EVIDENCE in item.evidence
-    )
-
-
 @dataclass(frozen=True)
 class ScopeExpansionSanctionRouting:
     """Mode-projected routing of a scope-expansion assessment (ADR 0112 §5).
@@ -403,36 +393,27 @@ class ScopeExpansionSanctionRouting:
     under the run's ``OperatingMode``, computed via the T1 projection
     :func:`pipeline.runtime.scope_expansion_sanction.decide`:
 
-    - ``halt_items`` — sanction ``HALT_WAIVER`` (a genuine-safety class with no
-      active waiver). These are the **only** items that emit a release gap and
-      force a REJECTED verdict, in every mode.
-    - ``handoff_items`` — sanction ``HANDOFF`` (a ``pro`` blocker or any
-      ``governed`` expansion). These do **not** force REJECTED; they mark the
-      need for a phase-handoff (the lifecycle wiring is a later increment).
-    - ``alert_items`` — sanction ``AUTO_ALERT`` (a ``pro`` risk): continue with
-      an operator-visible alert, no release gap.
+    - ``handoff_items`` — sanction ``HANDOFF`` (a ``governed`` expansion).
+      They do not force REJECTED; they request the delivery decision.
+    - ``alert_items`` — sanction ``AUTO_ALERT`` (a ``pro`` expansion): continue
+      with an operator-visible disclosure, no release gap.
 
     ``AUTO_CONTINUE`` items carry no route entry (record → continue).
     """
 
     operating_mode: OperatingMode
-    halt_items: tuple[ScopeExpansionItem, ...] = ()
     handoff_items: tuple[ScopeExpansionItem, ...] = ()
     alert_items: tuple[ScopeExpansionItem, ...] = ()
 
     @property
     def forces_rejected(self) -> bool:
-        """True iff a genuine-safety halt forces a REJECTED verdict."""
-        return bool(self.halt_items)
+        """Scope expansion never forces a release verdict by itself."""
+        return False
 
     @property
     def needs_phase_handoff(self) -> bool:
         """True iff at least one item routes through phase-handoff (T3)."""
         return bool(self.handoff_items)
-
-    def release_gaps(self, *, language: str | None = None) -> list[dict[str, str]]:
-        """Release-gap dicts (``required_receipt_gaps`` shape) for halt items only."""
-        return [_scope_gap_dict(item, language=language) for item in self.halt_items]
 
     def to_dict(self) -> dict[str, Any]:
         """Durable, JSON-safe view of the routing decision."""
@@ -440,7 +421,6 @@ class ScopeExpansionSanctionRouting:
             "operating_mode": self.operating_mode.value,
             "forces_rejected": self.forces_rejected,
             "needs_phase_handoff": self.needs_phase_handoff,
-            "halt_paths": [item.path for item in self.halt_items],
             "handoff_paths": [item.path for item in self.handoff_items],
             "alert_paths": [item.path for item in self.alert_items],
         }
@@ -456,32 +436,26 @@ def route_scope_expansion_sanction(
 
     Replaces the old unconditional ``blockers → release gaps`` coupling (the
     "prison rule"): the route now depends on the run's ``OperatingMode``,
-    whether the item is a genuine-safety class, and whether an operator
-    ``continue_with_waiver`` is active. Pure routing — the classifier is left
-    untouched; only :func:`pipeline.runtime.scope_expansion_sanction.decide`
-    decides the route per item.
+    and whether an operator ``continue_with_waiver`` is active. Pure routing —
+    the classifier is left untouched; only
+    :func:`pipeline.runtime.scope_expansion_sanction.decide` decides the route.
     """
-    halt: list[ScopeExpansionItem] = []
     handoff: list[ScopeExpansionItem] = []
     alerts: list[ScopeExpansionItem] = []
     for item in assessment.items:
         disposition = _decide_sanction(
             status=item.status.value,
-            category_is_genuine_safety=_item_is_genuine_safety(item),
             operating_mode=operating_mode,
             has_active_waiver=has_active_waiver,
         )
         sanction = disposition.sanction
-        if sanction is ScopeExpansionSanction.HALT_WAIVER:
-            halt.append(item)
-        elif sanction is ScopeExpansionSanction.HANDOFF:
+        if sanction is ScopeExpansionSanction.HANDOFF:
             handoff.append(item)
         elif sanction is ScopeExpansionSanction.AUTO_ALERT:
             alerts.append(item)
         # AUTO_CONTINUE: record → continue, no route entry.
     return ScopeExpansionSanctionRouting(
         operating_mode=operating_mode,
-        halt_items=tuple(halt),
         handoff_items=tuple(handoff),
         alert_items=tuple(alerts),
     )
@@ -521,9 +495,8 @@ def raise_scope_expansion_handoff(
     rc=4 — the same ADR 0038 lifecycle the loop-driven handoffs ride.
 
     No-op (returns ``None``) when there is no handoff need, or when a pause is
-    already pending — genuine-safety HALT items reject via the release-gap path,
-    and an earlier request (e.g. the implement substance-repair handoff) is never
-    clobbered. Idempotent across resume: the final_acceptance phase is recorded
+    already pending, and an earlier request (e.g. the implement substance-repair
+    handoff) is never clobbered. Idempotent across resume: the final_acceptance phase is recorded
     completed before the runner breaks, so a resumed ``continue`` short-circuits
     the completed phase rather than re-raising the same handoff.
     """
@@ -538,12 +511,18 @@ def raise_scope_expansion_handoff(
     )
 
     paths = [item.path for item in routing.handoff_items]
+    # The declared scope the changes were judged against rides the signal so
+    # every consumer (TTY digest, MCP payload, advice) can show the full
+    # scope delta — offending paths alone forced the operator to dig through
+    # the reviewer transcript to learn what the plan scope even was.
+    in_plan = _declared_write_scope(state).patterns
     signal = build_scope_expansion_handoff_signal(
         trigger=SCOPE_EXPANSION_OUT_OF_PLAN_TRIGGER,
         artifacts={
             "operating_mode": routing.operating_mode.value,
             "handoff_paths": paths,
             "findings": _handoff_findings(routing),
+            "in_plan_patterns": list(in_plan),
         },
         last_output=last_output or (
             "Out-of-plan scope expansion routed to phase-handoff for operator "

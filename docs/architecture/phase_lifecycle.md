@@ -43,7 +43,6 @@ stateDiagram-v2
 
 | Stage | Owner | Phase introduced | Short-circuit outcomes |
 |-------|-------|------------------|------------------------|
-| `entry` | runtime | Phase 2 | — |
 | `before_review` | HumanReview backend | Phase 8 | HALTED / SKIPPED / RETRY_REQUESTED |
 | `execute` | ExecutionMode dispatcher | Phase 2 | FAILED on exception |
 | `gates` | QualityGateRunner | Phase 4 | HALTED on `on_fail=HALT` |
@@ -135,6 +134,13 @@ against the published list — the SDK refuses an action that isn't in
 `rejected` verdicts** (an approved pause has nothing to waive); see
 ADR 0072.
 
+An incomplete `subtask_dag` implement handoff is stricter than a rejected loop
+verdict. It publishes exactly `retry_feedback`, `continue_with_waiver`, and
+`halt`. Bare `continue` is absent because accepting incomplete implementation
+is necessarily a waiver; the explicit waiver action requires the operator's
+non-empty verdict. The resume arm rejects a stale or hand-edited bare
+`continue` decision fail-closed. See ADR 0136.
+
 ### `decide ≠ resume`
 
 The contract intentionally splits the two operations:
@@ -180,6 +186,38 @@ field divergence for the same `handoff_id` raises
 `InvalidPhaseHandoffState`. See ADR 0031 § 2 for the full matrix
 including `halt`-after-`halt` replay semantics.
 
+### Canonical continuation selection (ADR 0149)
+
+Checkpoint resume, retained-change followup, and `from_run_plan` are three
+separate operations, selected only by the typed continuation reducer.  A
+checkpoint resume reuses the parent run directory, but preflight rejects it
+when the parent's scheduled-gate ledger is finalized.  This strict
+finalized-ledger rule never transfers to a fresh child: both a followup and a
+from-run-plan launch require a child id distinct from the parent and a fresh
+output directory with explicit parent lineage.
+
+A followup requires an isolated dirty retained worktree and a non-empty
+operator comment.  `from_run_plan` requires the parent's `parsed_plan.json`
+and consumes only that plan artifact; it is not a fallback for a retained
+change.  Missing, clean, unreadable, or non-isolated retained work is a typed
+blocker.  CLI, SDK, and transport entry points must not infer a different
+operation after the reducer or preflight refuses one.
+
+### Trigger-first verification recovery (ADR 0149)
+
+Handoff ownership is selected by trigger before phase.  A
+`verification_gate_failed` handoff is verification recovery even when it was
+emitted at `final_acceptance`; scope expansion requires its own explicit
+`scope_expansion:*` trigger.  Verification recovery validates an exact
+`(command, hook, phase)` identity, active handoff identity, feedback, retained
+repair subject, and repair step before consuming the decision.  It performs
+one repair and one rerun of that same gate on the fresh repaired subject.
+
+A control-plane blocker leaves the original handoff available to the operator;
+a provider or process crash remains the ordinary interrupted/failed lifecycle
+and is not recast as a blocker.  This lifecycle rule does not define a
+`final_acceptance` recovery path.
+
 ### Canonical state
 
 There is one source of truth for active-pause state:
@@ -201,7 +239,7 @@ accepted, feeds the generated feedback through the **same**
 pseudo-actions never enter `available_actions` or
 `phase_handoff_decide`; the recommendation is persisted under
 `<run_dir>/phase_handoff_advice/` and linked from the decision's `note`.
-See [ADR 0090](../adr/0090-handoff-advice-stage0.md) and the
+See [ADR 0124](../adr/0124-handoff-advice-stage0.md) and the
 `phase_handoff_advice/` section in
 [run_state.md](run_state.md).
 
@@ -214,7 +252,7 @@ sources, all flowing through the **one** decide + resume path above:
 
 - **`human`** — the operator typed the feedback at the canonical menu.
 - **`agent_advice`** — Stage 0: an operator accepted (or edited) an
-  advisor recommendation at the TTY ([ADR 0090](../adr/0090-handoff-advice-stage0.md)).
+  advisor recommendation at the TTY ([ADR 0124](../adr/0124-handoff-advice-stage0.md)).
 - **`ci_agent`** — Stage 1: in a **non-interactive** run a
   policy-controlled, prompt-free sub-flow auto-applies an advisor
   recommendation under a bounded `max_agent_retries` budget and audited
@@ -405,13 +443,22 @@ materializes the run's missing/stale required receipts so the model reviewer
 never has to leak shell work to the operator (ADR 0094). In `_on_phase_pre`
 (below), after the correction-route skip check and **before** `before_phase` /
 `before_delivery` gates evaluate, when `name in FINAL_PHASES` the orchestrator
-calls `auto_run_required_receipts(self, name, reason=…)`. That thin adapter runs
-the shared `materialize_required_receipts` executor — auto-running only `missing`
-/ `stale` required commands, skipping `present` (fresh), never re-running
-`failed` (the "never falsely green" invariant), and never auto-running
-`manual_only` / operator-only commands (those stay an explicit operator
-escape-hatch). It is a strict no-op under dry-run, no contract, or empty
-`required`. The auto-run records durable evidence: an append-only
+first resolves and durably records the authoritative `before_delivery:` epoch
+from the current run worktree, then calls `auto_run_required_receipts` with that
+exact plan. Only after the selection trail is written may the shared
+`materialize_required_receipts` executor run — auto-running only `missing`
+/ `stale` required commands and, per [ADR 0141](../adr/0141-subject-aware-refresh-of-failed-verification-receipts.md),
+a failed official current-run receipt only when usable typed subjects prove it
+`STALE` against the current checkout. A same, legacy, malformed, unavailable,
+absent, or inherited subject never authorizes that refresh; execution-first
+reporting still leaves a command failure `failed`. It skips `present` (fresh) and
+never auto-runs `manual_only` hooks / operator-owned commands (those stay an
+explicit operator escape-hatch). The materializer has one command pass, with no
+retry loop. It is a strict no-op under dry-run, no contract, or empty `required`.
+Later `before_delivery` hooks replay that recorded epoch rather than recomputing
+path selection, and reuse its fresh receipt rather than running a second
+subprocess. Correction pre-review materialization intentionally does not create a
+delivery epoch. The auto-run records durable evidence: an append-only
 `state.extras['verification_autorun']` list plus a per-phase mirror at
 `session['phase_log'][<phase>]['verification_autorun']`. The `before_delivery`
 gate, the Stage 5 readiness render, and the Stage 6 delivery gate then read the
@@ -487,6 +534,33 @@ the only way to drive this channel; without `on_phase_pre` it is inert and
 the fresh-run path is byte-for-byte unchanged. Its sole consumer today is
 correction routing (ADR 0086) — it is a correction-specific mechanism, not
 a general branching primitive.
+
+### Contract-aware handoff advice
+
+Advice is advisory only: the canonical decision path remains
+`phase_handoff_decide` with one of the four published actions. The advisor sees
+separate dynamic prompt parts for raw task, accepted parsed-plan contract, and
+handoff findings. Structured intent is assessed as `safe`, `contract_conflict`,
+`operator_review_required`, or `policy_blocked`; `auto_apply_ok` is derived.
+Unsafe conflict/ambiguity never use interactive apply/edit or CI retry and
+return to the canonical manual handoff menu. Stage 2 uses only the nearest
+same-phase linked retry result, never terminal or downstream success.
+
+## Verification hygiene handoff
+
+At the scheduled-gate routing seam, a typed `test_failure` continues through
+the established `repair_changes` loop and can expose `retry_feedback` on a
+handoff. A typed `provenance_failure` or `env_failure` is instead a hygiene
+handoff: no agent repair phase runs, and the available canonical actions are
+only `continue_with_waiver` and `halt`. The signal uses existing
+`artifacts.findings`, `artifacts.short_summary`, and `last_output`; it does not
+extend the phase-handoff wire shape.
+
+The advisor's waiver recommendation is read-only. CI stops at
+`needs_operator`; neither path records a decision or waiver. At the later
+readiness/delivery boundary, hygiene failures remain visible warnings, whereas
+`test_failure`, missing proof, and stale proof remain blocking under effective
+`require`. See [ADR 0130](../adr/0130-typed-verification-failure-and-hygiene-delivery-policy.md).
 
 Verification gates are bypassed on **both** sides of a skipped phase. The
 orchestrator's `_on_phase_pre` returns immediately after marking the skip,

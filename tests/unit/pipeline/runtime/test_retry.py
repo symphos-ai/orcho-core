@@ -18,9 +18,12 @@ import subprocess
 import pytest
 
 from core.io.retry import (
+    DEFAULT_RETRY_CONFIG,
     AgentAccessError,
     AgentAuthenticationError,
     AgentCallError,
+    AgentCancelledError,
+    AgentProcessKilledError,
     ApiTimeoutError,
     ContextOverflowError,
     ErrorType,
@@ -31,6 +34,7 @@ from core.io.retry import (
     call_with_retry,
     classify_error,
     classify_from_exit,
+    classify_signal_exit,
     sanitized_failure_excerpt,
     with_retry,
 )
@@ -125,6 +129,18 @@ class TestClassifyError:
         result = classify_error(exc)
         assert "specific message" in str(result)
 
+    def test_unknown_error_carries_actionable_hint(self) -> None:
+        # The generic bucket is not auto-retried, so its message is the whole
+        # remediation surface: it must lead with an actionable next step (the
+        # terminal FAILED banner shows only the first line) while still
+        # preserving the raw detail for --output debug.
+        exc = RuntimeError("weird provider glitch xyz")
+        msg = str(classify_error(exc))
+        first_line = msg.splitlines()[0]
+        assert "--output debug" in first_line
+        assert "not retried" in first_line
+        assert "weird provider glitch xyz" in msg
+
 
 class TestClassifyFromExit:
     def test_exit_zero_returns_none(self) -> None:
@@ -173,6 +189,58 @@ class TestClassifyFromExit:
         assert isinstance(result, AgentCallError)
 
 
+class TestClassifySignalExit:
+    """Signal-death typing driven purely by the exit code's shape."""
+
+    @pytest.mark.parametrize("exit_code", [-9, 137, -11, 139, -6, 134])
+    def test_kill_shape_maps_to_process_killed(self, exit_code: int) -> None:
+        result = classify_from_exit(exit_code, "")
+        assert isinstance(result, AgentProcessKilledError)
+        # Kill type is a SystemResourceError subclass → auto provider_runtime.
+        assert isinstance(result, SystemResourceError)
+
+    def test_kill_message_names_the_signal(self) -> None:
+        result = classify_from_exit(-9, "")
+        assert result is not None
+        assert "SIGKILL" in str(result)
+        # Shell 128+N convention normalises to the same signal name.
+        assert "SIGKILL" in str(classify_from_exit(137, ""))
+
+    @pytest.mark.parametrize("exit_code", [-2, -15, 130, 143])
+    def test_cancel_shape_maps_to_cancelled(self, exit_code: int) -> None:
+        result = classify_from_exit(exit_code, "")
+        assert isinstance(result, AgentCancelledError)
+        # Cancel type must NOT be a SystemResourceError (never recoverable).
+        assert not isinstance(result, SystemResourceError)
+
+    def test_cancel_message_names_the_signal(self) -> None:
+        assert "SIGTERM" in str(classify_from_exit(-15, ""))
+        assert "SIGINT" in str(classify_from_exit(-2, ""))
+
+    def test_plain_nonzero_stays_generic(self) -> None:
+        # 3 is not a signal shape → exactly generic AgentCallError, not a
+        # signal subclass.
+        result = classify_from_exit(3, "")
+        assert type(result) is AgentCallError
+
+    def test_unrecognised_signal_stays_generic(self) -> None:
+        # SIGHUP (1) is a signal but not in the kill/cancel taxonomy → generic.
+        result = classify_from_exit(-1, "")
+        assert type(result) is AgentCallError
+
+    def test_text_classification_keeps_priority_over_signal_shape(self) -> None:
+        # A recognised rate-limit signature on a kill-shaped code must stay a
+        # RateLimitError — the signal branch only fires for a bare generic.
+        result = classify_from_exit(137, "rate_limit_exceeded: quota reached")
+        assert isinstance(result, RateLimitError)
+        assert not isinstance(result, AgentProcessKilledError)
+
+    def test_helper_returns_none_for_non_signal(self) -> None:
+        assert classify_signal_exit(3) is None
+        assert classify_signal_exit(1) is None
+        assert classify_signal_exit(-1) is None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RetryConfig
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,6 +275,28 @@ class TestRetryConfig:
         cfg = RetryConfig(max_retries=3)
         err = SystemResourceError("pty")
         assert cfg.max_retries_for(err) == 0
+
+    def test_process_killed_uses_explicit_knob(self) -> None:
+        cfg = RetryConfig(max_retries=3, process_killed_max_retries=1)
+        err = AgentProcessKilledError("killed by SIGKILL (exit=-9)")
+        assert cfg.max_retries_for(err) == 1
+
+    def test_process_killed_default_knob_is_one(self) -> None:
+        err = AgentProcessKilledError("killed by SIGKILL (exit=-9)")
+        assert DEFAULT_RETRY_CONFIG.max_retries_for(err) == 1
+
+    def test_process_killed_does_not_disturb_base_system_resource(self) -> None:
+        # The kill subclass gets a budget; the base PTY-style form stays 0.
+        cfg = RetryConfig(max_retries=3, process_killed_max_retries=2)
+        assert cfg.max_retries_for(SystemResourceError("pty")) == 0
+        assert cfg.max_retries_for(AgentProcessKilledError("killed")) == 2
+
+    def test_cancelled_is_never_retried(self) -> None:
+        err = AgentCancelledError("cancelled by SIGTERM (exit=-15)")
+        # Zero under the default config...
+        assert DEFAULT_RETRY_CONFIG.max_retries_for(err) == 0
+        # ...and zero even when the generic budget is a positive 3.
+        assert RetryConfig(max_retries=3).max_retries_for(err) == 0
 
     def test_generic_uses_max_retries(self) -> None:
         cfg = RetryConfig(max_retries=3)
@@ -245,6 +335,28 @@ class TestCallWithRetry:
         result = call_with_retry(flaky, config=_make_config(max_retries=3), _sleep=_no_sleep)
         assert result == "success"
         assert call_count[0] == 3
+
+    def test_admission_denial_raises_original_before_event_or_sleep(self) -> None:
+        error = RateLimitError("rate_limit_exceeded")
+        order: list[str] = []
+        events: list[RetryEvent] = []
+
+        def fail() -> None:
+            order.append("attempt")
+            raise error
+
+        with pytest.raises(RateLimitError) as excinfo:
+            call_with_retry(
+                fail,
+                config=_make_config(max_retries=1),
+                retry_events=events,
+                retry_admission=lambda received: order.append("admission") or False,
+                _sleep=lambda _delay: order.append("sleep"),
+            )
+
+        assert excinfo.value is error
+        assert order == ["attempt", "admission"]
+        assert events == []
 
     def test_exhausts_and_raises(self) -> None:
         def always_fail():
@@ -298,6 +410,39 @@ class TestCallWithRetry:
             call_with_retry(pty_exhausted, config=_make_config(max_retries=3), _sleep=_no_sleep)
 
         assert call_count[0] == 1
+
+    def test_process_killed_retries_exactly_once(self) -> None:
+        # A RUNTIME-like config (generic=0) still retries the kill shape once
+        # via the explicit knob; second attempt succeeds → the phase continues.
+        call_count = [0]
+
+        def killed_then_ok():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise classify_from_exit(-9, "")
+            return "recovered"
+
+        cfg = RetryConfig(
+            max_retries=0,
+            process_killed_max_retries=1,
+            base_delay=0.0,
+            jitter=False,
+        )
+        result = call_with_retry(killed_then_ok, config=cfg, _sleep=_no_sleep)
+        assert result == "recovered"
+        assert call_count[0] == 2  # one failure + one successful retry
+
+    def test_cancelled_is_not_retried(self) -> None:
+        call_count = [0]
+
+        def cancelled():
+            call_count[0] += 1
+            raise classify_from_exit(-15, "")
+
+        cfg = RetryConfig(max_retries=3, base_delay=0.0, jitter=False)
+        with pytest.raises(AgentCancelledError):
+            call_with_retry(cancelled, config=cfg, _sleep=_no_sleep)
+        assert call_count[0] == 1  # no retry, even with generic budget 3
 
     def test_access_error_is_not_retried(self) -> None:
         call_count = [0]

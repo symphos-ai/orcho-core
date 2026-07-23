@@ -21,11 +21,9 @@ The split mirrors the neighbouring scope modules:
 ``notices`` / ``risks`` / ``blockers`` projections and ``has_blocker``), and the
 neutral per-file signal record :class:`FileScopeSignals`.
 
-**(B) Pure derivation.** :func:`derive_in_plan_patterns` folds the durable plan
-scope (``ParsedPlan.owned_files`` / ``allowed_modifications`` at plan and subtask
-level) plus the project-level ``PluginConfig.allowed_modifications`` into a glob
-pattern set, reusing the ``"glob — reason"`` path-extraction convention and the
-``_path_is_declared`` matching semantics from ``companion_scope``.
+**(B) Pure derivation.** :func:`derive_in_plan_patterns` is a compatibility
+projection over :mod:`pipeline.engine.declared_write_scope`, which owns durable
+scope normalisation, provenance, and matching semantics.
 
 **(C) Pure signal building.** :func:`categorize_file` maps a path to a stable
 category; :func:`build_scope_expansion_signals` assembles one
@@ -46,12 +44,16 @@ green gate for its own category is downgraded to at least ``risk``.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from pipeline.engine.declared_write_scope import (
+    path_matches_declared_scope,
+    resolve_declared_write_scope,
+)
 
 # ── category constants ───────────────────────────────────────────────────────
 
@@ -60,6 +62,7 @@ CATEGORY_FIXTURE = "fixture_snapshot"
 CATEGORY_SCHEMA = "generated_schema"
 CATEGORY_IMPORT_WIRING = "import_wiring"
 CATEGORY_PROJECT_CONFIG = "project_config"
+CATEGORY_TEST = "test"
 CATEGORY_PUBLIC_WIRE = "public_wire"
 CATEGORY_PERSISTENCE = "persistence"
 CATEGORY_SECURITY = "security"
@@ -74,6 +77,7 @@ _BENIGN_CATEGORIES = frozenset(
         CATEGORY_SCHEMA,
         CATEGORY_IMPORT_WIRING,
         CATEGORY_PROJECT_CONFIG,
+        CATEGORY_TEST,
     }
 )
 _SDK_RECONCILABLE_CATEGORIES = frozenset({CATEGORY_SCHEMA, CATEGORY_PUBLIC_WIRE})
@@ -82,6 +86,54 @@ _SDK_RECONCILABLE_CATEGORIES = frozenset({CATEGORY_SCHEMA, CATEGORY_PUBLIC_WIRE}
 LARGE_DIFF_LINES = 200
 
 _GREEN = "green"
+
+# ── test-module detection (language-agnostic) ────────────────────────────────
+# A test edit never changes the product surface, so it is never a genuine-safety
+# (persistence / security / public-wire) scope expansion — even when the name
+# carries a sensitive token (``test_run_state.py``, ``auth.service.test.ts``,
+# ``secret_store_test.go``). Detected two ways, both on the ORIGINAL-case path so
+# CamelCase conventions (``FooTest.java``) survive lowercasing.
+#
+# 1. Naming conventions across ecosystems (basename-only, so test *data* keeps
+#    its content category):
+_TEST_NAME_RE = re.compile(
+    r"""^(?:
+        test_.+\.py                                          # pytest / unittest
+      | .+_test\.(?:py|go|rb|exs?|cc|cpp|cxx|cs|c)           # go / ruby / elixir / c(++) / python-alt
+      | test_.+\.(?:cc|cpp|cxx|c)                            # c(++) prefix style
+      | .+[._](?:test|spec)\.(?:js|jsx|ts|tsx|mjs|cjs)       # jest / vitest / mocha / jasmine
+      | .+_spec\.rb                                          # rspec
+      | .+(?:Test|Tests|Spec|IT)\.(?:java|kt|kts|scala|cs|swift|php)  # jvm / .net / swift / php
+    )$""",
+    re.VERBOSE,
+)
+# 2. Location: a source file under a test directory (catches ecosystems with no
+#    name convention, e.g. Rust ``tests/foo.rs``). Excludes data/fixture/golden
+#    dirs so goldens and test data keep their content category.
+_TEST_DIR_RE = re.compile(r"(?:^|/)(?:tests?|__tests__|spec)/")
+_TEST_DATA_DIR_RE = re.compile(r"(?:^|/)(?:fixtures?|golden|goldens|snapshots?|testdata|data)/")
+_TEST_SOURCE_EXTS = (
+    ".py", ".go", ".rs", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".rb", ".java", ".kt", ".kts", ".scala", ".cs", ".swift", ".php",
+    ".ex", ".exs", ".cc", ".cpp", ".cxx", ".c", ".h", ".hpp", ".m", ".mm",
+)
+
+
+def _is_test_module(path: str, lowered: str) -> bool:
+    """True when ``path`` is a test source file in any common ecosystem (pure).
+
+    Uses the original-case basename for naming conventions (CamelCase
+    ``FooTest.java``) and the lowered path for the directory heuristic. Never
+    matches test *data* / fixtures / goldens — those keep their content
+    category.
+    """
+    if _TEST_NAME_RE.match(_basename(path)):
+        return True
+    return (
+        _TEST_DIR_RE.search(lowered) is not None
+        and _TEST_DATA_DIR_RE.search(lowered) is None
+        and lowered.endswith(_TEST_SOURCE_EXTS)
+    )
 
 
 # ── (A) typed results ────────────────────────────────────────────────────────
@@ -216,43 +268,6 @@ class ScopeExpansionAssessment:
 # ── (B) pure derivation of the in-plan pattern set ───────────────────────────
 
 
-# Strip a leading ``[subtask-id]`` / ``[alias]`` tag (possibly repeated) so the
-# bare glob surfaces, e.g. ``[T2] tests/x/** — reason`` → ``tests/x/** — reason``.
-_LEADING_TAG_RE = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
-# Split a ``glob — reason`` entry on a surrounded dash (em/en/hyphen). The
-# surrounding whitespace keeps in-path hyphens (``package-lock.json``) intact.
-_REASON_SPLIT_RE = re.compile(r"\s+[—–-]\s+")
-
-
-def _extract_glob(entry: Any) -> str:
-    """Extract the bare glob from a plan-scope / ``glob — reason`` entry (pure)."""
-    if not isinstance(entry, str):
-        return ""
-    text = _LEADING_TAG_RE.sub("", entry).strip()
-    if not text:
-        return ""
-    text = _REASON_SPLIT_RE.split(text, maxsplit=1)[0].strip()
-    # A glob never contains whitespace; keep only the first token defensively.
-    return text.split()[0] if text else ""
-
-
-def _plan_scope_entries(plan: Any) -> tuple[str, ...]:
-    """All durable plan-scope reference strings: plan- and subtask-level (pure)."""
-    refs: list[str] = []
-
-    def _extend(obj: Any) -> None:
-        for attr in ("owned_files", "allowed_modifications"):
-            for value in getattr(obj, attr, None) or ():
-                if isinstance(value, str) and value:
-                    refs.append(value)
-
-    if plan is not None:
-        _extend(plan)
-        for subtask in getattr(plan, "subtasks", None) or ():
-            _extend(subtask)
-    return tuple(refs)
-
-
 def derive_in_plan_patterns(
     plan: Any,
     project_allowed_modifications: Sequence[str] | None = None,
@@ -263,36 +278,15 @@ def derive_in_plan_patterns(
     subtask) with the project-level ``PluginConfig.allowed_modifications`` list,
     extracting the bare glob from each ``"glob — reason"`` entry. Pure — no I/O.
     """
-    patterns: set[str] = set()
-    for entry in _plan_scope_entries(plan):
-        glob = _extract_glob(entry)
-        if glob:
-            patterns.add(glob)
-    for entry in project_allowed_modifications or ():
-        glob = _extract_glob(entry)
-        if glob:
-            patterns.add(glob)
-    return tuple(sorted(patterns))
+    return resolve_declared_write_scope(
+        plan,
+        project_allowed_modifications,
+    ).patterns
 
 
 def _path_matches(rel: str, patterns: Sequence[str]) -> bool:
-    """True when ``rel`` matches any declared glob (``_path_is_declared`` semantics).
-
-    Supports an exact file, a ``**`` / ``*`` wildcard, and a directory-prefix
-    declaration (``a/b`` or ``a/b/**`` covers nested files). Pure string match.
-    """
-    for raw in patterns:
-        pat = str(raw).strip().rstrip("/")
-        if not pat:
-            continue
-        if pat in ("**", "*"):
-            return True
-        if fnmatch.fnmatch(rel, pat):
-            return True
-        base = pat.rstrip("*").rstrip("/")
-        if base and (rel == base or rel.startswith(base + "/")):
-            return True
-    return False
+    """Compatibility-local name for the canonical declared-scope matcher."""
+    return path_matches_declared_scope(rel, patterns)
 
 
 # ── (C) pure categorisation + signal building ────────────────────────────────
@@ -337,6 +331,12 @@ def categorize_file(path: str) -> str:
     p = path.lower()
     name = _basename(p)
 
+    # test source module (any language) — checked before the sensitive families
+    # so a sensitive token in a test's name/path cannot mis-escalate it. See
+    # ``_is_test_module``. Fixtures, goldens, and test *data* are excluded there
+    # and keep their content categories via the branches below.
+    if _is_test_module(path, p):
+        return CATEGORY_TEST
     # security — secret / auth / credential material (highest priority).
     if any(tok in p for tok in ("secret", "auth", "credential")):
         return CATEGORY_SECURITY

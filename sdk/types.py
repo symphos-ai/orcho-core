@@ -13,7 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pipeline.control.continuation import ContinuationDecision
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run identity / metadata
@@ -61,6 +64,17 @@ class PhaseStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class GateStatus:
+    """One quality-gate event projected onto the run status surface."""
+
+    name: str
+    outcome: str | None
+    kind: str | None = None
+    duration_s: float | None = None
+    phase: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunStatus:
     """Full status snapshot of a single run.
 
@@ -85,10 +99,12 @@ class RunStatus:
     total_rounds: int = 0
     total_retries: int = 0
     sub_projects: tuple[PhaseStatus, ...] = ()
+    quality_gates: tuple[GateStatus, ...] = ()
     worktree: dict[str, Any] | None = None
     raw_meta: dict[str, Any] = field(default_factory=dict)
     raw_metrics: dict[str, Any] = field(default_factory=dict)
     next_actions: tuple = ()  # tuple[Action, ...] — avoids forward-ref cycle
+    continuation_decision: ContinuationDecision | None = None
     artefacts: tuple = ()  # tuple[ArtefactRef, ...] — avoids forward-ref order
 
 
@@ -189,24 +205,62 @@ class ArtefactRef:
 
 @dataclass(frozen=True, slots=True)
 class PhaseBreakdown:
-    """One row in the by-phase aggregation of a `CostReport`."""
+    """One row in the phase-shaped aggregation of a `CostReport`.
+
+    ``kind`` mirrors the metrics entry kind when available. Normal
+    single-project phases use ``phase``; cross-project child pipeline aliases
+    use ``sub_pipeline`` and are rendered separately by the CLI so project
+    aliases do not masquerade as phase names.
+    """
 
     name: str
     cost: float
     tokens: int
     runs: int
     tokens_exact: bool
+    cost_estimated: bool = False
+    kind: str = "phase"
 
 
 @dataclass(frozen=True, slots=True)
 class AgentBreakdown:
-    """One row in the by-agent (provider) aggregation of a `CostReport`."""
+    """One row in the by-runtime aggregation of a `CostReport`.
 
-    provider: str  # "claude" / "codex" / "gemini" / "other"
+    The ``provider`` field is the resolved agent-runtime id when the phase
+    metrics carry one (e.g. ``claude``, ``claude-glm``); otherwise it falls
+    back to a model→provider bucket (``claude`` / ``codex`` / ``gemini`` /
+    ``other``) for legacy runs written without a runtime id. The field name
+    stays ``provider`` for wire compatibility.
+    """
+
+    # Resolved runtime id (e.g. ``claude`` / ``claude-glm``) when the phase
+    # carries one, else a model→provider fallback bucket
+    # (``claude`` / ``codex`` / ``gemini`` / ``other``).
+    provider: str
     cost: float
     tokens: int
     runs: int
     tokens_exact: bool
+    cost_estimated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectBreakdown:
+    """One row in the by-workspace-project aggregation of a `CostReport`.
+
+    ``name`` is the workspace project directory name. ``path`` is the resolved
+    project path used for attribution. Rows include single-project runs and
+    cross-project slices whose project path belongs to the same workspace
+    project group; cross-level orchestration phases remain separate phase rows.
+    """
+
+    name: str
+    path: str
+    cost: float
+    tokens: int
+    runs: int
+    tokens_exact: bool
+    cost_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +276,7 @@ class CostRunRow:
     duration_s: float
     rounds: int
     retries: int
+    cost_estimated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +306,7 @@ class CostReport:
     pricing_snapshot_age_days: int | None
     any_estimated: bool
     accounting_enabled: bool = True
+    project_breakdown: tuple[ProjectBreakdown, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

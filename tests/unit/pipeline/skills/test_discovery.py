@@ -3,7 +3,7 @@
 Pins multi-source skill discovery semantics:
 
 * Priority order (project > compat > workspace > user > entry_points)
-* :class:`SkillTrustPolicy` defaults: project + compat OFF
+* :class:`SkillTrustPolicy` defaults: workspace only
 * ``include_untrusted=True`` override
 * ``orcho.skills`` entry_points: SkillPackage instance, factory, Path
  fan-out, malformed entries
@@ -75,6 +75,22 @@ def _patch_entry_points(eps: list[_FakeEP]) -> Iterator[None]:
 
 
 class TestTrustPolicy:
+    def test_global_sources_off_by_default(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        home = tmp_path / "home"
+        _write_skill(home / ".agents/skills", "user-skill")
+        package_root = tmp_path / "pkg_root"
+        _write_skill(package_root, "package-skill")
+
+        with _patch_entry_points([_FakeEP("vendor_pack", package_root)]):
+            result = discover_skills(
+                project_dir=tmp_path / "project",
+                workspace_dir=workspace,
+                home_dir=home,
+            )
+
+        assert result == {}
+
     def test_project_skills_off_by_default(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
@@ -214,6 +230,7 @@ class TestPriorityOrder:
                 project_dir=project,
                 workspace_dir=workspace,
                 home_dir=home,
+                trust_policy=SkillTrustPolicy(trust_user=True),
             )
         assert result["shared"].source == "workspace"
         assert result["shared"].description == "from workspace"
@@ -242,6 +259,10 @@ class TestPriorityOrder:
                 project_dir=project,
                 workspace_dir=workspace,
                 home_dir=home,
+                trust_policy=SkillTrustPolicy(
+                    trust_user=True,
+                    trust_packages=True,
+                ),
             )
         assert result["shared"].source == "user"
         assert result["shared"].description == "from user"
@@ -269,7 +290,11 @@ class TestPriorityOrder:
                 project_dir=project,
                 workspace_dir=workspace,
                 home_dir=home,
-                trust_policy=SkillTrustPolicy(trust_project=True),
+                trust_policy=SkillTrustPolicy(
+                    trust_project=True,
+                    trust_user=True,
+                    trust_packages=True,
+                ),
             )
         assert set(result) == {"p_only", "w_only", "u_only", "pkg_only"}
         assert result["p_only"].source == "project"
@@ -293,6 +318,7 @@ class TestEntryPointCoercion:
                 project_dir=tmp_path / "project",
                 workspace_dir=tmp_path / "workspace",
                 home_dir=tmp_path / "home",
+                trust_policy=SkillTrustPolicy(trust_packages=True),
             )
         assert set(result) == {"vendor"}
         # Source upgraded from "unknown" → "package:<entry_name>" so
@@ -311,6 +337,7 @@ class TestEntryPointCoercion:
                 project_dir=tmp_path / "project",
                 workspace_dir=tmp_path / "workspace",
                 home_dir=tmp_path / "home",
+                trust_policy=SkillTrustPolicy(trust_packages=True),
             )
         assert set(result) == {"vendor"}
 
@@ -324,6 +351,7 @@ class TestEntryPointCoercion:
                 project_dir=tmp_path / "project",
                 workspace_dir=tmp_path / "workspace",
                 home_dir=tmp_path / "home",
+                trust_policy=SkillTrustPolicy(trust_packages=True),
             )
         assert set(result) == {"vendor_a", "vendor_b"}
         for pkg in result.values():
@@ -337,6 +365,7 @@ class TestEntryPointCoercion:
                 project_dir=tmp_path / "project",
                 workspace_dir=tmp_path / "workspace",
                 home_dir=tmp_path / "home",
+                trust_policy=SkillTrustPolicy(trust_packages=True),
             )
         assert result == {}
         captured = capsys.readouterr()
@@ -352,6 +381,7 @@ class TestEntryPointCoercion:
                 project_dir=tmp_path / "project",
                 workspace_dir=tmp_path / "workspace",
                 home_dir=tmp_path / "home",
+                trust_policy=SkillTrustPolicy(trust_packages=True),
             )
         assert result == {}
         captured = capsys.readouterr()

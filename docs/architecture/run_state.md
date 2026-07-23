@@ -49,6 +49,15 @@ The layer is split into isolated parts, each with a single job:
 - **State-transition helpers.** Focused writers own active handoff transitions,
   single-project terminal transitions, and cross terminal settlement in a run's
   flat state mapping (see below).
+- **Terminal-outcome reduction (ADR 0115).** A pure reducer,
+  `pipeline/run_state/terminal_outcome.py`, is the single home for the
+  status-flip *decisions* finalization applies: `resolve_terminal_outcome(...)`
+  (pre-delivery: state-halt → `halted`, plan-only work kind →
+  `awaiting_human_review`, else `done`) and `apply_no_diff_terminal(...)`
+  (post-delivery no-diff reconcile: rejected-no-diff → `halted`,
+  approved-no-diff → `done` with a marker). Like the writers, it does no I/O
+  and emits no events; finalization routes through it instead of encoding
+  flips inline.
 
 ## Checkpoint completeness = a successful outcome
 
@@ -139,7 +148,9 @@ session dict or a `meta.json` body loaded off disk:
 |---|---|---|
 | `mark_run_done(state)` | `status='done'` | cleared |
 | `mark_run_halted(state, *, halt_reason, halted_at=None)` | `status='halted'`, `halt_reason`, optional `halted_at` | cleared |
+| `mark_run_awaiting_review(state)` | `status='awaiting_human_review'` — the plan-only (planning/research) pause-for-review terminal; writes no `halt_reason` | preserved |
 | `mark_run_failed(state, *, halt_reason)` | `status='failed'`, `halt_reason` | preserved |
+| `mark_run_stalled(state, *, halt_reason)` | `status='failed'`, `halt_reason` — the stalled-command escalation (ADR 0103); distinct name gives the stall path a greppable home | preserved |
 | `mark_run_interrupted(state, *, interrupted_at, halt_reason='interrupted')` | `status='interrupted'`, `interrupted_at`, `halt_reason` | preserved |
 | `settle_cross_terminal(state, *, status, halt_reason=None, halted_at=None)` | cross terminal `status`, optional `halt_reason` / `halted_at` | cleared |
 
@@ -148,6 +159,16 @@ persistence, the `run.end` event, and checkpoint status stay with the caller,
 so a helper can never double-write or reorder the run-end boundary. The
 module depends on nothing and never imports runtime / resume / finalization
 code.
+
+The same module owns settle-time residue eviction (ADR 0115): a settled
+terminal (`done` / `halted`) evicts the canonical `TRANSIENT_SETTLE_KEYS`
+tuple (`phase_handoff`, `halt`, `halt_reason`, `halted_at`,
+`rejected_outcome`, `delivery_override`, `no_op_outcome`,
+`correction_fixed_point`) via `evict_transient_settle_keys(...)`, and cross
+runs have two disjoint canonical sets — `evict_cross_settle_residue(...)`
+(settle-only) and `evict_cross_handoff_markers(...)` (handoff-marker keys) —
+so "which residue is stale when" is a named contract, not per-call-site
+judgment.
 
 ### Stale-handoff policy
 
@@ -159,6 +180,10 @@ This is the load-bearing rule the helpers encode:
   that failed or was interrupted while carrying an undecided handoff still
   needs an operator decision; the repair layer deliberately refuses to flip
   it, so the helpers must not erase the state the operator has to act on.
+- **`awaiting_human_review` is a pause, not a settled terminal.** The
+  plan-only tail produced an artifact for a human to sign off; the operator
+  decision is still ahead, so the active `phase_handoff` must survive —
+  clearing it would erase exactly the state the reviewer acts on.
 
 The shape `mark_run_halted` writes for `halt_reason='phase_handoff_halt'`
 matches byte-for-byte what `repair_run_state` heals a torn halt to. The live
@@ -300,13 +325,19 @@ new terminal mutation.
 The interactive TTY handoff menu can offer two **UI pseudo-actions** —
 `advice` and `retry_with_advice` — on top of the four canonical actions when
 the pause is rejected/incomplete-eligible (see
-[ADR 0090](../adr/0090-handoff-advice-stage0.md)). These are not canonical
+[ADR 0124](../adr/0124-handoff-advice-stage0.md)). These are not canonical
 actions: they never enter `available_actions`, are never accepted by
 `phase_handoff_decide`, and never appear in a decision artifact's `action`
 field.
 
 The read-only advisor persists its recommendation to a **separate** run-state
 directory, **never** `phase_handoff_decisions/`:
+
+Advice artifacts add `contract_snapshot`, structured intent (`proposed_operations`
+and `contract_effects`), `disposition`, `blocked_reason`, and conflict details.
+Those decision-relevant fields are included in idempotency comparison, so a
+different snapshot, intent, or disposition receives a suffix rather than
+overwriting prior evidence.
 
 - `<run_dir>/phase_handoff_advice/<safe_handoff_id>.json` — one directory per
   run, one file per handoff, keyed by the same collision-resistant

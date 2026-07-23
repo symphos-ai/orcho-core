@@ -113,10 +113,10 @@ class TestSkillResourceBinding:
 
 class TestSkillTrustPolicy:
     def test_defaults_safe(self) -> None:
-        """Project + compat skills OFF by default — autonomous-run security."""
+        """Only workspace scope is active without an explicit opt-in."""
         p = SkillTrustPolicy()
-        assert p.trust_packages is True
-        assert p.trust_user is True
+        assert p.trust_packages is False
+        assert p.trust_user is False
         assert p.trust_workspace is True
         assert p.trust_project is False
         assert p.trust_compat_claude is False

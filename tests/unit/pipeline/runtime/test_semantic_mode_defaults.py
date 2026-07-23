@@ -22,7 +22,7 @@ from pipeline.runtime.semantic_mode_defaults import default_operating_mode
 # the implementation is caught here rather than inferred from it.
 _EXPECTED: dict[str, str] = {
     "small_task": "fast",
-    "feature": "fast",
+    "feature": "pro",
     "complex_feature": "pro",
     "planning": "pro",
     "code_review": "pro",
@@ -110,7 +110,7 @@ assert "pipeline.profiles.loader" not in sys.modules, "loader leaked into import
 # Projection stays inert and callable.
 from pipeline.runtime.run_shape import OperatingMode, SemanticProfile
 
-assert smd.default_operating_mode(SemanticProfile.FEATURE) is OperatingMode.FAST
+assert smd.default_operating_mode(SemanticProfile.FEATURE) is OperatingMode.PRO
 assert smd.default_operating_mode(SemanticProfile.MIGRATION) is OperatingMode.PRO
 
 print("OK")

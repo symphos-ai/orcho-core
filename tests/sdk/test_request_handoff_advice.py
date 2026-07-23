@@ -9,6 +9,7 @@ meta.status change); a missing run / mismatched id / ineligible handoff raise th
 existing typed SDK errors; an unparseable advisor response is handled like the
 existing dispatch / CI paths (no durable advice write, never auto-applied).
 """
+
 from __future__ import annotations
 
 import json
@@ -17,7 +18,10 @@ from typing import Any
 
 import pytest
 
+from agents.entities import SubTask
 from agents.runtimes._strategy import MockAgentProvider
+from pipeline.plan_artifacts import write_parsed_plan_artifact
+from pipeline.plan_parser import ParsedPlan
 from sdk import (
     HandoffAdviceResult,
     HandoffAdviceSafety,
@@ -41,7 +45,10 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         "round": 2,
         "loop_max_rounds": 2,
         "available_actions": [
-            "continue", "retry_feedback", "halt", "continue_with_waiver",
+            "continue",
+            "retry_feedback",
+            "halt",
+            "continue_with_waiver",
         ],
         "artifacts": {
             "findings": [
@@ -60,6 +67,7 @@ def _seed_paused_run(
     *,
     status: str = "awaiting_phase_handoff",
     phase_handoff: dict[str, Any] | None = "__default__",  # type: ignore[assignment]
+    with_parsed_plan: bool = True,
 ) -> tuple[Path, str, Path]:
     """Create a runs dir + a paused run dir with meta.json; return (runs, id, dir)."""
     runs = tmp_path / "runs"
@@ -81,6 +89,27 @@ def _seed_paused_run(
     elif phase_handoff is not None:
         meta["phase_handoff"] = phase_handoff
     (run_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    if with_parsed_plan:
+        write_parsed_plan_artifact(
+            run_dir,
+            ParsedPlan(
+                subtasks=(
+                    SubTask(
+                        id="repair-review",
+                        goal="Repair the rejected review finding",
+                        done_criteria=("The targeted regression test passes.",),
+                        owned_files=("tests/sdk/test_request_handoff_advice.py",),
+                    ),
+                ),
+                source="json",
+                short_summary="Repair the rejected handoff",
+                planning_context="The review finding requires a focused retry.",
+                goal="Return the rejected handoff to a verified state.",
+                acceptance_criteria=("The handoff advice retry is contract-bound.",),
+                owned_files=("tests/sdk/test_request_handoff_advice.py",),
+            ),
+            attempt=1,
+        )
     (run_dir / "events.jsonl").write_text("", encoding="utf-8")
     return runs, run_id, run_dir
 
@@ -92,7 +121,10 @@ def test_eligible_rejected_handoff_returns_typed_advice(tmp_path: Path) -> None:
     runs, run_id, run_dir = _seed_paused_run(tmp_path)
 
     result = request_handoff_advice(
-        run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+        run_id,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
     )
 
     assert isinstance(result, HandoffAdviceResult)
@@ -120,10 +152,42 @@ def test_eligible_rejected_handoff_returns_typed_advice(tmp_path: Path) -> None:
 def test_eligible_handoff_with_explicit_matching_id(tmp_path: Path) -> None:
     runs, run_id, _ = _seed_paused_run(tmp_path)
     result = request_handoff_advice(
-        run_id, _HANDOFF_ID, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+        run_id,
+        _HANDOFF_ID,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
     )
     assert result.handoff_id == _HANDOFF_ID
     assert result.recommended_action == "retry_feedback"
+
+
+def test_hygiene_gate_returns_waiver_without_a_decision_or_model(
+    tmp_path: Path,
+) -> None:
+    payload = _payload(
+        trigger="verification_gate_failed",
+        available_actions=["continue_with_waiver", "halt"],
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_env_failure",
+                    "severity": "P3",
+                    "failure_kind": "env_failure",
+                    "body": "class=env_failure; exit_code=0",
+                }
+            ]
+        },
+        last_output="class=env_failure; exit_code=0",
+    )
+    runs, run_id, run_dir = _seed_paused_run(tmp_path, phase_handoff=payload)
+
+    result = request_handoff_advice(run_id, runs_dir=runs, cwd=None)
+
+    assert result.recommended_action == "continue_with_waiver"
+    assert result.retry_feedback == ""
+    assert result.advice_artifact.startswith("phase_handoff_advice/")
+    assert not (run_dir / "phase_handoff_decisions").exists()
 
 
 # ── single durable write: no decision, no meta.status change ─────────────────
@@ -135,7 +199,10 @@ def test_advice_writes_no_decision_and_does_not_change_status(
     runs, run_id, run_dir = _seed_paused_run(tmp_path)
 
     request_handoff_advice(
-        run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+        run_id,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
     )
 
     # No decision artifact directory is created.
@@ -149,6 +216,26 @@ def test_advice_writes_no_decision_and_does_not_change_status(
     assert len(advice_files) == 1
 
 
+def test_no_parsed_plan_requires_operator_review_without_a_decision(
+    tmp_path: Path,
+) -> None:
+    runs, run_id, run_dir = _seed_paused_run(tmp_path, with_parsed_plan=False)
+
+    result = request_handoff_advice(
+        run_id,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
+    )
+
+    assert result.disposition == "operator_review_required"
+    assert result.safety.auto_apply_ok is False
+    advice_files = list((run_dir / "phase_handoff_advice").glob("*.json"))
+    assert len(advice_files) == 1
+    assert not (run_dir / "parsed_plan.json").exists()
+    assert not (run_dir / "phase_handoff_decisions").exists()
+
+
 # ── typed errors (no traceback) ──────────────────────────────────────────────
 
 
@@ -157,18 +244,25 @@ def test_nonexistent_run_raises_run_not_found(tmp_path: Path) -> None:
     runs.mkdir()
     with pytest.raises(RunNotFound):
         request_handoff_advice(
-            "20260623_999999_zzzzzz", runs_dir=runs, cwd=None,
+            "20260623_999999_zzzzzz",
+            runs_dir=runs,
+            cwd=None,
             provider=MockAgentProvider(),
         )
 
 
 def test_no_active_handoff_raises_invalid_state(tmp_path: Path) -> None:
     runs, run_id, _ = _seed_paused_run(
-        tmp_path, status="done", phase_handoff=None,
+        tmp_path,
+        status="done",
+        phase_handoff=None,
     )
     with pytest.raises(InvalidPhaseHandoffState):
         request_handoff_advice(
-            run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+            run_id,
+            runs_dir=runs,
+            cwd=None,
+            provider=MockAgentProvider(),
         )
 
 
@@ -176,7 +270,10 @@ def test_mismatched_handoff_id_raises_invalid_state(tmp_path: Path) -> None:
     runs, run_id, _ = _seed_paused_run(tmp_path)
     with pytest.raises(InvalidPhaseHandoffState):
         request_handoff_advice(
-            run_id, "review_changes:review:99", runs_dir=runs, cwd=None,
+            run_id,
+            "review_changes:review:99",
+            runs_dir=runs,
+            cwd=None,
             provider=MockAgentProvider(),
         )
 
@@ -186,7 +283,10 @@ def test_not_paused_status_raises_invalid_state(tmp_path: Path) -> None:
     runs, run_id, _ = _seed_paused_run(tmp_path, status="running")
     with pytest.raises(InvalidPhaseHandoffState):
         request_handoff_advice(
-            run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+            run_id,
+            runs_dir=runs,
+            cwd=None,
+            provider=MockAgentProvider(),
         )
 
 
@@ -195,13 +295,18 @@ def test_ineligible_approved_verdict_raises_invalid_state(tmp_path: Path) -> Non
     runs, run_id, _ = _seed_paused_run(
         tmp_path,
         phase_handoff=_payload(
-            verdict="APPROVED", approved=True, trigger="approved",
+            verdict="APPROVED",
+            approved=True,
+            trigger="approved",
             available_actions=["continue", "retry_feedback", "halt"],
         ),
     )
     with pytest.raises(InvalidPhaseHandoffState):
         request_handoff_advice(
-            run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+            run_id,
+            runs_dir=runs,
+            cwd=None,
+            provider=MockAgentProvider(),
         )
 
 
@@ -215,7 +320,10 @@ def test_ineligible_without_retry_feedback_raises_invalid_state(
     )
     with pytest.raises(InvalidPhaseHandoffState):
         request_handoff_advice(
-            run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+            run_id,
+            runs_dir=runs,
+            cwd=None,
+            provider=MockAgentProvider(),
         )
 
 
@@ -223,7 +331,8 @@ def test_ineligible_without_retry_feedback_raises_invalid_state(
 
 
 def test_unparseable_advice_no_durable_write_not_auto_applied(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import pipeline.project.handoff_advice as adv
 
@@ -238,7 +347,10 @@ def test_unparseable_advice_no_durable_write_not_auto_applied(
     runs, run_id, run_dir = _seed_paused_run(tmp_path)
 
     result = request_handoff_advice(
-        run_id, runs_dir=runs, cwd=None, provider=MockAgentProvider(),
+        run_id,
+        runs_dir=runs,
+        cwd=None,
+        provider=MockAgentProvider(),
     )
 
     # Parser normalises unparseable output to halt/low with the warning.

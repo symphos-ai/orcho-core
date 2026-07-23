@@ -38,6 +38,18 @@ _IS_WINDOWS: bool = sys.platform == "win32"
 _SELF_CORE_DIR: Path = Path(__file__).parent.parent
 
 
+def venv_python_subpath() -> str:
+    """Relative POSIX-style path to a venv's Python interpreter for this OS.
+
+    ``.venv/Scripts/python.exe`` on Windows, ``.venv/bin/python`` elsewhere.
+    Forward slashes so the result composes cleanly both into ``Path`` joins
+    and into ``{checkout}``/``{project}`` placeholder templates.
+    """
+    if _IS_WINDOWS:
+        return ".venv/Scripts/python.exe"
+    return ".venv/bin/python"
+
+
 # ── Engine roots ──────────────────────────────────────────────────────────────
 
 def engine_home() -> Path:
@@ -180,6 +192,21 @@ def claude_candidates() -> list[str]:
         "~/.nvm/versions/node/v22.12.0/bin/claude",
         "/usr/local/bin/claude",
         "/opt/homebrew/bin/claude",
+    ]
+
+
+def claude_glm_candidates() -> list[str]:
+    """Ordered list of candidate paths for a Claude-compatible GLM wrapper."""
+    if _IS_WINDOWS:
+        appdata = os.environ.get("APPDATA", "")
+        return [
+            rf"{appdata}\npm\claude-glm.cmd",
+        ]
+    return [
+        "~/bin/claude-glm",
+        "~/.local/bin/claude-glm",
+        "/usr/local/bin/claude-glm",
+        "/opt/homebrew/bin/claude-glm",
     ]
 
 

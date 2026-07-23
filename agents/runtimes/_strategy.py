@@ -345,9 +345,9 @@ class _MockClaude:
         # task marker. Detect it before the plan/release/review branches so the
         # synthetic advisor JSON never falls through to a plan or review parser.
         if _prompt_requests_handoff_advice(prompt):
-            content = _handoff_advice_json()
+            content = _handoff_advice_json(prompt)
             self._record_call(
-                f"handoff_advice for: {prompt[:80]}",
+                f"handoff_advice for: [handoff_advice] {prompt[:60]}",
                 content,
                 duration_s=_mock_duration("plan", prompt, content),
             )
@@ -421,7 +421,7 @@ class _MockClaude:
         produced via ``plan()``. Returned as raw text so callers can run
         the real ``parse_plan`` against it."""
         plugin_name, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         summary = _mock_plan_content(
             project, task, cwd, plugin_name, file_hints, language,
             revised=revised,
@@ -475,7 +475,7 @@ class _MockClaude:
     def plan(self, task: str, cwd: str = "", codemap: str = ""):
         """Return a mock ParsedPlan with realistic file hints."""
         plugin_name, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         summary = _mock_plan_content(
             project, task, cwd, plugin_name, file_hints, language,
             revised=False,
@@ -492,7 +492,7 @@ class _MockClaude:
     def hypothesize(self, task: str, cwd: str = "", codemap: str = "") -> str:
         """Fast mock hypothesis — always plausible, triggers 'approved' in QA."""
         _, file_hints, language = _load_plugin_hints(cwd)
-        project = cwd.split("/")[-1] if cwd else "project"
+        project = Path(cwd).name if cwd else "project"
         files = _mock_plan_files(project, cwd, file_hints, language)
         files_hint = "\n".join(f"  - {f}" for f in files[:3]) or "  - (project files)"
         language_note = f" ({language})" if language else ""
@@ -603,7 +603,7 @@ class _MockCodex:
         # codex mock serves it under --mock too. Detect the marker before the
         # release / review branches and emit an advisor record.
         if _prompt_requests_handoff_advice(prompt):
-            content = _handoff_advice_json()
+            content = _handoff_advice_json(prompt)
             self._record_call(prompt, content, duration_s=_mock_duration("codex", prompt, content))
             _write_to_agent_log("CODEX handoff_advice (mock)", content, duration_s=self.last_duration_s)
             return content
@@ -774,7 +774,7 @@ class _MockCodex:
 def _write_to_agent_log(label: str, content: str, *, duration_s: float = 0.0) -> None:
     """Append *content* to the global agent log file (if set)."""
     try:
-        from agents.stream import write_agent_log_section
+        from agents.stream_log import write_agent_log_section
         write_agent_log_section(label, content, duration_s=duration_s)
     except Exception:
         pass  # logging must never break the pipeline
@@ -1093,7 +1093,7 @@ def _cross_plan_json(prompt: str) -> str:
 
 def _claude_content(prompt: str, cwd: str = "") -> str:
     p = prompt.lower()
-    project = cwd.split("/")[-1] if cwd else "project"
+    project = Path(cwd).name if cwd else "project"
     plugin_name, file_hints, language = _load_plugin_hints(cwd)
 
     # Cross-plan (ADR 0054): plan/replan across multiple codebases emits a
@@ -1644,7 +1644,7 @@ def _prompt_requests_handoff_advice(prompt: str) -> bool:
     return "[handoff_advice]" in prompt
 
 
-def _handoff_advice_json() -> str:
+def _handoff_advice_json(prompt: str = "") -> str:
     """Synthesise a valid phase-handoff advisor JSON record.
 
     Returned by the mock when the reviewer prompt carries the
@@ -1652,6 +1652,7 @@ def _handoff_advice_json() -> str:
     well-formed recommendation. Defaults to a confident ``retry_feedback`` with
     a non-empty feedback string so the advisory retry path has concrete input.
     """
+    invariant_ids = re.findall(r"\[(acceptance:\d+|task:[^:\]\s]+:done:\d+)\]", prompt)
     return json.dumps({
         "recommended_action": "retry_feedback",
         "confidence": "high",
@@ -1666,6 +1667,15 @@ def _handoff_advice_json() -> str:
         "risks": ["The retry must stay scoped to the recorded findings."],
         "expected_files": ["the files named in the recorded findings"],
         "operator_note": "Mock advisor recommendation.",
+        "proposed_operations": [{
+            "kind": "repair",
+            "target": "recorded_findings",
+            "summary": "Address the recorded findings directly.",
+        }],
+        "contract_effects": [
+            {"invariant_id": invariant_id, "effect": "advance"}
+            for invariant_id in invariant_ids
+        ],
     })
 
 

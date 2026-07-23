@@ -144,6 +144,30 @@ class TestPromptResumeIntent:
         )
         assert out.mode is None
 
+    def test_blocked_checkpoint_is_not_offered(self) -> None:
+        options = ResumeIntentOptions(
+            can_checkpoint=False,
+            can_followup=True,
+            default_mode=ResumeMode.FOLLOWUP,
+            parent_status="failed",
+            reason="incomplete-parent",
+            checkpoint_blocked_reason="loop cursor is corrupt",
+        )
+        stdin, stdout = _io("2\n")
+
+        out = prompt_resume_intent(
+            run_id="r",
+            options=options,
+            stdin=stdin,
+            stdout=stdout,
+        )
+
+        assert out.mode is None
+        rendered = stdout.getvalue()
+        assert "Checkpoint resume is unavailable" in rendered
+        assert "loop cursor is corrupt" in rendered
+        assert "Resume from checkpoint" not in rendered
+
     def test_incomplete_eof_returns_none(self) -> None:
         stdin, stdout = _io("")  # immediate EOF
         out = prompt_resume_intent(

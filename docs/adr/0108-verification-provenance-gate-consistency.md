@@ -4,7 +4,7 @@ Status: Accepted
 
 ## Context
 
-ADR 0106 made a failed environment-provenance check downgrade the gate(s)
+ADR 0125 made a failed environment-provenance check downgrade the gate(s)
 scheduled at that phase to `FAIL`, so a fresh, exit-0 command receipt produced by
 an interpreter that imported the codebase from the wrong tree can no longer read
 as green. It did so by introducing one read-only reader
@@ -14,14 +14,14 @@ as green. It did so by introducing one read-only reader
 SDK projection `sdk.get_verification_timeline` and the live DONE/HALTED render in
 `pipeline.project.verification_timeline`.
 
-Two follow-on gaps remained after ADR 0106:
+Two follow-on gaps remained after ADR 0125:
 
 1. **The downgrade reached only two of four gate surfaces.** "What do this run's
    official verification gates look like" is answered in four places, not two.
    Besides the SDK projection and the live timeline, the final-acceptance
    **readiness** summary (`pipeline.verification_readiness`) and the Stage 6
    **delivery** assessment (`pipeline.verification_delivery`) classify the same
-   required gates from their command receipts. ADR 0106 wired the downgrade into
+   required gates from their command receipts. ADR 0125 wired the downgrade into
    the two *timeline* surfaces only, and it did so as **open-coded copies** — each
    timeline module recomputed "which gate failed provenance" inline. Readiness
    and delivery did not apply the rule at all, so a provenance-failed required
@@ -45,7 +45,7 @@ Two follow-on gaps remained after ADR 0106:
    simply is not the engine, which — once the overlay above reaches delivery —
    would block delivery on a false signal.
 
-Constraints carried over from ADR 0106: no new gate-status vocabulary, and the
+Constraints carried over from ADR 0125: no new gate-status vocabulary, and the
 public wire shape must not drift.
 
 ## Decision
@@ -60,7 +60,7 @@ scheduled phase recorded a failed `verification_environment` check, it returns a
 new `ReceiptClassification(status="failed")` carrying the provenance failure's
 operator-evidence as its `reason` (the `"<check>: expected <X> actual <Y>"`
 string) and its `path` repointed at the failing phase receipt, while preserving
-the original `source_run_id`. It reuses the ADR 0106 primitives
+the original `source_run_id`. It reuses the ADR 0125 primitives
 (`command_phase_schedule`, `environment_provenance_failures`,
 `environment_provenance_gate_failures`) and is never-raise: any IO / JSON /
 lookup error degrades to the input map unchanged.
@@ -124,7 +124,7 @@ durable `verification_environment` receipt — no terminal-banner parsing.
 them) selects checks by three branches:
 
 - **(a) Core checkout.** When `<cwd>/pipeline/__init__.py` exists, run the
-  unchanged ADR 0106 `pipeline_import` subprocess invariant. This is the
+  unchanged ADR 0125 `pipeline_import` subprocess invariant. This is the
   load-bearing core guard and is deliberately byte-for-byte preserved: an engine
   checkout whose interpreter imports `pipeline` from outside the checkout still
   records `pipeline_import.passed = false` and still produces a provenance
@@ -158,13 +158,13 @@ when absent, both default to `None` and the probe falls back to (a)/(c).
   `MANUAL`). The overlay only sets a classification status of `failed`, which
   maps to the existing `FAIL`.
 - **No public wire change.** `GateProjection.detail` and
-  `GateProjection.receipt_path` already exist from ADR 0106; this change only
+  `GateProjection.receipt_path` already exist from ADR 0125; this change only
   routes their existing content through the shared overlay. The provenance-`FAIL`
-  `detail` / `receipt_path` / `rerun_hint` are byte-identical to ADR 0106 for the
+  `detail` / `receipt_path` / `rerun_hint` are byte-identical to ADR 0125 for the
   already-`FAIL` case, so `python tools/dump_sdk_schema.py --check` shows no drift
   in `docs/sdk_schema.json`. Because there is **no** wire-shape change, this ADR
   needs no `orcho-mcp` companion update — the MCP schema is untouched (contrast
-  ADR 0106, whose additive `detail` field did require the companion).
+  ADR 0125, whose additive `detail` field did require the companion).
 
 ## Consequences
 
@@ -183,7 +183,7 @@ when absent, both default to `None` and the probe falls back to (a)/(c).
   (auto-run collector, `gate_repair`, verification autorun) are untouched, so the
   downgrade adds no re-run / repair-loop pressure.
 
-This ADR builds on ADR 0106 (environment-provenance failure downgrades its phase
+This ADR builds on ADR 0125 (environment-provenance failure downgrades its phase
 gate to `FAIL` — the rule this change makes the single effective classification
 across all four surfaces and extends into project-aware phase receipts), ADR 0095
 (verification-gate timeline durable trails — the surfaces being unified), ADR

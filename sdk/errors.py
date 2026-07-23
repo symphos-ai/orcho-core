@@ -34,6 +34,18 @@ class RunNotFound(OrchoError):
     exit_code = 1
 
 
+class LaunchError(OrchoError):
+    """Failed to spawn (or resume) a detached pipeline subprocess.
+
+    Raised by the ``sdk.run_control.launch`` surface when the underlying
+    ``subprocess.Popen`` fails (``OSError`` / ``FileNotFoundError``) or a
+    launch input (``project_dir`` / ``task_file``) is invalid. A missing
+    run on resume/cancel signals :class:`RunNotFound` instead.
+    """
+
+    exit_code = 1
+
+
 class PricingFetchError(OrchoError):
     """Pricing-table refresh from upstream sources failed."""
 
@@ -52,6 +64,12 @@ class EvidenceInvalid(OrchoError):
     exit_code = 1
 
 
+class CrossExecutionGraphInvalid(OrchoError):
+    """The immutable cross execution graph artifact is missing or invalid."""
+
+    exit_code = 1
+
+
 class WorkspaceInitError(OrchoError):
     """``sdk.init_workspace`` refused a target or hit a conflict.
 
@@ -61,6 +79,12 @@ class WorkspaceInitError(OrchoError):
     MCP server entry with the same name already exists with different
     content (``--force`` needed to replace).
     """
+
+    exit_code = 2
+
+
+class ProfileCustomizeError(OrchoError):
+    """``sdk.customize_profile`` rejected a local profile overlay request."""
 
     exit_code = 2
 

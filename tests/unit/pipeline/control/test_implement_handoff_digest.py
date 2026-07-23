@@ -9,7 +9,7 @@ from pipeline.control.implement_handoff_digest import (
     render_implement_incomplete_digest,
 )
 
-_ACTIONS = ("continue", "retry_feedback", "continue_with_waiver", "halt")
+_ACTIONS = ("retry_feedback", "continue_with_waiver", "halt")
 
 
 class TestClassifier:
@@ -57,7 +57,7 @@ class TestClassifier:
             "missing_subtask_receipts": [],
         }
         digest = classify_implement_incomplete(
-            artifacts, "", ("continue", "retry_feedback", "halt"),
+            artifacts, "", ("retry_feedback", "halt"),
         )
         assert digest.is_verification_exception is True
         assert digest.recommended_action == "retry_feedback"
@@ -76,8 +76,53 @@ class TestClassifier:
         digest = classify_implement_incomplete({}, "", _ACTIONS)
         assert digest.incomplete_subtasks == ()
         assert digest.unmet_criteria == ()
+        assert digest.unmet_evidence == ()
+        assert digest.repaired_gates == ()
         assert digest.missing_receipts == ()
         assert digest.is_verification_exception is False
+        assert digest.is_environment_blocker is False
+
+    def test_environment_evidence_recommends_halt_not_blind_retry(self) -> None:
+        artifacts = {
+            "incomplete_subtasks": ["T2-route"],
+            "attestation_incomplete": {
+                "T2-route": "done_criteria not met (by index): [2]",
+            },
+            "unmet_done_criteria": [
+                {
+                    "subtask_id": "T2-route",
+                    "index": 2,
+                    "criterion": "Functional route test passes.",
+                    "evidence": (
+                        "Functional execution is blocked because PostgreSQL "
+                        "port 5433 is already allocated."
+                    ),
+                },
+            ],
+        }
+        digest = classify_implement_incomplete(artifacts, "", _ACTIONS)
+        assert digest.is_environment_blocker is True
+        assert digest.recommended_action == "halt"
+        assert digest.unmet_evidence == ((
+            "T2-route",
+            2,
+            "Functional route test passes.",
+            "Functional execution is blocked because PostgreSQL port 5433 "
+            "is already allocated.",
+        ),)
+
+    def test_gate_repair_context_is_kept_separate_from_blocker(self) -> None:
+        artifacts = {
+            "incomplete_subtasks": ["T2-route"],
+            "attestation_incomplete": {"T2-route": "criterion 2 unverified"},
+            "post_phase_gate_repair": {
+                "status": "passed",
+                "commands": ["cs", "rector"],
+            },
+        }
+        digest = classify_implement_incomplete(artifacts, "", _ACTIONS)
+        assert digest.repaired_gates == ("cs", "rector")
+        assert digest.unmet_criteria == (("T2-route", "criterion 2 unverified"),)
 
 
 class TestRenderer:
@@ -126,9 +171,43 @@ class TestRenderer:
         digest = ImplementIncompleteDigest(
             incomplete_subtasks=("A",),
             unmet_criteria=(("A", "reason"),),
+            unmet_evidence=(),
             missing_receipts=(),
+            repaired_gates=(),
             is_verification_exception=False,
+            is_environment_blocker=False,
             recommended_action="retry_feedback",
         )
         text = strip_ansi(render_implement_incomplete_digest(digest, color=False))
         assert "Subtask: A" in text
+
+    def test_environment_blocker_explains_green_repair_then_handoff(self) -> None:
+        digest = classify_implement_incomplete(
+            {
+                "incomplete_subtasks": ["T2-route"],
+                "attestation_incomplete": {
+                    "T2-route": "done_criteria not met (by index): [2]",
+                },
+                "unmet_done_criteria": [
+                    {
+                        "subtask_id": "T2-route",
+                        "index": 2,
+                        "criterion": "Functional route test passes.",
+                        "evidence": "PostgreSQL port 5433 is already allocated.",
+                    },
+                ],
+                "post_phase_gate_repair": {
+                    "status": "passed",
+                    "commands": ["cs"],
+                },
+            },
+            "",
+            _ACTIONS,
+        )
+        text = strip_ansi(render_implement_incomplete_digest(digest))
+        assert "Gate repair passed: cs" in text
+        assert "Separate blocker remains" in text
+        assert "Functional route test passes." in text
+        assert "PostgreSQL port 5433 is already allocated." in text
+        assert "Recommended: halt" in text
+        assert "another implementation retry cannot repair the environment" in text

@@ -50,6 +50,7 @@ Start here, in order:
 | [guides/execution_mode_authoring.md](guides/execution_mode_authoring.md) | Custom execution modes for phases |
 | [guides/session_adapter_authoring.md](guides/session_adapter_authoring.md) | Session adapters for agent runtimes |
 | [guides/multimodal_runtime_support.md](guides/multimodal_runtime_support.md) | Attachments and multimodal runtime support |
+| [guides/claude_glm_runtime.md](guides/claude_glm_runtime.md) | Configure a Claude-compatible GLM wrapper as its own runtime |
 
 ---
 
@@ -62,6 +63,7 @@ Start here, in order:
 | [reference/profile_schema.md](reference/profile_schema.md) | The full profile schema |
 | [reference/run_artifacts.md](reference/run_artifacts.md) | Run directory files: `meta.json`, `events.jsonl`, `metrics.json`, `evidence.json` |
 | [reference/event_registry.md](reference/event_registry.md) | `events.jsonl` registry: events, required payload keys, rules for `SILENT`/MCP consumers |
+| [reference/operating_modes.md](reference/operating_modes.md) | Work modes `fast`/`pro`/`governed`: strictness matrix + when to use |
 | [reference/resume_modes.md](reference/resume_modes.md) | Resume and session semantics |
 | [reference/attachments.md](reference/attachments.md) | Attachment model |
 | [reference/builtin_gates.md](reference/builtin_gates.md) | Built-in quality gates |

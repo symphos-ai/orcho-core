@@ -54,6 +54,11 @@ from pipeline.verification_dependencies import changed_files_fingerprint
 from pipeline.verification_receipt_index import (
     VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
 )
+from tests.fixtures.verification_subject import (
+    fake_verification_subject_capture as fake_verification_subject_capture,
+)
+
+pytestmark = pytest.mark.usefixtures("fake_verification_subject_capture")
 
 _INCIDENT_PARENT_RUN_ID = "20260612_213530"
 _INCIDENT_CHILD_RUN_ID = "20260612_225347"
@@ -64,7 +69,10 @@ _INCIDENT_CHILD_RUN_ID = "20260612_225347"
 
 
 def _make_stub(
-    tmp_path: Path, *, extras: dict, session: dict | None = None,
+    tmp_path: Path,
+    *,
+    extras: dict,
+    session: dict | None = None,
 ) -> SimpleNamespace:
     run_dir = tmp_path / "run"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +108,8 @@ def _stub_resolve_side_git(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub only the resolve-side git helpers (upstream of the gate check)."""
     monkeypatch.setattr(cd, "stdio_interactive", lambda: False)
     monkeypatch.setattr(
-        cd, "_run_owned_patch",
+        cd,
+        "_run_owned_patch",
         lambda *_a, **_kw: "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n",
     )
     monkeypatch.setattr(cd, "_changed_paths", lambda *_a, **_kw: ("a.py",))
@@ -113,7 +122,8 @@ def _stub_resolve_side_git(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_require_block_halts_run_with_verification_keys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
     _stub_resolve_side_git(monkeypatch)
@@ -124,7 +134,8 @@ def test_require_block_halts_run_with_verification_keys(
         garbage_paths=(".venv/x",),
     )
     monkeypatch.setattr(
-        run_mod, "assess_delivery_verification",
+        run_mod,
+        "assess_delivery_verification",
         lambda **_kw: assessment,
     )
 
@@ -154,7 +165,8 @@ def test_require_block_halts_run_with_verification_keys(
 
 
 def test_no_contract_passes_gate_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
 
@@ -164,8 +176,12 @@ def test_no_contract_passes_gate_none(
         recorded.update(kwargs)
         # Short-circuit to a benign terminal status (no apply, no halt).
         return CommitDeliveryDecision(
-            action="none", status="no_diff", run_id="r1", decision_id="r1",
-            project_path=kwargs["project_dir"], source_path=kwargs["source_worktree"],
+            action="none",
+            status="no_diff",
+            run_id="r1",
+            decision_id="r1",
+            project_path=kwargs["project_dir"],
+            source_path=kwargs["source_worktree"],
             baseline_ref=kwargs["baseline_ref"],
         )
 
@@ -188,25 +204,31 @@ def test_no_contract_passes_gate_none(
 
 
 def test_warn_policy_does_not_halt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
     _stub_resolve_side_git(monkeypatch)
 
     assessment = DeliveryVerificationAssessment(
-        policy="warn", required_missing=("test",),
+        policy="warn",
+        required_missing=("test",),
     )
     monkeypatch.setattr(
-        run_mod, "assess_delivery_verification", lambda **_kw: assessment,
+        run_mod,
+        "assess_delivery_verification",
+        lambda **_kw: assessment,
     )
     # Stub apply so warn-path delivery (action=approve) does not touch real git.
     monkeypatch.setattr(
-        cd, "apply_commit_delivery",
+        cd,
+        "apply_commit_delivery",
         lambda decision, **_kw: replace(decision, status="committed"),
     )
 
     stub = _make_stub(
-        tmp_path, extras={"verification_contract": object()},
+        tmp_path,
+        extras={"verification_contract": object()},
     )
     _PipelineRun._run_commit_delivery(stub, diff_cwd=stub.project_path)
 
@@ -226,13 +248,15 @@ def test_warn_policy_does_not_halt(
 
 
 def test_waived_required_gate_delivers_and_persists_meta_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
     _stub_resolve_side_git(monkeypatch)
     # Stub apply so the (non-blocking) waived path delivers without real git.
     monkeypatch.setattr(
-        cd, "apply_commit_delivery",
+        cd,
+        "apply_commit_delivery",
         lambda decision, **_kw: replace(decision, status="committed"),
     )
 
@@ -252,7 +276,9 @@ def test_waived_required_gate_delivers_and_persists_meta_evidence(
     )
     assert assessment.blocking is False
     monkeypatch.setattr(
-        run_mod, "assess_delivery_verification", lambda **_kw: assessment,
+        run_mod,
+        "assess_delivery_verification",
+        lambda **_kw: assessment,
     )
 
     session = {
@@ -303,18 +329,22 @@ def test_waived_required_gate_delivers_and_persists_meta_evidence(
 
 
 def test_no_waiver_omits_meta_evidence_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Byte-identity guard: with no waived gate the evidence key is absent.
     _stub_appconfig(monkeypatch)
     _stub_resolve_side_git(monkeypatch)
     monkeypatch.setattr(
-        cd, "apply_commit_delivery",
+        cd,
+        "apply_commit_delivery",
         lambda decision, **_kw: replace(decision, status="committed"),
     )
     assessment = DeliveryVerificationAssessment(policy="warn")
     monkeypatch.setattr(
-        run_mod, "assess_delivery_verification", lambda **_kw: assessment,
+        run_mod,
+        "assess_delivery_verification",
+        lambda **_kw: assessment,
     )
     stub = _make_stub(tmp_path, extras={"verification_contract": object()})
     _PipelineRun._run_commit_delivery(stub, diff_cwd=stub.project_path)
@@ -322,7 +352,8 @@ def test_no_waiver_omits_meta_evidence_key(
 
 
 def test_redelivery_without_waiver_clears_stale_meta_evidence_key(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A first waived delivery left commit_delivery_verification_waived on the
     # session; the operator re-ran the gate and re-delivers with no waived gaps.
@@ -330,14 +361,17 @@ def test_redelivery_without_waiver_clears_stale_meta_evidence_key(
     _stub_appconfig(monkeypatch)
     _stub_resolve_side_git(monkeypatch)
     monkeypatch.setattr(
-        cd, "apply_commit_delivery",
+        cd,
+        "apply_commit_delivery",
         lambda decision, **_kw: replace(decision, status="committed"),
     )
     assessment = DeliveryVerificationAssessment(policy="require")
     assert assessment.blocking is False
     assert assessment.waived_gates == ()
     monkeypatch.setattr(
-        run_mod, "assess_delivery_verification", lambda **_kw: assessment,
+        run_mod,
+        "assess_delivery_verification",
+        lambda **_kw: assessment,
     )
     stub = _make_stub(tmp_path, extras={"verification_contract": object()})
     # Pre-seed the stale evidence key from a prior waived attempt.
@@ -366,7 +400,8 @@ def test_redelivery_without_waiver_clears_stale_meta_evidence_key(
 
 
 def test_assess_called_with_diff_cwd_and_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
 
@@ -379,16 +414,22 @@ def test_assess_called_with_diff_cwd_and_baseline(
     monkeypatch.setattr(run_mod, "assess_delivery_verification", _recording_assess)
     # Keep resolve git-free and terminal.
     monkeypatch.setattr(
-        cd, "resolve_commit_delivery",
+        cd,
+        "resolve_commit_delivery",
         lambda **kwargs: CommitDeliveryDecision(
-            action="none", status="no_diff", run_id="r1", decision_id="r1",
-            project_path=kwargs["project_dir"], source_path=kwargs["source_worktree"],
+            action="none",
+            status="no_diff",
+            run_id="r1",
+            decision_id="r1",
+            project_path=kwargs["project_dir"],
+            source_path=kwargs["source_worktree"],
             baseline_ref=kwargs["baseline_ref"],
         ),
     )
 
     stub = _make_stub(
-        tmp_path, extras={"verification_contract": object()},
+        tmp_path,
+        extras={"verification_contract": object()},
     )
     diff_cwd = stub.project_path
     _PipelineRun._run_commit_delivery(stub, diff_cwd=diff_cwd)
@@ -504,42 +545,69 @@ def _git_checkout(tmp_path: Path) -> Path:
 
 def _git_head(co: Path) -> str:
     return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=co, check=True,
-        capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=co,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
 
 
-def _parent_receipt(run_dir: Path, command: str, *, fingerprint: str,
-                    head: str) -> None:
-    write_command_receipt(output_dir=run_dir, result={
-        "command": command, "env": "ci", "cwd": "/cwd",
-        "placeholders": {"checkout": "/co", "project": "/co"},
-        "argv": [command], "assertions": [], "exit_code": 0, "duration_s": 0.1,
-        "parity": "absolute", "detail": "",
-        "git": {"checkout_head": head, "baseline_head": None,
-                "changed_files_fingerprint": fingerprint},
-        "dependencies": [],
-    })
+def _parent_receipt(
+    run_dir: Path,
+    command: str,
+    *,
+    fingerprint: str,
+    head: str,
+    exit_code: int = 0,
+) -> None:
+    from pipeline.verification_subject import capture_verification_subject
+
+    write_command_receipt(
+        output_dir=run_dir,
+        result={
+            "command": command,
+            "env": "ci",
+            "cwd": "/cwd",
+            "placeholders": {"checkout": "/co", "project": "/co"},
+            "argv": [command],
+            "assertions": [],
+            "exit_code": exit_code,
+            "duration_s": 0.1,
+            "parity": "absolute",
+            "detail": "",
+            "git": {
+                "checkout_head": head,
+                "baseline_head": None,
+                "changed_files_fingerprint": fingerprint,
+            },
+            "subject": capture_verification_subject(run_dir.parent / "checkout"),
+            "dependencies": [],
+        },
+    )
 
 
 def _incident_contract() -> VerificationContract:
-    contract = VerificationContract.from_plugin(PluginConfig(
-        work_mode="governed",
-        verification_envs={"ci": {}},
-        verification={
-            "default_env": "ci",
-            "commands": {"test": {"run": "pytest -q {checkout}"}},
-            "required": ["test"],
-            "delivery_policy": "require",
-        },
-    ))
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            work_mode="governed",
+            verification_envs={"ci": {}},
+            verification={
+                "default_env": "ci",
+                "commands": {"test": {"run": "pytest -q {checkout}"}},
+                "required": ["test"],
+                "delivery_policy": "require",
+            },
+        )
+    )
     assert contract is not None
     return contract
 
 
 @pytest.mark.git_worktree
 def test_incident_parent_receipts_inherited_through_run_py(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
 
@@ -557,9 +625,7 @@ def test_incident_parent_receipts_inherited_through_run_py(
     extras = {
         "verification_contract": contract,
         "verification_placeholders": ctx,
-        VERIFICATION_PARENT_RUNS_EXTRAS_KEY: (
-            (parent_dir.name, str(parent_dir)),
-        ),
+        VERIFICATION_PARENT_RUNS_EXTRAS_KEY: ((parent_dir.name, str(parent_dir)),),
     }
 
     # Let the REAL assess run; capture the gate run.py forwards to resolve.
@@ -568,8 +634,12 @@ def test_incident_parent_receipts_inherited_through_run_py(
     def _recording_resolve(**kwargs):
         captured["gate"] = kwargs["verification_gate"]
         return CommitDeliveryDecision(
-            action="none", status="no_diff", run_id="r1", decision_id="r1",
-            project_path=kwargs["project_dir"], source_path=kwargs["source_worktree"],
+            action="none",
+            status="no_diff",
+            run_id="r1",
+            decision_id="r1",
+            project_path=kwargs["project_dir"],
+            source_path=kwargs["source_worktree"],
             baseline_ref=kwargs["baseline_ref"],
         )
 
@@ -605,31 +675,30 @@ def test_incident_parent_receipts_inherited_through_run_py(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# (h) terminal invariant (T3 / ADR 0106+0108): a non-interactive run whose
-#     final_acceptance is APPROVED but whose required gate was downgraded by a
-#     provenance break must NOT finalize as a clean committed/done. It halts at
-#     commit_delivery_verification_blocked, and the typed provenance evidence
-#     (receipt_path + failing check) is present on disk — never banner-parsed.
+# (h) terminal invariant: a non-interactive run whose final_acceptance is
+#     APPROVED but whose required gate has a provenance break surfaces that break
+#     as a hygiene warning, never as commit-delivery verification blocking.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def _phase_scheduled_require_contract() -> VerificationContract:
     """A require gate ``test`` scheduled at ``after_phase(implement)`` — so the
     overlay can link its provenance to the implement phase receipt."""
-    contract = VerificationContract.from_plugin(PluginConfig(
-        work_mode="governed",
-        verification_envs={"ci": {}},
-        verification={
-            "default_env": "ci",
-            "commands": {"test": {"run": "pytest -q {checkout}"}},
-            "required": ["test"],
-            "delivery_policy": "require",
-            "schedule": [
-                {"after_phase": "implement", "policy": "require",
-                 "commands": ["test"]},
-            ],
-        },
-    ))
+    contract = VerificationContract.from_plugin(
+        PluginConfig(
+            work_mode="governed",
+            verification_envs={"ci": {}},
+            verification={
+                "default_env": "ci",
+                "commands": {"test": {"run": "pytest -q {checkout}"}},
+                "required": ["test"],
+                "delivery_policy": "require",
+                "schedule": [
+                    {"after_phase": "implement", "policy": "require", "commands": ["test"]},
+                ],
+            },
+        )
+    )
     assert contract is not None
     return contract
 
@@ -641,20 +710,23 @@ def _write_failed_implement_phase_receipt(run_dir: Path) -> Path:
         phase="implement",
         round=1,
         cwd=run_dir,
-        checks=[{
-            "name": "pipeline_import",
-            "expected": "/abs/checkout/pipeline/__init__.py",
-            "actual": "/abs/install/pipeline/__init__.py",
-            "passed": False,
-        }],
+        checks=[
+            {
+                "name": "pipeline_import",
+                "expected": "/abs/checkout/pipeline/__init__.py",
+                "actual": "/abs/install/pipeline/__init__.py",
+                "passed": False,
+            }
+        ],
     )
     assert path is not None
     return path
 
 
 @pytest.mark.git_worktree
-def test_approved_with_provenance_failed_required_gate_blocks_delivery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_approved_with_provenance_failed_required_gate_warns_at_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_appconfig(monkeypatch)
 
@@ -676,14 +748,19 @@ def test_approved_with_provenance_failed_required_gate_blocks_delivery(
     }
 
     # Reuse the real assessment helper (no duplicated git logic): the passing
-    # command receipt is downgraded by the provenance break → failed + blocking.
+    # command receipt is downgraded by the provenance break → hygiene warning.
     assessment = assess_delivery_verification(
-        contract=contract, run_dir=run_dir, ctx=ctx, extras=extras,
-        diff_cwd=co, baseline_ref="HEAD",
+        contract=contract,
+        run_dir=run_dir,
+        ctx=ctx,
+        extras=extras,
+        diff_cwd=co,
+        baseline_ref="HEAD",
     )
     assert assessment is not None
     assert assessment.required_failed == ("test",)
-    assert assessment.blocking is True
+    assert assessment.blocking is False
+    assert assessment.warning_gaps[0].command == "test"
 
     # final_acceptance APPROVED — the release gate alone would let this ship.
     session = {
@@ -713,17 +790,11 @@ def test_approved_with_provenance_failed_required_gate_blocks_delivery(
     # Drive the REAL terminal path through run.py.
     _PipelineRun._run_commit_delivery(stub, diff_cwd=co)
 
-    # NOT a clean committed/done: APPROVED did not mask the provenance failure.
-    assert stub.session["status"] == "halted"
-    assert stub.session["halt_reason"] == "commit_delivery_verification_blocked"
-    cd_dict = stub.session["commit_delivery"]
-    assert cd_dict["status"] == "verification_blocked"
-    assert cd_dict["action"] == "none"
-    assert "commit_sha" not in cd_dict  # nothing was shipped
-    assert cd_dict["verification_policy"] == "require"
-    # The provenance-downgraded required gate is the typed blocker surfaced on
-    # the decision wire (not a parsed banner).
-    assert cd_dict["verification_failed"] == ["test"]
+    # APPROVED is not halted by a hygiene warning.
+    assert stub.session.get("halt_reason") != "commit_delivery_verification_blocked"
+    assert stub.session["status"] != "halted"
+    if "commit_delivery" in stub.session:
+        assert stub.session["commit_delivery"]["status"] != "verification_blocked"
 
     # Typed provenance evidence is present on disk: the failing check, its
     # expected/actual, and the receipt_path of the verification_environment
@@ -736,3 +807,66 @@ def test_approved_with_provenance_failed_required_gate_blocks_delivery(
     assert failure.receipt_path == str(phase_path)
     assert failure.expected == "/abs/checkout/pipeline/__init__.py"
     assert failure.actual == "/abs/install/pipeline/__init__.py"
+
+
+@pytest.mark.git_worktree
+def test_approved_with_test_failure_and_phase_provenance_halts_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_appconfig(monkeypatch)
+
+    co = _git_checkout(tmp_path)
+    head, fp = _git_head(co), changed_files_fingerprint(str(co))
+    run_dir = tmp_path / "20260626_000001"
+    run_dir.mkdir()
+    _parent_receipt(run_dir, "test", fingerprint=fp, head=head, exit_code=1)
+    _write_failed_implement_phase_receipt(run_dir)
+
+    contract = _phase_scheduled_require_contract()
+    ctx = PlaceholderContext(checkout=str(co), project=str(co))
+    extras = {
+        "verification_contract": contract,
+        "verification_placeholders": ctx,
+    }
+    assessment = assess_delivery_verification(
+        contract=contract,
+        run_dir=run_dir,
+        ctx=ctx,
+        extras=extras,
+        diff_cwd=co,
+        baseline_ref="HEAD",
+    )
+    assert assessment is not None
+    assert assessment.blocking is True
+    assert assessment.warning_gaps == ()
+    assert assessment.blocking_gaps[0].command == "test"
+
+    stub = SimpleNamespace(
+        output_dir=run_dir,
+        session={
+            "status": "done",
+            "phases": {
+                "final_acceptance": {
+                    "verdict": "APPROVED",
+                    "short_summary": "feat: deliver",
+                },
+            },
+        },
+        project_path=co,
+        parent_run_id=None,
+        project_alias=None,
+        no_interactive=True,
+        worktree_context=None,
+        session_ts="20260626_000001",
+        phase_config=None,
+        state=SimpleNamespace(extras=extras),
+        _commit_delivery_baseline=lambda: "HEAD",
+        _presentation=PresentationPolicy.SILENT,
+    )
+
+    _PipelineRun._run_commit_delivery(stub, diff_cwd=co)
+
+    assert stub.session["status"] == "halted"
+    assert stub.session["halt_reason"] == "commit_delivery_verification_blocked"
+    assert stub.session["commit_delivery"]["status"] == "verification_blocked"

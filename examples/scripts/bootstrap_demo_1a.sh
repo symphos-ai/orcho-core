@@ -24,16 +24,44 @@ printf -v project_arg "%q" "$project_dir"
 printf -v workspace_arg "%q" "$workspace_dir"
 
 run_workspace_init() {
-  local py_bin="$core_dir/.venv/bin/python"
-  if [[ ! -x "$py_bin" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      py_bin="python3"
-    else
-      py_bin="python"
-    fi
+  # Resolution order:
+  #   1. explicit ORCHO_DEMO_ORCHO_BIN for installed CLI demos,
+  #   2. explicit ORCHO_DEMO_CORE_PYTHON for source-checkout tests,
+  #   3. repo venv for editable development,
+  #   4. `orcho` on PATH (pipx / pip install),
+  #   5. bare Python source fallback.
+  local orcho_bin="${ORCHO_DEMO_ORCHO_BIN:-}"
+  if [[ -n "$orcho_bin" ]]; then
+    "$orcho_bin" workspace init "$demo_root" --force >/dev/null
+    return
+  fi
+
+  local py_bin="${ORCHO_DEMO_CORE_PYTHON:-}"
+  if [[ -n "$py_bin" ]]; then
+    PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
+      "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
+    return
+  fi
+
+  py_bin="$core_dir/.venv/bin/python"
+  if [[ -x "$py_bin" ]]; then
+    PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
+      "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
+    return
+  fi
+
+  if command -v orcho >/dev/null 2>&1; then
+    orcho workspace init "$demo_root" --force >/dev/null
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    py_bin="python3"
+  else
+    py_bin="python"
   fi
   PYTHONPATH="$core_dir${PYTHONPATH:+:$PYTHONPATH}" \
-    "$py_bin" -m cli.orcho workspace init "$demo_root" >/dev/null
+    "$py_bin" -m cli.orcho workspace init "$demo_root" --force >/dev/null
 }
 
 init_project_git() {
@@ -101,7 +129,7 @@ Run the pipeline:
     --task "Fix validation bug in sample API" \\
     --project $project_arg \\
     --workspace $workspace_arg \\
-    --profile advanced \\
+    --profile feature \\
     --mock \\
     --mock-validate-plan-reject 1 \\
     --max-rounds 2 \\

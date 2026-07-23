@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,6 +31,11 @@ if TYPE_CHECKING:
 
 #: Durable advice artifacts live here. Never ``phase_handoff_decisions/``.
 _ADVICE_DIRNAME = "phase_handoff_advice"
+
+
+def _jsonable(value: Any) -> Any:
+    """Normalise dataclass tuples to their durable JSON representation."""
+    return json.loads(json.dumps(value, ensure_ascii=False))
 
 
 def _advice_payload(advice: HandoffAdvice) -> dict[str, Any]:
@@ -45,6 +51,7 @@ def _advice_payload(advice: HandoffAdvice) -> dict[str, Any]:
         "expected_files": list(advice.expected_files),
         "operator_note": advice.operator_note,
         "parse_warnings": list(advice.parse_warnings),
+        "intent": asdict(advice.intent),
     }
 
 
@@ -54,6 +61,7 @@ def _advice_artifact_dict(
     *,
     created_at: str,
     usage: Mapping[str, Any] | None,
+    assessment: Any | None,
 ) -> dict[str, Any]:
     return {
         "run_id": ctx.run_id,
@@ -66,6 +74,12 @@ def _advice_artifact_dict(
         "created_at": created_at,
         "response_language": ctx.response_language,
         "advice": _advice_payload(advice),
+        "contract_snapshot": _jsonable(asdict(ctx.contract_snapshot)) if ctx.contract_snapshot else None,
+        "proposed_operations": [asdict(item) for item in advice.intent.proposed_operations],
+        "contract_effects": [asdict(item) for item in advice.intent.contract_effects],
+        "disposition": getattr(assessment, "disposition", ""),
+        "blocked_reason": getattr(assessment, "blocked_reason", ""),
+        "conflict_details": list(getattr(assessment, "conflict_details", ())),
         "raw_output": advice.raw_output,
         "usage": dict(usage) if usage else {},
     }
@@ -79,6 +93,7 @@ def write_advice_artifact(
     *,
     usage: Mapping[str, Any] | None = None,
     created_at: str | None = None,
+    assessment: Any | None = None,
 ) -> str:
     """Persist the advice object and return its actual relative path.
 
@@ -93,7 +108,14 @@ def write_advice_artifact(
     created_at = created_at or datetime.now(UTC).isoformat(timespec="seconds")
     safe_id = safe_handoff_id(handoff_id)
     advice_dir = run_dir / _ADVICE_DIRNAME
-    new_payload = _advice_payload(advice)
+    new_payload = _jsonable(_advice_payload(advice))
+    identity = {
+        "advice": new_payload,
+        "contract_snapshot": _jsonable(asdict(context.contract_snapshot)) if context.contract_snapshot else None,
+        "disposition": getattr(assessment, "disposition", ""),
+        "blocked_reason": getattr(assessment, "blocked_reason", ""),
+        "conflict_details": list(getattr(assessment, "conflict_details", ())),
+    }
     # Probe the base name then attempt-suffixed names: first free name wins
     # (write + return); an occupant holding identical advice is an idempotent
     # return; a divergent occupant is stepped over.
@@ -108,7 +130,7 @@ def write_advice_artifact(
             candidate.write_text(
                 json.dumps(
                     _advice_artifact_dict(
-                        advice, context, created_at=created_at, usage=usage,
+                        advice, context, created_at=created_at, usage=usage, assessment=assessment,
                     ),
                     indent=2,
                     ensure_ascii=False,
@@ -116,7 +138,7 @@ def write_advice_artifact(
                 encoding="utf-8",
             )
             return relpath
-        if existing.get("advice") == new_payload:
+        if {key: existing.get(key) for key in identity} == identity:
             return relpath
         attempt += 1
 

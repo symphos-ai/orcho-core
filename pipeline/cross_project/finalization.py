@@ -123,6 +123,17 @@ class CrossFinalizationContext:
     # tests (which carry no gate residue) constructing the context without
     # a checkpoint; the production caller always threads ``ctx.cross_ckpt``.
     cross_ckpt: dict[str, Any] = field(default_factory=dict)
+    # Runtime supplies a freshly reduced state immediately before this terminal
+    # boundary.  Optional only for direct unit-level callers of this service.
+    parent_state: Any | None = None
+    # Cross-only profiles intentionally have no child-run inputs.  The
+    # canonical state still represents their declared aliases, while this
+    # consumer policy decides whether child release readiness is required.
+    require_child_readiness: bool = True
+    # The immutable execution graph rejected admission of a runner-owned gate.
+    # This is derived at the coordinator boundary; it is never persisted as a
+    # mutable graph ledger.
+    graph_gate_blocked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +344,44 @@ def _decide_base_status(
     ctx: CrossFinalizationContext,
 ) -> tuple[Literal["done", "failed"], str | None, str | None, bool]:
     """The pre-delivery CFA / contract_check status decision."""
+    if ctx.graph_gate_blocked:
+        return (
+            "failed",
+            "cross_execution_graph_blocked",
+            "immutable cross execution graph denied runner-gate admission",
+            False,
+        )
+    state = ctx.parent_state
+    if ctx.require_child_readiness and state is not None and (
+        state.violations
+        or state.active_operations
+        or state.pending_decision is not None
+        or any(not child.contract_evaluable for child in state.children)
+    ):
+        aliases = tuple(
+            child.alias for child in state.children if not child.contract_evaluable
+        )
+        return (
+            "failed",
+            "cross_child_readiness_blocked",
+            "canonical cross-parent state is not terminal-ready "
+            f"(aliases: {', '.join(aliases)})",
+            False,
+        )
+    if state is None:
+        from pipeline.cross_project.gate_entries import (
+            child_readiness_blocking_aliases,
+        )
+
+        readiness_blocks = child_readiness_blocking_aliases(ctx.contract_results)
+        if readiness_blocks:
+            return (
+                "failed",
+                "cross_child_readiness_blocked",
+                "required child readiness precondition failed "
+                f"(aliases: {', '.join(readiness_blocks)})",
+                False,
+            )
     if ctx.cfa_result is None:
         _blocking_skips: list[str] = []
         for _alias, _entry in ctx.contract_results.items():

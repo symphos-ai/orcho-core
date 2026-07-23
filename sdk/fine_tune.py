@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.infra.platform import venv_python_subpath
+
 # Repo markers, ordered so the first detected env becomes ``default_env``.
 _MARKER_ORDER: tuple[str, ...] = (
     "pyproject.toml",
@@ -180,7 +182,7 @@ def _python_package(root: Path) -> str:
 
 def _build_python(root: Path) -> tuple[str, dict[str, Any], dict[str, Any]]:
     pkg = _python_package(root)
-    venv_python = root / ".venv" / "bin" / "python"
+    venv_python = root / venv_python_subpath()
     env_spec: dict[str, Any] = {
         "assertions": [
             {"import": pkg, "path_under": "{checkout}"},
@@ -189,7 +191,7 @@ def _build_python(root: Path) -> tuple[str, dict[str, Any], dict[str, Any]]:
         ],
     }
     if venv_python.is_file():
-        env_spec = {"python": "{checkout}/.venv/bin/python", **env_spec}
+        env_spec = {"python": f"{{checkout}}/{venv_python_subpath()}", **env_spec}
     commands = {
         "lint": {"run": "ruff check .", "env": "py"},
         "test": {"run": "pytest -q", "env": "py"},

@@ -18,9 +18,10 @@ development only; it is separate from Orcho-managed worktree runs.
 
 ## Stable Install Is Read-Only
 
-Do not edit code under `$HOME/.local/share/orcho-*` directly. Change the
-canonical workspace repos and use `orcho-promote`; touch stable checkouts only
-when the user explicitly asks to debug or repair them.
+Stable Orcho is a pipx install (venv at `$HOME/.local/pipx/venvs/orcho`,
+shims in `$HOME/.local/bin`). Do not edit files inside that venv directly.
+Change the canonical workspace repos and promote with `orcho-promote`; touch
+the stable install only when the user explicitly asks to debug or repair it.
 
 ## Build, Run, And Test
 
@@ -170,6 +171,20 @@ with `<!-- TODO(orcho-phase-X): expand -->`.
 
 Pipeline phases use granular versioned names such as `5`, `5c`, `5e`, `5e5`,
 `7c`, `7d`, and `7e`. Preserve the existing naming scheme.
+
+### DCO Sign-Off On Direct Commits
+
+This public repo enforces DCO (a `Signed-off-by:` trailer matching the
+committer identity) on every commit in a PR's `base..HEAD`. Orcho's own
+delivery engine (`resolve_commit_delivery`, mono and cross) already signs its
+commits automatically — no action needed there.
+
+When an agent or operator commits directly to this repo outside an Orcho run
+(hand-authored fixes, PR branches, hotfixes), **always use `git commit -s`**
+(or an equivalent trailer). Forgetting this is a recurring, entirely
+avoidable failure mode: the PR goes red on the `signoff` check and the commit
+has to be amended and force-pushed after the fact. Add the sign-off up front
+instead of reacting to the red check.
 
 ### ADR Discipline
 

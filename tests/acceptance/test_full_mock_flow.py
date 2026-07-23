@@ -78,6 +78,25 @@ def reset_logging_globals():
     _events.init_event_store(None)
 
 
+@pytest.fixture(autouse=True)
+def _adr0119_legacy_bypass_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin delivery to the ADR 0119 ``bypass`` opt-out for this legacy slice.
+
+    ADR 0119 shipped ``branch_policy=worktree_branch`` as the delivery default,
+    which publishes an isolated run's own branch instead of committing onto the
+    target checkout — so a parent run leaves its checkout clean and a follow-up /
+    correction rerun refuses to start. These end-to-end flows predate that policy
+    and assert the prior "commit onto the checkout" behavior, so they run under
+    ``bypass`` (the ADR's explicit legacy opt-out). The new branch-policy
+    behavior is covered by
+    ``tests/unit/pipeline/engine/test_commit_delivery.py`` and
+    ``test_delivery_branch.py``.
+    """
+    import pipeline.engine.delivery_branch as _db
+
+    monkeypatch.setattr(_db, "normalize_branch_policy", lambda _raw: "bypass")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared plugin config (real object, not MagicMock)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -696,11 +715,12 @@ class TestA9_RejectedReleaseTerminal:
         runs_dir = run_dir.parent
         run_id = run_dir.name
 
-        # Delivery gate (ADR 0111): an auto-refused rejected release is a
-        # decidable correction whose only forward motion is a from_run_plan
-        # follow-up. Shipping, ``skip`` (ADR 0106) AND the now-inert ``fix``
-        # repeat are all blocked — only ``halt`` remains — and the reason routes
-        # the client to the follow-up (NOT 'no pending delivery gate').
+        # Delivery gate (ADR 0111 + ADR 0133): an auto-refused rejected release
+        # is a decidable correction whose only forward motion is an ordinary
+        # follow-up through resume with an operator comment. Shipping, ``skip``
+        # (ADR 0106) AND the now-inert ``fix`` repeat are all blocked — only
+        # ``halt`` remains — and the reason routes the client to the follow-up
+        # (NOT 'no pending delivery gate').
         state = delivery_decision_state(run_id, runs_dir=runs_dir, cwd=None)
         assert state.decidable is True
         assert state.kind == "correction"
@@ -713,8 +733,9 @@ class TestA9_RejectedReleaseTerminal:
         # The reason names the follow-up handle as the run's resolved (stamped)
         # id from the persisted gate context — which the run-dir name may differ
         # from in this fixture, so assert against ``state.run_id``.
-        assert f"from_run_plan={state.run_id}" in state.reason
-        assert "orcho_run_start" in state.reason
+        assert f"orcho_run_resume run_id={state.run_id}" in state.reason
+        assert "operator comment" in state.reason
+        assert "from_run_plan" not in state.reason
         assert "inert" in state.reason
 
         # The durable rejected blockers stay on the persisted gate context (the
@@ -931,6 +952,8 @@ class TestCrossDemoExample:
         web_dst = tmp_path / "web"
         shutil.copytree(self.EXAMPLE_DIR / "api", api_dst)
         shutil.copytree(self.EXAMPLE_DIR / "web", web_dst)
+        _init_git_repo(api_dst)
+        _init_git_repo(web_dst)
         return {"api": api_dst, "web": web_dst}
 
     def test_cross_demo_runs_end_to_end(
@@ -1685,9 +1708,9 @@ class TestB10_CrossFinalAcceptance:
         # 28-kwarg ``run_pipeline(**kwargs)`` wrapper. Patch the new
         # symbol at the project_dispatch import site and read
         # ``project_alias`` off the typed request.
-        real_run_project_pipeline = sys.modules[
-            "pipeline.cross_project.project_dispatch"
-        ].run_project_pipeline
+        from pipeline.cross_project import project_dispatch
+
+        real_run_project_pipeline = project_dispatch.run_project_pipeline
 
         def _crash_target(request):
             if request.project_alias == target_alias:
@@ -3057,6 +3080,66 @@ class TestStage5_PhaseHandoffResume:
         assert sorted(attempts_by_phase.get("validate_plan", [])) == [1, 2, 3]
         # Implement only ran in the resume subprocess — single attempt.
         assert attempts_by_phase.get("implement") == [1]
+
+    def test_retry_feedback_resume_summary_replays_persisted_decision(
+        self, project, run_dir, capsys,
+    ) -> None:
+        """Summary resume banner replays the ACTUALLY-persisted decision.
+
+        The ``↺ resume from checkpoint`` line must surface the operator's
+        stored ``retry_feedback`` action + feedback, read from the handoff
+        decision artifact — not a synthetic ``human_feedback`` state field,
+        which the checkpoint never carries. Without threading the real
+        artifact the decision-replay field silently vanishes, so this test
+        fails if the resume line drops back to a bare phase-count banner.
+        The round *result* is intentionally absent: the banner prints during
+        checkpoint hydration, before the replayed round runs.
+        """
+        from core.io.ansi import strip_ansi
+        from core.observability.logging import apply_output_mode, get_output_mode
+        from sdk.phase_handoff import phase_handoff_decide
+
+        s_pause = self._pause_on_rejected_plan(project, run_dir)
+        handoff_id = s_pause["phase_handoff"]["id"]
+        run_id = self._parent_run_id(run_dir)
+
+        feedback = "add rollback steps to the plan"
+        phase_handoff_decide(
+            run_dir.name, handoff_id, "retry_feedback",
+            feedback=feedback,
+            runs_dir=run_dir.parent, cwd=None,
+        )
+
+        from agents.runtimes import MockAgentProvider
+        provider2 = MockAgentProvider(latency=0.0)
+        provider2.codex = lambda m, **_kw: _AlwaysApproved()
+
+        _before = get_output_mode()
+        lp, hu, gd = _patches()
+        try:
+            apply_output_mode("summary")
+            capsys.readouterr()  # drop the default-mode pause output
+            with lp, hu, gd, patch(
+                "pipeline.project.profile_dispatch.maybe_run_hypothesis",
+                return_value=(None, []),
+            ):
+                run_pipeline(
+                    task="Retry with feedback",
+                    project_dir=str(project),
+                    output_dir=run_dir,
+                    profile_name="feature",
+                    resume_from=run_id,
+                    hypothesis_enabled=False,
+                    provider=provider2,
+                )
+            out = strip_ansi(capsys.readouterr().out)
+        finally:
+            apply_output_mode(_before)
+
+        resume = [ln for ln in out.splitlines() if "resume from checkpoint" in ln]
+        assert resume, f"summary resume banner missing:\n{out}"
+        assert "decision replay: retry_feedback" in resume[0], resume[0]
+        assert feedback in resume[0], resume[0]
 
     def test_retry_feedback_rejected_again_chains_new_handoff(
         self, project, run_dir,

@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pipeline.evidence.finding_lifecycle import annotate_finding_lifecycle
 from pipeline.evidence.schema import EVIDENCE_SCHEMA_VERSION
 from pipeline.run_state.setup_failure import detect_setup_preflight_failure
 
@@ -113,7 +114,10 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         "plan": _build_plan_record(events, meta),
         "phases": _build_phases(events),
         "gates": _build_gates(events),
-        "commands": _build_commands(events),
+        "commands": [
+            *_build_commands(events),
+            *_build_managed_commands(target),
+        ],
         "artifacts": _build_artifacts(events),
         "metrics": _build_metrics_rollup(metrics),
         "errors": _build_errors(events, meta, target),
@@ -133,6 +137,7 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         # stale/missing call is impossible here — that classification is
         # owned by the prompt layer (pipeline.verification_readiness).
         "verification_readiness": _build_verification_readiness(target),
+        "scheduled_gate_ledger": _build_scheduled_gate_ledger(target),
         "prompt_render": build_prompt_render_evidence(meta),
         "worktree": meta.get("worktree"),
         "worktree_projects": _build_worktree_projects(meta),
@@ -294,6 +299,7 @@ def _build_plan_record(
             "risks": [],
             "review_focus": [],
             "mcp_context": [],
+            "subtasks": [],
         }
     payload = parsed.payload
     return {
@@ -318,6 +324,10 @@ def _build_plan_record(
             dict(x) for x in payload.get("mcp_context", [])
             if isinstance(x, dict)
         ],
+        "subtasks": [
+            dict(x) for x in payload.get("subtasks", [])
+            if isinstance(x, dict)
+        ],
     }
 
 
@@ -339,6 +349,22 @@ def _string_list_from_payload(
         return []
     n = int(payload.get(count_key, 0) or 0)
     return [f"<entry {i + 1}>" for i in range(n)]
+
+
+def _build_scheduled_gate_ledger(run_dir: Path) -> dict[str, Any] | None:
+    """Copy only a valid ledger artifact; terminal output is never consulted."""
+    from pipeline.verification_ledger_store import ledger_path, load_ledger
+
+    if not ledger_path(run_dir).exists():
+        return None
+    ledger = load_ledger(run_dir)
+    from dataclasses import asdict
+
+    return {
+        "schema_version": "1", "finalized": ledger.finalized,
+        "rows": [asdict(row) for row in ledger.rows],
+        "trail": [asdict(event) for event in ledger.trail],
+    }
 
 
 def _build_verification_receipts(run_dir: Path) -> list[dict[str, Any]]:
@@ -577,6 +603,37 @@ def _build_commands(events: list[_RawEvent]) -> list[dict[str, Any]]:
     return closed
 
 
+def _build_managed_commands(run_dir: Path) -> list[dict[str, Any]]:
+    """Project the managed-command owner's bounded durable records."""
+    from agents.managed_command import ManagedCommandStore
+
+    return [
+        {
+            "argv_summary": record.executable,
+            "cwd": "",
+            "exit_code": record.exit_code,
+            "duration_s": record.duration_s,
+            "outcome": (
+                "unknown"
+                if record.state == "unknown"
+                else "success"
+                if record.exit_code == 0
+                else "failure"
+            ),
+            "source": "managed",
+            "identity_digest": record.identity_digest,
+            "phase": record.phase,
+            "state": str(record.state),
+            "executable": record.executable,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "artifact_path": record.artifact_path,
+            "degraded_reason": record.degraded_reason,
+        }
+        for record in ManagedCommandStore(run_dir).evidence()
+    ]
+
+
 def _build_artifacts(events: list[_RawEvent]) -> list[dict[str, Any]]:
     """Snapshot every ``artifact.created`` payload."""
     artifacts: list[dict[str, Any]] = []
@@ -620,8 +677,8 @@ def _build_metrics_rollup(metrics: dict[str, Any]) -> dict[str, Any]:
             if isinstance(metrics.get("phases"), dict) else {}
         ),
         # Additive passthrough of the per-subtask usage breakdown so a
-        # post-mortem can answer "which implement subtask was most expensive?"
-        # from the durable bundle alone. Present only when ``metrics.json``
+        # post-mortem can answer "which implement subtask produced the most
+        # usage?" from the durable bundle alone. Present only when ``metrics.json``
         # carried it (subtask_dag runs); accounting scrub already ran on
         # ``metrics`` in ``collect_evidence`` before this rollup.
         **(
@@ -781,10 +838,9 @@ def _build_errors(
     # ``delivery_status`` (clean | repaired | waived | incomplete) plus the
     # waiver fields and WHICH subtasks blocked delivery. Surface a distinct
     # breadcrumb for any non-clean delivery so a post-mortem sees how implement
-    # closed (``action`` distinguishes a bare ``continue`` from
-    # ``continue_with_waiver``) and exactly which subtasks were accepted —
-    # including missing-receipt ids, which have no ``subtask.receipt`` event of
-    # their own and would otherwise be invisible in evidence.
+    # closed and exactly which subtasks were accepted — including missing-receipt
+    # ids, which have no ``subtask.receipt`` event of their own and would
+    # otherwise be invisible in evidence.
     implement_attempts = _phase_attempts((meta.get("phases") or {}).get("implement"))
     if implement_attempts:
         impl = implement_attempts[-1]
@@ -898,8 +954,12 @@ def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
     phases_meta = meta.get("phases") or {}
     if not isinstance(phases_meta, dict):
         return out
+    phase_attempts = {
+        phase_name: _phase_attempts(phases_meta.get(phase_name))
+        for phase_name in _FINDING_BEARING_PHASES
+    }
     for phase_name in _FINDING_BEARING_PHASES:
-        attempts = _phase_attempts(phases_meta.get(phase_name))
+        attempts = phase_attempts[phase_name]
         for idx, attempt in enumerate(attempts, start=1):
             attempt_num = _coerce_int(attempt.get("attempt"), idx)
             findings = attempt.get("findings")
@@ -918,8 +978,24 @@ def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
                     "line": _optional_int(f.get("line")),
                     "phase": phase_name,
                     "attempt": attempt_num,
+                    "source_verdict": str(attempt.get("verdict") or ""),
+                    "source_approved": (
+                        attempt.get("approved")
+                        if isinstance(attempt.get("approved"), bool)
+                        else None
+                    ),
+                    "source_ship_ready": (
+                        attempt.get("ship_ready")
+                        if isinstance(attempt.get("ship_ready"), bool)
+                        else None
+                    ),
                 })
-    return out
+    waiver = meta.get("phase_handoff_waiver")
+    return annotate_finding_lifecycle(
+        out,
+        phase_attempts,
+        waiver=waiver if isinstance(waiver, dict) else None,
+    )
 
 
 def _build_release_summary(meta: dict[str, Any]) -> list[dict[str, Any]]:

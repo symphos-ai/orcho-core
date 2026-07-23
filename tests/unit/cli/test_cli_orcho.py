@@ -41,6 +41,8 @@ def _write_run(
     tokens_out: int = 2000,
     duration_s: float = 10.0,
     rounds: int = 0,
+    cost: float | None = None,
+    cost_estimated: bool = False,
 ) -> Path:
     """Create a fake run directory with meta.json and metrics.json."""
     d = runs_dir / run_id
@@ -71,6 +73,14 @@ def _write_run(
     }
     if rounds:
         metrics["total_rounds"] = rounds
+    if cost is not None:
+        metrics["total_cost_usd_equivalent"] = cost
+        if cost_estimated:
+            metrics["cost_estimated"] = True
+        for phase in metrics["phases"].values():
+            phase["cost_usd_equivalent"] = cost / 2.0
+            if cost_estimated:
+                phase["cost_estimated"] = True
 
     (d / "metrics.json").write_text(json.dumps(metrics))
     return d
@@ -108,6 +118,19 @@ class TestParser:
         assert args.task == "Do X"
         assert args.project == "/p"
 
+    def test_managed_command_run_subcommand(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "command", "run",
+            "--run-dir", "/runs/r1",
+            "--phase", "implement",
+            "--cwd", "/checkout",
+            "--", "python", "-m", "pytest",
+        ])
+        assert args.command == "command"
+        assert args.command_action == "run"
+        assert args.argv == ["--", "python", "-m", "pytest"]
+
     def test_run_task_file(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["run", "--task-file", "task.md", "--project", "/p"])
@@ -131,6 +154,120 @@ class TestParser:
         # resolve_resume_profile.
         assert args.profile is None
         assert args.session_mode == "auto"
+
+    def test_run_runtime_flags_accept_extension_runtime(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "run",
+            "--task", "x",
+            "--project", "/p",
+            "--runtime-implement", "claude-glm",
+        ])
+        assert args.runtime_implement == "claude-glm"
+
+    def test_runtimes_install_subcommand(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "bin" / "claude-glm"
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.command == "runtimes"
+        assert args.runtimes_cmd == "install"
+        assert args.func(args) == 0
+        assert destination.exists()
+        assert "Installed claude-glm wrapper" in capsys.readouterr().out
+
+    def test_runtimes_install_refuses_existing_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        destination = tmp_path / "claude-glm"
+        destination.write_text("custom\n")
+        args = parser.parse_args([
+            "runtimes",
+            "install",
+            "claude-glm",
+            "--path",
+            str(destination),
+        ])
+
+        assert args.func(args) == 2
+        assert destination.read_text() == "custom\n"
+        assert "pass --force" in capsys.readouterr().err
+
+    def test_demos_bootstrap_subcommand(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "bootstrap",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "bootstrap"
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "DEMO golden-api workspace ready." in out
+        assert "orcho run" in out
+        assert "--profile feature" in out
+        assert (tmp_path / "demo" / "project").is_dir()
+
+    def test_demos_install_alias(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "demos",
+            "install",
+            "golden-api",
+            "--root",
+            str(tmp_path / "demo"),
+        ])
+
+        assert args.command == "demos"
+        assert args.demos_cmd == "install"
+        assert args.func(args) == 0
+        assert "DEMO golden-api workspace ready." in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("group", "func_name"),
+        [
+            ("profiles", "cmd_profiles_list"),
+            ("pricing", "cmd_pricing_show"),
+            ("workflows", "cmd_workflows_list"),
+        ],
+    )
+    def test_bare_listing_group_defaults_to_action(
+        self, group: str, func_name: str,
+    ) -> None:
+        # A subcommand group whose obvious bare action is a listing/show must
+        # not dead-end in argparse — bare `orcho <group>` resolves to that
+        # action instead of `error: arguments are required` (exit 2).
+        parser = self.build_parser()
+        args = parser.parse_args([group])
+        assert args.command == group
+        assert args.func.__name__ == func_name
+
+    @pytest.mark.parametrize("group", ["profile", "runtimes", "demos", "workspace"])
+    def test_bare_arg_only_group_prints_help_clean(
+        self, group: str, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Groups whose subcommands all need arguments print their own help and
+        # exit 0 on bare invocation, rather than argparse's exit-2 dead-end.
+        parser = self.build_parser()
+        args = parser.parse_args([group])
+        assert args.command == group
+        assert args.func(args) == 0
+        assert f"orcho {group}" in capsys.readouterr().out
 
     def test_run_all_flags(self) -> None:
         parser = self.build_parser()
@@ -174,6 +311,20 @@ class TestParser:
         assert args.format == "md"
         assert args.debug is True
 
+    def test_evidence_default_format_is_cli(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["evidence"])
+        assert args.command == "evidence"
+        assert args.format == "cli"
+        assert args.view == "summary"
+
+    def test_evidence_full_view_flag(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["evidence", "--view", "full"])
+        assert args.command == "evidence"
+        assert args.format == "cli"
+        assert args.view == "full"
+
     def test_profiles_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -185,6 +336,54 @@ class TestParser:
         out = capsys.readouterr().out
         assert "Profiles" in out
         assert "feature" in out
+        assert "Mode" in out
+        assert "Worktree" in out
+        assert "Production-grade dev cycle" not in out
+        assert "orcho profiles list --verbose" in out
+
+    def test_profiles_list_verbose_shows_descriptions(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        parser = self.build_parser()
+        args = parser.parse_args(["profiles", "list", "--verbose"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "feature" in out
+        assert "Production-grade dev cycle" in out
+        assert "orcho profiles list --verbose" not in out
+
+    def test_profile_customize_writes_workspace_overlay(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        _break_cli_binary_lookup(monkeypatch)
+        workspace = tmp_path / "workspace"
+        monkeypatch.setenv("ORCHO_WORKSPACE", str(workspace))
+        parser = self.build_parser()
+        args = parser.parse_args([
+            "profile",
+            "customize",
+            "feature",
+            "--mode",
+            "pro",
+            "--phase-effort",
+            "implement=high",
+        ])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Updated profile customization for feature" in out
+        data = json.loads(
+            (workspace / ".orcho" / "config.local.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert data["profiles_v2"]["feature"]["_profile"]["default_mode"] == "pro"
+        assert data["profiles_v2"]["feature"]["implement"]["effort"] == "high"
 
     def test_workflows_list_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -195,8 +394,11 @@ class TestParser:
 
         assert args.func(args) == 0
         out = capsys.readouterr().out
-        assert "Profiles" in out
+        assert "Workflows" in out
+        assert "Workflow" in out
         assert "task" in out
+        assert "orcho workflows list --verbose" in out
+        assert "orcho profiles list --verbose" not in out
 
     def test_top_level_help_documents_output_modes(self) -> None:
         parser = self.build_parser()
@@ -205,6 +407,10 @@ class TestParser:
         assert "Start here:" in help_text
         assert "Workflows:" in help_text
         assert "Output modes:" in help_text
+        assert "status        What is happening / what should I do next?" in help_text
+        assert "evidence      What happened / what proves it?" in help_text
+        assert "metrics/cost  How much did it consume?" in help_text
+        assert "diff          What changed?" in help_text
         assert "--output live" in help_text
         assert "--output debug" in help_text
         assert "orcho help --verbose" in help_text
@@ -221,8 +427,12 @@ class TestParser:
             name for _, commands in COMMAND_GROUPS for name, _ in commands
         }
         # ``help`` is service-only and lives in the "More help" section, not
-        # in a command group; every other subcommand must be categorized.
-        assert grouped == sub_choices - {"help"}
+        # in a command group. ``web`` and ``tui`` are interface commands
+        # intentionally hidden from the advertised listing until their packages
+        # ship on PyPI (still registered + callable, just not advertised so a
+        # new user is never pointed at an uninstallable ``pip install``).
+        # Every OTHER subcommand must still be categorized.
+        assert grouped == sub_choices - {"help", "web", "tui"}
 
     def test_onboarding_lists_every_command_grouped(self) -> None:
         from cli._help import COMMAND_GROUPS, QUICK_HELP
@@ -271,6 +481,21 @@ class TestParser:
         assert args.projects == ["unity:/u", "api:/a"]
         assert args.profile == "lite"
 
+    def test_tui_subcommand(self) -> None:
+        parser = self.build_parser()
+        args = parser.parse_args(["tui", "--run-dir", "/x", "--follow"])
+        assert args.command == "tui"
+        assert args.run_dir == "/x"
+        assert args.follow is True
+        assert args.replay is False
+        from cli.orcho import cmd_tui
+        assert args.func is cmd_tui
+
+    def test_tui_follow_replay_mutually_exclusive(self) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["tui", "--follow", "--replay"])
+
     def test_status_no_run_id(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["status"])
@@ -292,10 +517,28 @@ class TestParser:
         args = parser.parse_args(["metrics", "--last", "20"])
         assert args.last == 20
 
+    def test_metrics_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["metrics", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
+
     def test_history_defaults(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["history"])
         assert args.last == 10
+
+    def test_history_last_rejects_placeholder(self, capsys: pytest.CaptureFixture[str]) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["history", "-n", "LAST"])
+
+        err = capsys.readouterr().err
+        assert "expected a number" in err
+        assert "`COUNT` is a placeholder" in err
 
     def test_prompts_name(self) -> None:
         parser = self.build_parser()
@@ -312,6 +555,65 @@ class TestParser:
         parser = self.build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["run", "--task", "x", "--task-file", "f.md", "--project", "/p"])
+
+    def test_version_flag_prints_versions_and_exits_zero(
+        self,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        parser = self.build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["--version"])
+        assert excinfo.value.code == 0
+        out = capsys.readouterr().out
+        assert "orcho-core" in out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# --version string composition
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVersionString:
+    @staticmethod
+    def _fake_version(known: dict[str, str]):
+        from importlib import metadata
+
+        def version(name: str) -> str:
+            try:
+                return known[name]
+            except KeyError:
+                raise metadata.PackageNotFoundError(name) from None
+
+        return version
+
+    def test_core_and_mcp_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version",
+            self._fake_version({"orcho-core": "1.2.3", "orcho-mcp": "4.5.6"}),
+        )
+        assert orcho._version_string() == "orcho-core 1.2.3\norcho-mcp 4.5.6"
+
+    def test_mcp_absent_is_omitted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version",
+            self._fake_version({"orcho-core": "1.2.3"}),
+        )
+        assert orcho._version_string() == "orcho-core 1.2.3"
+
+    def test_core_metadata_missing_degrades_gracefully(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from cli import orcho
+
+        monkeypatch.setattr(
+            orcho.metadata, "version", self._fake_version({}),
+        )
+        out = orcho._version_string()
+        assert out.startswith("orcho-core ")
+        assert "package metadata not found" in out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -436,9 +738,89 @@ class TestCmdMetrics:
         assert "20260501_000000" in out
         assert "20260502_000000" in out
 
+    def test_metrics_history_aligns_long_ids_and_cost(
+        self,
+        runs_dir: Path,
+        capsys,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from cli.orcho import cmd_metrics
+        from core.infra import config
+
+        monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+        config._reset_config()
+        try:
+            _write_run(
+                runs_dir,
+                "20260707_162649_347471",
+                project="/repo/demo_project",
+                task="tool-handler smoke with enough text to clip",
+                tokens_in=10_000,
+                tokens_out=972,
+                duration_s=0.8,
+                rounds=1,
+                cost=1.23,
+                cost_estimated=True,
+            )
+            args = _make_args(last=10)
+            rc = cmd_metrics(args)
+        finally:
+            config._reset_config()
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Metrics history · last 1 runs" in out
+        assert "Cost ref" in out
+        assert "estimated-api ~$1.23" in out
+        assert "20260707_162649_347471   demo_project" in out
+
+    def test_metrics_history_color_can_be_forced(self, tmp_path: Path) -> None:
+        from cli._formatters import format_metrics_history
+        from core.io.ansi import set_color_enabled, strip_ansi
+        from sdk.types import RunMetrics
+
+        run_dir = tmp_path / "runs" / "20260707_162649_347471"
+        run_dir.mkdir(parents=True)
+        (run_dir / "meta.json").write_text(
+            json.dumps(
+                {
+                    "project": "/repo/orcho-core",
+                    "task": "color metrics",
+                }
+            ),
+            encoding="utf-8",
+        )
+        row = RunMetrics(
+            run_id="20260707_162649_347471",
+            run_dir=run_dir,
+            total_tokens=10,
+            total_duration_s=1.0,
+            total_rounds=1,
+            total_cost_usd_equivalent=1.23,
+            raw={"total_cost_usd_equivalent": 1.23, "cost_estimated": True},
+        )
+
+        try:
+            set_color_enabled(True)
+            rendered = format_metrics_history([row])
+        finally:
+            set_color_enabled(None)
+
+        assert "\x1b[" in rendered
+        plain = strip_ansi(rendered)
+        assert "Metrics history · last 1 runs" in plain
+        assert "Cost ref" in plain
+        assert "estimated-api ~$1.23" in plain
+
     def test_metrics_single_run_detail(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_metrics
-        _write_run(runs_dir, "20260502_100000", tokens_in=5000, tokens_out=10000)
+        _write_run(
+            runs_dir,
+            "20260502_100000",
+            tokens_in=5000,
+            tokens_out=10000,
+            cost=2.0,
+        )
         args = _make_args(run_id="20260502_100000")
         rc = cmd_metrics(args)
         out = capsys.readouterr().out
@@ -485,8 +867,10 @@ class TestCmdHistory:
         rc = cmd_history(args)
         out = capsys.readouterr().out
         assert rc == 0
+        assert "Run history · last 2 shown" in out
         assert "20260501_000000" in out
         assert "20260502_000000" in out
+        assert "orcho status <run-id>" in out
 
     def test_history_sorted_newest_first(self, runs_dir: Path, capsys) -> None:
         from cli.orcho import cmd_history
@@ -518,6 +902,22 @@ class TestCmdHistory:
         out = capsys.readouterr().out
         assert "no meta.json" in out
 
+    def test_history_color_can_be_forced(self, runs_dir: Path, capsys) -> None:
+        from cli.orcho import cmd_history
+        from core.io.ansi import C, set_color_enabled
+
+        _write_run(runs_dir, "20260502_000000", status="done")
+        args = _make_args(last=10)
+
+        try:
+            set_color_enabled(True)
+            cmd_history(args)
+            colored = capsys.readouterr().out
+        finally:
+            set_color_enabled(None)
+
+        assert f"{C.GREEN}done" in colored
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_prompts
@@ -532,15 +932,21 @@ class TestCmdPrompts:
         assert rc == 0
         # Listing should surface composable parts (post-ADR-0022 catalog).
         assert "tasks/implement" in out
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Formats" in out
+        assert "Roles" in out
+        assert "Tasks" in out
 
-    def test_no_name_no_list_shows_core(self, capsys) -> None:
+    def test_no_name_no_list_shows_summary(self, capsys) -> None:
         from cli.orcho import cmd_prompts
         args = _make_args(name=None, list=False, project=None)
         rc = cmd_prompts(args)
         out = capsys.readouterr().out
         assert rc == 0
-        assert "Available prompts" in out
+        assert "Prompt catalog" in out
+        assert "Groups" in out
+        assert "orcho prompts --list" in out
+        assert "tasks/implement" not in out
 
     def test_resolution_chain_core_only(self, capsys) -> None:
         from cli.orcho import cmd_prompts
@@ -612,7 +1018,7 @@ class TestCmdPrompts:
             "tasks/final_acceptance",
             # ADR 0085: correction profile entry-gate triage procedure.
             "tasks/correction_triage",
-            # ADR 0090: interactive phase-handoff advisor procedure.
+            # ADR 0124: interactive phase-handoff advisor procedure.
             "tasks/handoff_advice",
             "tasks/validate_plan",
             "tasks/plan",
@@ -652,6 +1058,329 @@ class TestCmdPrompts:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCmdEvidence:
+    def test_cli_format_is_default_operator_summary(self, monkeypatch) -> None:
+        import cli.orcho as orcho
+
+        body = {
+            "run_id": "R",
+            "run_dir": "/tmp/runs/R",
+            "schema_version": "1",
+            "status": "done",
+            "task": "Ship the thing",
+            "profile": "feature",
+            "plan": {
+                "source": "json",
+                "short_summary": "Small useful summary.",
+                "planning_context": "P" * 1000,
+                "subtask_count": 2,
+                "has_contract": True,
+                "acceptance_criteria": ["a"],
+                "owned_files": ["cli.py"],
+                "commands_to_run": ["pytest -q"],
+            },
+            "phases": [
+                {"name": "PLAN", "title": "PLAN", "outcome": "ok", "attempt": 1},
+                {
+                    "name": "VALIDATE_PLAN",
+                    "title": "validate",
+                    "outcome": "skipped",
+                    "attempt": 1,
+                },
+            ],
+            "gates": [
+                {
+                    "name": "tests",
+                    "kind": "computational",
+                    "outcome": "skipped",
+                    "duration_s": 0.0,
+                }
+            ],
+            "commands": [],
+            "artifacts": [],
+            "metrics": {
+                "total_tokens": 100,
+                "total_tokens_in": 70,
+                "total_tokens_out": 30,
+                "total_duration_s": 1.5,
+                "total_rounds": 1,
+            },
+            "errors": [],
+            "findings": [],
+        }
+        fake_stdout = _FakeStdout(is_tty=False)
+        monkeypatch.setattr(orcho.sys, "stdout", fake_stdout)
+        monkeypatch.setattr(orcho, "collect_evidence", lambda *a, **k: _make_args(body=body))
+
+        rc = orcho.cmd_evidence(_make_args(run_id=None, workspace=None, out=None))
+
+        out = fake_stdout.getvalue()
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "Attention: yes" in out
+        assert "1 gate skipped" in out
+        assert "Recorded: none; 1 planned" in out
+        assert "Planning context" not in out
+        assert not out.lstrip().startswith("{")
+
+    def test_cli_format_color_can_be_forced(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import get_color_enabled, set_color_enabled, strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        before = get_color_enabled()
+        set_color_enabled(True)
+        try:
+            rendered = format_evidence_cli(bundle)
+        finally:
+            set_color_enabled(before)
+
+        assert "\x1b[" in rendered
+        assert "Evidence:" in strip_ansi(rendered)
+
+    def test_cli_artifact_paths_are_copyable_not_clipped(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        long_path = (
+            "/Users/example/workspace-orchestrator/runspace/runs/"
+            "20260708_135646_06db6e/plan_20260708_135646_06db6e_round_20.json"
+        )
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [{"kind": "parsed_plan", "path": long_path}],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle))
+
+        assert long_path in rendered
+        assert "plan_20260708_135646_06db6e_round_20..." not in rendered
+
+    def test_cli_full_view_renders_plan_timeline_and_acceptance(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "Ship the complete evidence picture",
+                "profile": "feature",
+                "plan": {
+                    "source": "json",
+                    "short_summary": "Build a richer evidence view.",
+                    "planning_context": "Full planning context survives here.",
+                    "subtask_count": 2,
+                    "has_contract": True,
+                    "goal": "Make evidence explain the run",
+                    "acceptance_criteria": ["full plan visible", "review path visible"],
+                    "owned_files": ["cli/_evidence_cli.py"],
+                    "commands_to_run": ["pytest tests/unit/cli/test_cli_orcho.py -q"],
+                    "risks": ["large output"],
+                    "review_focus": ["operator UX"],
+                    "subtasks": [
+                        {
+                            "id": "t1",
+                            "goal": "Render the plan",
+                            "owned_files": ["cli/_evidence_cli.py"],
+                            "done_criteria": ["Plan section lists tasks"],
+                        },
+                        {
+                            "id": "t2",
+                            "goal": "Render the review path",
+                            "depends_on": ["t1"],
+                            "files": ["tests/unit/cli/test_cli_orcho.py"],
+                            "done_criteria": ["Timeline lists acceptance"],
+                        },
+                    ],
+                },
+                "phases": [
+                    {
+                        "name": "plan",
+                        "title": "PLAN",
+                        "outcome": "ok",
+                        "attempt": 1,
+                        "started_at": "2026-07-08T10:00:00Z",
+                        "ended_at": "2026-07-08T10:01:00Z",
+                    },
+                    {
+                        "name": "review_changes",
+                        "title": "Review",
+                        "outcome": "ok",
+                        "attempt": 2,
+                        "started_at": "2026-07-08T10:02:00Z",
+                        "ended_at": "2026-07-08T10:03:00Z",
+                    },
+                ],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "implementation_receipts": [
+                    {
+                        "subtask_id": "t1",
+                        "state": "done",
+                        "runtime": "claude",
+                        "model": "opus",
+                        "criteria_report": [{"met": True}],
+                    }
+                ],
+                "release_summary": [
+                    {
+                        "phase": "final_acceptance",
+                        "attempt": 1,
+                        "verdict": "APPROVED",
+                        "summary": "Ready.",
+                    }
+                ],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle, view="full"))
+
+        assert "Plan contract:" in rendered
+        assert "Full planning context survives here." in rendered
+        assert "subtasks=2 · dag=yes · contract=yes" in rendered
+        assert "Acceptance criteria:" in rendered
+        assert "full plan visible" in rendered
+        assert "Planned tasks:" in rendered
+        assert "1. t1 Render the plan" in rendered
+        assert "depends_on: t1" in rendered
+        assert "Phase timeline:" in rendered
+        assert "review_changes#2" in rendered
+        assert "Implementation receipts:" in rendered
+        assert "done        t1 claude / opus" in rendered
+        assert "Acceptance:" in rendered
+        assert "APPROVED   final_acceptance#1" in rendered
+
+    def test_cli_findings_show_lifecycle_statuses(self) -> None:
+        from cli._evidence_cli import format_evidence_cli
+        from core.io.ansi import strip_ansi
+
+        bundle = _make_args(
+            body={
+                "run_id": "R",
+                "run_dir": "/tmp/runs/R",
+                "schema_version": "1",
+                "status": "done",
+                "task": "T",
+                "profile": "feature",
+                "plan": {"source": "json", "subtask_count": 0, "has_contract": False},
+                "phases": [],
+                "gates": [],
+                "commands": [],
+                "artifacts": [],
+                "metrics": {
+                    "total_tokens": 1,
+                    "total_tokens_in": 1,
+                    "total_tokens_out": 0,
+                    "total_duration_s": 0.1,
+                },
+                "errors": [],
+                "findings": [
+                    {
+                        "id": "O1",
+                        "severity": "P1",
+                        "title": "Still broken",
+                        "phase": "review_changes",
+                        "attempt": 2,
+                        "status": "open",
+                    },
+                    {
+                        "id": "F1",
+                        "severity": "P1",
+                        "title": "Fixed earlier issue",
+                        "phase": "review_changes",
+                        "attempt": 1,
+                        "status": "fixed",
+                        "status_reason": "later review_changes attempt approved",
+                    },
+                    {
+                        "id": "W1",
+                        "severity": "P2",
+                        "title": "Accepted risk",
+                        "phase": "validate_plan",
+                        "attempt": 1,
+                        "status": "waived",
+                    },
+                    {
+                        "id": "R1",
+                        "severity": "P1",
+                        "title": "Release blocker",
+                        "phase": "final_acceptance",
+                        "attempt": 1,
+                        "status": "final_rejected",
+                    },
+                ],
+            }
+        )
+
+        rendered = strip_ansi(format_evidence_cli(bundle))
+
+        assert "active x2" in rendered
+        assert "final-rejected x1 (P1x1)" in rendered
+        assert "open x1 (P1x1)" in rendered
+        assert "waived x1 (P2x1)" in rendered
+        assert "fixed x1 (P1x1)" in rendered
+        assert "REJECTED P1  final_acceptance#1" in rendered
+        assert "OPEN     P1  review_changes#2" in rendered
+        assert "WAIVED   P2  validate_plan#1" in rendered
+        assert "FIXED    P1  review_changes#1" in rendered
+        assert "later review_changes attempt approved" not in rendered
+
+        debug_rendered = strip_ansi(format_evidence_cli(bundle, debug=True))
+        assert "later review_changes attempt approved" in debug_rendered
+
     def test_json_projection_compacts_verbose_fields(self) -> None:
         from cli._formatters import project_evidence_json
 
@@ -963,6 +1692,18 @@ class TestCmdDiff:
         assert "Update(api/payload.py)" in out
         assert "Update(api/util.py)" in out
 
+    def test_diff_missing_mode_defaults_to_preview(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_diff
+        self._write_diff_run(runs_dir, "20260519_100009")
+        args = _make_args(run_id="20260519_100009", no_color=True)
+        rc = cmd_diff(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Update(api/payload.py)" in out
+        assert "diff --git" not in out
+
     def test_diff_stat_mode_shows_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1096,14 +1837,14 @@ class TestCmdDiff:
         with pytest.raises(SystemExit):
             parser.parse_args(["diff", "any_run", "--preview", "--stat"])
 
-    def test_diff_parser_default_mode_is_full(self) -> None:
+    def test_diff_parser_default_mode_is_preview(self) -> None:
         from cli.orcho import build_parser
         args = build_parser().parse_args(["diff", "any_run"])
-        assert args.diff_mode == "full"
+        assert args.diff_mode == "preview"
 
 
 class TestCmdEvidenceDiff:
-    """Test ``orcho evidence --diff[=mode]`` markdown + JSON wrappers."""
+    """Test ``orcho evidence --diff[=mode]`` CLI/markdown + JSON wrappers."""
 
     @pytest.fixture
     def runs_dir(self, tmp_path: Path, monkeypatch):
@@ -1273,6 +2014,22 @@ class TestCmdEvidenceDiff:
         assert "## Diff" in out
         assert "api/payload.py" in out
 
+    def test_cli_diff_is_default_and_appends_section(
+        self, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_evidence
+        self._write_evidence_run(runs_dir, "20260519_200012")
+        args = _make_args(
+            run_id="20260519_200012", format=None, diff="stat",
+        )
+        rc = cmd_evidence(args)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Evidence:" in out
+        assert "## Diff" in out
+        assert "+1 -1" in out
+        assert not out.lstrip().startswith("{")
+
     def test_md_diff_stat_only_renders_table(
         self, runs_dir: Path, capsys,
     ) -> None:
@@ -1324,6 +2081,7 @@ class TestCmdEvidenceDiff:
         assert bare.diff == "preview"
         default = parser.parse_args(["evidence", "any_run"])
         assert default.diff is None
+        assert default.format == "cli"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1432,10 +2190,17 @@ class TestWorkspaceInitParser:
         assert args.dry_run is True
         assert args.no_scaffold is True
 
-    def test_workspace_requires_subcommand(self) -> None:
+    def test_workspace_bare_prints_help_clean(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Bare `orcho workspace` no longer dead-ends in argparse: its
+        # subcommands all need arguments, so it prints its own help and
+        # exits 0 (see test_bare_arg_only_group_prints_help_clean).
         parser = self.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["workspace"])
+        args = parser.parse_args(["workspace"])
+        assert args.workspace_cmd is None
+        assert args.func(args) == 0
+        assert "orcho workspace" in capsys.readouterr().out
 
     def test_workspace_fine_tune_dry_run_parses(self) -> None:
         parser = self.build_parser()
@@ -1490,6 +2255,17 @@ class TestWorkspaceInitParser:
 
 
 class TestCmdWorkspaceInit:
+    @pytest.fixture(autouse=True)
+    def _runtimes_on_path(self, monkeypatch):
+        """Pin runtime detection so results don't depend on the host PATH."""
+        monkeypatch.setattr(
+            "sdk.runtimes.shutil.which",
+            lambda cmd: (
+                f"/usr/bin/{cmd}" if cmd in ("codex", "claude", "gemini")
+                else None
+            ),
+        )
+
     def test_real_run_creates_layout_and_prints_summary(
         self, tmp_path: Path, capsys,
     ) -> None:
@@ -1587,7 +2363,179 @@ class TestCmdWorkspaceInit:
         assert "individual project repo" in err
 
 
+class TestWorkspaceInitRuntimeGate:
+    """`workspace init` scans runtimes before writing anything (R: gate)."""
+
+    @staticmethod
+    def _which(*installed: str):
+        return lambda cmd: (
+            f"/usr/bin/{cmd}" if cmd in installed else None
+        )
+
+    def test_zero_runtimes_stops_with_install_recommendation(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no CLI agent runtime found on PATH" in err
+        assert "codex" in err and "claude" in err and "gemini" in err
+        assert not (root / "workspace-orchestrator").exists(), \
+            "a refused init must not scaffold anything"
+
+    def test_zero_runtimes_force_scaffolds_anyway(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=True,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        assert (root / "workspace-orchestrator" / "runspace" / "runs").is_dir()
+        out = capsys.readouterr().out
+        assert "not found on PATH" in out  # formatter warning survives
+
+    def test_zero_runtimes_dry_run_previews_with_warning(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which())
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            force=False,
+            dry_run=True,
+        ))
+
+        assert rc == 0
+        assert not root.exists()
+        assert "not found on PATH" in capsys.readouterr().out
+
+    def test_partial_gap_non_interactive_warns_and_keeps_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "not found on PATH" in out
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert any(
+            spec.get("runtime") == "codex"
+            for spec in config["phases"].values()
+        ), "config must not be switched without consent"
+
+    def test_partial_gap_interactive_yes_switches_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import io
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        fake_stdin = io.StringIO("y\n")
+        fake_stdin.isatty = lambda: True  # type: ignore[method-assign]
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=False,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "switched to 'claude'" in out
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert all(
+            spec["runtime"] == "claude"
+            for spec in config["phases"].values()
+        )
+
+    def test_partial_gap_interactive_no_keeps_config(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        import io
+        import json
+
+        from cli.orcho import cmd_workspace_init
+
+        monkeypatch.setattr("sdk.runtimes.shutil.which", self._which("claude"))
+        fake_stdin = io.StringIO("n\n")
+        fake_stdin.isatty = lambda: True  # type: ignore[method-assign]
+        monkeypatch.setattr("sys.stdin", fake_stdin)
+        root = tmp_path / "group"
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=False,
+            force=False,
+            dry_run=False,
+        ))
+
+        assert rc == 0
+        config = json.loads(
+            (root / "workspace-orchestrator" / ".orcho" / "config.local.json")
+            .read_text(encoding="utf-8")
+        )
+        assert any(
+            spec.get("runtime") == "codex"
+            for spec in config["phases"].values()
+        )
+
+
 class TestWorkspaceInitNoInteractive:
+    @pytest.fixture(autouse=True)
+    def _runtimes_on_path(self, monkeypatch):
+        """Pin runtime detection so results don't depend on the host PATH."""
+        monkeypatch.setattr(
+            "sdk.runtimes.shutil.which",
+            lambda cmd: (
+                f"/usr/bin/{cmd}" if cmd in ("codex", "claude", "gemini")
+                else None
+            ),
+        )
+
     def test_no_interactive_flag_parsed(self) -> None:
         from cli.orcho import build_parser
         parser = build_parser()
@@ -1710,6 +2658,111 @@ class TestWorkspaceInitNoInteractive:
         assert called == [], "prompt (and git init) must NOT run for a refused target"
         err = capsys.readouterr().err
         assert "individual project repo" in err
+
+    # --- delivery setup hint (T3) ----------------------------------------
+
+    @staticmethod
+    def _group_with_child(tmp_path: Path) -> Path:
+        """A group root holding one detectable child project."""
+        root = tmp_path / "group"
+        child = root / "proj"
+        child.mkdir(parents=True)
+        (child / "pyproject.toml").write_text("[project]\nname='proj'\n")
+        return root
+
+    def test_prints_delivery_setup_hint_when_helper_returns_hint(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: ["install the gh CLI to enable auto-push"],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Delivery setup:" in out
+        assert "install the gh CLI to enable auto-push" in out
+
+    def test_no_hint_printed_when_helper_returns_empty(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: [],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        assert rc == 0
+        assert "Delivery setup:" not in capsys.readouterr().out
+
+    def test_dry_run_shows_hint_without_writing_files(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            lambda project_dir, **_: ["install the gh CLI to enable auto-push"],
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=True,
+            force=False,
+        ))
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "install the gh CLI to enable auto-push" in out
+        # --dry-run must not create the workspace layout on disk.
+        assert not (root / "workspace-orchestrator").exists()
+
+    def test_helper_exception_does_not_change_exit_code_or_print(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+
+        root = self._group_with_child(tmp_path)
+
+        def _boom(project_dir, **_):
+            raise RuntimeError("hint probe exploded")
+
+        monkeypatch.setattr(
+            "pipeline.engine.delivery_publish.collect_delivery_setup_hints",
+            _boom,
+        )
+
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            no_interactive=True,
+            dry_run=False,
+            force=False,
+        ))
+
+        # Detection failure never disturbs the init outcome.
+        assert rc == 0
+        assert "Delivery setup:" not in capsys.readouterr().out
 
 
 class TestFormatWorkspaceInitColorPolicy:
@@ -2194,6 +3247,31 @@ class TestProjectOrchestratorMain:
         assert exc.value.code == 2
         captured = capsys.readouterr()
         assert "run_id 20260512_001 already exists" in captured.err
+
+    def test_loop_resume_blocked_exits_2_without_traceback(
+        self, main_env, monkeypatch, capsys: pytest.CaptureFixture,
+    ) -> None:
+        from pipeline.runtime.resume import LoopResumeBlockedError
+
+        main_env["run_pipeline"].side_effect = LoopResumeBlockedError(
+            "loop cursor conflicts with active profile"
+        )
+        self._set_argv(
+            monkeypatch,
+            "--task", "X",
+            "--project", str(main_env["project"]),
+            "--mock",
+        )
+        from pipeline.project_orchestrator import main
+
+        with pytest.raises(SystemExit) as exc:
+            main()
+
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        assert "Cannot resume from checkpoint" in captured.err
+        assert "loop cursor conflicts" in captured.err
+        assert "Traceback" not in captured.err
 
     def test_keyboard_interrupt_exits_130_with_message(
         self, main_env, monkeypatch, capsys: pytest.CaptureFixture
@@ -3282,7 +4360,7 @@ def _write_verify_project(root: Path, *, pkg: str = "proj_pkg") -> Path:
 def _write_meta_run(runs_dir: Path, run_id: str, *, project: str | None) -> Path:
     d = runs_dir / run_id
     d.mkdir(parents=True)
-    meta: dict = {"task": "t", "status": "done"}
+    meta: dict = {"task": "t", "status": "done", "worktree": {"isolation": "off"}}
     if project is not None:
         meta["project"] = project
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -3319,10 +4397,17 @@ class TestVerifyEnvParser:
         assert args.run_id is None
         assert args.workspace is None
 
-    def test_verify_requires_subcommand(self) -> None:
+    def test_verify_without_subcommand_shows_overview(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         parser = self.build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["verify"])
+        args = parser.parse_args(["verify"])
+
+        assert args.func(args) == 0
+        out = capsys.readouterr().out
+        assert "Verify · declared receipts" in out
+        assert "orcho verify env" in out
+        assert "orcho verify run --required" in out
 
     def test_verify_env_does_not_resolve_cli_binaries(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -3331,6 +4416,32 @@ class TestVerifyEnvParser:
         parser = self.build_parser()
         args = parser.parse_args(["verify", "env", "--env", "ci"])
         assert args.func.__name__ == "cmd_verify_env"
+
+    def test_verify_filters_skill_shadow_chatter(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from cli import orcho as cli_orcho
+        from sdk.verify import VerifyListResult
+
+        def fake_verify_list(**kwargs):
+            print(
+                "  ! skills: workspace skill 'x' (workspace) shadowed by "
+                "project skill at /tmp/x"
+            )
+            print("  kept diagnostic")
+            return VerifyListResult(run_id="r1", commands=[])
+
+        monkeypatch.setattr(cli_orcho, "verify_list", fake_verify_list)
+
+        rc = cli_orcho.cmd_verify_list(
+            _make_args(project=None, run_id=None, workspace=None)
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "shadowed by" not in out
+        assert "kept diagnostic" in out
+        assert "verify list" in out
 
 
 class TestCmdVerifyEnv:
@@ -3363,6 +4474,8 @@ class TestCmdVerifyEnv:
         out = capsys.readouterr().out
         assert rc == 0
         assert "PASS" in out
+        assert f"checkout: {project}" in out
+        assert "source:   canonical_non_isolated" in out
 
         receipt = run_dir / ENV_RECEIPTS_DIRNAME / "verify_env_ci.json"
         assert receipt.is_file()
@@ -3518,8 +4631,11 @@ def _write_meta_run_worktree(
     d = runs_dir / run_id
     d.mkdir(parents=True)
     meta: dict = {"task": "t", "status": "done", "project": str(project)}
-    if worktree is not None:
-        meta["worktree"] = worktree
+    meta["worktree"] = (
+        {"isolation": "off"}
+        if worktree is None
+        else {"isolation": "worktree", **worktree}
+    )
     (d / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return d
 
@@ -3597,6 +4713,12 @@ class TestCmdVerifyListRun:
         assert rc == 0
         assert "show_cwd" in out
         assert "req" in out
+        assert "$ python -c" in out
+        assert "['python'" not in out
+        assert "Preview only" in out
+        assert f"checkout: {worktree}" in out
+        assert "source:   run_metadata" in out
+        assert "orcho verify run --required" in out
         # Nothing executed.
         assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
 
@@ -3621,12 +4743,34 @@ class TestCmdVerifyListRun:
         out = capsys.readouterr().out
         assert rc == 0
         assert "PASS" in out
+        assert f"checkout: {worktree}" in out
+        assert "source:   run_metadata" in out
         # Receipt landed and the command executed inside the worktree.
         receipt = run_dir / COMMAND_RECEIPTS_DIRNAME / "show_cwd.json"
         assert receipt.is_file()
         data = json.loads(receipt.read_text(encoding="utf-8"))
         assert data["cwd"] == str(worktree)
         assert data["git"]["checkout_head"] == head
+
+    def test_missing_isolated_checkout_exits_2_without_receipt(
+        self, tmp_path: Path, runs_dir: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_verify_run
+        from pipeline.evidence.verification_receipt import COMMAND_RECEIPTS_DIRNAME
+
+        project = _write_verify_cmd_project(tmp_path)
+        run_dir = _write_meta_run_worktree(
+            runs_dir, "20260101_000000", project=project,
+            worktree={"path": str(tmp_path / "missing")},
+        )
+        rc = cmd_verify_run(_make_args(
+            project=str(project), run_id="20260101_000000", workspace=None,
+            names=["show_cwd"], required=False,
+        ))
+        captured = capsys.readouterr()
+        assert rc == 2
+        assert "recorded isolated checkout" in captured.err
+        assert not (run_dir / COMMAND_RECEIPTS_DIRNAME).exists()
 
     def test_run_failing_command_exits_1(
         self, tmp_path: Path, runs_dir: Path, capsys,
@@ -3670,7 +4814,9 @@ class TestCmdVerifyListRun:
         assert rc == 0
         assert "parity=differential" in out
         assert head in out
-        assert "base-xyz" in out
+        # The diagnostic baseline is the resolved identity OID; an unresolved
+        # historical ref is intentionally represented as ``None``.
+        assert "base-xyz" not in out
 
     def test_run_unknown_command_exits_2_without_write(
         self, tmp_path: Path, runs_dir: Path, capsys,
@@ -3994,3 +5140,45 @@ class TestVerboseHelpGroups:
             assert f"[{name.upper()}]" in out, name
         assert "OTHER" in out
         assert "[HELP]" in out
+
+
+class TestTuiDispatch:
+    """``orcho tui`` delegates to the optional ``orcho-tui`` package, mirroring
+    ``orcho web`` → ``orcho-web``: a lazy, guarded import so ``orcho-core`` keeps
+    no hard dependency on its sibling."""
+
+    def test_not_installed_prints_install_hint(self, monkeypatch, capsys) -> None:
+        import argparse
+        import builtins
+
+        from cli.orcho import cmd_tui
+
+        real_import = builtins.__import__
+
+        def _no_orcho_tui(name, *a, **k):
+            if name.startswith("orcho_tui"):
+                raise ImportError("no orcho_tui")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", _no_orcho_tui)
+        args = argparse.Namespace(run_id=None, run_dir="/x", follow=False, replay=False)
+        assert cmd_tui(args) == 1
+        assert "orcho-tui is not installed" in capsys.readouterr().err
+
+    def test_dispatch_translates_argv(self, monkeypatch) -> None:
+        import argparse
+        import sys
+        import types
+
+        from cli.orcho import cmd_tui
+
+        seen: dict[str, list[str]] = {}
+        fake = types.ModuleType("orcho_tui.cli")
+        fake.main = lambda argv: (seen.__setitem__("argv", argv), 0)[1]
+        pkg = types.ModuleType("orcho_tui")
+        monkeypatch.setitem(sys.modules, "orcho_tui", pkg)
+        monkeypatch.setitem(sys.modules, "orcho_tui.cli", fake)
+
+        args = argparse.Namespace(run_id="r1", run_dir=None, follow=True, replay=False)
+        assert cmd_tui(args) == 0
+        assert seen["argv"] == ["--run-id", "r1", "--follow"]

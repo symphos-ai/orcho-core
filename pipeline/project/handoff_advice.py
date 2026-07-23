@@ -30,8 +30,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from core.infra.paths import PROMPTS_DIR
-
 # Durable artifact + provenance live in a focused leaf module; re-exported here
 # so the advisor module stays the stable public facade for them.
 from pipeline.project.handoff_advice_artifact import (
@@ -39,6 +37,13 @@ from pipeline.project.handoff_advice_artifact import (
     load_advice_artifact,
     write_advice_artifact,
 )
+from pipeline.project.handoff_advice_contract import (
+    AdviceContractSnapshot,
+    build_advice_contract_snapshot,
+    build_advice_prompt as _render_advice_prompt,
+    build_advice_turn as _make_advice_turn,
+)
+from pipeline.project.handoff_advice_intent import AdviceIntent, parse_advice_intent
 
 if TYPE_CHECKING:
     from pipeline.runtime.handoff import PhaseHandoffRequested
@@ -53,14 +58,23 @@ _ADVICE_PHASE = "handoff_advice"
 _ADVICE_USAGE_EXTRAS_KEY = "_phase_handoff_advice_usage"
 #: Triggers / verdicts an advisory pass is meant for. ``build_phase_handoff_signal``
 #: emits REJECTED; ``subtask_dag_handoff`` emits INCOMPLETE (exhausted implement).
-_ADVISORY_TRIGGERS: frozenset[str] = frozenset({"rejected", "incomplete"})
+_ADVISORY_TRIGGERS: frozenset[str] = frozenset(
+    {
+        "rejected",
+        "incomplete",
+        "verification_gate_failed",
+    }
+)
 _ADVISORY_VERDICTS: frozenset[str] = frozenset({"REJECTED", "INCOMPLETE"})
 #: ADR 0112 §5 scope-expansion handoff trigger family (participant_add /
 #: out_of_plan). Recognised as advisory-eligible via prefix since the tail is
 #: opaque (a repo identity), so it cannot be enumerated like the fixed triggers.
 _SCOPE_EXPANSION_TRIGGER_PREFIX = "scope_expansion:"
 _VALID_ACTIONS: tuple[str, ...] = (
-    "continue", "retry_feedback", "halt", "continue_with_waiver",
+    "continue",
+    "retry_feedback",
+    "halt",
+    "continue_with_waiver",
 )
 _VALID_CONFIDENCE: tuple[str, ...] = ("high", "medium", "low")
 #: Compactness caps so the advisor context never copies a whole transcript.
@@ -85,7 +99,10 @@ _RESPONSE_CONTRACT = (
     'the corrective feedback the retry round should act on; otherwise empty>",\n'
     '  "risks": ["<concrete risks of the recommended path>"],\n'
     '  "expected_files": ["<files a retry would most likely touch>"],\n'
-    '  "operator_note": "<optional short note to the operator>"\n'
+    '  "operator_note": "<optional short note to the operator>",\n'
+    '  "proposed_operations": [{"kind": "repair | preserve | revert | remove | waive | stop", "target": "<structured target>"}],\n'
+    '  "contract_effects": [{"invariant_id": "<published invariant id>", '
+    '"effect": "preserve | advance | violate | unknown"}]\n'
     "}\n"
     "Do not act on your own recommendation. An operator reviews it first."
 )
@@ -110,6 +127,7 @@ class AdviceContext:
     loop_max_rounds: int = 1
     correction_context: str = ""
     response_language: str = ""
+    contract_snapshot: AdviceContractSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +135,10 @@ class HandoffAdvice:
     """The advisor's normalised recommendation."""
 
     recommended_action: Literal[
-        "continue", "retry_feedback", "halt", "continue_with_waiver",
+        "continue",
+        "retry_feedback",
+        "halt",
+        "continue_with_waiver",
     ]
     confidence: Literal["high", "medium", "low"]
     rationale: str
@@ -127,20 +148,7 @@ class HandoffAdvice:
     operator_note: str = ""
     parse_warnings: tuple[str, ...] = ()
     raw_output: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class AdviceSafety:
-    """Safety classification: ``auto_apply_ok`` only for non-low-confidence
-    ``retry_feedback``; ``needs_confirmation`` flags low confidence;
-    ``blocked_reason`` set for any non-retry recommendation; ``waiver_blocked``
-    records a render-only waiver, flagged when blocking-severity findings exist.
-    """
-
-    auto_apply_ok: bool
-    needs_confirmation: bool
-    blocked_reason: str = ""
-    waiver_blocked: bool = False
+    intent: AdviceIntent = field(default_factory=AdviceIntent)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +164,8 @@ class AdvisorResult:
 def advice_actions_available(signal: PhaseHandoffRequested) -> bool:
     """Return True when an advisory pass should be offered for ``signal``.
 
-    All four must hold: (a) ``trigger`` is ``rejected``/``incomplete`` OR a
+    All four must hold: (a) ``trigger`` is ``rejected``/``incomplete`` /
+    ``verification_gate_failed`` OR a
     ``scope_expansion:*`` sanction; (b) verdict is rejected/incomplete-equivalent
     — ``approved is not True`` and the normalised verdict is
     ``REJECTED``/``INCOMPLETE`` (an empty verdict with ``approved=False`` counts; a
@@ -172,6 +181,7 @@ def advice_actions_available(signal: PhaseHandoffRequested) -> bool:
     # advisory-eligible like rejected/incomplete — the operator can ask for the
     # smallest honest way forward on a paused out-of-plan sanction too.
     is_scope_expansion = trigger.startswith(_SCOPE_EXPANSION_TRIGGER_PREFIX)
+    is_hygiene_gate = hygiene_gate_failure_kind(signal) is not None
     if trigger not in _ADVISORY_TRIGGERS and not is_scope_expansion:
         return False
     if getattr(signal, "approved", None) is True:
@@ -184,11 +194,47 @@ def advice_actions_available(signal: PhaseHandoffRequested) -> bool:
     # (advice's job there is to propose a retry). A scope-expansion sanction has
     # no retry at the terminal seam, so it is exempt: advice still recommends the
     # smallest honest route among continue / continue_with_waiver / halt.
-    if not is_scope_expansion and "retry_feedback" not in available:
+    if not is_scope_expansion and not is_hygiene_gate and "retry_feedback" not in available:
         return False
     last_output = str(getattr(signal, "last_output", "") or "").strip()
     findings = _extract_findings(getattr(signal, "artifacts", {}) or {})
     return bool(last_output or findings)
+
+
+def hygiene_gate_failure_kind(signal: PhaseHandoffRequested) -> str | None:
+    """Return the typed hygiene kind on a verification-gate handoff, if any."""
+    if getattr(signal, "trigger", "") != "verification_gate_failed":
+        return None
+    artifacts = getattr(signal, "artifacts", {}) or {}
+    if not isinstance(artifacts, Mapping):
+        return None
+    findings = artifacts.get("findings")
+    if not isinstance(findings, (list, tuple)):
+        return None
+    for finding in findings:
+        if not isinstance(finding, Mapping):
+            continue
+        kind = str(finding.get("failure_kind") or "").strip()
+        if kind in {"provenance_failure", "env_failure"}:
+            return kind
+    return None
+
+
+def hygiene_gate_advice(signal: PhaseHandoffRequested) -> HandoffAdvice | None:
+    """Return the deterministic waiver recommendation for a hygiene handoff."""
+    kind = hygiene_gate_failure_kind(signal)
+    if kind is None:
+        return None
+    return HandoffAdvice(
+        recommended_action="continue_with_waiver",
+        confidence="high",
+        rationale=(
+            f"{kind} is verification-environment evidence, not an agent repair "
+            "task; an operator must explicitly waive or halt."
+        ),
+        retry_feedback="",
+        operator_note="No repair retry is available for a hygiene verification failure.",
+    )
 
 
 def _extract_findings(artifacts: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
@@ -297,6 +343,7 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
         str(artifacts.get("correction_context") or "").strip(),
         _FINDING_BODY_CHAR_LIMIT,
     )
+    contract_snapshot = build_advice_contract_snapshot(run, signal)
     return AdviceContext(
         run_id=str(getattr(run, "session_ts", "") or ""),
         handoff_id=str(getattr(signal, "handoff_id", "") or ""),
@@ -319,106 +366,16 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
             last_output,
             correction_context,
         ),
+        contract_snapshot=contract_snapshot,
     )
-
-
-def _advice_task_body() -> str:
-    """Load the user-editable advisor procedure part."""
-    path = PROMPTS_DIR / "tasks" / "handoff_advice.md"
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-def _render_context_block(ctx: AdviceContext) -> str:
-    """Render the compact recorded-context section embedded in the prompt."""
-    lines: list[str] = [
-        "# Recorded handoff context", "",
-        f"- phase: {ctx.phase}", f"- trigger: {ctx.trigger}",
-        f"- verdict: {ctx.verdict}",
-        f"- round: {ctx.prior_retry_round}/{ctx.loop_max_rounds}",
-    ]
-    if ctx.task_title:
-        lines.append(f"- task: {ctx.task_title}")
-    if ctx.available_actions:
-        lines.append(f"- available actions: {', '.join(ctx.available_actions)}")
-    if ctx.last_phase_summary:
-        lines += ["", "## Reviewer summary", ctx.last_phase_summary]
-    if ctx.findings:
-        lines += ["", "## Findings"]
-        for f in ctx.findings:
-            head = " ".join(
-                p for p in (f.get("severity"), f.get("id"), f.get("title")) if p
-            ).strip()
-            lines.append(f"- {head or '(finding)'}")
-            if f.get("required_fix"):
-                lines.append(f"    required_fix: {f['required_fix']}")
-            if f.get("body"):
-                lines.append(f"    {f['body']}")
-    if ctx.last_output:
-        lines += ["", "## Last output", ctx.last_output]
-    if ctx.correction_context:
-        lines += ["", "## Correction context", ctx.correction_context]
-    if ctx.diff_summary:
-        lines += ["", "## Working tree (git status --short)", ctx.diff_summary]
-    return "\n".join(lines)
-
-
-def _render_language_policy(ctx: AdviceContext) -> str:
-    """Render the natural-language policy for advisor JSON string values."""
-    if not ctx.response_language:
-        return ""
-    return "\n".join((
-        "# Response language",
-        (
-            "Write human-readable JSON string values "
-            f"(`rationale`, `retry_feedback`, `risks`, `operator_note`) "
-            f"in {ctx.response_language}."
-        ),
-        (
-            "JSON keys, protocol enum values, file paths, identifiers, command "
-            "names, and code symbols stay in their original language."
-        ),
-    ))
 
 
 def build_advice_prompt(ctx: AdviceContext) -> str:
-    """Compose the read-only advisor prompt (marker, task, context, contract)."""
-    sections = [_ADVICE_MARKER]
-    body = _advice_task_body()
-    if body:
-        sections.append(body)
-    sections.append(_render_context_block(ctx))
-    language_policy = _render_language_policy(ctx)
-    if language_policy:
-        sections.append(language_policy)
-    sections.append(_RESPONSE_CONTRACT)
-    return "\n\n".join(sections)
+    return _render_advice_prompt(ctx, marker=_ADVICE_MARKER, response_contract=_RESPONSE_CONTRACT)
 
 
 def _build_advice_turn(ctx: AdviceContext):
-    """Per-turn prompt turn for the advisor call (embeds per-handoff findings)."""
-    from pipeline.prompts.composer import assemble_cache_first_segments
-    from pipeline.prompts.types import (
-        PromptCacheScope,
-        PromptLayer,
-        PromptPart,
-        PromptStability,
-    )
-
-    return assemble_cache_first_segments((
-        PromptPart(
-            kind="task",
-            name="handoff_advice",
-            source="builtin",
-            body=build_advice_prompt(ctx),
-            layer=PromptLayer.TURN,
-            stability=PromptStability.TURN,
-            cache_scope=PromptCacheScope.NONE,
-            volatile_reason="handoff advice embeds per-handoff findings",
-        ),
-    ))
+    return _make_advice_turn(ctx, marker=_ADVICE_MARKER, response_contract=_RESPONSE_CONTRACT)
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -477,7 +434,8 @@ def _as_str_list(value: Any) -> tuple[str, ...]:
 
 
 def _clamp_advice_to_available(
-    advice: HandoffAdvice, available_actions: tuple[str, ...],
+    advice: HandoffAdvice,
+    available_actions: tuple[str, ...],
 ) -> HandoffAdvice:
     """Normalise a recommendation the operator cannot take down to ``halt``.
 
@@ -517,10 +475,7 @@ def parse_advice(raw: str) -> HandoffAdvice:
         return HandoffAdvice(
             recommended_action="halt",
             confidence="low",
-            rationale=(
-                "Advisor output could not be parsed as a structured "
-                "recommendation."
-            ),
+            rationale=("Advisor output could not be parsed as a structured recommendation."),
             retry_feedback="",
             parse_warnings=("advice_unparseable",),
             raw_output=raw,
@@ -528,25 +483,16 @@ def parse_advice(raw: str) -> HandoffAdvice:
     warnings: list[str] = []
     action = str(data.get("recommended_action") or "").strip().lower()
     if action not in _VALID_ACTIONS:
-        warnings.append(
-            f"unsupported recommended_action {action!r} normalized to 'halt'"
-        )
-        action = "halt"
+        warnings.append(f"unsupported recommended_action {action!r}")
     confidence = str(data.get("confidence") or "").strip().lower()
     if confidence not in _VALID_CONFIDENCE:
-        warnings.append(
-            f"unsupported confidence {confidence!r} normalized to 'low'"
-        )
+        warnings.append(f"unsupported confidence {confidence!r} normalized to 'low'")
         confidence = "low"
     rationale = str(data.get("rationale") or "").strip()
     retry_feedback = str(data.get("retry_feedback") or "").strip()
     operator_note = str(data.get("operator_note") or "").strip()
     if action == "retry_feedback" and not retry_feedback:
-        warnings.append(
-            "retry_feedback recommendation carried no feedback; "
-            "downgraded to 'halt'"
-        )
-        action = "halt"
+        warnings.append("retry_feedback recommendation carried no feedback")
     return HandoffAdvice(
         recommended_action=action,  # type: ignore[arg-type]
         confidence=confidence,  # type: ignore[arg-type]
@@ -557,6 +503,7 @@ def parse_advice(raw: str) -> HandoffAdvice:
         operator_note=operator_note,
         parse_warnings=tuple(warnings),
         raw_output=raw,
+        intent=parse_advice_intent(data),
     )
 
 
@@ -581,50 +528,11 @@ def _has_blocking_severity(findings: Any) -> bool:
     return False
 
 
-def classify_advice_safety(
-    advice: HandoffAdvice, findings: Any = (),
-) -> AdviceSafety:
-    """Classify whether a recommendation may be auto-applied: ``auto_apply_ok``
-    only for ``retry_feedback`` at non-``low`` confidence (the only durable
-    action this path generates); any ``low`` sets ``needs_confirmation``;
-    non-retry recommendations set ``blocked_reason``; ``continue_with_waiver`` is
-    ALWAYS render-only (``waiver_blocked``) — never auto-applied.
-    """
-    confidence_low = advice.confidence == "low"
-    action = advice.recommended_action
-    if action == "continue_with_waiver":
-        return AdviceSafety(
-            auto_apply_ok=False,
-            needs_confirmation=confidence_low,
-            blocked_reason=(
-                "continue_with_waiver is advisory only; a waiver is never "
-                "applied automatically from the advice path"
-            ),
-            waiver_blocked=True,
-        )
-    if action != "retry_feedback":
-        return AdviceSafety(
-            auto_apply_ok=False,
-            needs_confirmation=confidence_low,
-            blocked_reason=(
-                f"{action!r} is not an auto-appliable advisory action; only "
-                "retry_feedback generates a durable decision"
-            ),
-            waiver_blocked=_has_blocking_severity(findings),
-        )
-    return AdviceSafety(
-        auto_apply_ok=not confidence_low,
-        needs_confirmation=confidence_low,
-        blocked_reason="" if not confidence_low else (
-            "low-confidence retry_feedback requires explicit operator "
-            "confirmation"
-        ),
-        waiver_blocked=_has_blocking_severity(findings),
-    )
-
-
 def invoke_advisor(
-    run: Any, ctx: AdviceContext, *, agent: Any = None,
+    run: Any,
+    ctx: AdviceContext,
+    *,
+    agent: Any = None,
 ) -> AdvisorResult:
     """Call the read-only advisor and return its parsed recommendation.
 
@@ -641,8 +549,8 @@ def invoke_advisor(
     from pipeline.phases.builtin.session_invoke import _session_aware_invoke
 
     cwd = str(getattr(run, "git_cwd", "") or "")
-    prompt = build_advice_prompt(ctx)
     turn = _build_advice_turn(ctx)
+    prompt = turn.text
     start = time.perf_counter()
     raw = _session_aware_invoke(
         agent,
@@ -659,7 +567,12 @@ def invoke_advisor(
 
 
 def _capture_advice_usage(
-    run: Any, agent: Any, duration_s: float, *, prompt: str, output: str,
+    run: Any,
+    agent: Any,
+    duration_s: float,
+    *,
+    prompt: str,
+    output: str,
 ) -> dict[str, Any]:
     """Capture the advisor invoke's usage into the in-memory extras aggregate.
 
@@ -683,7 +596,10 @@ def _capture_advice_usage(
         )
 
         usage = _capture_invoke_usage(
-            agent, duration_s, prompt=prompt, output=output,
+            agent,
+            duration_s,
+            prompt=prompt,
+            output=output,
         )
         state = getattr(run, "state", None)
         extras = getattr(state, "extras", None)
@@ -698,14 +614,12 @@ def _capture_advice_usage(
 
 __all__ = [
     "AdviceContext",
-    "AdviceSafety",
     "AdvisorResult",
     "HandoffAdvice",
     "advice_actions_available",
     "build_advice_context",
     "build_advice_prompt",
     "build_provenance_note",
-    "classify_advice_safety",
     "invoke_advisor",
     "load_advice_artifact",
     "parse_advice",

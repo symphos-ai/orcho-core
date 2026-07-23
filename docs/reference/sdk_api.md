@@ -4,6 +4,35 @@ The headless library boundary every embedder calls. Returns typed
 dataclasses, raises typed errors, never prints, never calls `sys.exit`.
 JSON-friendly through `to_jsonable` for IPC consumers.
 
+## Scheduled-gate timeline
+
+`get_verification_timeline()` is artifact-only. Rows retain identity,
+declaration/selection/execution axes, terminal disposition, and receipt evidence;
+events are identity-scoped. Without `scheduled_gate_ledger.json` it returns an
+empty projection and never loads a plugin or reconstructs plans/receipt status.
+Every execution event references an immutable, run-relative receipt copy. The
+flat command receipt remains the authoritative latest result for readiness and
+delivery. After the initial execution of an exact `command` / `hook` / `phase`
+identity, both automatic repair rechecks and operator retries have
+`ReceiptEvidence.rerun=true`; the SDK projects this persisted ledger fact and
+never infers it from ordering. This introduces no SDK or MCP wire change.
+The public wire has no legacy status enum, autorun compatibility DTO, manual
+aggregate, or scheduled-trail availability/gap field. Core delivery remains
+stopped until paired `scheduled-gates-4` `orcho-mcp` L1–L4 validation succeeds.
+
+## Managed-command evidence
+
+`list_commands()` includes durable agent-managed command records alongside
+ordinary command-event records. Managed records have `source="managed"` and
+project the lifecycle state (`unknown` or `exited`), exit code, identity digest,
+phase, bounded executable name, timestamps when available, and a run-relative
+artifact path. They do not expose raw arguments or environment values and do
+not count as scheduled-verification receipts.
+
+An unsettled lease is reported as `unknown`; only an exact terminal receipt is
+reported as `exited`. A malformed artifact remains visible with
+`degraded_reason` instead of suppressing other command evidence.
+
 ## Conventions
 
 Every read/report call accepts the same explicit-context triple:
@@ -37,10 +66,40 @@ call time.
 | `NoWorkspace`       | 1           | no runs directory could be resolved                           |
 | `RunNotFound`       | 1           | requested run id has no directory                             |
 | `PricingFetchError` | 2           | `refresh_pricing` scrape or network fetch failed              |
+| `ProfileCustomizeError` | 2       | `customize_profile` request or overlay validation failed      |
 | `PromptNotFound`    | 1           | requested prompt name has no resolution                       |
 | `EvidenceInvalid`   | 1           | evidence bundle composition failed (file missing/unreadable)  |
 
 ## Modules
+
+### `sdk.run_control.continuation` and `sdk.run_control.launch`
+
+`ContinuationRequest` is the explicit operator intent (`resume`, `followup`,
+or `from_run_plan`); `resolve_continuation(...)` returns exactly one selected
+operation or a typed blocker. `preflight_continuation(...)` reads the parent
+metadata and strictly validates any scheduled-gate ledger before launch.
+
+`resume_run(...)` can reopen only a checkpoint-resumable parent and refuses a
+finalized scheduled-gate ledger before it attempts a subprocess spawn.
+`launch_correction_followup(...)` requires a retained dirty worktree, an
+operator comment, and a child id distinct from its parent. It preserves parent
+lineage through its `--resume <parent>` argv while creating a fresh output
+directory. `launch_from_run_plan(...)` is a separate fresh-child operation; it
+requires `parsed_plan.json`, emits `--from-run-plan <parent>`, and never uses
+that route for a retained-change correction. This additive public wire surface
+requires coordinated adaptation in the companion `orcho-mcp` repository before
+promotion; no companion production files are changed here.
+
+### `sdk.handoff_advice`
+
+`request_handoff_advice(...) -> HandoffAdviceResult` is read-only apart from its
+additive advice artifact. It hydrates durable `parsed_plan.json`, exposes the
+assessment `disposition` and typed conflict details, and derives legacy safety
+projections from that one assessment. Unsafe conflict/ambiguity still require
+the canonical manual `phase_handoff_decide` path; no new action is introduced.
+
+This MCP-visible schema change requires a coordinated `orcho-mcp` companion
+before promotion. That companion is intentionally outside this checkout.
 
 ### `sdk.runs`
 
@@ -66,7 +125,62 @@ load_status(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> RunStatu
 
 `RunStatus` carries the typed projection plus `raw_meta` / `raw_metrics`
 for fields the SDK hasn't promoted. `sub_projects` is the cross-run
-sub-project list (status per alias).
+sub-project list (status per alias). `quality_gates` is a best-effort
+projection of finalized gate events from `evidence.json` when that artifact
+exists.
+
+### `sdk.cross_parent_state`
+
+```python
+load_cross_parent_state(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossParentState
+```
+
+Loads the immutable canonical reduction for one cross-project parent run. The
+result is additive to the SDK surface and does not alter `RunStatus` or an
+existing payload. `CrossParentState` contains ordered child projections,
+active operations, an exact pending decision, blockers, consistency violations,
+the parent classification, and an optional terminal disposition. Child
+projections keep execution, contract evaluability, release disposition, and
+release readiness as distinct fields. The exported supporting types are
+`ChildState`, `ActiveOperation`, `PhaseIdentity`, `ScheduledGateIdentity`,
+`PendingDecision`, `ChildBlocker`, and `ConsistencyViolation`.
+
+This is read-only: context resolution uses `find_run`, then the loader reads
+only the parent metadata, declared child paths, typed events, and scheduled-gate
+ledger through the shared disk adapter. It does not write a state snapshot,
+parse transcripts, infer handoff identifiers from prefixes, or discover
+directories. Runtime consumers and this SDK reader use the same reducer for
+equivalent facts.
+
+### `sdk.cross_execution_graph`
+
+```python
+load_cross_execution_graph(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossExecutionGraph
+```
+
+Loads the immutable `cross_execution_graph.json` snapshot through standard run
+resolution. It is read-only: it never creates, repairs, or reconstructs an
+artifact. `CrossExecutionGraph`, its frozen/slotted node, compile-identity, and
+executor-policy dataclasses, plus node/owner/executor enums, are JSON-ready via
+`to_jsonable`. `RunNotFound` and `NoWorkspace` propagate from resolution;
+missing, malformed, unsupported, or inconsistent snapshots raise
+`CrossExecutionGraphInvalid`.
+
+The graph is immutable structural data. Core C2 scheduler/state consumes it but does not
+store a status ledger: it drives serial dispatch and resume selection from
+canonical durable facts. It is not exposed as an MCP/XF3 wire payload.
+
+### `sdk.cross_execution_graph_state`
+
+```python
+load_cross_execution_graph_state(run_id=None, *, workspace=None, runs_dir=None, cwd=None) -> CrossExecutionGraphState
+```
+
+Loads the current derived node state for the immutable graph using the same
+canonical facts and reducer as the C2 scheduler. The result is frozen, slotted,
+JSON-serializable, and read-only: it does not write a graph status ledger,
+checkpoint, or any run artifact. Nested child operations remain child-owned;
+MCP/XF3 projection is deferred.
 
 ### `sdk.history`
 
@@ -283,6 +397,21 @@ developer's real `~/.orcho/`.
 Raises `PricingFetchError` (with `exit_code=2`) on any scrape or
 network failure.
 
+### `sdk.profile_customize`
+
+```python
+customize_profile(profile: str, *, ..., dry_run: bool = False) -> ProfileCustomizeResult
+```
+
+Writes a validated `profiles_v2` overlay for a built-in profile into a local
+`config.local.json`. The default scope is workspace-local
+(`$ORCHO_WORKSPACE/.orcho/config.local.json`); `scope="user"` writes
+`~/.orcho/config.local.json`. `dry_run=True` validates and returns the target
+path without writing.
+
+Raises `ProfileCustomizeError` (with `exit_code=2`) when the request cannot be
+resolved or the resulting overlay does not pass the v2 profile schema.
+
 ### `sdk.cost`
 
 ```python
@@ -291,15 +420,24 @@ aggregate_cost(*, workspace=None, runs_dir=None, cwd=None,
 ```
 
 Pure aggregation across runs whose timestamps fall within `window`
-(`"30d"` / `"7d"` / `"all"`). Codex-shaped phases (tokens reported but
-no `cost_usd_equivalent`) trigger pricing fallback through
+(`"30d"` / `"7d"` / `"all"`). The dollar fields are cost references,
+not billing receipts. Runtime-reported values come from the active
+runtime/endpoint; token-only phases can trigger pricing fallback through
 `core.observability.pricing.estimate_cost_from_total`;
-`CostReport.priced_entries_count` records how many entries got priced.
+`CostReport.priced_entries_count` records how many entries were **estimated**
+(priced from the local snapshot), not the report's overall price.
 
 `CostReport.top_runs` is sorted by `(cost desc, tokens desc)`;
-`phase_breakdown` and `agent_breakdown` by cost descending. `provider`
-in `agent_breakdown` is one of `"claude"` / `"codex"` / `"gemini"` /
-`"other"` (best-effort prefix match on the model string).
+`phase_breakdown`, `agent_breakdown`, and `project_breakdown` are sorted by
+cost descending. `project_breakdown` attributes single-project runs by
+`meta.project` and cross-project slices by `meta.projects[alias]` when the
+resolved project path belongs to the workspace project group; external demo or
+temporary projects are not included in that workspace-project view.
+`provider` in `agent_breakdown` is the resolved **runtime id** when the phase
+metrics carry one (e.g. `"claude"`, `"claude-glm"`); otherwise it falls back to
+a model→provider mapping for older runs (`"claude"` / `"codex"` / `"gemini"` /
+`"other"`). Breakdown percentages are **share of the breakdown** — a row's cost
+over the sum of the rows shown, so they stay within 100%.
 
 ### `sdk.runner`
 
@@ -422,12 +560,13 @@ json_payload = json.dumps(to_jsonable(rows))
 
 ## Side-effecting calls
 
-Only two public SDK calls write to disk:
+Only these public SDK calls write to disk:
 
 | Call                                | Writes                                        |
 | ----------------------------------- | --------------------------------------------- |
 | `refresh_pricing(provider, ...)`    | `~/.orcho/pricing.local.toml` (configurable)  |
 | `write_evidence_bundle(b, out_dir)` | `<out_dir>/<run_id>/evidence.{json,md}`       |
+| `customize_profile(profile, ...)`   | local `config.local.json` `profiles_v2` block |
 
 Every other public function is read-only (no filesystem writes, no
 network, no env mutation). The CLI's `_run_cli(call, formatter)`

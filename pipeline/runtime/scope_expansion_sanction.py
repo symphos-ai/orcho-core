@@ -13,24 +13,14 @@ halt — moves here, projected from the operating mode rather than hardcoded int
 the classifier. This mirrors :mod:`pipeline.runtime.session_disposition` (a
 deterministic projection of a resolved policy + signals).
 
-**The matrix (ADR 0112 §5).** :func:`decide` is a total function over the
-closed ``OperatingMode`` vocabulary and the three durable scope-expansion
-statuses, with two cross-cutting rules that win in *every* mode:
+**The matrix (ADR 0139).** :func:`decide` is a total function over the closed
+``OperatingMode`` vocabulary and the three durable scope-expansion statuses.
+Classification remains evidence, not a delivery verdict; the operating mode is
+the sole strictness decision:
 
-- ``has_active_waiver`` (the ADR 0072/0073 ``continue_with_waiver`` escape
-  hatch) → ``AUTO_CONTINUE`` in every mode, *including* genuine-safety. The
-  operator waiver fully disarms the gate; this is the single escape hatch, not
-  a new parallel waiver path.
-- genuine safety (``security`` / ``persistence`` / ``destructive_delete``) with
-  no active waiver → ``HALT_WAIVER`` in every mode (including ``fast``): alert +
-  default halt + waiver, never an un-waivable dead-end and never silently
-  auto-sanctioned.
-
-For a benign change with no active waiver, routing is mode-projected:
-
-    fast      notice/risk/blocker → AUTO_CONTINUE (record → re-setup → continue; no pause)
-    pro       notice → AUTO_CONTINUE; risk → AUTO_ALERT; blocker → HANDOFF
-    governed  notice/risk/blocker → HANDOFF (alert; operator sanction)
+    fast      notice/risk/blocker → AUTO_CONTINUE (record → re-setup → continue)
+    pro       notice/risk/blocker → AUTO_ALERT (continue + disclosure)
+    governed  notice/risk/blocker → HANDOFF (operator delivery decision)
 
 **Policy is a projection carrier, not an outcome.** The knob that lands on
 ``RunShape`` (:class:`~pipeline.runtime.run_shape.ScopeExpansionSanctionPolicy`)
@@ -80,7 +70,7 @@ class ScopeExpansionDisposition:
 
     ``sanction`` is the chosen route the caller acts on. ``alert`` is whether
     the route raises an operator-visible alert (``True`` for ``AUTO_ALERT`` /
-    ``HANDOFF`` / ``HALT_WAIVER``, ``False`` for a silent ``AUTO_CONTINUE``).
+    ``HANDOFF``, ``False`` for a silent ``AUTO_CONTINUE``).
     ``reason`` is a short human-readable rationale for trace metadata and
     debugging; it is informational only and never parsed.
     """
@@ -101,7 +91,7 @@ _SANCTION_POLICY_BY_MODE: dict[OperatingMode, ScopeExpansionSanctionPolicy] = {
     ),
     OperatingMode.PRO: ScopeExpansionSanctionPolicy(
         operating_mode=OperatingMode.PRO,
-        notes="pro: notice auto; risk auto+alert; blocker → phase-handoff",
+        notes="pro: every scope expansion continues with an operator alert",
     ),
     OperatingMode.GOVERNED: ScopeExpansionSanctionPolicy(
         operating_mode=OperatingMode.GOVERNED,
@@ -145,7 +135,6 @@ def project_scope_expansion_sanction(
 def decide(
     *,
     status: str,
-    category_is_genuine_safety: bool,
     operating_mode: OperatingMode,
     has_active_waiver: bool,
 ) -> ScopeExpansionDisposition:
@@ -160,23 +149,18 @@ def decide(
         :class:`~pipeline.engine.scope_expansion.ScopeExpansionStatus` member
         (a ``StrEnum``, so it stringifies to one of the three durable values)
         or the bare value string. An unknown status fails fast.
-    category_is_genuine_safety:
-        Whether the change falls in a genuine-safety class (``security`` /
-        ``persistence`` / ``destructive_delete``). When ``True`` and no waiver
-        is active, the route is ``HALT_WAIVER`` regardless of mode.
     operating_mode:
         The run's strictness posture (the carried sanction policy's mode). Must
         be an ``OperatingMode`` member — there is no string/legacy fallback.
     has_active_waiver:
-        Whether an operator ``continue_with_waiver`` (ADR 0072/0073) is active.
-        When ``True`` the gate is fully disarmed (``AUTO_CONTINUE``) in every
-        mode, including genuine-safety — the single operator escape hatch.
+        Whether an operator ``continue_with_waiver`` is active. When ``True``
+        the gate is fully disarmed (``AUTO_CONTINUE``) in every mode.
 
     Raises
     ------
     TypeError
-        If ``operating_mode`` is not an ``OperatingMode`` or the boolean flags
-        are not ``bool``. Fail-fast rather than guessing a default.
+        If ``operating_mode`` is not an ``OperatingMode`` or
+        ``has_active_waiver`` is not ``bool``. Fail-fast rather than guessing.
     ValueError
         If ``status`` is not one of the three durable scope-expansion statuses.
     """
@@ -184,11 +168,6 @@ def decide(
         raise TypeError(
             "scope_expansion_sanction.decide: operating_mode must be an "
             f"OperatingMode, got {type(operating_mode).__name__}"
-        )
-    if not isinstance(category_is_genuine_safety, bool):
-        raise TypeError(
-            "scope_expansion_sanction.decide: category_is_genuine_safety must "
-            f"be bool, got {type(category_is_genuine_safety).__name__}"
         )
     if not isinstance(has_active_waiver, bool):
         raise TypeError(
@@ -202,9 +181,8 @@ def decide(
             f"{status!r}; expected one of {sorted(_KNOWN_STATUSES)}"
         )
 
-    # 1. Operator escape hatch (ADR 0072/0073): an active continue_with_waiver
-    #    fully disarms the gate in EVERY mode, even a genuine-safety class. This
-    #    is the single waiver path — not a new parallel one.
+    # An active waiver fully disarms the gate in every mode. It remains the
+    # single explicit operator escape hatch rather than a parallel route.
     if has_active_waiver:
         return ScopeExpansionDisposition(
             sanction=ScopeExpansionSanction.AUTO_CONTINUE,
@@ -215,19 +193,9 @@ def decide(
             alert=False,
         )
 
-    # 2. Genuine safety stays hard regardless of mode: alert + default halt +
-    #    waiver. Never silently auto-sanctioned, not even under fast.
-    if category_is_genuine_safety:
-        return ScopeExpansionDisposition(
-            sanction=ScopeExpansionSanction.HALT_WAIVER,
-            reason=(
-                "genuine-safety class (security/persistence/destructive_delete)"
-                ": default halt + waiver in every mode"
-            ),
-            alert=True,
-        )
-
-    # 3. Mode-projected routing of a benign notice/risk/blocker.
+    # Mode-projected routing of the classifier fact. Category/evidence remain
+    # visible in the durable assessment, but do not introduce a second policy
+    # axis that can overrule the selected operating mode.
     match operating_mode:
         case OperatingMode.FAST:
             return ScopeExpansionDisposition(
@@ -239,27 +207,11 @@ def decide(
                 alert=False,
             )
         case OperatingMode.PRO:
-            if status_value == STATUS_NOTICE:
-                return ScopeExpansionDisposition(
-                    sanction=ScopeExpansionSanction.AUTO_CONTINUE,
-                    reason="pro: notice auto-sanctioned; no pause",
-                    alert=False,
-                )
-            if status_value == STATUS_RISK:
-                return ScopeExpansionDisposition(
-                    sanction=ScopeExpansionSanction.AUTO_ALERT,
-                    reason="pro: risk auto-sanctioned with an operator alert",
-                    alert=True,
-                )
-            if status_value == STATUS_BLOCKER:
-                return ScopeExpansionDisposition(
-                    sanction=ScopeExpansionSanction.HANDOFF,
-                    reason=(
-                        "pro: blocker routes through phase-handoff "
-                        "(not a silent reject)"
-                    ),
-                    alert=True,
-                )
+            return ScopeExpansionDisposition(
+                sanction=ScopeExpansionSanction.AUTO_ALERT,
+                reason=f"pro: {status_value} continues with an operator alert",
+                alert=True,
+            )
         case OperatingMode.GOVERNED:
             return ScopeExpansionDisposition(
                 sanction=ScopeExpansionSanction.HANDOFF,
@@ -271,10 +223,8 @@ def decide(
                 alert=True,
             )
 
-    # Completeness guard: an OperatingMode member (or a status under pro) added
-    # without a branch above must fail loudly here rather than silently
-    # defaulting. ``status`` is validated against ``_KNOWN_STATUSES`` so the pro
-    # branch always returns for a valid status; this guards a future enum gap.
+    # Completeness guard: an OperatingMode member added without a branch above
+    # must fail loudly rather than silently defaulting.
     raise AssertionError(
         "scope_expansion_sanction.decide: unhandled routing for "
         f"operating_mode={operating_mode!r}, status={status_value!r}; the "

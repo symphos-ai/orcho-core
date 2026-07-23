@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 import agents as agents_module
+from agents.owned_child import OwnedChildRegistry
 from agents.runtimes import _failures
 from agents.runtimes.claude import ClaudeAgent
 from agents.runtimes.codex import CodexAgent
@@ -29,7 +30,10 @@ from core.io.retry import (
     AgentAccessError,
     AgentAuthenticationError,
     AgentCallError,
+    AgentCancelledError,
+    AgentProcessKilledError,
     ApiConnectionError,
+    SystemResourceError,
     classify_error,
     classify_from_exit,
 )
@@ -126,6 +130,22 @@ class TestRaiseOnRuntimeFailure:
         with pytest.raises(ApiConnectionError):
             self._call(returncode=1, stderr="connection refused")
 
+    @pytest.mark.parametrize("returncode", [-9, 137])
+    def test_kill_signal_raises_process_killed_error(self, returncode: int) -> None:
+        # Signal-death shape with no classifiable stderr text → kill-type,
+        # which is a SystemResourceError subclass (auto provider_runtime).
+        with pytest.raises(AgentProcessKilledError) as excinfo:
+            self._call(returncode=returncode, stderr="")
+        assert isinstance(excinfo.value, SystemResourceError)
+        assert "SIGKILL" in str(excinfo.value)
+
+    @pytest.mark.parametrize("returncode", [-15, -2])
+    def test_cancel_signal_raises_cancelled_error(self, returncode: int) -> None:
+        with pytest.raises(AgentCancelledError) as excinfo:
+            self._call(returncode=returncode, stderr="")
+        # Cancel-type must NOT be a SystemResourceError (never recoverable).
+        assert not isinstance(excinfo.value, SystemResourceError)
+
     def test_exit_zero_transport_reply_raises_connection_error(self) -> None:
         # The transcript case: CLI exits 0 but the model's own reply IS the
         # transport error. Must still halt.
@@ -212,6 +232,40 @@ def _runtime_test_environment(
 
 
 class TestRuntimesHaltOnApiFailure:
+    @pytest.mark.parametrize(
+        ("factory", "stdout"),
+        [
+            (lambda: ClaudeAgent(model="claude-test"), "done"),
+            (
+                lambda: CodexAgent(model="gpt-test"),
+                '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+            ),
+            (lambda: GeminiAgent(model="gemini-test"), "done"),
+        ],
+        ids=["claude", "codex", "gemini"],
+    )
+    def test_child_start_identity_matches_agent_start(
+        self, monkeypatch: pytest.MonkeyPatch, factory, stdout: str,
+    ) -> None:
+        stream_kwargs: dict[str, object] = {}
+        emitted: list[tuple[str, dict[str, object]]] = []
+
+        def _fake_stream(*_args, **kwargs):
+            stream_kwargs.update(kwargs)
+            return _stream(stdout=stdout)
+
+        monkeypatch.setattr(agents_module, "_stream_run", _fake_stream)
+        monkeypatch.setattr(
+            "core.observability.events.emit",
+            lambda kind, **payload: emitted.append((kind, payload)),
+        )
+        agent = factory()
+        agent.invoke("hi", "/project")
+
+        start = next(payload for kind, payload in emitted if kind == "agent.start")
+        assert stream_kwargs["owned_child_owner"] is agent._owned_children
+        assert stream_kwargs["agent_call_id"] == start["agent_call_id"]
+
     def test_claude_exit_zero_sentinel_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             agents_module, "_stream_run",
@@ -334,3 +388,94 @@ class TestRuntimesHaltOnApiFailure:
         out = ClaudeAgent(model="claude-test").invoke("hi", "/project")
         assert out == '{"verdict":"REJECTED"}'
         assert calls["n"] == 1
+
+
+# ── run_invoke_with_retry: kill retries once under RUNTIME_RETRY_CONFIG ───────
+
+class TestRunInvokeWithRetrySignalBudget:
+    """RUNTIME_RETRY_CONFIG gives a kill-shaped death exactly one retry while a
+    cancel-shaped death is never retried (generic non-zero exits stay 0)."""
+
+    def test_runtime_config_pins_kill_budget_to_one(self) -> None:
+        # The budget is intentional, not an inherited default.
+        assert _failures.RUNTIME_RETRY_CONFIG.process_killed_max_retries == 1
+
+    def test_kill_is_retried_exactly_once_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Killed by SIGKILL (OOM), no classifiable stderr → kill-type.
+                raise classify_from_exit(-9, "")
+            return "recovered"
+
+        out = _failures.run_invoke_with_retry(attempt, runtime="claude")
+        assert out == "recovered"
+        assert calls["n"] == 2  # one kill + one successful retry
+
+    def test_cancel_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            raise classify_from_exit(-15, "")
+
+        with pytest.raises(AgentCancelledError):
+            _failures.run_invoke_with_retry(attempt, runtime="claude")
+        assert calls["n"] == 1  # no retry
+
+
+class TestOwnedChildRetryAdmission:
+    class _FakeProc:
+        pid = 5412
+
+        def __init__(self, result: int | None | Exception) -> None:
+            self.result = result
+
+        def poll(self) -> int | None:
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    @pytest.mark.parametrize("result", [None, RuntimeError("lost visibility")])
+    def test_running_or_unavailable_child_blocks_second_attempt(
+        self, monkeypatch: pytest.MonkeyPatch, result: int | None | Exception,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        owner = OwnedChildRegistry()
+        owner.register(self._FakeProc(result))  # type: ignore[arg-type]
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            raise classify_from_exit(-9, "")
+
+        with pytest.raises(AgentProcessKilledError):
+            _failures.run_invoke_with_retry(
+                attempt, runtime="claude", owned_children=owner,
+            )
+        assert calls["n"] == 1
+
+    def test_exited_child_allows_existing_bounded_kill_retry(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(_failures, "_sleep", lambda _s: None)
+        owner = OwnedChildRegistry()
+        owner.register(self._FakeProc(-9))  # type: ignore[arg-type]
+        calls = {"n": 0}
+
+        def attempt() -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise classify_from_exit(-9, "")
+            return "recovered"
+
+        assert _failures.run_invoke_with_retry(
+            attempt, runtime="claude", owned_children=owner,
+        ) == "recovered"
+        assert calls["n"] == 2

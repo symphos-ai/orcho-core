@@ -28,7 +28,7 @@ is threaded into classification so ``delivery_gate_plan`` reuses the cached
 (:data:`pipeline.verification_readiness.ROUTING_PLANS_EXTRAS_KEY`) rather than
 rebuilding a fresh plan from the live checkout. That is what makes path-selected
 delivery gates (for example ``cli-sdk-unit``) land in the materialized
-``required_delivery_commands`` set — so auto-run targets exactly what readiness
+delivery selection receipt view — so auto-run targets exactly what readiness
 and delivery enforce, never a narrower ``contract.required``-only subset.
 """
 
@@ -39,7 +39,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pipeline.verification_readiness import classify_required_receipts
+from pipeline.verification_failure import failed_receipt_refresh_eligible
+from pipeline.verification_readiness import (
+    classify_required_receipts,
+    delivery_gate_plan,
+    resolve_delivery_selection,
+)
 from pipeline.verification_receipt_index import VERIFICATION_PARENT_RUNS_EXTRAS_KEY
 
 if TYPE_CHECKING:
@@ -221,26 +226,91 @@ def materialize_required_receipts(
             ),
         )
 
-    # Lazy: keep sdk.verify (and its placeholder/loader chain) off this module's
-    # import path until a real materialization runs.
-    from sdk.verify import manual_or_operator_only_commands, verify_env, verify_run
+    # Failed-receipt refresh is based only on the official receipt physically
+    # owned by this run. A parent candidate selected by readiness inheritance,
+    # or an unavailable current identity, is never evidence for execution.
+    from pipeline.evidence.verification_receipt import load_command_receipts
+    from pipeline.verification_subject import (
+        VerificationSubjectAvailable,
+        capture_verification_subject,
+    )
 
-    manual_set = manual_or_operator_only_commands(contract)
+    current_receipts = {
+        str(receipt.get("command", "")): receipt
+        for receipt in load_command_receipts(run_dir)
+    }
+    try:
+        captured_subject = capture_verification_subject(Path(checkout)) if checkout else None
+        current_subject = (
+            captured_subject.identity
+            if isinstance(captured_subject, VerificationSubjectAvailable)
+            else None
+        )
+    except Exception:  # noqa: BLE001 — identity errors remain fail-closed
+        current_subject = None
+
+    # Materialization covers selected engine identities at every delivery
+    # position.  Receipt reads remain command-level, but execution ownership
+    # comes from the typed resolver so manual/suggest never reach sdk.verify.
+    # This includes after_phase(implement): a repair can make its earlier
+    # receipt stale before final acceptance, and the pre-final pass is the only
+    # automatic path that can refresh that delivery-enforced proof.
+    try:
+        plan = delivery_gate_plan(contract, classify_extras, checkout)
+        selection = resolve_delivery_selection(contract, plan)
+    except Exception:  # noqa: BLE001 — no resolved identity means no execution
+        selection = None
+    engine_commands: set[str] = set()
+    operator_commands: set[str] = set()
+    for resolved in getattr(selection, "identities", ()):
+        # Operator-owned identities remain visible in the receipt view whatever
+        # their hook; they are withheld as ``skipped_manual``.  Any selected
+        # engine identity in the delivery receipt view is materialized.
+        if resolved.executor == "operator":
+            operator_commands.add(resolved.identity.command)
+        elif resolved.executor == "engine":
+            engine_commands.add(resolved.identity.command)
+    # A command can have an operator-owned phase identity and an automatic
+    # before-delivery identity. Receipt materialization is command-level, so the
+    # delivery executor wins; only commands with no delivery executor are
+    # withheld as manual.
+    operator_commands.difference_update(engine_commands)
+
+    # Lazy: keep sdk.verify (and its placeholder/loader chain) off this module's
+    # import path until a real engine-owned materialization runs.
+    verify_env = verify_run = None
 
     targets: list[str] = []
     skipped_manual: list[str] = []
     skipped_fresh: list[str] = []
     for command, status in classification.items():
-        if status.status == "present":
-            skipped_fresh.append(command)
+        if command not in engine_commands and command not in operator_commands:
             continue
-        # ``failed`` is intentionally left out of every bucket: it is never
-        # rerun in the normal path and must not be reported as fresh.
-        if status.status in ("missing", "stale"):
-            if command in manual_set:
+        if (
+            failed_receipt_refresh_eligible(
+                current_receipts.get(command), current_subject=current_subject,
+            )
+        ):
+            if command in operator_commands:
                 skipped_manual.append(command)
             else:
                 targets.append(command)
+            continue
+        if status.status == "present":
+            skipped_fresh.append(command)
+            continue
+        # Same-subject and unverifiable failed receipts remain failed and are
+        # intentionally left out of every execution bucket.
+        if status.status in ("missing", "stale", "unverifiable"):
+            if command in operator_commands:
+                skipped_manual.append(command)
+            else:
+                targets.append(command)
+
+    if targets:
+        from sdk.verify import verify_env as _verify_env, verify_run as _verify_run
+
+        verify_env, verify_run = _verify_env, _verify_run
 
     ran_envs: list[str] = []
     ran_commands: list[str] = []
@@ -259,11 +329,14 @@ def materialize_required_receipts(
 
     for env_name in needed_envs:
         try:
+            assert verify_env is not None
             env_result = verify_env(
                 project=project_dir,
                 env=env_name,
                 run_id=run_id,
                 workspace=resolved_workspace,
+                runs_dir=run_dir.parent,
+                subject_checkout=checkout or None,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise
             errors.append(f"verify_env[{env_name}] {type(exc).__name__}: {exc}")
@@ -279,17 +352,14 @@ def materialize_required_receipts(
 
     if targets:
         try:
+            assert verify_run is not None
             run_result = verify_run(
                 project=project_dir,
                 run_id=run_id,
                 workspace=resolved_workspace,
+                runs_dir=run_dir.parent,
                 commands=list(targets),
-                # Pin execution to the run's *resolved* subject checkout. Without
-                # this, verify_run re-derives the checkout from meta and, when
-                # ``meta['worktree']`` is absent (a correction follow-up's early
-                # meta, or the foreign-worktree env leak), silently runs the gate
-                # against the canonical project — stamping a receipt that proves
-                # the wrong checkout while still exiting 0.
+                # Both receipt kinds receive the same resolved physical subject.
                 subject_checkout=checkout or None,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise
@@ -315,7 +385,13 @@ def materialize_required_receipts(
     residual_required = [
         command
         for command, status in post.items()
-        if status.status in ("missing", "stale")
+        if (
+            status.status in ("missing", "stale", "unverifiable")
+            # An operator-owned delivery identity is intentionally withheld and
+            # already reported through ``skipped_manual``.  It is not an
+            # unmaterialized required receipt merely because it remains absent.
+            and command not in operator_commands
+        )
     ]
     # ``failed`` is authoritative, not the optimistic exit codes: a ran command
     # whose on-disk receipt classifies ``failed`` (non-zero exit, a failed
@@ -403,8 +479,93 @@ def _record_autorun_evidence(run: Any, phase: str, result: ReceiptAutoRunResult)
                 phase_entry["verification_autorun"] = evidence
 
 
+def select_before_delivery_epoch(run: Any) -> Any | None:
+    """Durably select the pre-final delivery epoch before receipt execution.
+
+    The mono-project final-phase seam is its sole caller.  Correction
+    pre-review materialization deliberately does not freeze delivery scope.
+    """
+    state = getattr(run, "state", None)
+    if getattr(state, "dry_run", False):
+        return None
+    extras = getattr(state, "extras", {}) or {}
+    contract = extras.get("verification_contract")
+    if contract is None:
+        return None
+    from pipeline.project.verification_ledger_runtime import select_epoch
+    from pipeline.project.verification_selection_context import selection_context_for_run
+
+    return select_epoch(
+        run, contract, epoch="before_delivery:",
+        context=selection_context_for_run(run, contract),
+    )
+
+
+def _record_autorun_executions(
+    run: Any,
+    run_dir: Path,
+    delivery_plan: Any | None,
+    result: ReceiptAutoRunResult,
+) -> None:
+    """Attach each Stage 9 execution to its immutable receipt attempt.
+
+    Flat command receipts remain the authoritative latest view for readiness.
+    This adapter only snapshots each freshly materialized flat receipt into the
+    shared scheduled-execution evidence store before adding the corresponding
+    identity-scoped ledger event.
+    """
+    from pipeline.evidence.verification_receipt import (
+        load_command_receipts,
+        write_scheduled_command_receipt,
+    )
+    from pipeline.project.verification_ledger_runtime import record_execution
+    from pipeline.verification_ledger_store import load_ledger
+
+    receipts_by_command = {
+        str(receipt.get("command", "")): receipt
+        for receipt in load_command_receipts(run_dir)
+    }
+    entries_by_command: dict[str, list[Any]] = {}
+    for entry in getattr(delivery_plan, "entries", ()):
+        entries_by_command.setdefault(entry.command, []).append(entry)
+
+    try:
+        prior_executions = {
+            event.identity
+            for event in load_ledger(run_dir).trail
+            if event.kind == "execution"
+        }
+    except Exception:  # noqa: BLE001 — output-dir-less adapters have no ledger
+        prior_executions = set()
+
+    for command in result.ran_commands:
+        receipt = receipts_by_command.get(command)
+        if receipt is None:
+            continue
+        for entry in entries_by_command.get(command, ()):
+            evidence = write_scheduled_command_receipt(
+                output_dir=run_dir,
+                result=receipt,
+                hook=str(getattr(entry, "hook", "")),
+                phase=str(getattr(entry, "phase", "")),
+            )
+            receipt_path = (
+                evidence.relative_to(run_dir).as_posix()
+                if evidence is not None else None
+            )
+            identity = (entry.command, entry.hook, entry.phase)
+            record_execution(
+                run,
+                entry,
+                passed=command not in result.failed,
+                receipt_evidence=receipt_path,
+                rerun=identity in prior_executions,
+            )
+            prior_executions.add(identity)
+
+
 def auto_run_required_receipts(
-    run: Any, phase: str, *, reason: str,
+    run: Any, phase: str, *, reason: str, delivery_plan: Any | None = None,
 ) -> ReceiptAutoRunResult:
     """Materialise the run's required receipts before a final phase, and record
     durable evidence.
@@ -471,5 +632,17 @@ def auto_run_required_receipts(
         dry_run=False,
         reason=reason,
     )
+    # The final-phase caller selected ``delivery_plan`` durably before invoking
+    # sdk.verify. Correction pre-review passes no plan and cannot create a
+    # premature delivery epoch.
+    from pipeline.project.verification_ledger_runtime import record_reuse
+    by_command: dict[str, tuple[Any, ...]] = {}
+    for entry in getattr(delivery_plan, "entries", ()):
+        by_command.setdefault(entry.command, ())
+        by_command[entry.command] += (entry,)
+    _record_autorun_executions(run, run_dir, delivery_plan, result)
+    for command in result.skipped_fresh:
+        for entry in by_command.get(command, ()):
+            record_reuse(run, entry, fresh=True)
     _record_autorun_evidence(run, phase, result)
     return result

@@ -13,8 +13,10 @@ discipline so callers in :mod:`pipeline.engine.worktree` can branch on
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -78,31 +80,133 @@ def git_committed_files_since(
     return [line for line in stdout.splitlines() if line.strip()]
 
 
-def git_changed_files(cwd: str) -> list[str]:
-    """Working-tree files with any uncommitted change (modified, added,
-    deleted, renamed, untracked). Returns paths relative to ``cwd``.
+class GitStatusKind(StrEnum):
+    """The working-tree change kinds relevant to write-scope matching."""
 
-    Used by the IMPLEMENT phase summary to surface what the agent
-    actually touched. Empty list on a clean tree or when ``cwd`` is not
-    a git repo — never raises.
+    MODIFIED = "modified"
+    ADDED = "added"
+    UNTRACKED = "untracked"
+    DELETED = "deleted"
+    RENAMED = "renamed"
+    COPIED = "copied"
+
+
+@dataclass(frozen=True, slots=True)
+class GitStatusRecord:
+    """One exact change from ``git status --porcelain=v1 -z``.
+
+    ``path`` is the current path except for deletions, where it is the removed
+    path.  Rename and copy records additionally retain their source in
+    ``old_path``.  Git emits destination first in porcelain v1's NUL format.
     """
-    try:
-        r = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=cwd, capture_output=True, text=True, check=False,
+
+    kind: GitStatusKind
+    path: str
+    old_path: str | None = None
+
+    @property
+    def scope_identities(self) -> tuple[str, ...]:
+        """Exact paths that must each be considered for declared write scope."""
+        if self.old_path is not None:
+            return (self.old_path, self.path)
+        return (self.path,)
+
+
+class GitStatusParseError(ValueError):
+    """A successful git invocation returned invalid porcelain v1 bytes."""
+
+
+_PORCELAIN_CODES = frozenset({b" ", b"M", b"A", b"D", b"R", b"C", b"T", b"U", b"?"})
+
+
+def _parse_git_status_porcelain(output: bytes) -> tuple[GitStatusRecord, ...]:
+    """Parse exact NUL-delimited porcelain v1 output.
+
+    This deliberately parses bytes rather than Git's human/display format:
+    paths are decoded with :func:`os.fsdecode`, without unquoting or splitting
+    an arrow-like substring.  A malformed successful response is a contract
+    violation, not evidence of a clean working tree.
+    """
+    if not isinstance(output, bytes):
+        raise GitStatusParseError("git status stdout must be bytes")
+    if not output:
+        return ()
+
+    fields = output.split(b"\0")
+    if fields.pop() != b"":
+        raise GitStatusParseError("porcelain record is not NUL-terminated")
+
+    records: list[GitStatusRecord] = []
+    index = 0
+    while index < len(fields):
+        field = fields[index]
+        index += 1
+        if len(field) < 4 or field[2:3] != b" ":
+            raise GitStatusParseError(f"malformed porcelain record: {field!r}")
+        x, y = field[:1], field[1:2]
+        if x not in _PORCELAIN_CODES or y not in _PORCELAIN_CODES:
+            raise GitStatusParseError(f"unknown porcelain status: {field[:2]!r}")
+        if (x == b"?") != (y == b"?"):
+            raise GitStatusParseError(f"malformed untracked status: {field[:2]!r}")
+        path_bytes = field[3:]
+        if not path_bytes:
+            raise GitStatusParseError("porcelain record has an empty path")
+
+        if x == y == b"?":
+            kind = GitStatusKind.UNTRACKED
+        elif b"R" in (x, y):
+            kind = GitStatusKind.RENAMED
+        elif b"C" in (x, y):
+            kind = GitStatusKind.COPIED
+        elif b"D" in (x, y):
+            kind = GitStatusKind.DELETED
+        elif b"A" in (x, y):
+            kind = GitStatusKind.ADDED
+        else:
+            # M, T, and U all represent a path that remains in the worktree.
+            kind = GitStatusKind.MODIFIED
+
+        old_path: str | None = None
+        if kind in (GitStatusKind.RENAMED, GitStatusKind.COPIED):
+            if index == len(fields):
+                raise GitStatusParseError("truncated rename/copy porcelain record")
+            old_path_bytes = fields[index]
+            index += 1
+            if not old_path_bytes:
+                raise GitStatusParseError("rename/copy porcelain record has an empty source")
+            old_path = os.fsdecode(old_path_bytes)
+        records.append(
+            GitStatusRecord(kind=kind, path=os.fsdecode(path_bytes), old_path=old_path),
         )
-    except (FileNotFoundError, OSError):
-        return []
-    files: list[str] = []
-    for line in r.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        # Porcelain format: ``XY <path>`` or ``XY <old> -> <new>``.
-        path = line[3:]
-        if " -> " in path:
-            path = path.split(" -> ", 1)[1]
-        files.append(path)
-    return files
+    return tuple(records)
+
+
+def git_changed_file_records(cwd: str | Path) -> tuple[GitStatusRecord, ...]:
+    """Collect exact working-tree changes, degrading only on invocation failure."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            cwd=str(cwd), capture_output=True, check=False, timeout=30.0,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return ()
+    if result.returncode != 0:
+        return ()
+    return _parse_git_status_porcelain(result.stdout)
+
+
+def git_changed_files(cwd: str | Path) -> list[str]:
+    """Stable, de-duplicated scope identities from exact status records.
+
+    Adds, modifications, and untracked files contribute their current path;
+    deletions contribute their removed path; renames and copies contribute both
+    source and destination.  This is intentionally the sole list projection.
+    """
+    identities: dict[str, None] = {}
+    for record in git_changed_file_records(cwd):
+        for path in record.scope_identities:
+            identities.setdefault(path, None)
+    return list(identities)
 
 
 # ---------------------------------------------------------------------------
@@ -352,9 +456,13 @@ def apply_patch_to_checkout(
 
 __all__ = [
     "GitOpResult",
+    "GitStatusKind",
+    "GitStatusParseError",
+    "GitStatusRecord",
     "apply_patch_to_checkout",
     "create_worktree",
     "git_changed_files",
+    "git_changed_file_records",
     "git_committed_files_since",
     "git_diff_stat",
     "git_head",

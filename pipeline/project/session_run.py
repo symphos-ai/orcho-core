@@ -86,6 +86,7 @@ class _ProjectRunContext:
     from_run_plan_stripped: Any
     plan_source: str
     cross_handoff_text: Any
+    cross_declared_files: tuple[str, ...]
     change_handoff: Any
     do_plan: bool
     do_build: bool
@@ -219,6 +220,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         plan_source=_profile.plan_source,
         projected_profile=_profile.projected_profile_name,
         presentation=request.presentation,
+        preallocated_output_dir=request.preallocated_output_dir,
     )
 
     plugin = load_plugin(str(project_path))
@@ -234,6 +236,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         provider=request.provider,
         model=request.model,
         runtime_override=runtime_override,
+        skill_trust=plugin.skill_trust,
     )
 
     # Read-only Stage 1 verification-contract projection. Validate ONCE,
@@ -299,6 +302,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         from_run_plan_stripped=_profile.from_run_plan_stripped,
         plan_source=_profile.plan_source,
         cross_handoff_text=_profile.cross_handoff_text,
+        cross_declared_files=_profile.cross_declared_files,
         change_handoff=_profile.change_handoff,
         do_plan=_profile.do_plan,
         do_build=_profile.do_build,
@@ -435,6 +439,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         output_dir=request.output_dir, dry_run=request.dry_run, session=session,
         session_ts=ctx.session_ts, git_cwd=ctx.git_cwd,
         change_handoff=ctx.change_handoff, cross_handoff_text=ctx.cross_handoff_text,
+        cross_declared_files=ctx.cross_declared_files,
         plan_source=ctx.plan_source, handoff_path=request.handoff_path,
         auto_waiver_allowed=request.auto_waiver_allowed,
         followup_seed_count=followup_seed_count, ckpt=ctx.ckpt,
@@ -451,6 +456,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         from_run_plan_stripped=ctx.from_run_plan_stripped,
         verification_contract=ctx.verification_contract,
         resume_completed_phases=resume_completed_phases,
+        resume_requested=bool(request.resume_from),
     ))
     ctx.state = _state_setup.state
     ctx.codemap = _state_setup.codemap
@@ -475,6 +481,7 @@ def _build_and_dispatch(request: ProjectRunRequest, ctx: _ProjectRunContext) -> 
         profile_name=ctx.resolved_profile_name,
         session_mode=request.session_mode, max_rounds=ctx.max_rounds,
         no_interactive=request.no_interactive,
+        unattended=request.unattended,
         plan_model=ctx.plan_model, implement_model=ctx.implement_model,
         repair_model=ctx.repair_model,
         repair_escalation_model=ctx.repair_escalation_model,
@@ -513,6 +520,24 @@ def _promote_plan_only_followup(request: ProjectRunRequest) -> ProjectRunRequest
     rather than proceeding as a false plan-artifact continuation.
     """
     from pipeline.project.followup_worktree import resolve_followup_plan_promotion
+
+    # A rejected/fix parent is a retained-change recovery candidate, never a
+    # plan-artifact continuation.  Keep the generic plan-only promotion below
+    # unchanged for genuine plan parents, but do not let a missing/clean
+    # correction worktree silently turn into ``from_run_plan``.
+    if request.resume_mode == "followup" and request.followup_parent_run_dir:
+        from pipeline.control.continuation import resolve_continuation_decision
+
+        parent_dir = Path(request.followup_parent_run_dir)
+        try:
+            parent_meta = json.loads((parent_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            parent_meta = None
+        decision = resolve_continuation_decision(
+            run_id=parent_dir.name, meta=parent_meta, parent_run_dir=parent_dir,
+        )
+        if decision.continuation_subject == "retained_change":
+            return request
 
     promoted = resolve_followup_plan_promotion(
         resume_mode=request.resume_mode,

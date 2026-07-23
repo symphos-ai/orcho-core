@@ -105,7 +105,22 @@ def _golden_run(target: Path) -> Path:
             acceptance_criteria_count=2, owned_files_count=1,
             owned_files=["calc.py"],
             commands_to_run=["pytest -q"],
-            commands_to_run_count=1),
+            commands_to_run_count=1,
+            subtasks=[
+                {
+                    "id": "t1",
+                    "goal": "Add payload validation",
+                    "owned_files": ["calc.py"],
+                    "done_criteria": ["invalid payload is rejected"],
+                },
+                {
+                    "id": "t2",
+                    "goal": "Add regression coverage",
+                    "depends_on": ["t1"],
+                    "files": ["tests/test_calc.py"],
+                    "done_criteria": ["tests pass"],
+                },
+            ]),
         _ev(4, "phase.end", phase="PLAN", title="PLAN",
             outcome="ok", attempt=1),
         _ev(5, "phase.start", phase="IMPLEMENT", title="BUILD",
@@ -241,6 +256,21 @@ class TestCollector:
         assert len(plan["owned_files"]) == 1
         assert len(plan["commands_to_run"]) == 1
         assert "Implementation Plan body" in plan["planning_context"]
+        assert plan["subtasks"] == [
+            {
+                "id": "t1",
+                "goal": "Add payload validation",
+                "owned_files": ["calc.py"],
+                "done_criteria": ["invalid payload is rejected"],
+            },
+            {
+                "id": "t2",
+                "goal": "Add regression coverage",
+                "depends_on": ["t1"],
+                "files": ["tests/test_calc.py"],
+                "done_criteria": ["tests pass"],
+            },
+        ]
 
     def test_phases_paired_by_attempt(self, tmp_path: Path) -> None:
         bundle = collect_evidence(_golden_run(tmp_path))
@@ -580,6 +610,20 @@ class TestFindings:
         ]
         assert [f["attempt"] for f in bundle["findings"]] == [1, 1, 1]
 
+    def test_bundle_annotates_finding_lifecycle_status(
+        self, tmp_path: Path,
+    ) -> None:
+        bundle = collect_evidence(_findings_run(tmp_path))
+        by_id = {f["id"]: f for f in bundle["findings"]}
+
+        assert by_id["F1"]["status"] == "fixed"
+        assert by_id["F1"]["status_reason"] == "later validate_plan attempt approved"
+        assert by_id["F2"]["status"] == "fixed"
+        assert by_id["Q1"]["status"] == "accepted"
+        assert by_id["Q1"]["status_reason"] == (
+            "source phase approved with this finding present"
+        )
+
     def test_finding_record_preserves_optional_location(
         self, tmp_path: Path,
     ) -> None:
@@ -607,9 +651,11 @@ class TestFindings:
         md = render_evidence_md(bundle)
 
         assert "## Findings" in md
+        assert "**Lifecycle:** `fixed` x2 (P2 x1, P3 x1), `accepted` x1 (P0 x1)" in md
         # Severity, phase, attempt, title all visible.
-        assert "`P2`" in md and "`P0`" in md
+        assert "`FIXED` `P2`" in md and "`ACCEPTED` `P0`" in md
         assert "Missing test coverage" in md
+        assert "**Status:** `fixed` (later validate_plan attempt approved)" in md
         assert "**Phase:** `validate_plan`" in md
         assert "**Phase:** `final_acceptance`" in md
         # required_fix surfaced for every finding.
@@ -757,6 +803,8 @@ class TestReleaseDictShape:
         assert entry["attempt"] == 1
         assert entry["severity"] == "P1"
         assert entry["required_fix"] == "Restore compatibility."
+        assert entry["status"] == "final_rejected"
+        assert entry["status_reason"] == "final acceptance rejected this finding"
 
     def test_release_summary_preserves_why_blocks_release(
         self, tmp_path: Path,

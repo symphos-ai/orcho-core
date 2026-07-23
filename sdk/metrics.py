@@ -4,7 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.observability import metrics as _core_metrics
-from core.observability.metrics import accounting_enabled, scrub_accounting_fields
+from core.observability.metrics import scrub_accounting_fields
+from sdk._runspace_context import accounting_enabled_for_context
 from sdk.runs import (
     _CWD_DEFAULT,
     find_run,
@@ -14,9 +15,9 @@ from sdk.runs import (
 from sdk.types import RunMetrics
 
 
-def _build_run_metrics(run_dir: Path) -> RunMetrics:
+def _build_run_metrics(run_dir: Path, *, use_accounting: bool) -> RunMetrics:
     raw = load_json_optional(run_dir / "metrics.json")
-    if not accounting_enabled():
+    if not use_accounting:
         raw = scrub_accounting_fields(raw)
     return RunMetrics(
         run_id=run_dir.name,
@@ -48,7 +49,11 @@ def get_run_metrics(
     that need fields the SDK hasn't promoted yet.
     """
     ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
-    return _build_run_metrics(ref.run_dir)
+    use_accounting = accounting_enabled_for_context(
+        workspace=workspace,
+        runs_dir=ref.run_dir.parent,
+    )
+    return _build_run_metrics(ref.run_dir, use_accounting=use_accounting)
 
 
 def list_metrics(
@@ -67,12 +72,16 @@ def list_metrics(
     """
     rd = find_runs_dir(workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     legacy = _core_metrics.load_historical_runs(rd, last_n=last)
+    use_accounting = accounting_enabled_for_context(
+        workspace=workspace,
+        runs_dir=rd,
+    )
     out: list[RunMetrics] = []
     for s in legacy:
         run_dir = rd / s.run_id
         # Re-load to pick up tokens_in/out and phases that the legacy
         # `RunSummary` doesn't carry.
-        out.append(_build_run_metrics(run_dir))
+        out.append(_build_run_metrics(run_dir, use_accounting=use_accounting))
     return out
 
 

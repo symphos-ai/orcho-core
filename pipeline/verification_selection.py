@@ -9,9 +9,8 @@ Nothing here executes a command, writes a receipt, blocks a transition, or
 triggers repair — it only resolves the policy algebra. The two transforms are:
 
 * **Effective policy** — an explicit ``schedule.policy`` (anything that is not
-  ``None``, including ``"suggest"``) is authoritative and is *not* transformed
-  by ``work_mode``. Otherwise the merged gate-set ``default_policy`` (which may
-  be ``None``) is fed through the ``work_mode`` derivation table (docs
+  ``None``, including ``"suggest"``) wins over gate-set defaults, and every
+  declared tier is projected through the ``work_mode`` derivation table (docs
   ``verification_contract.md`` §work_mode).
 * **Effective action** — an explicit ``schedule.action`` is authoritative
   (including an operator ``"abort"``, which is never blurred). Otherwise a
@@ -114,6 +113,7 @@ class ScheduledGateEntry:
     action: str
     contributing_gate_sets: tuple[str, ...]
     primary_gate_set: str
+    activation_binding: str = ""
 
 
 @dataclass(frozen=True)
@@ -218,7 +218,7 @@ def derive_effective_policy(
     is **never** an input: an expensive ``require`` gate still blocks (ADR 0117).
     The fixed mode × tier table:
 
-    * ``fast`` — relaxes only the advisory ``suggest`` tier to ``off`` for speed;
+    * ``fast`` — relaxes only the advisory ``suggest`` tier to ``manual`` for speed;
       ``warn`` and ``require`` are honored as declared.
     * ``pro`` — honors the declared tier exactly.
     * ``governed`` — escalates ``warn`` to ``require``; ``require`` and ``suggest``
@@ -229,7 +229,7 @@ def derive_effective_policy(
         "require" if required else "suggest"
     )
     if work_mode == "fast":
-        return "off" if tier == "suggest" else tier
+        return "manual" if tier == "suggest" else tier
     if work_mode == "pro":
         return tier
     if work_mode == "governed":
@@ -315,11 +315,16 @@ def build_scheduled_gate_plan(
                 selected_commands.append(command)
             if set_name not in contributing[command]:
                 contributing[command].append(set_name)
+    for sched in contract.schedule:
+        for command in sched.commands:
+            if command not in contributing:
+                contributing[command] = []
+                selected_commands.append(command)
 
     entries: list[ScheduledGateEntry] = []
     for command in selected_commands:
         command_sets = tuple(contributing[command])
-        primary = command_sets[0]
+        primary = command_sets[0] if command_sets else ""
         required = command in contract.required
 
         # Resolve applicable schedule entries, grouped by (hook, phase), with a
@@ -335,7 +340,8 @@ def build_scheduled_gate_plan(
             res = by_key.setdefault(key, _PairResolution())
             res.absorb(sched.policy, sched.action, sched.gate_sets)
 
-        if not by_key:
+        unscheduled = not by_key
+        if unscheduled:
             by_key[("manual_only", "")] = _PairResolution()
 
         for hook, phase in sorted(by_key, key=lambda k: (_hook_rank(k[0]), k[1])):
@@ -345,11 +351,17 @@ def build_scheduled_gate_plan(
             )
             base_policy, base_action = _merge_defaults(merge_source)
 
-            if res.policy is not None:
-                effective_policy = res.policy
+            if hook == "manual_only" and unscheduled:
+                # A selected command with no applicable schedule has the
+                # explicit ADR 0132 fallback identity. Gate-set defaults and
+                # ``verification.required`` must not turn that operator-owned
+                # identity into an automatic policy.
+                effective_policy = "manual"
             else:
                 effective_policy = derive_effective_policy(
-                    base_policy, work_mode, required=required,
+                    res.policy if res.policy is not None else base_policy,
+                    work_mode,
+                    required=False if hook == "manual_only" else required,
                 )
 
             if res.action is not None:
@@ -368,6 +380,7 @@ def build_scheduled_gate_plan(
                     action=effective_action,
                     contributing_gate_sets=command_sets,
                     primary_gate_set=primary,
+                    activation_binding="always" if not command_sets else "selected",
                 ),
             )
 

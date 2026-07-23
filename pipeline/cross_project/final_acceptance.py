@@ -54,6 +54,7 @@ from pipeline.release_parser import (
     VerificationGap,
     parse_release,
 )
+from pipeline.run_state.cross_parent import ChildState, ReleaseDisposition
 
 if TYPE_CHECKING:
     from pipeline.prompts.turn import PromptTurn
@@ -162,6 +163,11 @@ class CrossFinalAcceptanceContext:
     # Rendered into the focus so the agent reviews the change surface,
     # not the pristine source. Empty ⇒ fall back to plan-embedded paths.
     review_paths: Mapping[str, str] = field(default_factory=dict)
+    # Canonical reducer projections are supplied by the runtime boundary.  The
+    # session snapshots remain only prompt/audit material, never a second
+    # status-classification authority.
+    child_states: Mapping[str, ChildState] = field(default_factory=dict)
+    parent_blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -195,6 +201,8 @@ def build_context(
     session_phases: Mapping[str, Any],
     common_cwd: str,
     review_paths: Mapping[str, str] | None = None,
+    child_states: Mapping[str, ChildState] | None = None,
+    parent_blocked: bool = False,
 ) -> CrossFinalAcceptanceContext:
     """Snapshot the inputs from ``session["phases"]`` after
     contract_check has written its results.
@@ -221,6 +229,8 @@ def build_context(
         common_cwd=common_cwd,
         output_language=output_language,
         review_paths=dict(review_paths or {}),
+        child_states=dict(child_states or {}),
+        parent_blocked=parent_blocked,
     )
 
 
@@ -266,22 +276,75 @@ def _collect_preconditions(
     """
     blockers: list[ReleaseBlocker] = []
     gaps: list[VerificationGap] = []
+    if ctx.parent_blocked:
+        # A runtime boundary observed an active, pending, or inconsistent
+        # parent.  This is a CFA precondition and must not reach the provider.
+        blockers.extend(
+            _blocker_missing_child(alias, language=ctx.output_language)
+            for alias in ctx.aliases
+        )
+        return CrossFinalPreconditions(blockers=tuple(blockers))
     for alias in ctx.aliases:
         child = ctx.child_sessions.get(alias)
+        cc_entry = ctx.contract_results.get(alias)
+        child_state = ctx.child_states.get(alias)
+        if child_state is not None:
+            if not child_state.contract_evaluable:
+                blocker = next(iter(child_state.blockers), None)
+                blockers.append(
+                    _blocker_missing_child(
+                        alias,
+                        child=child,
+                        child_status=child_state.status,
+                        child_reason=blocker.code if blocker else "child_not_evaluable",
+                        language=ctx.output_language,
+                    )
+                )
+                continue
+            if child_state.release_disposition is ReleaseDisposition.REJECTED:
+                fa_entry = _child_final_acceptance(child)
+                blockers.append(
+                    _blocker_child_rejected(
+                        alias,
+                        fa_entry or {},
+                        language=ctx.output_language,
+                    )
+                )
+                # A rejected child remains contract-evaluable: retain the
+                # existing contract-check policy below.
+        # Dispatch readiness takes precedence over all compatibility handling.
+        # NOT_EVALUABLE means no contract review was possible, so it must not be
+        # reinterpreted as REJECTED or policy SKIPPED below.
+        if (
+            isinstance(cc_entry, Mapping)
+            and cc_entry.get("not_evaluable") is True
+            and cc_entry.get("source") == "precondition"
+            and cc_entry.get("reason") == "child_readiness"
+        ):
+            blockers.append(
+                _blocker_missing_child(
+                    alias,
+                    child=child,
+                    child_status=cc_entry.get("child_status"),
+                    child_reason=cc_entry.get("child_reason"),
+                    language=ctx.output_language,
+                )
+            )
+            continue
         # Crashed child first — the runner's exception catcher wrote
         # {"status": "failed", "error": ...} for this alias, so the
         # blocker body carries the error hint. Order matters: a missing
         # entry (None) and a failed entry both fall under
         # MISSING_CHILD, but only the failed one has actionable detail
         # to surface.
-        if isinstance(child, Mapping) and child.get("status") == "failed":
+        if child_state is None and isinstance(child, Mapping) and child.get("status") == "failed":
             blockers.append(
                 _blocker_missing_child(
                     alias, child=child, language=ctx.output_language,
                 )
             )
             continue
-        if not _child_present(child):
+        if child_state is None and not _child_present(child):
             blockers.append(
                 _blocker_missing_child(alias, language=ctx.output_language)
             )
@@ -309,7 +372,7 @@ def _collect_preconditions(
                 _blocker_missing_release(alias, language=ctx.output_language)
             )
             continue
-        if ship_ready is False or fa_entry.get("verdict") == "REJECTED":
+        if child_state is None and (ship_ready is False or fa_entry.get("verdict") == "REJECTED"):
             blockers.append(
                 _blocker_child_rejected(
                     alias, fa_entry, language=ctx.output_language,
@@ -317,7 +380,6 @@ def _collect_preconditions(
             )
             # Don't `continue` — still check contract_check below.
         # Contract check for this alias.
-        cc_entry = ctx.contract_results.get(alias)
         if isinstance(cc_entry, Mapping):
             cc_parse_error = cc_entry.get("parse_error")
             if cc_parse_error:
@@ -416,22 +478,32 @@ def _blocker(
 
 
 def _blocker_missing_child(
-    alias: str, *, child: Any = None, language: str | None = None,
+    alias: str,
+    *,
+    child: Any = None,
+    child_status: Any = None,
+    child_reason: Any = None,
+    language: str | None = None,
 ) -> ReleaseBlocker:
-    error_hint = ""
-    if isinstance(child, Mapping) and child.get("error"):
-        error_hint = (
-            f" Ошибка: {str(child['error'])[:200]}"
-            if _is_russian(language)
-            else f" Error: {str(child['error'])[:200]}"
+    status = child_status if isinstance(child_status, str) else None
+    reason = child_reason if isinstance(child_reason, str) else None
+    if isinstance(child, Mapping):
+        status = status or (
+            child.get("status") if isinstance(child.get("status"), str) else None
         )
+        reason = reason or str(child.get("halt_reason") or child.get("error") or "")
+    detail_hint = ""
+    if status:
+        detail_hint += f" Status: {status}."
+    if reason:
+        detail_hint += f" Reason: {reason[:200]}."
     if _is_russian(language):
         return _blocker(
             id=f"{_BLOCKER_MISSING_CHILD}_{alias}",
             title=f"Отсутствует или упал sub-pipeline для [{alias}]",
             body=(
                 f"Cross-runner не создал завершенную sub-session для "
-                f"alias {alias!r}.{error_hint}"
+                f"alias {alias!r}.{detail_hint}"
             ),
             required_fix=(
                 f"Разобрать, почему sub-pipeline [{alias}] не завершился "
@@ -448,7 +520,7 @@ def _blocker_missing_child(
         title=f"Missing or failed sub-pipeline for [{alias}]",
         body=(
             f"The cross runner did not produce a complete sub-session "
-            f"for alias {alias!r}.{error_hint}"
+            f"for alias {alias!r}.{detail_hint}"
         ),
         required_fix=(
             f"Investigate why the [{alias}] sub-pipeline did not "

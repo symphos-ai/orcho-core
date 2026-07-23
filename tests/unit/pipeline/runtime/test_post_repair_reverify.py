@@ -21,11 +21,31 @@ from __future__ import annotations
 import io
 from contextlib import redirect_stdout
 
+import pytest
+
 from pipeline.phases.builtin import _should_resume
 from pipeline.plugins import PluginConfig
 from pipeline.project.profile_dispatch import emit_phase_banner
 from pipeline.runtime import PipelineState
 from pipeline.runtime.roles import SessionInvocationRole
+
+
+@pytest.fixture(autouse=True)
+def _live_output_mode():
+    """Pin the full live transcript shape.
+
+    ``summary`` is the default run-output mode (the compact append-only
+    arc that collapses phase banners to ``▶ <phase>``); these tests pin
+    the full banner label, so force ``live`` and restore afterwards.
+    """
+    from core.observability import logging as _logging
+
+    before = _logging.get_output_mode()
+    _logging._output_mode = "live"
+    try:
+        yield
+    finally:
+        _logging._output_mode = before
 
 
 def _state(**extras: object) -> PipelineState:

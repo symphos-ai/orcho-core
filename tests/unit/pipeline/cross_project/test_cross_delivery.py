@@ -86,14 +86,24 @@ def _child_session(
     return child
 
 
-def _app_cfg(enabled: bool = True, action: str = "approve") -> SimpleNamespace:
-    return SimpleNamespace(
-        commit={
-            "enabled": enabled,
-            "auto_in_ci": action,
-            "add_untracked": True,
-        },
-    )
+def _app_cfg(
+    enabled: bool = True,
+    action: str = "approve",
+    branch_policy: str | None = "bypass",
+) -> SimpleNamespace:
+    # These legacy cross tests assert the "commit the alias diff onto each
+    # project checkout" contract, which under ADR 0119 is the ``bypass`` policy —
+    # opt into it explicitly. A ``None`` policy omits the key entirely so the
+    # commit site resolves the ``worktree_branch`` default (default-branch
+    # protection).
+    commit: dict = {
+        "enabled": enabled,
+        "auto_in_ci": action,
+        "add_untracked": True,
+    }
+    if branch_policy is not None:
+        commit["branch_policy"] = branch_policy
+    return SimpleNamespace(commit=commit)
 
 
 def _make_alias(
@@ -144,6 +154,43 @@ def test_per_alias_clean_targets_all_commit(tmp_path: Path) -> None:
     assert ev["per_alias"]["api"]["status"] == "committed"
     assert ev["per_alias"]["api"]["commit_sha"]
     assert ev["per_alias"]["web"]["status"] == "committed"
+
+
+def test_missing_branch_policy_protects_project_default_branch(
+    tmp_path: Path,
+) -> None:
+    """ADR 0119 invariant for cross: a missing ``commit.branch_policy`` resolves
+    to ``worktree_branch`` (never a hidden ``bypass``), so an APPROVED cross run
+    publishes a delivery branch instead of auto-committing onto each project's
+    default branch."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    old_head = _head(api_repo)
+    session = {"phases": {"projects": {"api": api_child}}}
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_app_cfg(branch_policy=None),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+    )
+
+    assert result.overall == "ok"
+    rec = result.per_alias[0]
+    assert rec.status == "committed"
+    # Invariant: the default branch never moved and no commit_sha was produced —
+    # the deliverable is a published branch, not a commit onto ``main``.
+    assert _head(api_repo) == old_head
+    assert _git_log_subjects(api_repo) == ["init"]
+    assert rec.commit_sha is None
+    # The run's work is published as an ``orcho/deliver/…`` branch.
+    branches = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        cwd=api_repo, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert any(b.startswith("orcho/deliver/") for b in branches)
 
 
 def test_outcome_matrix_classifies_no_diff_as_success(tmp_path: Path) -> None:
@@ -474,3 +521,87 @@ def test_finalizer_maps_disabled_to_done(tmp_path: Path) -> None:
     result = _finalize_with_delivery(tmp_path, "disabled")
     assert result.status == "done"
     assert result.halt_reason is None
+
+
+# ── outward commit-message language (parity with mono #48) ────────────
+
+
+class _FakeReleaseAgent:
+    """Stand-in for the cross release (CFA) agent: records the prompt it
+    was handed and returns a fixed ``llm_generate`` commit-message JSON."""
+
+    def __init__(self, subject: str) -> None:
+        self._subject = subject
+        self.prompts: list[str] = []
+
+    def invoke(self, prompt: str, cwd: str, **_kw) -> str:
+        self.prompts.append(prompt)
+        return (
+            '{"subject": "' + self._subject + '", "body": "cross body", '
+            '"type": "feat", "breaking": false}'
+        )
+
+
+def _llm_app_cfg(content_language: str = "English") -> SimpleNamespace:
+    # ``default_strategy=llm_generate`` makes the local (bypass) commit route
+    # consult the generator without needing a real PR push; ``content_language``
+    # is what the generator must render the outward message in.
+    cfg = _app_cfg(branch_policy="bypass")
+    cfg.commit["default_strategy"] = "llm_generate"
+    cfg.content_language = content_language
+    return cfg
+
+
+def test_release_agent_authors_content_language_commit_message(
+    tmp_path: Path,
+) -> None:
+    """With a release agent wired, the alias commit subject comes from the
+    generator (rendered in ``content_language``), NOT the operator-language
+    release summary — the cross counterpart of the mono #48 language split."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    session = {"phases": {"projects": {"api": api_child}}}
+    agent = _FakeReleaseAgent("wire cross commit language")
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_llm_app_cfg("English"),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+        release_agent=agent,
+    )
+
+    assert result.overall == "ok"
+    subjects = _git_log_subjects(api_repo)
+    # The generated Conventional-Commits header landed as the commit subject,
+    # not the ``fix: deliver change`` release summary.
+    assert any("feat: wire cross commit language" in s for s in subjects)
+    assert not any("deliver change" in s for s in subjects)
+    # The generator was driven with the content_language contract.
+    assert agent.prompts and "English" in agent.prompts[0]
+
+
+def test_no_release_agent_falls_back_to_release_summary(
+    tmp_path: Path,
+) -> None:
+    """Null-safe: without a release agent the generator is ``None`` and the
+    existing release-summary fallback is used verbatim — no regression."""
+    cross_run_dir = tmp_path / "run"
+    cross_run_dir.mkdir()
+    api_repo, api_child = _make_alias(tmp_path, cross_run_dir, "api")
+    session = {"phases": {"projects": {"api": api_child}}}
+
+    result = run_cross_delivery(
+        session=session,
+        projects={"api": api_repo},
+        app_cfg=_llm_app_cfg("English"),
+        cross_run_dir=cross_run_dir,
+        terminal=False,
+        # release_agent omitted -> None
+    )
+
+    assert result.overall == "ok"
+    subjects = _git_log_subjects(api_repo)
+    assert any("deliver change" in s for s in subjects)

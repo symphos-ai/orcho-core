@@ -9,23 +9,43 @@ on:
     - cron: "20 2 * * 2"
 
 permissions:
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
   analyze:
     name: Analyze Python
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # docs-only PRs don't need a CodeQL database build + analysis. `code`
+      # is true iff at least one changed file is NOT a .md/.mdx. On
+      # `schedule` (no diff to compare) paths-filter has no base to work
+      # from and evaluates every filter to true, so the weekly full scan is
+      # unaffected. The job still runs and reports "Analyze Python" quickly
+      # either way, so this required check never hangs pending.
+      - name: Detect docs-only change
+        id: filter
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!**/*.mdx'
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        if: steps.filter.outputs.code == 'true'
+        uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           languages: python
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
+        if: steps.filter.outputs.code == 'true'
+        uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1

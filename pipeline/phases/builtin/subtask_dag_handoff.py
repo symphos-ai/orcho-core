@@ -61,9 +61,8 @@ IMPLEMENT_HANDOFF_ROUND_KEY = "implement_handoff"
 #: Applier-set provenance recorded on an auto-waiver (§2/§4).
 AUTO_WAIVER_DECIDED_BY = "auto:on_exhausted"
 
-#: Full action set offered on an implement-handoff pause (§1).
+#: Explicit action set offered on an incomplete implement handoff.
 _IMPLEMENT_HANDOFF_ACTIONS: tuple[str, ...] = (
-    PhaseHandoffAction.CONTINUE.value,
     PhaseHandoffAction.RETRY_FEEDBACK.value,
     PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
     PhaseHandoffAction.HALT.value,
@@ -119,7 +118,7 @@ def _log_subtask_auto_repair_banner(
     if attempts <= 0 or not incomplete_ids:
         return
 
-    from agents.stream import write_agent_log_section
+    from agents.stream_log import write_agent_log_section
     from core.io.ansi import C
 
     lines = [
@@ -139,6 +138,15 @@ def _log_subtask_auto_repair_banner(
         separator_codes=(C.GREY,),
         exit_codes=(C.GREY,),
     )
+    # Summary mode: an additional compact one-line card next to the durable
+    # section above. The section's stdout echo is off in summary (only the
+    # file sink runs), so there is no double print; live/debug skip this
+    # branch entirely and keep the full multi-line block byte-identical.
+    from core.observability.logging import get_output_mode
+    if get_output_mode() == "summary":
+        from core.io import summary_lines
+        mode = "retry_feedback" if retry_mode else "auto_repair"
+        print(f"  {summary_lines.autofix_line(mode, incomplete_ids, attempts, on_exhausted)}")
 
 
 @dataclass(frozen=True)
@@ -211,6 +219,7 @@ def _build_handoff_signal(
     attestation_incomplete: Mapping[str, str],
     findings: Any,
     last_output: str,
+    unmet_done_criteria: tuple[Mapping[str, Any], ...],
 ) -> PhaseHandoffRequested:
     """Build the §1 non-loop PhaseHandoffRequested for an exhausted run."""
     round_n = _next_implement_handoff_round(state)
@@ -230,6 +239,7 @@ def _build_handoff_signal(
             "incomplete_subtasks": list(still_incomplete_ids),
             "attestation_incomplete": dict(attestation_incomplete),
             "missing_subtask_receipts": list(missing_ids),
+            "unmet_done_criteria": [dict(item) for item in unmet_done_criteria],
         },
         last_output=last_output,
     )
@@ -247,6 +257,7 @@ def handle_subtask_dag_handoff(
     done_context: Mapping[str, PriorContext],
     repair_pass: RepairPass,
     last_output: str = "",
+    unmet_done_criteria: tuple[Mapping[str, Any], ...] = (),
 ) -> SubtaskDagHandoffOutcome:
     """Resolve an incomplete ``subtask_dag`` delivery per the implement policy.
 
@@ -320,7 +331,7 @@ def handle_subtask_dag_handoff(
     # Ineligible (halt, or auto_waiver without the opt-in) → pause for operator.
     signal = _build_handoff_signal(
         state, policy, still, missing_ids, attestation_incomplete, findings,
-        last_output,
+        last_output, unmet_done_criteria,
     )
     state.phase_handoff_request = signal
     return SubtaskDagHandoffOutcome(

@@ -6,6 +6,13 @@ intent classification consumed by every frontend that exposes ``--resume``.
 """
 from __future__ import annotations
 
+from pipeline.control.continuation import (
+    ContinuationDecision,
+    ContinuationRequest,
+    ContinuationResolution,
+    resolve_continuation,
+    resolve_continuation_decision,
+)
 from pipeline.control.handoff_banners import (
     RetryOutcome,
     print_retry_feedback_banner,
@@ -118,6 +125,10 @@ __all__ = [
     "build_signal_from_active_payload",
     "classify_implement_incomplete",
     "classify_resume_mode",
+    "ContinuationDecision",
+    "ContinuationRequest",
+    "ContinuationResolution",
+    "resolve_continuation",
     "detect_active_followup_child",
     "detect_active_handoff_without_decision",
     "extract_cross_followup_session_seeds",
@@ -144,6 +155,7 @@ __all__ = [
     "render_retry_outcome_banner",
     "render_round_label",
     "resolve_active_handoff_interactively",
+    "resolve_continuation_decision",
     "resolve_latest_run",
     "resolve_project",
     "resolve_projects_argv",
