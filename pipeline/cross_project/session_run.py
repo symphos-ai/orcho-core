@@ -766,13 +766,6 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         result_to_phase_log_entry,
     )
 
-    r.banner(
-        "CROSS_FINAL_ACCEPTANCE",
-        "CROSS-FINAL-ACCEPTANCE — system release gate",
-        r.C.MAGENTA,
-        phase_kind=None,
-        attempt=1,
-    )
     _cfa_ctx = build_context(
         cross_plan_markdown=ctx.plan_output,
         aliases=tuple(request.projects.keys()),
@@ -798,6 +791,13 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         output_dir=bool(request.output_dir),
         terminal=ctx.terminal,
         max_rounds=CFA_DEFAULT_MAX_ROUNDS,
+        on_fresh_start=lambda: r.banner(
+            "CROSS_FINAL_ACCEPTANCE",
+            "CROSS-FINAL-ACCEPTANCE — system release gate",
+            r.C.MAGENTA,
+            phase_kind=None,
+            attempt=1,
+        ),
     )
     ctx.cfa_outcome = _cfa_outcome
     # ``halted`` already wrote terminal state; skip the tail and return.
