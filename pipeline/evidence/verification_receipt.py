@@ -482,6 +482,15 @@ def _normalize_dependencies(value: Any) -> list[dict[str, Any]]:
 
 def _normalize_subject(value: Any) -> dict[str, Any]:
     """Serialize a typed capture outcome at the durable receipt boundary."""
+    # ``write_scheduled_command_receipt`` can snapshot an already persisted
+    # flat receipt.  Accept that serialized representation as well as the
+    # typed capture result used by new command executions.
+    if isinstance(value, Mapping):
+        normalized = subject_identity(value)
+        if normalized is not None:
+            value = normalized
+        elif value.get("status") == "unavailable":
+            return {"status": "unavailable", "reason": str(value.get("reason", "identity_unavailable"))}
     if isinstance(value, VerificationSubjectAvailable):
         value = value.identity
     if isinstance(value, VerificationSubjectIdentity) and is_usable_verification_subject(value):

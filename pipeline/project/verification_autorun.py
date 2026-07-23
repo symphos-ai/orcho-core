@@ -501,6 +501,69 @@ def select_before_delivery_epoch(run: Any) -> Any | None:
     )
 
 
+def _record_autorun_executions(
+    run: Any,
+    run_dir: Path,
+    delivery_plan: Any | None,
+    result: ReceiptAutoRunResult,
+) -> None:
+    """Attach each Stage 9 execution to its immutable receipt attempt.
+
+    Flat command receipts remain the authoritative latest view for readiness.
+    This adapter only snapshots each freshly materialized flat receipt into the
+    shared scheduled-execution evidence store before adding the corresponding
+    identity-scoped ledger event.
+    """
+    from pipeline.evidence.verification_receipt import (
+        load_command_receipts,
+        write_scheduled_command_receipt,
+    )
+    from pipeline.project.verification_ledger_runtime import record_execution
+    from pipeline.verification_ledger_store import load_ledger
+
+    receipts_by_command = {
+        str(receipt.get("command", "")): receipt
+        for receipt in load_command_receipts(run_dir)
+    }
+    entries_by_command: dict[str, list[Any]] = {}
+    for entry in getattr(delivery_plan, "entries", ()):
+        entries_by_command.setdefault(entry.command, []).append(entry)
+
+    try:
+        prior_executions = {
+            event.identity
+            for event in load_ledger(run_dir).trail
+            if event.kind == "execution"
+        }
+    except Exception:  # noqa: BLE001 — output-dir-less adapters have no ledger
+        prior_executions = set()
+
+    for command in result.ran_commands:
+        receipt = receipts_by_command.get(command)
+        if receipt is None:
+            continue
+        for entry in entries_by_command.get(command, ()):
+            evidence = write_scheduled_command_receipt(
+                output_dir=run_dir,
+                result=receipt,
+                hook=str(getattr(entry, "hook", "")),
+                phase=str(getattr(entry, "phase", "")),
+            )
+            receipt_path = (
+                evidence.relative_to(run_dir).as_posix()
+                if evidence is not None else None
+            )
+            identity = (entry.command, entry.hook, entry.phase)
+            record_execution(
+                run,
+                entry,
+                passed=command not in result.failed,
+                receipt_evidence=receipt_path,
+                rerun=identity in prior_executions,
+            )
+            prior_executions.add(identity)
+
+
 def auto_run_required_receipts(
     run: Any, phase: str, *, reason: str, delivery_plan: Any | None = None,
 ) -> ReceiptAutoRunResult:
@@ -572,17 +635,12 @@ def auto_run_required_receipts(
     # The final-phase caller selected ``delivery_plan`` durably before invoking
     # sdk.verify. Correction pre-review passes no plan and cannot create a
     # premature delivery epoch.
-    from pipeline.project.verification_ledger_runtime import (
-        record_execution,
-        record_reuse,
-    )
+    from pipeline.project.verification_ledger_runtime import record_reuse
     by_command: dict[str, tuple[Any, ...]] = {}
     for entry in getattr(delivery_plan, "entries", ()):
         by_command.setdefault(entry.command, ())
         by_command[entry.command] += (entry,)
-    for command in result.ran_commands:
-        for entry in by_command.get(command, ()):
-            record_execution(run, entry, passed=command not in result.failed)
+    _record_autorun_executions(run, run_dir, delivery_plan, result)
     for command in result.skipped_fresh:
         for entry in by_command.get(command, ()):
             record_reuse(run, entry, fresh=True)
