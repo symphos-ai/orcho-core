@@ -2291,6 +2291,8 @@ class TestCmdWorkspaceInit:
         assert "Plugin template:" in out
         assert "Prompt overrides:" in out
         assert "Task files:" in out
+        assert "Agent rules template:" in out
+        assert "Claude shim template:" in out
         assert "MCP client setup" in out
         assert "choose one path" in out
         assert "one Orcho MCP server per workspace" in out
