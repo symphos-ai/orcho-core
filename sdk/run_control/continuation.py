@@ -39,7 +39,10 @@ def read_continuation_meta(run_dir: Path) -> dict[str, Any] | None:
 
 
 def preflight_continuation(
-    request: ContinuationRequest, *, parent_run_dir: Path,
+    request: ContinuationRequest,
+    *,
+    parent_run_dir: Path,
+    meta: dict[str, Any] | None = None,
 ) -> ContinuationPreflight:
     """Resolve one operation and enforce finalized-ledger safety before spawn.
 
@@ -48,10 +51,16 @@ def preflight_continuation(
     follow-up and from-run-plan launches use fresh run directories and must not
     inherit the parent's finalized execution record.
     """
-    meta = read_continuation_meta(parent_run_dir)
+    resolved_meta = (
+        meta if isinstance(meta, dict) else read_continuation_meta(parent_run_dir)
+    )
     resolution = resolve_continuation(
-        request, meta=meta, parent_run_dir=parent_run_dir,
-        allow_paused_checkpoint=_paused_handoff_has_decision(request.run_id, parent_run_dir, meta),
+        request,
+        meta=resolved_meta,
+        parent_run_dir=parent_run_dir,
+        allow_paused_checkpoint=_paused_handoff_has_decision(
+            request.run_id, parent_run_dir, resolved_meta,
+        ),
     )
     if resolution.operation == "resume_checkpoint":
         ledger_file = parent_run_dir / "scheduled_gate_ledger.json"
@@ -69,7 +78,7 @@ def preflight_continuation(
                         request, resolution.decision, "blocked",
                         "same-run resume is blocked: parent has a finalized scheduled-gate ledger",
                     )
-    return ContinuationPreflight(resolution, parent_run_dir, meta)
+    return ContinuationPreflight(resolution, parent_run_dir, resolved_meta)
 
 
 def _paused_handoff_has_decision(

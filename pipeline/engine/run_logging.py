@@ -61,6 +61,10 @@ def setup_run_logging(
         _events.init_event_store(output_dir, resume=is_resume)
 
     agent_log_path = output_dir / "output.log"
+    # The CLI advertises this path before the first provider invocation. Some
+    # resume paths finish entirely from cached durable state, so no stream
+    # writer ever opens it; materialize the promised sink during setup.
+    agent_log_path.touch(exist_ok=True)
     _agent_module.set_agent_log(agent_log_path)
 
     if not is_sub_pipeline and terminal:

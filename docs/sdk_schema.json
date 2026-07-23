@@ -5550,6 +5550,12 @@
           "default": null,
           "kind": "KEYWORD_ONLY",
           "name": "parent_run_dir"
+        },
+        {
+          "annotation": "dict[str, Any] | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "meta"
         }
       ],
       "return": "ContinuationPreflight"

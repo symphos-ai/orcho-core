@@ -7,6 +7,7 @@ from pipeline.control.continuation import (
     resolve_continuation,
     resolve_continuation_decision,
 )
+from sdk.run_control.continuation import preflight_continuation
 
 
 def _meta(path: Path) -> dict:
@@ -63,6 +64,114 @@ def test_paused_handoff_is_not_advertised_as_checkpoint_resume(tmp_path: Path) -
     assert resolve_continuation(
         ContinuationRequest("paused", "resume"), meta=meta, parent_run_dir=tmp_path,
     ).operation == "blocked"
+
+
+def test_interrupted_in_flight_phase_uses_persisted_plan_not_checkpoint(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "parsed_plan.json").write_text("{}")
+    (tmp_path / "events.jsonl").write_text(
+        '{"seq":1,"kind":"phase.start","payload":{"phase":"implement"}}\n',
+    )
+    meta = {"status": "interrupted", "task": "implement"}
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted", meta=meta, parent_run_dir=tmp_path,
+    )
+    resume = resolve_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+    from_plan = resolve_continuation(
+        ContinuationRequest("interrupted", "from_run_plan"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "plan_artifact"
+    assert decision.recommended_next_action == "plan_artifact_continuation"
+    assert decision.checkpoint_resumable is False
+    assert resume.operation == "blocked"
+    assert from_plan.operation == "launch_from_run_plan"
+
+
+def test_interrupted_in_flight_phase_without_plan_is_blocked(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "events.jsonl").write_text(
+        '{"seq":1,"kind":"phase.start","payload":{"phase":"implement"}}\n',
+    )
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted",
+        meta={"status": "interrupted", "task": "implement"},
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "none"
+    assert decision.checkpoint_resumable is False
+    assert decision.blocked is True
+    assert "no persisted plan artifact" in decision.reason
+
+
+def test_interrupted_without_run_dir_keeps_legacy_checkpoint_classification() -> None:
+    decision = resolve_continuation_decision(
+        run_id="interrupted",
+        meta={"status": "interrupted", "task": "implement"},
+    )
+
+    assert decision.continuation_subject == "checkpoint"
+    assert decision.checkpoint_resumable is True
+
+
+def test_interrupted_after_phase_checkpoint_remains_resumable(tmp_path: Path) -> None:
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join([
+            '{"seq":1,"kind":"phase.start","payload":{"phase":"plan"}}',
+            '{"seq":2,"kind":"phase.end","payload":{"phase":"plan","outcome":"ok"}}',
+        ])
+        + "\n",
+    )
+    meta = {"status": "interrupted", "task": "implement"}
+
+    decision = resolve_continuation_decision(
+        run_id="interrupted", meta=meta, parent_run_dir=tmp_path,
+    )
+    resume = resolve_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        meta=meta,
+        parent_run_dir=tmp_path,
+    )
+
+    assert decision.continuation_subject == "checkpoint"
+    assert decision.checkpoint_resumable is True
+    assert resume.operation == "resume_checkpoint"
+
+
+def test_diagnosis_meta_seam_and_resume_preflight_share_checkpoint_readiness(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "meta.json").write_text(
+        '{"status":"running","task":"implement"}',
+    )
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join([
+            '{"seq":1,"kind":"phase.start","payload":{"phase":"plan"}}',
+            '{"seq":2,"kind":"phase.end","payload":{"phase":"plan","outcome":"ok"}}',
+        ])
+        + "\n",
+    )
+    merged = {"status": "interrupted", "task": "implement"}
+
+    result = preflight_continuation(
+        ContinuationRequest("interrupted", "resume"),
+        parent_run_dir=tmp_path,
+        meta=merged,
+    )
+
+    assert result.parent_meta == merged
+    assert result.resolution.operation == "resume_checkpoint"
 
 
 def test_off_isolation_parent_is_blocked_even_when_source_is_dirty(tmp_path: Path) -> None:

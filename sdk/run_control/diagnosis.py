@@ -349,13 +349,34 @@ def _classify(
         if resumable
         else f"run is in status {status!r}; continue this run"
     )
+    plan_artifact_continuation = (
+        continuation.continuation_subject == SUBJECT_PLAN_ARTIFACT
+    )
+    if plan_artifact_continuation:
+        reason = continuation.reason
     return RunDiagnosis(
         run_id=run_id,
         condition=status or SUBJECT_UNKNOWN,
         reason=reason,
         status=status,
         halt_reason=halt_reason,
-        continuation_subject=SUBJECT_NONE,
+        continuation_subject=(
+            continuation.continuation_subject
+            if plan_artifact_continuation
+            else SUBJECT_NONE
+        ),
+        recommended_next_action=(
+            continuation.recommended_next_action
+            if plan_artifact_continuation
+            else None
+        ),
+        recommended_run_id=(
+            run_id
+            if plan_artifact_continuation
+            else None
+        ),
+        blocked=continuation.blocked,
+        block_message=continuation.reason if continuation.blocked else None,
     )
 
 
