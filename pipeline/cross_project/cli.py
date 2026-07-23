@@ -365,13 +365,15 @@ Examples:
     parser.add_argument(
         "--workspace", "-w", type=str, default=None,
         help="Path to workspace-orchestrator dir. Required (or set $ORCHO_WORKSPACE) "
-             "так что run-артефакты пишутся в <workspace>/runspace/runs/<ts>/.",
+             "so run artifacts are written under "
+             "<workspace>/runspace/runs/<ts>/.",
     )
     parser.add_argument(
         "--resume", type=str, nargs="?", const="latest", default=None,
         metavar="RUN_ID",
         help="Resume cross-run by RUN_ID (basename in runspace/runs/). "
-             "Cross-checkpoint.json + per-alias checkpoints.db решают что пропустить. "
+             "Cross-checkpoint.json and per-alias checkpoints.db determine "
+             "which work can be skipped. "
              "Pass bare --resume or --resume latest to auto-select the newest "
              "cross run in the active workspace.",
     )
@@ -538,7 +540,7 @@ Examples:
         )
         sys.exit(0)
 
-    # См. project_orchestrator.main(): выставляем env ДО первого config.RUNS_DIR.
+    # See project_orchestrator.main(): set env before the first config.RUNS_DIR access.
     try:
         task = _resolve_task(
             explicit_task=args.task,
@@ -613,7 +615,7 @@ Examples:
             sys.exit(2)
         if not output_dir.is_dir():
             print_error(
-                f"--resume {args.resume!r}: cross run_dir не существует: {output_dir}"
+                f"--resume {args.resume!r}: cross run_dir does not exist: {output_dir}"
             )
             sys.exit(2)
     else:

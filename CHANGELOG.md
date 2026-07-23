@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-07-23
+
+### Added
+
+- Scheduled verification is represented by a durable ledger with explicit
+  selection, execution, consequence, and disposition evidence.
+- Verification receipts bind results to immutable subject identities and keep
+  automatic rerun attempts as distinct durable evidence.
+- Provider-owned long commands have a managed lifecycle with run-scoped
+  receipts and duplicate-execution protection.
+- Cross-project runs persist an execution graph and reduce canonical parent
+  state from their child pipelines and cross gates.
+- The public SDK exposes canonical continuation preflight, run diagnosis,
+  managed-command evidence, and cross-execution state.
+
+### Changed
+
+- Verification ownership is explicit: implementation prompts favor targeted,
+  cost-aware checks while the engine owns scheduled broad gates and repair
+  routing.
+- Pre-final gate selection and delivery readiness use the same authoritative
+  scheduled identities.
+- Scope expansion in `pro` mode is advisory; governed runs retain the
+  decision-gated behavior.
+- Skill discovery defaults to local project and workspace scopes instead of
+  injecting unrelated global skill context.
+- Cross-project resume reuses durable child and gate state rather than
+  manufacturing completion from stale parent snapshots.
+
+### Fixed
+
+- Diagnose and resume now agree on checkpoint readiness: an interruption inside
+  an unfinished phase uses a persisted plan continuation instead of advertising
+  a same-run resume that preflight will reject.
+- Verification repair preserves retry context, refreshes stale failed receipts,
+  and reports automatic reruns without overwriting the first attempt.
+- Provider retries wait for the owned child process to settle and cannot launch
+  duplicate heavy commands with the same identity.
+- Correction follow-ups retain their worktree and use ordinary follow-up
+  semantics rather than plan-only continuation.
+- Exact declared write scope survives planning, cross handoffs, and final
+  acceptance without false expansion findings.
+- Delivery output distinguishes committed, published, retained, and rejected
+  outcomes and exposes the published commit identity.
+- Resumed cross delivery does not rerun a completed cross-final-acceptance gate
+  or print a false phase banner.
+- The advertised `output.log` exists even when a resume completes entirely from
+  cached durable state.
+- Test isolation and verification-subject fixtures keep the full suite stable
+  without repeated Git snapshot work in unit hot paths.
+
+### Documentation
+
+- Added architecture decisions for scheduled-gate lifecycle, verification
+  ownership, verification subject continuity, canonical continuation, and
+  cross-project parent-state reduction.
+- Documented task-authoring rules that keep broad quality gates engine-owned.
+
 ## 0.4.0 - 2026-07-08
 
 ### Added
