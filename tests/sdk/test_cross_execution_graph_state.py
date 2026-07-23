@@ -97,3 +97,50 @@ def test_disk_and_runtime_gate_facts_keep_cfa_handoff_active(tmp_path: Path) -> 
     cfa = next(fact for fact in disk.entries if fact.identity == "cfa")
     assert cfa.active is True
     assert cfa.completed is False
+
+
+def test_disk_and_runtime_gate_facts_distinguish_completed_cfa_from_reusable_cache(tmp_path: Path) -> None:
+    graph = _graph()
+    write_cross_execution_graph(tmp_path, graph)
+    valid = {
+        "output": "approved", "raw_output": "{}", "approved": True,
+        "verdict": "APPROVED", "short_summary": "ok", "ship_ready": True,
+        "release_blockers": [], "verification_gaps": [],
+        "contract_status": {
+            "task_contract": "satisfied", "interfaces": "compatible",
+            "persistence": "safe", "tests": "sufficient",
+        },
+        "source": "agent", "duration_s": 1.0,
+    }
+    rejected = {
+        **valid,
+        "approved": False,
+        "verdict": "REJECTED",
+        "ship_ready": False,
+        "short_summary": "Release is blocked.",
+        "release_blockers": [{
+            "id": "CFA1", "severity": "P1", "title": "Blocked release",
+            "body": "A cross-project invariant is broken.",
+            "required_fix": "Repair the invariant.",
+            "why_blocks_release": "Consumers would observe inconsistent data.",
+        }],
+        "contract_status": {
+            "task_contract": "incomplete", "interfaces": "broken",
+            "persistence": "safe", "tests": "weak",
+        },
+    }
+    cases = {
+        "approved": valid,
+        "rejected_override": {**rejected, "override": {"action": "continue"}},
+        "rejected_halted": rejected,
+        "malformed": {"verdict": "APPROVED"},
+    }
+
+    for expected, entry in cases.items():
+        meta = {"phases": {"cross_final_acceptance": entry}}
+        (tmp_path / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        runtime = build_runtime_runner_gate_facts(graph, meta, {})
+        disk = load_runner_gate_facts(graph, tmp_path)
+        assert disk == runtime
+        cfa = next(fact for fact in runtime.entries if fact.identity == "cfa")
+        assert cfa.completed is (expected != "malformed")

@@ -165,6 +165,39 @@ def test_approved_terminal_forwards_no_override() -> None:
     assert m_deliver.call_args.kwargs["override"] is False
 
 
+def test_delivery_starts_after_parent_gate_snapshot_is_persisted(tmp_path) -> None:
+    ctx = _ctx(cfa_outcome=SimpleNamespace(outcome="approved_terminal"))
+    ctx.run_dir = tmp_path
+    ctx.session = {
+        "projects": {"api": "/source/api", "web": "/source/web"},
+        "phases": {
+            "projects": {
+                "api": {"worktree": {"path": "/work/api"}, "phases": {"final_acceptance": {"verdict": "APPROVED"}}},
+                "web": {"worktree": {"path": "/work/web"}, "phases": {"final_acceptance": {"verdict": "APPROVED"}}},
+            },
+            "contract_check": {"api": {"verdict": "APPROVED"}, "web": {"verdict": "APPROVED"}},
+            "cross_final_acceptance": {"verdict": "APPROVED", "ship_ready": True},
+        },
+    }
+    request = SimpleNamespace(projects={"api": tmp_path, "web": tmp_path}, output_dir=tmp_path, max_rounds=1)
+    observed: dict = {}
+
+    def delivery(**_kwargs):
+        observed.update(__import__("json").loads((tmp_path / "meta.json").read_text(encoding="utf-8")))
+        return object()
+
+    with (
+        patch("pipeline.cross_project.cross_delivery.run_cross_delivery", side_effect=delivery),
+        patch("pipeline.cross_project.finalization.CrossFinalizationContext"),
+        patch("pipeline.cross_project.finalization.finalize_cross_run"),
+    ):
+        _run_delivery_and_finalize(request, ctx)
+
+    assert observed["phases"]["projects"] == ctx.session["phases"]["projects"]
+    assert observed["phases"]["contract_check"] == ctx.session["phases"]["contract_check"]
+    assert observed["phases"]["cross_final_acceptance"] == ctx.session["phases"]["cross_final_acceptance"]
+
+
 # ── coordinator ordering: rejected halts before delivery ──────────────
 
 

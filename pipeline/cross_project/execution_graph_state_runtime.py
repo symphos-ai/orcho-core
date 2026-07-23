@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from pipeline.cross_project.cfa_gate import has_completed_cfa_phase_entry
 from pipeline.cross_project.contract_check import _has_completed_contract_cache
 from pipeline.cross_project.execution_graph import (
     CrossExecutionGraph,
@@ -48,7 +49,7 @@ def build_runtime_runner_gate_facts(
             skipped = False
             active = False
         else:
-            completed = bool(row) and not bool(row.get("skipped")) and not cfa_handoff_pending
+            completed = has_completed_cfa_phase_entry(row) and not cfa_handoff_pending
             skipped = bool(row.get("skipped"))
             active = bool(cfa_handoff_pending)
         entries.append(

@@ -10,6 +10,7 @@ from pipeline.run_state.cross_parent import ParentClass, ScheduledGateIdentity
 from pipeline.run_state.cross_parent_disk import (
     load_cross_parent_facts,
     load_cross_parent_state,
+    load_declared_child_meta,
 )
 
 
@@ -32,6 +33,18 @@ def test_reads_only_declared_child_paths_and_preserves_order(tmp_path: Path) -> 
 
     assert facts.declared_aliases == ("api", "web")
     assert [child.alias for child in facts.children] == ["api", "web"]
+
+
+def test_declared_child_meta_retains_payload_and_distinguishes_bad_paths(tmp_path: Path) -> None:
+    _write(tmp_path / "producer" / "meta.json", {"status": "done", "phases": {"final_acceptance": {"verdict": "APPROVED"}}})
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "meta.json").write_text("{broken", encoding="utf-8")
+
+    children = load_declared_child_meta(tmp_path, ("producer", "missing", "broken"))
+
+    assert [child.alias for child in children] == ["producer", "missing", "broken"]
+    assert [child.observation.value for child in children] == ["present", "missing", "malformed"]
+    assert children[0].payload["phases"]["final_acceptance"]["verdict"] == "APPROVED"
 
 
 def test_malformed_child_is_not_silently_empty(tmp_path: Path) -> None:

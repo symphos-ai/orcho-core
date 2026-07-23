@@ -8,6 +8,7 @@ lifecycle events come from the cross-run's shared event stream.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +27,47 @@ from pipeline.run_state.cross_parent import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredChildMeta:
+    """One exact-path child-meta observation, retaining its raw session payload.
+
+    This is intentionally separate from :class:`ChildFacts`: reducers receive
+    only normalized immutable facts, while resume setup can hydrate the full
+    child session from the same physical read.
+    """
+
+    alias: str
+    observation: Observation
+    payload: dict[str, Any]
+
+
+def load_declared_child_meta(
+    run_dir: Path | str, aliases: tuple[str, ...] | list[str]
+) -> tuple[DeclaredChildMeta, ...]:
+    """Read exactly the supplied child meta paths, in supplied alias order.
+
+    Callers own alias declaration.  In particular, this does not inspect the
+    directory listing, so an undeclared sibling can never enter a resumed
+    parent session.
+    """
+    path = Path(run_dir)
+    return tuple(
+        DeclaredChildMeta(alias, observation, payload)
+        for alias in aliases
+        for payload, observation in (_read_object(path / alias / "meta.json"),)
+    )
+
+
 def load_cross_parent_facts(run_dir: Path | str) -> CrossParentFacts:
     """Read only the parent and declared child paths required for reduction."""
     path = Path(run_dir)
     parent, parent_observation = _read_object(path / "meta.json")
     checkpoint, checkpoint_observation = _read_object(path / "cross_checkpoint.json")
     aliases = _declared_aliases(parent)
-    child_rows = tuple(_child_facts(path, alias, checkpoint) for alias in aliases)
+    child_rows = tuple(
+        _child_facts_from_observation(child, checkpoint, path)
+        for child in load_declared_child_meta(path, aliases)
+    )
     pending = _decision(parent.get("phase_handoff"), checkpoint)
     return CrossParentFacts(
         declared_aliases=aliases,
@@ -50,13 +85,19 @@ def load_cross_parent_state(run_dir: Path | str) -> CrossParentState:
 
 
 def _child_facts(path: Path, alias: str, checkpoint: dict[str, Any]) -> ChildFacts:
-    child, observation = _read_object(path / alias / "meta.json")
+    child = load_declared_child_meta(path, (alias,))[0]
+    return _child_facts_from_observation(child, checkpoint, path)
+
+
+def _child_facts_from_observation(
+    child: DeclaredChildMeta, checkpoint: dict[str, Any], path: Path
+) -> ChildFacts:
     return _facts_from_mapping(
-        alias,
-        child,
-        physical=observation,
-        checkpoint_sub_status=_string(_mapping(checkpoint.get("sub_status")).get(alias)),
-        active_operations=_active_operations(path, alias),
+        child.alias,
+        child.payload,
+        physical=child.observation,
+        checkpoint_sub_status=_string(_mapping(checkpoint.get("sub_status")).get(child.alias)),
+        active_operations=_active_operations(path, child.alias),
         checkpoint=checkpoint,
     )
 
