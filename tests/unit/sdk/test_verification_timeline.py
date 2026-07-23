@@ -46,6 +46,7 @@ def _write_ledger(run_dir: Path) -> None:
             condition="always", selected=True, execution_policy="require",
             consequence="required_action", executor="engine", trigger="after_phase",
             disposition="executed_pass",
+            receipt_evidence="verification_command_receipts/check-rerun.json",
         ),
         GateLedgerRow(
             gate="check", hook="manual_only", phase="",
@@ -96,6 +97,9 @@ def test_reads_exact_durable_rows_and_identity_scoped_events(
     ]
     assert projection.rows[0].execution_policy == "require"
     assert projection.rows[0].consequence == "required_action"
+    assert projection.rows[0].receipt_evidence == ReceiptEvidence(
+        path="verification_command_receipts/check-rerun.json", rerun=True,
+    )
     assert projection.rows[1].executor == "operator"
     assert projection.rows[2].selection_reason == "paths"
     assert [(event.command, event.hook, event.phase, event.kind) for event in projection.events] == [

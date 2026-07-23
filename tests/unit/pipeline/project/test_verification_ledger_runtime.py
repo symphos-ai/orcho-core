@@ -325,7 +325,10 @@ def test_runtime_ledger_preserves_execution_facts_across_sdk_evidence_and_done(
         run, run.state.extras["verification_contract"],
         epoch="before_delivery:", context=SelectionContext(),
     )
-    record_execution(run, plan.entries[0], passed=True)
+    record_execution(
+        run, plan.entries[0], passed=True,
+        receipt_evidence="receipts/initial.json",
+    )
 
     def identity_facts(rows):
         return [
@@ -376,7 +379,11 @@ def test_runtime_ledger_preserves_execution_facts_across_sdk_evidence_and_done(
     assert facts(finalized.rows) == expected
 
     monkeypatch.setenv("ORCHO_RUNSPACE", str(tmp_path))
-    assert facts(get_verification_timeline(run_id="20260101_000000").rows) == expected
+    projection = get_verification_timeline(run_id="20260101_000000")
+    assert facts(projection.rows) == expected
+    assert projection.rows[0].receipt_evidence is not None
+    assert projection.rows[0].receipt_evidence.path == "receipts/initial.json"
+    assert projection.rows[0].receipt_evidence.rerun is False
 
     evidence_rows = collect_evidence(run_dir)["scheduled_gate_ledger"]["rows"]
     assert [

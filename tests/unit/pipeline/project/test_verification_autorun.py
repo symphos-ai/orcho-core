@@ -1107,20 +1107,27 @@ def test_stage9_execution_receipt_is_immutable_and_identity_scoped(
     readiness = classify_required_receipts(contract, run_dir, ctx, checkout=str(project))
     assert readiness["lint"].status == ("present" if stage9_exit == 0 else "failed")
 
-    if prior_exit == 0:
-        (run_dir / "meta.json").write_text(
-            json.dumps({"task": "t", "status": "done", "project": str(project)}),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("ORCHO_RUNSPACE", str(workspace))
-        from sdk.verification_timeline import ReceiptEvidence, get_verification_timeline
+    (run_dir / "meta.json").write_text(
+        json.dumps({"task": "t", "status": "done", "project": str(project)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ORCHO_RUNSPACE", str(workspace))
+    from sdk.verification_timeline import ReceiptEvidence, get_verification_timeline
 
-        projection = get_verification_timeline(
-            run_id=run_dir.name, workspace=workspace,
-        )
-        assert projection.events[-1].receipt_evidence == ReceiptEvidence(
-            path=executions[-1].receipt_evidence, rerun=True,
-        )
+    projection = get_verification_timeline(
+        run_id=run_dir.name, workspace=workspace,
+    )
+    projected_row = next(
+        row for row in projection.rows if row.command == entry.command
+        and row.hook == entry.hook and row.phase == entry.phase
+    )
+    assert projected_row.disposition == disposition
+    assert projected_row.receipt_evidence == ReceiptEvidence(
+        path=executions[-1].receipt_evidence, rerun=True,
+    )
+    assert projection.events[-1].receipt_evidence == ReceiptEvidence(
+        path=executions[-1].receipt_evidence, rerun=True,
+    )
 
 
 def test_persisted_evidence_append_only_and_session_mirror(

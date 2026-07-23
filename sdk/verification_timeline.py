@@ -5,9 +5,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
+
+if TYPE_CHECKING:
+    from pipeline.verification_ledger import GateLedgerRow, GateTrailEvent
 
 Disposition = Literal[
     "not_selected", "manual_available", "suggested", "skipped_fresh",
@@ -88,7 +91,10 @@ def get_verification_timeline(
             execution_policy=row.execution_policy, consequence=row.consequence,
             disposition=row.disposition, selection_reason=row.selection_reason,
             executor=row.executor, trigger=row.trigger,
-            receipt_evidence=_receipt(row.receipt_evidence),
+            receipt_evidence=_receipt(
+                row.receipt_evidence,
+                rerun=_execution_rerun(row, ledger.trail),
+            ),
         )
         for row in ledger.rows
     )
@@ -109,6 +115,21 @@ def get_verification_timeline(
 
 def _receipt(path: str | None, *, rerun: bool = False) -> ReceiptEvidence | None:
     return ReceiptEvidence(path=path, rerun=rerun) if path else None
+
+
+def _execution_rerun(
+    row: GateLedgerRow,
+    trail: tuple[GateTrailEvent, ...],
+) -> bool:
+    """Return the persisted rerun fact for the row's immutable execution receipt."""
+    for event in reversed(trail):
+        if (
+            event.kind == "execution"
+            and event.identity == row.identity
+            and event.receipt_evidence == row.receipt_evidence
+        ):
+            return event.rerun
+    return False
 
 
 __all__ = [
