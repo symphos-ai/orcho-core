@@ -739,12 +739,21 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         )
         ctx.cfa_result = None
         return False
+    selected_cfa = (
+        select_ready_runner_gate(
+            graph_state, CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE,
+        )
+        if execution_graph is not None and not readiness_precondition
+        else None
+    )
     if (
         execution_graph is not None
         and not readiness_precondition
-        and select_ready_runner_gate(
-            graph_state, CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE,
-        ) is None
+        and selected_cfa is None
+        and not (
+            request.resume_from
+            and cfa_node.status is CrossExecutionGraphStatus.COMPLETED
+        )
     ):
         ctx.graph_gate_blocked = True
         return False
@@ -817,6 +826,11 @@ def _finalize_release_verdict(request: CrossRunRequest, ctx: _CrossRunContext) -
     r = ctx.r
     _cfa_result = ctx.cfa_result
     _cfa_outcome = ctx.cfa_outcome
+    # A valid persisted CFA was already observed on the interrupted run.
+    # Resume reconstructs it solely to restore the finalizer/delivery context;
+    # do not duplicate its verdict event, phase log tail, or usage accounting.
+    if _cfa_outcome.outcome == "cached_terminal":
+        return False
     if _cfa_result.prompt_text:
         _cfa_usage = _capture_invoke_usage(
             ctx.review_agent,
@@ -954,6 +968,12 @@ def _run_delivery_and_finalize(request: CrossRunRequest, ctx: _CrossRunContext) 
         )
     should_deliver, override = _cross_delivery_plan(ctx)
     if should_deliver:
+        # Delivery can be interactive or otherwise interruptible.  Persist the
+        # fully reduced parent snapshot first so a resume sees canonical child
+        # sessions plus both runner-gate results before taking any delivery
+        # action.  Finalization remains the sole terminal-state writer.
+        if request.output_dir:
+            save_cross_session(ctx.run_dir, ctx.session)
         from core.infra import config as _delivery_config
         from pipeline.cross_project.cross_delivery import run_cross_delivery
 

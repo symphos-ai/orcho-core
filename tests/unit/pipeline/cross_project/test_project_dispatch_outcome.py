@@ -272,3 +272,31 @@ def test_graph_dispatch_preserves_physical_completion_without_checkpoint(tmp_pat
     )
     assert run_project_dispatch(ctx).paused is False
     assert ctx.session["phases"]["projects"]["core"] is completed
+
+
+def test_graph_dispatch_skips_hydrated_producer_then_runs_ready_consumer(tmp_path, monkeypatch) -> None:
+    ctx = _context(tmp_path, ("consumer", "producer"))
+    ctx.execution_graph = _graph(
+        aliases=("producer", "consumer"),
+        dependencies={"producer": (), "consumer": ("producer",)},
+    )
+    producer = {
+        "status": "done",
+        "phases": {"final_acceptance": {"verdict": "APPROVED", "ship_ready": True}},
+    }
+    ctx.session["phases"]["projects"] = {"producer": producer}
+    (ctx.run_dir / "producer").mkdir()
+    (ctx.run_dir / "producer" / "meta.json").write_text(json.dumps(producer))
+    calls: list[str] = []
+
+    def child(request):
+        calls.append(request.project_alias)
+        session = {"status": "done", "phases": {}}
+        (ctx.run_dir / request.project_alias).mkdir(exist_ok=True)
+        (ctx.run_dir / request.project_alias / "meta.json").write_text(json.dumps(session))
+        return SimpleNamespace(session=session)
+
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", child)
+    assert run_project_dispatch(ctx).paused is False
+    assert calls == ["consumer"]
+    assert ctx.session["phases"]["projects"]["producer"] is producer

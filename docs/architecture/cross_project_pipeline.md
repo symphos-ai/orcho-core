@@ -155,6 +155,16 @@ path, typed event streams, and `scheduled_gate_ledger.json`. It does not parse
 transcripts, infer identifiers from prefixes, discover child directories, or
 write a derived reducer artifact.
 
+On resume, the physical child `meta.json` files are the canonical source for
+the parent session's `phases.projects` payloads. Checkpoint sub-status remains
+only a routing cursor: it cannot manufacture a completed child or a release
+verdict. Missing, malformed, or incomplete physical release payloads therefore
+remain fail-closed rather than being replaced with a stale embedded snapshot.
+Completed contract and approved CFA results are reused from the durable parent
+session; the snapshot immediately before delivery contains those gate results
+and the hydrated child payloads, so an interruption at delivery resumes with
+the same reduction inputs and without re-invoking either gate.
+
 `NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
 policy applies, and it is not an interface-compatibility verdict.
 Resume treats it as incomplete evidence and re-runs contract evaluation

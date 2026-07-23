@@ -982,3 +982,111 @@ def test_graph_blocked_gate_finalizes_failed_without_delivery(tmp_path) -> None:
         graph_gate_blocked=True,
     ))
     assert (status, halt_reason) == ("failed", "cross_execution_graph_blocked")
+
+
+def test_resume_reuses_strict_completed_cfa_cache_without_provider(tmp_path) -> None:
+    from pipeline.cross_project.cfa_gate import evaluate_cfa_gate
+
+    result = run_cross_final_acceptance(
+        _build(
+            ("api",),
+            projects={"api": _child_with_final(_approved_child_release())},
+            contracts={"api": _approved_contract_check()},
+        ),
+        codex=_RecordingCodex(),
+        dry_run=False,
+    )
+    session = {"phases": {"cross_final_acceptance": result_to_phase_log_entry(result)}}
+
+    resume_provider = _RecordingCodex()
+    outcome = evaluate_cfa_gate(
+        cfa_ctx=object(),
+        codex=resume_provider,
+        dry_run=False,
+        run_dir=tmp_path,
+        session=session,
+        cross_ckpt={},
+        cross_phase_usage={},
+        resume_from="prior",
+        output_dir=False,
+        terminal=False,
+    )
+
+    assert outcome.outcome == "cached_terminal"
+    assert outcome.cfa_result.parsed.approved is True
+    assert resume_provider.prompts == []
+
+
+def test_resume_completed_cfa_reaches_delivery_without_provider(tmp_path, monkeypatch) -> None:
+    """The coordinator admits a completed CFA solely to restore delivery context."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from pipeline.cross_project import parent_state_runtime, session_run
+
+    cached_result = run_cross_final_acceptance(
+        _build(
+            ("api",),
+            projects={"api": _child_with_final(_approved_child_release())},
+            contracts={"api": _approved_contract_check()},
+        ),
+        codex=_RecordingCodex(),
+        dry_run=False,
+    )
+    parent = reduce_cross_parent_state(CrossParentFacts(
+        ("api",),
+        (ChildFacts(
+            "api", Observation.PRESENT, "done",
+            release_verdict="APPROVED", release_ship_ready=True,
+        ),),
+    ))
+    cfa_complete = CrossExecutionGraphNodeState(
+        "cfa", CrossExecutionGraphNodeKind.CROSS_FINAL_ACCEPTANCE,
+        CrossExecutionGraphStatus.COMPLETED,
+        CrossExecutionGraphReason.RUNNER_GATE_COMPLETED,
+    )
+    monkeypatch.setattr(
+        parent_state_runtime, "reduce_runtime_cross_parent_state", lambda *_: parent,
+    )
+    monkeypatch.setattr(
+        session_run, "reduce_runtime_cross_execution_graph_state",
+        lambda *_: CrossExecutionGraphState((cfa_complete,)),
+    )
+
+    class Provider:
+        def invoke(self, *_args, **_kwargs):
+            pytest.fail("a completed CFA cache must not invoke the provider")
+
+    policy = CrossGatePolicy(
+        enabled=True,
+        run=CrossGateRunPolicy.ALWAYS,
+        on_skip=CrossGateSkipPolicy.ALLOW_WITH_GAP,
+    )
+    request = SimpleNamespace(
+        task="resume delivery", projects={"api": tmp_path}, dry_run=False,
+        resume_from="prior", output_dir=None, max_rounds=1,
+    )
+    ctx = SimpleNamespace(
+        r=SimpleNamespace(banner=lambda *_, **__: None, C=SimpleNamespace(MAGENTA="")),
+        session={
+            "projects": {"api": str(tmp_path)},
+            "phases": {"cross_final_acceptance": result_to_phase_log_entry(cached_result)},
+        },
+        cross_ckpt={}, run_dir=tmp_path, profile_setup=SimpleNamespace(cfa_gate_policy=policy),
+        execution_graph=object(), graph_gate_blocked=False, terminal=False,
+        review_agent=Provider(), cross_phase_usage={}, plan_output="", review_common_cwd=tmp_path,
+        review_projects={"api": tmp_path}, contract_results={}, contract_check_failed=False,
+        contract_check_failure_reason=None, delivery_result=None, child_profile=object(),
+    )
+
+    assert session_run._run_release_gate(request, ctx) is False
+    assert ctx.graph_gate_blocked is False
+    assert ctx.cfa_outcome.outcome == "cached_terminal"
+    assert session_run._finalize_release_verdict(request, ctx) is False
+    with (
+        patch("pipeline.cross_project.cross_delivery.run_cross_delivery", return_value=object()) as deliver,
+        patch("pipeline.cross_project.finalization.CrossFinalizationContext"),
+        patch("pipeline.cross_project.finalization.finalize_cross_run"),
+    ):
+        session_run._run_delivery_and_finalize(request, ctx)
+    deliver.assert_called_once()
