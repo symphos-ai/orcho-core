@@ -67,6 +67,22 @@ It blocks `CHECKPOINT` when the parent meta is in a terminal state
 (`done`, `phase_handoff_halt`, `commit_decision_halt`) — those
 require a follow-up by definition.
 
+### Unattended phase-handoff re-arm
+
+ADR 0154 makes one halted parent checkpoint-resumable:
+`halt_reason="phase_handoff_unattended_halt"`. It is not an operator's
+terminal `phase_handoff_halt`. On the first bare CHECKPOINT resume, Orcho
+validates `meta.phase_handoff_unattended.phase_handoff`, restores that exact
+payload (including `available_actions` and artifacts), and returns with
+`status="awaiting_phase_handoff"`. It does not call `on_resume`, replay a
+decision, or execute phases on that invocation. Record a decision through the
+existing `phase_handoff_decide` API, then resume again for normal continuation.
+
+If the persisted unattended block is legacy or malformed, or a typed ledger
+resume check refuses execution, the run remains `halted` and writes
+`meta.resume_refusal`; the original halt reason is retained when known. This
+is a durable refusal, not an `interrupted` outcome.
+
 ### Parent-status guard (non-interactive)
 
 `pipeline/project_orchestrator.py:4175-4189` rejects bare `--resume`

@@ -272,6 +272,21 @@ def test_repair_loop_on_resume_degrades_to_handoff(monkeypatch) -> None:
     assert any(n["kind"] == "repair_loop_fallback" for n in notes)
 
 
+def test_empty_on_resume_schedule_does_not_plan_or_select_epoch(monkeypatch) -> None:
+    run = _run(_contract([
+        {"after_phase": "implement", "action": "handoff", "commands": ["test"]},
+    ]))
+    monkeypatch.setattr(
+        gate_repair, "_plan", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("empty on_resume schedule must not plan"),
+        ),
+    )
+
+    outcome = gate_repair.run_gate_hook(run, object(), object(), hook="on_resume")
+
+    assert outcome == gate_repair.GateRepairOutcome(active=False)
+
+
 # ── per-action routing ──────────────────────────────────────────────────────
 
 
@@ -520,20 +535,17 @@ class TestRoutingPlanLifecycle:
 
         monkeypatch.setattr(ledger_runtime, "build_scheduled_gate_plan", counting_build)
 
-        # Each distinct hook:phase position is its own epoch -> three builds.
+        # Only the declared hook:phase position earns an epoch. Empty raw
+        # schedule positions must not create an empty ledger selection trail.
         for hook, phase in (
             ("before_phase", "implement"),
             ("after_phase", "implement"),
             ("before_delivery", ""),
         ):
             gate_repair.run_gate_hook(run, object(), object(), hook=hook, phase=phase)
-        assert builds["n"] == 3
+        assert builds["n"] == 1
         plans = run.state._verification_ledger_epoch_cache
-        assert set(plans) == {
-            "before_phase:implement",
-            "after_phase:implement",
-            "before_delivery:",
-        }
+        assert set(plans) == {"after_phase:implement"}
 
     def test_same_epoch_reuses_cached_plan(self, monkeypatch) -> None:
         contract = _contract(
@@ -650,18 +662,17 @@ class TestRoutingPlanLifecycle:
         self,
         monkeypatch,
     ) -> None:
-        # The reviewer's case: an early after_phase(plan) must not freeze the
-        # plan reused by after_phase(implement).
+        # An undeclared after_phase(plan) is now a pure no-op; it must not
+        # create an epoch that could influence after_phase(implement).
         run, outcome = self._run_path_gate_lifecycle(
             monkeypatch,
             early_hook="after_phase",
             early_phase="plan",
         )
         plans = run.state._verification_ledger_epoch_cache
-        assert "mcp" not in plans["after_phase:plan"].selected_gate_sets
+        assert "after_phase:plan" not in plans
         assert outcome.active and outcome.paused
         assert "mcp" in plans["after_phase:implement"].selected_gate_sets
-        assert plans["after_phase:plan"] is not plans["after_phase:implement"]
 
 
 # ── Routing threads task_kind / operator_sets from state.extras ─────────────

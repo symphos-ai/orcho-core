@@ -92,7 +92,16 @@ def run_gate_hook(
     failure that yields a blocking disposition, returns it.
     """
     contract = _contract(run)
-    if contract is None:
+    if contract is None or hook == "manual_only":
+        return GateRepairOutcome(active=False)
+    # Avoid creating a resume epoch (and its durable selection trail) for a
+    # hook the contract never declares.  In particular, a checkpoint resume
+    # without ``on_resume`` gates must not call ``select_epoch`` merely to
+    # discover an empty plan.
+    if not any(
+        entry.hook == hook and entry.phase == phase
+        for entry in contract.schedule
+    ):
         return GateRepairOutcome(active=False)
 
     plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
