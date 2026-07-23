@@ -1032,6 +1032,97 @@ def _stub_run(project: Path, run_dir: Path, contract: Any, ctx: Any) -> Any:
     )
 
 
+@pytest.mark.parametrize(
+    ("prior_exit", "stage9_exit", "disposition"),
+    [(0, 1, "executed_fail"), (1, 0, "executed_pass")],
+    ids=["pass-to-stage9-fail", "fail-to-stage9-pass"],
+)
+def test_stage9_execution_receipt_is_immutable_and_identity_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_exit: int,
+    stage9_exit: int,
+    disposition: str,
+) -> None:
+    """Stage 9 snapshots its own attempt before appending an execution event."""
+    from pipeline.evidence.verification_receipt import (
+        load_command_receipts,
+        write_scheduled_command_receipt,
+    )
+    from pipeline.project.verification_ledger_runtime import finalize, record_execution
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=project, project=project,
+               workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    run.state.output_dir = run_dir
+    plan = select_before_delivery_epoch(run)
+    entry = plan.entries[0]
+
+    initial_flat = _write_receipt(
+        run_dir, "lint", exit_code=prior_exit, checkout=project,
+    )
+    initial = json.loads(initial_flat.read_text(encoding="utf-8"))
+    prior_evidence = write_scheduled_command_receipt(
+        output_dir=run_dir, result=initial, hook=entry.hook, phase=entry.phase,
+    )
+    assert prior_evidence is not None
+    record_execution(
+        run, entry, passed=prior_exit == 0,
+        receipt_evidence=prior_evidence.relative_to(run_dir).as_posix(),
+    )
+    # The Stage 9 materializer sees a genuinely absent current receipt; the
+    # immutable prior attempt remains solely in the execution-evidence store.
+    initial_flat.unlink()
+    _Recorder(run_dir, exit_codes={"lint": stage9_exit}).install(monkeypatch)
+
+    result = auto_run_required_receipts(
+        run, "final_acceptance", reason="pre-final", delivery_plan=plan,
+    )
+
+    assert result.ran_commands == ("lint",)
+    executions = [
+        event for event in load_ledger(run_dir).trail
+        if event.kind == "execution" and event.identity == (entry.command, entry.hook, entry.phase)
+    ]
+    assert [event.outcome for event in executions] == [
+        "pass" if prior_exit == 0 else "fail",
+        "pass" if stage9_exit == 0 else "fail",
+    ]
+    assert [event.rerun for event in executions] == [False, True]
+    assert executions[0].receipt_evidence != executions[1].receipt_evidence
+    assert executions[1].receipt_evidence is not None
+    latest_evidence = run_dir / executions[1].receipt_evidence
+    assert json.loads(latest_evidence.read_text(encoding="utf-8"))["exit_code"] == stage9_exit
+    flat = load_command_receipts(run_dir)
+    assert flat == [json.loads((run_dir / COMMAND_RECEIPTS_DIRNAME / "lint.json").read_text())]
+    assert flat[0]["exit_code"] == stage9_exit
+
+    closed = finalize(run)
+    assert closed is not None
+    row = next(row for row in closed.rows if row.identity == executions[-1].identity)
+    assert row.disposition == disposition
+    assert row.receipt_evidence == executions[-1].receipt_evidence
+    readiness = classify_required_receipts(contract, run_dir, ctx, checkout=str(project))
+    assert readiness["lint"].status == ("present" if stage9_exit == 0 else "failed")
+
+    if prior_exit == 0:
+        (run_dir / "meta.json").write_text(
+            json.dumps({"task": "t", "status": "done", "project": str(project)}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ORCHO_RUNSPACE", str(workspace))
+        from sdk.verification_timeline import ReceiptEvidence, get_verification_timeline
+
+        projection = get_verification_timeline(
+            run_id=run_dir.name, workspace=workspace,
+        )
+        assert projection.events[-1].receipt_evidence == ReceiptEvidence(
+            path=executions[-1].receipt_evidence, rerun=True,
+        )
+
+
 def test_persisted_evidence_append_only_and_session_mirror(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
