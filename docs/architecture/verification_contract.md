@@ -126,6 +126,34 @@ after the initial exact gate identity is a rerun. Each trail event references a
 different immutable receipt copy, while the flat command receipt remains the
 single latest result classified by readiness and delivery.
 
+## Executable verification handoff actions (ADR 0153)
+
+`pipeline.project.gate_repair._request_handoff` is the sole owner of the
+verification-gate action menu. For a non-hygiene failure it includes
+`retry_feedback` only when the active projected profile has a
+`repair_changes` step; a repair-less profile receives the same ordered menu
+without that action. Hygiene failures remain exactly
+`continue_with_waiver`, `halt` because repairing source cannot fix a broken
+verification environment.
+
+The SDK continues to validate a requested action against the persisted
+`available_actions` membership. This is not a new SDK or MCP policy: clients
+cannot submit `retry_feedback` when the menu did not publish it.
+
+An old persisted `retry_feedback` decision can predate a profile change that
+removes `repair_changes`. Its typed preflight blocker does not consume the
+recovery subject or become a provider failure. The project retry owner
+re-parks the run through the normal phase-handoff pause tail with a fresh,
+decidable handoff id; it preserves the gate identity and records the blocker
+reason in existing handoff artifacts and output. The old immutable decision
+artifact remains audit evidence, while the fresh menu offers an executable
+action. No top-level handoff payload key, SDK schema, or MCP wire shape
+changes.
+
+This decision intentionally excludes unattended-halt resume behavior and any
+generalized action-policy matrix. Those paths retain their current owners and
+require a separate contract if changed.
+
 ## Verification subject identity (ADR 0140, I4-R1)
 
 Command receipts now use schema **v3**. Their only authoritative freshness
