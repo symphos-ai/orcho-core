@@ -53,6 +53,22 @@ GATED_PLUGIN = PluginConfig(
     },
 )
 
+SMALL_TASK_HANDOFF_PLUGIN = PluginConfig(
+    name="Repairless small-task verification",
+    language="Python",
+    work_mode="pro",
+    verification={
+        "commands": {"gate": {"run": ["python", "-c", "raise SystemExit(1)"]}},
+        "required": ["gate"],
+        "gate_sets": {"required": {"commands": ["gate"]}},
+        "selection": [{"always": ["required"]}],
+        "schedule": [{
+            "after_phase": "implement", "policy": "require",
+            "action": "handoff", "commands": ["gate"],
+        }],
+    },
+)
+
 
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.is_file():
@@ -133,6 +149,34 @@ class TestRequireGateBlocksGreenRun:
         assert receipt["placeholders"]["project"] == project
 
 
+@pytest.mark.git_worktree
+@pytest.mark.filesystem_heavy
+def test_small_task_handoff_omits_unexecutable_retry_feedback(tmp_path: Path) -> None:
+    """The real repair-less profile publishes only actions it can execute."""
+    project = tmp_path / "proj"
+    _init_git_repo(project)
+    run_dir = tmp_path / "runs" / "20260723_small_task_handoff"
+    run_dir.mkdir(parents=True)
+    with patch(
+        "pipeline.project.session_run.load_plugin",
+        return_value=SMALL_TASK_HANDOFF_PLUGIN,
+    ):
+        session = run_pipeline(
+            task="Add structured logging",
+            project_dir=str(project),
+            output_dir=run_dir,
+            max_rounds=1,
+            profile_name="small_task",
+            provider=_build_clean_review_provider(),
+        )
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert session["status"] == meta["status"] == "awaiting_phase_handoff"
+    handoff = meta["phase_handoff"]
+    assert handoff["trigger"] == "verification_gate_failed"
+    assert "retry_feedback" not in handoff["available_actions"]
+
+
 def test_verification_retry_feedback_preserves_human_directed_round_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -194,9 +238,9 @@ def test_verification_retry_feedback_preserves_human_directed_round_context(
         prior_round=2, fresh_round=3, loop_max_rounds=2,
         human_retry_ordinal=1,
     )
-    assert calls == [{"repair": {"retry_context": expected}}, {
-        "retry_context": expected,
-    }]
+    assert calls[0] == {"repair": {"retry_context": expected}}
+    assert calls[1]["retry_context"] == expected
+    assert calls[1]["profile"] is not None
     assert render_round_label(
         phase="implement", round=expected.fresh_round,
         loop_max_rounds=expected.loop_max_rounds, human_directed=True,

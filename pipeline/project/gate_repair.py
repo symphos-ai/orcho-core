@@ -518,6 +518,7 @@ def _route_failed_gate(
             classification,
             1,
             1,
+            profile=profile,
             phase=_handoff_phase(hook, phase),
             hook=hook,
             gate_phase=phase,
@@ -533,6 +534,7 @@ def _route_failed_gate(
                 classification,
                 1,
                 1,
+                profile=profile,
                 phase=_handoff_phase(hook, phase),
                 hook=hook,
                 gate_phase=phase,
@@ -562,6 +564,7 @@ def _route_failed_gate(
             classification,
             1,
             1,
+            profile=profile,
             phase=_handoff_phase(hook, phase),
             hook=hook,
             gate_phase=phase,
@@ -600,6 +603,7 @@ def _repair_loop(
                 classification,
                 round_n,
                 max_rounds,
+                profile=profile,
                 phase=_handoff_phase(hook, phase),
                 hook=hook,
                 gate_phase=phase,
@@ -635,6 +639,7 @@ def _repair_loop(
                 classification,
                 round_n,
                 max_rounds,
+                profile=profile,
                 phase=_handoff_phase(hook, phase),
                 hook=hook,
                 gate_phase=phase,
@@ -649,6 +654,7 @@ def _repair_loop(
                 classification,
                 round_n,
                 max_rounds,
+                profile=profile,
                 phase=_handoff_phase(hook, phase),
                 hook=hook,
                 gate_phase=phase,
@@ -1230,13 +1236,14 @@ def _request_handoff(
     round_n: int,
     max_rounds: int,
     *,
+    profile: Any,
     phase: str,
     hook: str,
     gate_phase: str,
 ) -> None:
     """Stash a phase-handoff signal so the caller persists the pause."""
     from pipeline.runtime.handoff import PhaseHandoffRequested
-    from pipeline.runtime.roles import PhaseHandoffAction, PhaseHandoffType
+    from pipeline.runtime.roles import PhaseHandoffType
     from pipeline.verification_failure import format_receipt_failure
 
     evidence = format_receipt_failure(classification, receipt)
@@ -1255,16 +1262,7 @@ def _request_handoff(
         "failure_kind": failure_kind,
     }
     last_output = getattr(run.state, "last_critique", "") or evidence
-    available_actions = (
-        (PhaseHandoffAction.CONTINUE_WITH_WAIVER.value, PhaseHandoffAction.HALT.value)
-        if hygiene
-        else (
-            PhaseHandoffAction.CONTINUE.value,
-            PhaseHandoffAction.RETRY_FEEDBACK.value,
-            PhaseHandoffAction.HALT.value,
-            PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
-        )
-    )
+    available_actions = _handoff_actions(profile, hygiene=hygiene)
     signal = PhaseHandoffRequested(
         handoff_id=f"gate:{entry.command}:{round_n}",
         phase=phase,
@@ -1283,6 +1281,82 @@ def _request_handoff(
             "findings": [finding],
             "short_summary": evidence,
         },
+        last_output=last_output,
+    )
+    run.state.phase_handoff_request = signal
+    run.state.stop(f"phase handoff requested: {signal.handoff_id}")
+
+
+def _handoff_actions(profile: Any, *, hygiene: bool) -> tuple[str, ...]:
+    """Return only actions the current profile can execute for this failure."""
+    from pipeline.runtime.roles import PhaseHandoffAction
+
+    return (
+        (PhaseHandoffAction.CONTINUE_WITH_WAIVER.value, PhaseHandoffAction.HALT.value)
+        if hygiene
+        else (
+            (
+                PhaseHandoffAction.CONTINUE.value,
+                PhaseHandoffAction.RETRY_FEEDBACK.value,
+                PhaseHandoffAction.HALT.value,
+                PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
+            )
+            if _repair_step(profile) is not None
+            else (
+                PhaseHandoffAction.CONTINUE.value,
+                PhaseHandoffAction.HALT.value,
+                PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
+            )
+        )
+    )
+
+
+def repark_verification_handoff_retry_blocked(
+    run: Any, *, profile: Any, active: dict[str, Any], reason: str,
+) -> None:
+    """Publish a fresh, decidable gate pause after retry preflight blocks.
+
+    The old decision remains immutable audit evidence.  Its id cannot be reused:
+    SDK decisions are exact-payload idempotent, while the re-parked handoff must
+    offer the profile's current executable action set.
+    """
+    from pipeline.runtime.handoff import PhaseHandoffRequested
+    from pipeline.runtime.roles import PhaseHandoffType
+
+    artifacts = dict(active.get("artifacts") or {})
+    findings = artifacts.get("findings")
+    hygiene = (
+        isinstance(findings, list)
+        and bool(findings)
+        and isinstance(findings[0], dict)
+        and findings[0].get("severity") == "P3"
+    )
+    prior_id = str(active.get("id") or "gate:verification")
+    prior_summary = artifacts.get("short_summary")
+    artifacts["retry_blocked_reason"] = reason
+    artifacts["short_summary"] = (
+        f"{prior_summary}\nRetry blocked: {reason}"
+        if isinstance(prior_summary, str) and prior_summary
+        else f"Retry blocked: {reason}"
+    )
+    prior_output = active.get("last_output")
+    last_output = (
+        f"{prior_output}\nRetry blocked: {reason}"
+        if isinstance(prior_output, str) and prior_output
+        else f"Retry blocked: {reason}"
+    )
+    signal = PhaseHandoffRequested(
+        handoff_id=f"{prior_id}:retry_blocked",
+        phase=str(active.get("phase") or "implement"),
+        type=PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT,
+        trigger="verification_gate_failed",
+        verdict="REJECTED",
+        approved=False,
+        round_extras_key=str(active.get("round_extras_key") or "repair_round"),
+        round=max(1, int(active.get("round", 1) or 1)),
+        loop_max_rounds=max(1, int(active.get("loop_max_rounds", 1) or 1)),
+        available_actions=_handoff_actions(profile, hygiene=hygiene),
+        artifacts=artifacts,
         last_output=last_output,
     )
     run.state.phase_handoff_request = signal
@@ -1404,7 +1478,9 @@ def _repair_budget(run: Any, profile: Any) -> int:
     return 1
 
 
-def rerun_verification_handoff_gate(run: Any, *, retry_context: Any) -> bool:
+def rerun_verification_handoff_gate(
+    run: Any, *, retry_context: Any, profile: Any,
+) -> bool:
     """Re-execute exactly one durable selected gate after a human repair.
 
     The lookup is identity-based; a missing or duplicate match is a control
@@ -1435,6 +1511,7 @@ def rerun_verification_handoff_gate(run: Any, *, retry_context: Any) -> bool:
     _request_handoff(
         run, entry, receipt, classification,
         retry_context.fresh_round, retry_context.loop_max_rounds,
+        profile=profile,
         phase=_handoff_phase(hook, phase), hook=hook, gate_phase=phase,
     )
     return False
@@ -1447,5 +1524,6 @@ __all__ = [
     "evaluate_pre_phase_gates",
     "run_gate_hook",
     "run_post_implement_gate_repair",
+    "repark_verification_handoff_retry_blocked",
     "rerun_verification_handoff_gate",
 ]
