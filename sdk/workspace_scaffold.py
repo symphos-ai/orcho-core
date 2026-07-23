@@ -29,9 +29,22 @@ understand that project. An empty PLUGIN dict is valid and changes nothing.
 
 PLUGIN = {
     # "name": "My Project",
-    # "language": "Python",
-    # "architecture": "FastAPI service with PostgreSQL",
-    # "build_prompt_extra": "Run pytest after changing Python code.",
+    # "language": "Describe the project's actual language/runtime.",
+    # "architecture": "Describe the project's real components and boundaries.",
+    # Keep recurring verification in the typed contract below instead of
+    # repeating broad test commands in every task. workspace init cannot infer
+    # project-native tools; add real environments, commands, selection, and
+    # schedules after inspecting the project.
+    # BEGIN ORCHO VERIFICATION EXAMPLE
+    # "work_mode": "pro",
+    # "verification": {
+    #     "delivery_policy": "warn",
+    #     "commands": {},
+    #     "gate_sets": {},
+    #     "selection": [],
+    #     "schedule": [],
+    # },
+    # END ORCHO VERIFICATION EXAMPLE
     # "review_focus_extra": "Check auth, migrations, and API compatibility.",
     # "skill_trust": {
     #     # Project and workspace skills are opt-in. Keep defaults unless
@@ -41,6 +54,96 @@ PLUGIN = {
     # },
 }
 '''
+
+_AGENTS_BODY: Final[str] = """\
+# Orcho Project Agent Rules
+
+This template belongs with the adjacent `plugin.py` verification contract.
+When adopting that plugin in a project, merge these rules into the project's
+root `AGENTS.md` and keep a root `CLAUDE.md` shim pointing to it. Native agent
+runtimes discover root instruction files; Orcho does not inject this template
+into prompts or overwrite existing project rules.
+
+## Configuring Orcho for this project
+
+When asked to configure Orcho, do not fill the plugin from language stereotypes
+or copy commands from this template. Inspect the repository first:
+
+1. Read existing root instructions, manifests, package-manager scripts,
+   build files, CI workflows, and developer documentation.
+2. Identify the commands the project already treats as authoritative for
+   formatting, lint, type checks, unit/integration tests, builds, migrations,
+   and end-to-end checks.
+3. Identify the real execution environment: checkout-relative binaries,
+   required services, dependency repositories, generated assets, credentials,
+   serial-only infrastructure, and commands unsafe in an isolated worktree.
+4. Separate fast deterministic feedback from broad, slow, destructive,
+   networked, or credential-dependent verification. Do not call a command
+   cheap merely because its name sounds familiar.
+5. Edit `.orcho/multiagent/plugin.py` using only facts found in this project:
+   declare environments and commands, group them by purpose, select them by
+   `always`, `paths`, `task_kind`, or `operator`, then schedule them or leave
+   them manual-only.
+6. Start new automatic policy at `warn`. Promote a stable, load-bearing check
+   to `require` only after its environment and failure consequence are proven.
+   Use repair routing only for failures the implementation agent can fix in
+   code; environment, service, credential, and provenance failures need an
+   operator handoff.
+7. Run `orcho quality-gates --project .` and fix every contract validation
+   error. Execute cheap candidate commands once to confirm their exact argv and
+   cwd. Do not launch broad or destructive candidates merely to finish setup;
+   keep them operator-selected until deliberately validated.
+8. Report what was configured, why each gate is selected and scheduled, which
+   checks remain manual, and which assumptions still need operator confirmation.
+
+An empty generated verification skeleton is a starting point, not a completed
+project configuration.
+
+## Verification ownership
+
+Before adding verification commands to a task, inspect the target project's:
+
+    <project>/.orcho/multiagent/plugin.py
+
+You can also inspect the effective contract with:
+
+    orcho quality-gates --project /path/to/project
+
+Apply the same rules whether the task comes from `--task`, `--task-file`, a
+follow-up, or an edited plan:
+
+- If a broad or recurring command is selected and scheduled by the project
+  verification contract, the Orcho engine owns its official execution and
+  durable receipt. Do not turn it into an implement subtask or run it again
+  merely to satisfy task acceptance.
+- Implementation agents may run useful targeted checks while debugging:
+  focused tests, lint on changed files, a narrow type check, or another bounded
+  command that gives fast feedback. The contract does not prohibit native
+  tools; it prevents duplicate ownership of official proof.
+- State acceptance as observable behavior, structure, and targeted evidence.
+  Say that the repository gate remains engine-owned instead of copying its
+  broad command into the task.
+- If a command exists but is manual-only, declared but unscheduled, or absent
+  from the contract, a task may explicitly require it when it is necessary
+  evidence. Label why it is needed. Recurring commands should move into the
+  project contract rather than being copied into every task.
+- Never invoke `orcho verify` from an implement subtask to manufacture official
+  receipts. Verification execution and receipt ownership belong to the engine.
+- Work in the checkout supplied by Orcho. Do not hard-code a canonical project
+  path as the edit or test subject.
+
+## Task authoring
+
+Keep one task bounded. Name anticipated files, the behavior being changed,
+targeted tests that help implementation, and explicit exclusions. Do not ask an
+agent to prove unbounded claims such as "nothing anywhere broke."
+
+The detailed task and gate guide is:
+
+    workspace-orchestrator/.orcho/.task-files/README.md
+"""
+
+_CLAUDE_BODY: Final[str] = "@./AGENTS.md\n"
 
 _PROMPT_README_BODY: Final[str] = """\
 # {title} Prompt Overrides
@@ -76,9 +179,67 @@ project when you want bare-name lookup to find them predictably.
 
 ## Writing a good task file
 
+These rules apply to both reusable task files and direct `--task` input.
+
+Start by inspecting the target project's effective verification contract:
+
+    orcho quality-gates --project /path/to/project
+
+The contract is usually declared in:
+
+    project/.orcho/multiagent/plugin.py
+
+### When a gate is selected and scheduled
+
 Verification is the engine's job. A full or broad suite is not an implement
-subtask: implement work uses only targeted tests for its concrete change. The
-project's required gate runs separately after implementation.
+subtask: the engine executes the scheduled command, records its receipt, and
+applies the configured consequence.
+
+Write acceptance in terms of:
+
+- observable behavior or structure;
+- anticipated files and explicit exclusions;
+- targeted tests or checks useful while implementing;
+- the fact that the repository gate remains engine-owned.
+
+Implementation agents are still allowed to use native tools. Focused tests,
+lint on changed files, a narrow type check, and other bounded feedback are
+appropriate when they help produce correct code. The rule is against duplicate
+ownership of the same broad proof, not against useful local verification.
+
+### When a command is not engine-owned
+
+If a useful command is manual-only, declared but unscheduled, or not present in
+the verification contract, the task may require it explicitly. This is
+especially appropriate for one-off migration checks or expensive commands that
+should run only for a particular change. Explain why that command is necessary.
+
+If the same command keeps appearing in tasks, configure it once as a selected
+and scheduled project gate instead.
+
+### Minimal project gate pattern
+
+The generated `.orcho/multiagent/plugin.py` contains a language-neutral,
+validation-safe starting pattern. It deliberately declares no command because
+`workspace init` has not inspected the project:
+
+- add the project's real verification environment and native command;
+- group it in a gate set;
+- select the gate set with `always`, `paths`, `task_kind`, or `operator`;
+- schedule it at an executable hook, or keep it manual-only;
+- start with `warn`; promote load-bearing, stable checks to `require` only when
+  the environment and repair consequence are deliberate.
+
+Do not copy `orcho verify run ...` into the task. That command creates official
+receipts and remains engine/operator-owned.
+
+The adjacent `.orcho/multiagent/AGENTS.md` is the matching project-rule
+template. When a project adopts the plugin, merge that template into the
+project's root `AGENTS.md` and keep the supplied `CLAUDE.md` shim at the same
+root. Existing project instructions must be preserved rather than overwritten.
+The template also tells an agent how to inspect an unfamiliar repository,
+derive project-native environments and commands, choose selection/scheduling,
+and validate the resulting contract without guessing a language toolchain.
 
 For the complete authoring guide, see:
 
@@ -96,6 +257,8 @@ def scaffold_workspace_extensions(
     multiagent = root / "multiagent"
     prompts = multiagent / "prompts"
     task_files = root / ".task-files"
+    agents_file = multiagent / "AGENTS.md"
+    claude_file = multiagent / "CLAUDE.md"
 
     created: list[Path] = []
     skipped: list[Path] = []
@@ -120,6 +283,8 @@ def scaffold_workspace_extensions(
         )
 
     files = {
+        agents_file: _AGENTS_BODY,
+        claude_file: _CLAUDE_BODY,
         multiagent / "plugin.py": _PLUGIN_BODY,
         prompts / "roles" / "README.md": _PROMPT_README_BODY.format(
             title="Roles", layer="roles",
@@ -150,6 +315,8 @@ def scaffold_workspace_extensions(
             str(multiagent / "plugin.py"),
             str(prompts),
             str(task_files),
+            str(agents_file),
+            str(claude_file),
         ),
     )
 

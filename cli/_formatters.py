@@ -1757,6 +1757,8 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             "Plugin template:",
             "Prompt overrides:",
             "Task files:",
+            "Agent rules template:",
+            "Claude shim template:",
         )
         for label, path in zip(labels, extension_points, strict=False):
             out.append(

@@ -58,8 +58,10 @@ The command creates:
 │   ├── runspace/runs/         ← pipeline run results are written here
 │   ├── .orcho/config.local.json      ← workspace-local override config
 │   ├── .orcho/multiagent/plugin.py  ← empty plugin template, safe by default
+│   ├── .orcho/multiagent/AGENTS.md  ← matching project agent-rule template
+│   ├── .orcho/multiagent/CLAUDE.md  ← shim shipped with the rule template
 │   ├── .orcho/multiagent/prompts/   ← workspace-level prompt override guides
-│   └── .orcho/.task-files/          ← reusable task-file guide
+│   └── .orcho/.task-files/          ← task and verification ownership guide
 ├── api/                       ← your project 1 (detected automatically)
 ├── frontend/                  ← your project 2
 └── mobile/                    ← your project 3
@@ -84,6 +86,21 @@ are only created when missing and are never overwritten. Prompt overrides
 resolve project first, then workspace, then core. Project plugins still
 live at `project/.orcho/multiagent/plugin.py`; the workspace plugin file
 is a copyable template with `PLUGIN = {}`.
+
+The generated `AGENTS.md` and `CLAUDE.md` live beside the plugin because they
+form one project-configuration template. When a project adopts the plugin,
+merge the rules into that project's root `AGENTS.md` and keep the shim at the
+same root so native agent runtimes discover them. Existing project instructions
+are never overwritten. The task guide applies the same ownership rule to task
+files, direct `--task` input, and follow-ups: scheduled project gates remain
+engine-owned, while implementation can still run focused tests, lint on
+changed files, and other bounded feedback. Commands that are manual-only or
+not configured may be requested explicitly. The plugin template includes a
+commented, language-neutral gate pattern that starts at `warn` and declares no
+commands until the project has been inspected. The matching agent rules include
+a setup playbook for discovering project-native commands and environments,
+choosing selection and scheduling, validating the contract, and reporting
+unresolved assumptions.
 
 From there — the usual commands:
 
