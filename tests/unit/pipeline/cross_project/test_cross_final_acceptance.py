@@ -1066,8 +1066,12 @@ def test_resume_completed_cfa_reaches_delivery_without_provider(tmp_path, monkey
         task="resume delivery", projects={"api": tmp_path}, dry_run=False,
         resume_from="prior", output_dir=None, max_rounds=1,
     )
+    banners: list[tuple] = []
     ctx = SimpleNamespace(
-        r=SimpleNamespace(banner=lambda *_, **__: None, C=SimpleNamespace(MAGENTA="")),
+        r=SimpleNamespace(
+            banner=lambda *args, **_kwargs: banners.append(args),
+            C=SimpleNamespace(MAGENTA=""),
+        ),
         session={
             "projects": {"api": str(tmp_path)},
             "phases": {"cross_final_acceptance": result_to_phase_log_entry(cached_result)},
@@ -1082,6 +1086,7 @@ def test_resume_completed_cfa_reaches_delivery_without_provider(tmp_path, monkey
     assert session_run._run_release_gate(request, ctx) is False
     assert ctx.graph_gate_blocked is False
     assert ctx.cfa_outcome.outcome == "cached_terminal"
+    assert banners == []
     assert session_run._finalize_release_verdict(request, ctx) is False
     with (
         patch("pipeline.cross_project.cross_delivery.run_cross_delivery", return_value=object()) as deliver,

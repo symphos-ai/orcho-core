@@ -47,6 +47,7 @@ Critical invariants pinned by tests:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -625,6 +626,7 @@ def evaluate_cfa_gate(
     output_dir: bool,
     terminal: bool,
     max_rounds: int = CFA_DEFAULT_MAX_ROUNDS,
+    on_fresh_start: Callable[[], None] | None = None,
 ) -> CfaGateOutcome:
     """Gate the cross_final_acceptance phase with pause/decide semantics.
 
@@ -667,6 +669,9 @@ def evaluate_cfa_gate(
             gate surfaces this in the handoff payload as
             ``loop_max_rounds`` so UI / CLI can render ``round N
             of M``.
+        on_fresh_start: optional presentation callback invoked only
+            when the reviewer will actually execute. Cached and
+            decision-only resume paths do not invoke it.
 
     Returns:
         :class:`CfaGateOutcome` carrying the dispatch outcome and (on
@@ -694,6 +699,9 @@ def evaluate_cfa_gate(
             return CfaGateOutcome(outcome="cached_terminal", cfa_result=cached)
 
     # ── Fresh path: run the reviewer ──────────────────────────────────
+    if on_fresh_start is not None:
+        on_fresh_start()
+
     from pipeline.cross_project.final_acceptance import (
         result_to_phase_log_entry,
         run_cross_final_acceptance,
