@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.io.git_helpers import has_uncommitted
-from pipeline.run_state.status_vocab import PAUSE_STATUS, RESUMABLE_TERMINAL_STATUSES
+from pipeline.run_state.projector import project_run_dir
+from pipeline.run_state.status_vocab import (
+    INTERRUPTED_STATUS,
+    PAUSE_STATUS,
+    RESUMABLE_TERMINAL_STATUSES,
+)
 
 ContinuationSubject = Literal["checkpoint", "plan_artifact", "retained_change", "none"]
 ContinuationIntent = Literal["resume", "followup", "from_run_plan"]
@@ -112,6 +117,13 @@ def _has_persisted_plan(parent_run_dir: Path | None) -> bool:
         return False
 
 
+def _interrupted_phase(parent_run_dir: Path | None) -> str | None:
+    """Return the phase left in flight by an interrupted provider invocation."""
+    if parent_run_dir is None:
+        return None
+    return project_run_dir(parent_run_dir).active_phase
+
+
 def _is_correction_candidate(meta: Mapping[str, Any]) -> bool:
     if meta.get("status") != "halted":
         return False
@@ -165,6 +177,41 @@ def resolve_continuation_decision(
             return ContinuationDecision(run_id, "retained_change", "start_followup", ("followup", "exit"), True, False, retained, source, True, reason)
         return ContinuationDecision(run_id, "retained_change", "start_followup", ("followup", "exit"), True, False, retained, "worktree", False, "terminal correction retains an uncommitted worktree change")
 
+    if meta.get("status") == INTERRUPTED_STATUS:
+        active_phase = _interrupted_phase(parent_run_dir)
+        if active_phase is not None:
+            if _has_persisted_plan(parent_run_dir):
+                return ContinuationDecision(
+                    run_id,
+                    "plan_artifact",
+                    "plan_artifact_continuation",
+                    (),
+                    False,
+                    False,
+                    None,
+                    None,
+                    False,
+                    (
+                        f"interrupted during phase {active_phase!r} before a "
+                        "resumable checkpoint; restart implementation from the "
+                        "persisted plan artifact"
+                    ),
+                )
+            return ContinuationDecision(
+                run_id,
+                "none",
+                "none",
+                (),
+                False,
+                False,
+                None,
+                None,
+                True,
+                (
+                    f"interrupted during phase {active_phase!r} before a "
+                    "resumable checkpoint and no persisted plan artifact exists"
+                ),
+            )
     if meta.get("status") in RESUMABLE_TERMINAL_STATUSES:
         return ContinuationDecision(run_id, "checkpoint", "resume_checkpoint", (), False, True, None, None, False, "checkpoint-resumable terminal state")
     if meta.get("status") == PAUSE_STATUS:

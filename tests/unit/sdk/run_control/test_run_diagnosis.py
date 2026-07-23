@@ -289,6 +289,35 @@ def test_resumable_non_terminal_stop(tmp_path: Path, status: str) -> None:
     assert d.continuation_subject == diag.SUBJECT_NONE
 
 
+def test_interrupted_in_flight_phase_recommends_plan_artifact(
+    tmp_path: Path,
+) -> None:
+    runs = tmp_path / "runs"
+    _mk(
+        runs,
+        "r",
+        {"status": "interrupted", "project": "/x"},
+        files={
+            "parsed_plan.json": "{}",
+            "events.jsonl": (
+                '{"seq":1,"kind":"phase.start",'
+                '"payload":{"phase":"implement"}}\n'
+            ),
+        },
+    )
+
+    d = _diag(runs, "r")
+
+    assert d.condition == "interrupted"
+    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert (
+        d.recommended_next_action
+        == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    )
+    assert d.recommended_run_id == "r"
+    assert "before a resumable checkpoint" in d.reason
+
+
 # ── parity table (living documentation; MCP not imported) ──────────────────────
 
 # Mirror of MCP ``project_run_diagnosis`` condition labels (run_projection.py).
