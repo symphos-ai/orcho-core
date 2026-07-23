@@ -65,11 +65,25 @@ def apply_verification_handoff_resume(
     advances past the phase that published the gate handoff.
     """
     if action == "retry_feedback":
-        return apply_verification_handoff_retry(
-            run=run, profile=profile, ctx=ctx, active=active,
-            handoff_id=handoff_id, feedback=feedback, note=note,
-            decided_at=decided_at, identity=identity,
-        )
+        try:
+            return apply_verification_handoff_retry(
+                run=run, profile=profile, ctx=ctx, active=active,
+                handoff_id=handoff_id, feedback=feedback, note=note,
+                decided_at=decided_at, identity=identity,
+            )
+        except VerificationHandoffRetryBlocked as exc:
+            # A persisted decision can outlive a profile edit that removes
+            # repair_changes. Re-park through the ordinary pause tail with a
+            # fresh id: the old immutable decision artifact cannot be reused
+            # for a different executable action.
+            from pipeline.project.gate_repair import (
+                repark_verification_handoff_retry_blocked,
+            )
+
+            repark_verification_handoff_retry_blocked(
+                run, profile=profile, active=active, reason=str(exc),
+            )
+            return _outcome(profile, paused=True)
 
     from pipeline.project.handoff import (
         PhaseHandoffResumeOutcome,
@@ -180,7 +194,7 @@ def apply_verification_handoff_retry(
 
     try:
         passed = rerun_verification_handoff_gate(
-            run, retry_context=retry_context,
+            run, retry_context=retry_context, profile=profile,
         )
     except AgentCallError:
         raise
