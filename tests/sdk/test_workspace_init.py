@@ -89,7 +89,10 @@ def test_workspace_agent_rules_define_gate_ownership_for_all_task_inputs(
     assert "When asked to configure Orcho" in agents
     assert "manifests, package-manager scripts" in agents
     assert "Do not call a command\n   cheap" in agents
-    assert "Start new automatic policy at `warn`" in agents
+    assert "do not default every new gate to `warn`" in agents
+    assert "Use `require` immediately" in agents
+    assert "make the delivery boundary `require` as well" in agents
+    assert "Keep unproven, broad" in agents
     assert "operator handoff" in agents
     assert "orcho quality-gates --project ." in agents
     assert "empty generated verification skeleton" in agents
@@ -109,7 +112,7 @@ def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
         Path(result.workspace_dir) / ".orcho" / "multiagent" / "plugin.py"
     ).read_text(encoding="utf-8")
 
-    assert '"delivery_policy": "warn"' in plugin
+    assert "delivery_policy" not in plugin
     assert '"commands": {}' in plugin
     assert '"gate_sets": {}' in plugin
     assert '"selection": []' in plugin
@@ -138,7 +141,9 @@ def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
     contract = VerificationContract.from_plugin(load_plugin(str(project)))
 
     assert contract is not None
-    assert contract.delivery_policy == "warn"
+    # The empty skeleton remains validation-safe. Agents must select a policy
+    # from project evidence rather than copying one from the template.
+    assert contract.delivery_policy is None
     assert tuple(contract.commands) == ()
 
 
