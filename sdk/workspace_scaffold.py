@@ -38,7 +38,6 @@ PLUGIN = {
     # BEGIN ORCHO VERIFICATION EXAMPLE
     # "work_mode": "pro",
     # "verification": {
-    #     "delivery_policy": "warn",
     #     "commands": {},
     #     "gate_sets": {},
     #     "selection": [],
@@ -84,8 +83,14 @@ or copy commands from this template. Inspect the repository first:
    declare environments and commands, group them by purpose, select them by
    `always`, `paths`, `task_kind`, or `operator`, then schedule them or leave
    them manual-only.
-6. Start new automatic policy at `warn`. Promote a stable, load-bearing check
-   to `require` only after its environment and failure consequence are proven.
+6. Choose policy from evidence; do not default every new gate to `warn`.
+   Use `require` immediately for a project-established, load-bearing check when
+   its command and isolated execution environment are proven and its failure
+   must prevent delivery. Use `warn` for genuinely advisory diagnostics whose
+   failure should be visible but should not block. Keep unproven, broad,
+   service-dependent, credential-dependent, or destructive checks manual until
+   their environment and consequence are deliberate. If any delivery-selected
+   check is load-bearing, make the delivery boundary `require` as well.
    Use repair routing only for failures the implementation agent can fix in
    code; environment, service, credential, and provenance failures need an
    operator handoff.
@@ -227,8 +232,9 @@ validation-safe starting pattern. It deliberately declares no command because
 - group it in a gate set;
 - select the gate set with `always`, `paths`, `task_kind`, or `operator`;
 - schedule it at an executable hook, or keep it manual-only;
-- start with `warn`; promote load-bearing, stable checks to `require` only when
-  the environment and repair consequence are deliberate.
+- use `require` for a proven load-bearing check, `warn` for a genuinely
+  advisory diagnostic, and manual selection for an unproven or operationally
+  expensive check. Do not use `warn` merely to avoid deciding the consequence.
 
 Do not copy `orcho verify run ...` into the task. That command creates official
 receipts and remains engine/operator-owned.
