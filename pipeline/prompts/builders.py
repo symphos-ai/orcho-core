@@ -1618,6 +1618,7 @@ def replan_prompt(
     change_handoff: str | None = None,
     prompt_spec: PromptSpec | None = None,
     professional_prompt_mode: "ProfessionalPromptMode | str | None" = None,
+    verification_part: PromptPart | None = None,
 ) -> PromptTurn:
     """REPLAN: architect revises plan after QA rejection or operator retry.
 
@@ -1687,7 +1688,7 @@ def replan_prompt(
             plan_artifact_boundary_contract(),
             authoring_language_strategy(task_language=cfg.task_language),
         ),
-        extra_upper_parts=extra_parts,
+        extra_upper_parts=_with_verification_part(extra_parts, verification_part),
         project_dir=project_dir,
         plugin=plugin,
     )

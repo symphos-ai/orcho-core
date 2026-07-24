@@ -1031,12 +1031,33 @@ def render_phase_gate_block(
         relevant = [(e, p) for (e, p) in annotated if e.hook != "manual_only"]
         if not relevant:
             return None
-        lines = [f"Verification contract — {phase}:"]
+        lines = [
+            f"Verification contract — {phase}:",
+            "  The engine owns the selected scheduled gates below. Do not "
+            "copy their commands, or broader repository-wide/full-suite "
+            "wrappers, into implement commands, task specs, or done criteria. "
+            "Implement may name targeted checks for the concrete change.",
+        ]
         if contract.verification_envs:
             lines.append(
                 "  envs: " + ", ".join(sorted(contract.verification_envs)),
             )
         lines.append("  Scheduled gates:")
+        lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
+        return "\n".join(lines)
+
+    if phase == "validate_plan":
+        relevant = [(e, p) for (e, p) in annotated if e.hook != "manual_only"]
+        if not relevant:
+            return None
+        lines = [
+            f"Verification contract — {phase}:",
+            "  Reject a plan that turns a selected engine-owned command, or a "
+            "broader repository-wide/full-suite wrapper, into an implement "
+            "command, task spec, or done criterion. Targeted checks for the "
+            "concrete change remain valid.",
+            "  Engine-owned scheduled gates:",
+        ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
 

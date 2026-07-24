@@ -37,11 +37,13 @@ from pipeline.quality_gates import (
 )
 from pipeline.runtime import (
     GateKind,
+    PhaseHandoffType,
     PhaseRegistry,
     PipelineProfile,
     PipelineState,
     run_profile,
 )
+from pipeline.verification_contract import VerificationContract
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
@@ -489,6 +491,35 @@ class TestRegistration:
 # ── Plan ──────────────────────────────────────────────────────────────────────
 
 class TestPlanHandler:
+    def test_replan_keeps_code_owned_verification_ownership_context(self) -> None:
+        architect = _FakeArchitect(_valid_plan_md("fresh plan"))
+        state = _state(phase_config=_StubPhaseConfig(plan_agent=architect))
+        contract = VerificationContract.from_plugin(PluginConfig(
+            work_mode="pro",
+            verification={
+                "commands": {"lint": {"run": "ruff check ."}},
+                "gate_sets": {"hygiene": {"commands": ["lint"]}},
+                "selection": [{"always": ["hygiene"]}],
+                "schedule": [{
+                    "after_phase": "implement",
+                    "gate_sets": ["hygiene"],
+                    "policy": "require",
+                }],
+            },
+        ))
+        assert contract is not None
+        state.extras.update({
+            "plan_round": 2,
+            "verification_contract": contract,
+        })
+        state.last_critique = "Remove the engine-owned lint command."
+
+        default_registry().get("plan")(state)
+
+        prompt, _cwd = architect.calls[0]
+        assert "The engine owns the selected scheduled gates below" in prompt
+        assert "ruff check ." in prompt
+
     def test_success_materializes_declared_write_scope_with_plugin_allowance(self) -> None:
         payload = json.dumps({
             "short_summary": "scope",
@@ -707,6 +738,149 @@ class TestPlanHandler:
 # ── validate_plan ─────────────────────────────────────────────────────────────
 
 class TestValidatePlanHandler:
+    def test_exact_engine_gate_overlap_forces_replan_without_reviewer(self) -> None:
+        reviewer = _FakeReviewer(_approved_review("would approve"))
+        state = _state(phase_config=_StubPhaseConfig(
+            validate_plan_agent=reviewer,
+        ))
+        state.plan_markdown = "PLAN MD"
+        state.parsed_plan = ParsedPlan(
+            short_summary="plan",
+            planning_context="context",
+            commands_to_run=("python -m ruff check .",),
+            subtasks=(
+                SubTask(
+                    id="T1",
+                    goal="change code",
+                    done_criteria=("Ruff and the broad suite pass.",),
+                ),
+            ),
+            source="json",
+        )
+        contract = VerificationContract.from_plugin(PluginConfig(
+            work_mode="pro",
+            verification={
+                "commands": {
+                    "lint": {"run": ["python", "-m", "ruff", "check", "."]},
+                },
+                "gate_sets": {"hygiene": {"commands": ["lint"]}},
+                "selection": [{"always": ["hygiene"]}],
+                "schedule": [{
+                    "after_phase": "implement",
+                    "gate_sets": ["hygiene"],
+                    "policy": "require",
+                }],
+            },
+        ))
+        assert contract is not None
+        state.extras["verification_contract"] = contract
+
+        new = default_registry().get("validate_plan")(state)
+
+        assert reviewer.calls == []
+        assert new.phase_log["validate_plan"]["approved"] is False
+        assert "engine-owned verification" in new.last_critique
+        assert new.phase_log["validate_plan"][
+            "verification_ownership_conflicts"
+        ] == [{
+            "location": "commands_to_run[0]",
+            "plan_command": "python -m ruff check .",
+            "gate_command": "lint",
+            "hook": "after_phase",
+            "phase": "implement",
+        }]
+
+    def test_final_bypass_round_stops_ownership_conflict_before_implement(
+        self,
+    ) -> None:
+        reviewer = _FakeReviewer(_approved_review("would approve"))
+        state = _state(phase_config=_StubPhaseConfig(
+            validate_plan_agent=reviewer,
+        ))
+        state.plan_markdown = "PLAN MD"
+        state.parsed_plan = ParsedPlan(
+            short_summary="plan",
+            planning_context="context",
+            commands_to_run=("python -m ruff check .",),
+            subtasks=(),
+            source="json",
+        )
+        contract = VerificationContract.from_plugin(PluginConfig(
+            work_mode="pro",
+            verification={
+                "commands": {
+                    "lint": {"run": ["python", "-m", "ruff", "check", "."]},
+                },
+                "gate_sets": {"hygiene": {"commands": ["lint"]}},
+                "selection": [{"always": ["hygiene"]}],
+                "schedule": [{
+                    "after_phase": "implement",
+                    "gate_sets": ["hygiene"],
+                    "policy": "require",
+                }],
+            },
+        ))
+        assert contract is not None
+        state.extras.update({
+            "plan_round": 1,
+            "plan_round_max": 1,
+            "verification_contract": contract,
+        })
+        state.lifecycle_ctx.active_step.handoff = SimpleNamespace(
+            type=PhaseHandoffType.HUMAN_BYPASS,
+        )
+
+        new = default_registry().get("validate_plan")(state)
+
+        assert reviewer.calls == []
+        assert new.halt is True
+        assert new.halt_reason == (
+            "validate_plan verification ownership conflict rejected before "
+            "implement"
+        )
+
+    def test_final_operator_round_routes_ownership_conflict_to_handoff(
+        self,
+    ) -> None:
+        state = _state()
+        state.plan_markdown = "PLAN MD"
+        state.parsed_plan = ParsedPlan(
+            short_summary="plan",
+            planning_context="context",
+            commands_to_run=("python -m ruff check .",),
+            subtasks=(),
+            source="json",
+        )
+        contract = VerificationContract.from_plugin(PluginConfig(
+            work_mode="pro",
+            verification={
+                "commands": {
+                    "lint": {"run": ["python", "-m", "ruff", "check", "."]},
+                },
+                "gate_sets": {"hygiene": {"commands": ["lint"]}},
+                "selection": [{"always": ["hygiene"]}],
+                "schedule": [{
+                    "after_phase": "implement",
+                    "gate_sets": ["hygiene"],
+                    "policy": "require",
+                }],
+            },
+        ))
+        assert contract is not None
+        state.extras.update({
+            "plan_round": 1,
+            "plan_round_max": 1,
+            "verification_contract": contract,
+        })
+        state.lifecycle_ctx.active_step.handoff = SimpleNamespace(
+            type=PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT,
+        )
+
+        new = default_registry().get("validate_plan")(state)
+
+        assert new.phase_log["validate_plan"]["approved"] is False
+        assert new.halt is False
+
     def test_approved_does_not_halt(self) -> None:
         state = _state()
         state.plan_markdown = "PLAN MD"
