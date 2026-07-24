@@ -34,7 +34,7 @@ and delivery enforce, never a narrower ``contract.required``-only subset.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -140,6 +140,7 @@ def materialize_required_receipts(
     extras: Mapping[str, Any] | None = None,
     dry_run: bool = False,
     reason: str,
+    on_targets_resolved: Callable[[tuple[str, ...]], None] | None = None,
 ) -> ReceiptAutoRunResult:
     """Regenerate a run's missing/stale required receipts in a single pass.
 
@@ -165,6 +166,10 @@ def materialize_required_receipts(
     parent-runs key is absent from ``extras``, it is merged into a private copy
     (``dict(extras or {})``, never mutating the caller's mapping) so parent-receipt
     inheritance still matches readiness.
+
+    ``on_targets_resolved`` is an optional observation hook invoked once, after
+    authoritative selection and immediately before any environment or command
+    execution. It receives only the commands that will actually run.
 
     No-op (``attempted=False``) when ``dry_run`` is set, no contract is declared,
     or the resolved delivery-required set is empty (no required delivery command
@@ -308,6 +313,8 @@ def materialize_required_receipts(
                 targets.append(command)
 
     if targets:
+        if on_targets_resolved is not None:
+            on_targets_resolved(tuple(targets))
         from sdk.verify import verify_env as _verify_env, verify_run as _verify_run
 
         verify_env, verify_run = _verify_env, _verify_run
@@ -565,7 +572,12 @@ def _record_autorun_executions(
 
 
 def auto_run_required_receipts(
-    run: Any, phase: str, *, reason: str, delivery_plan: Any | None = None,
+    run: Any,
+    phase: str,
+    *,
+    reason: str,
+    delivery_plan: Any | None = None,
+    on_targets_resolved: Callable[[tuple[str, ...]], None] | None = None,
 ) -> ReceiptAutoRunResult:
     """Materialise the run's required receipts before a final phase, and record
     durable evidence.
@@ -631,6 +643,7 @@ def auto_run_required_receipts(
         extras=extras,
         dry_run=False,
         reason=reason,
+        on_targets_resolved=on_targets_resolved,
     )
     # The final-phase caller selected ``delivery_plan`` durably before invoking
     # sdk.verify. Correction pre-review passes no plan and cannot create a
