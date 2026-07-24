@@ -150,7 +150,7 @@ def test_small_task_always_publishes_committed_delivery_branch(
 @pytest.mark.git_worktree
 @pytest.mark.filesystem_heavy
 def test_small_task_always_without_provider_keeps_branch_ready_result(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "project"
     run_dir = tmp_path / "runs" / "small-task-no-provider"
@@ -171,3 +171,7 @@ def test_small_task_always_without_provider_keeps_branch_ready_result(
         "is ready; open a pull request" in notice
         for notice in delivery["delivery_notices"]
     )
+    stdout = capsys.readouterr().out
+    assert f"branch {delivery['delivery_branch']} ready" in stdout
+    assert "reason:" in stdout
+    assert "PR https://" not in stdout

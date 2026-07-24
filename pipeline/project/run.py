@@ -803,6 +803,9 @@ class _PipelineRun:
     # 0034). Same lifecycle as the worktree token — set after the
     # sandbox resolver returns at run init, reset in ``finalize()``.
     _sandbox_cvar_token: object | None = None  # Token[SandboxPolicy | None]
+    # Runtime-only presentation context; deliberately not persisted because the
+    # durable delivery record does not encode the effective publish gate.
+    _delivery_publish_gate: object | None = None
 
     def __post_init__(self) -> None:
         if self._session_adapters is None:
@@ -1512,6 +1515,7 @@ class _PipelineRun:
         )
 
         app_cfg = config.AppConfig.load()
+        self._delivery_publish_gate = app_cfg.commit.get("publish")
 
         def commit_message_generator(decision):
             # Strategy is decided upstream by ``resolve_commit_delivery`` /
@@ -1666,6 +1670,9 @@ class _PipelineRun:
                     (decision.commit_sha or "")[:7],
                     decision.delivery_branch or None,
                     pr_url=decision.pr_url,
+                    publish_gate=self._delivery_publish_gate,
+                    delivery_warnings=decision.delivery_warnings,
+                    delivery_notices=decision.delivery_notices,
                 ))
             else:
                 render_delivery_outcome(

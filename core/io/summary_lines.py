@@ -35,6 +35,7 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from core.io.ansi import C, paint, strip_ansi
+from core.io.delivery_summary import project_degraded_publish
 
 # ── glyph vocabulary ─────────────────────────────────────────────────────
 # The fixed prefix set. Each line begins with exactly one of these; the
@@ -412,6 +413,9 @@ def delivery_line(
     branch: str | None = None,
     *,
     pr_url: str | None = None,
+    publish_gate: object | None = None,
+    delivery_warnings: Sequence[str] = (),
+    delivery_notices: Sequence[str] = (),
     color: bool | None = None,
     stream: TextIO | None = None,
 ) -> str:
@@ -427,6 +431,23 @@ def delivery_line(
     to a pushed-branch-only publish — instead of a misleading
     ``committed <empty>``.
     """
+    degraded = project_degraded_publish(
+        {
+            "delivery_branch": branch,
+            "pr_url": pr_url,
+            "delivery_warnings": delivery_warnings,
+            "delivery_notices": delivery_notices,
+        },
+        publish_gate=publish_gate,
+    )
+    if degraded is not None:
+        glyph = _glyph(GLYPH_WARN, C.YELLOW, color=color, stream=stream)
+        return _join(
+            [f"{glyph} delivery", degraded.ready_text, f"reason: {degraded.reason}"],
+            color=color,
+            stream=stream,
+        )
+
     glyph = _glyph(GLYPH_OK, C.GREEN, color=color, stream=stream)
     parts = [f"{glyph} delivery"]
     if sha:

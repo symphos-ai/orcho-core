@@ -140,6 +140,26 @@ def test_delivery_line_published_branch_without_pr_is_actionable() -> None:
     )
 
 
+def test_delivery_line_degraded_publish_shows_ready_branch_and_reason() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+            "delivery_warnings": ["delivery publish provider is unavailable"],
+            "delivery_notices": [
+                "delivery branch orcho/deliver/r1-feature is ready; "
+                "open a pull request",
+            ],
+        },
+    }
+    assert render_delivery_destination_lines(session, publish_gate="always") == (
+        "Delivery: branch orcho/deliver/r1-feature ready — reason: "
+        "delivery publish provider is unavailable",
+    )
+
+
 def test_delivery_line_checkout_branch_with_pr_keeps_all_facts() -> None:
     session = {
         "commit_delivery": {

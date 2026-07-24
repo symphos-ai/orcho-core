@@ -297,7 +297,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"No run found{suffix}.")
         print(f"Runs dir: {rd}")
         return 1
-    print(format_status(status, verbose=verbose))
+    app_cfg = config.AppConfig.load()
+    print(format_status(
+        status,
+        verbose=verbose,
+        publish_gate=app_cfg.commit.get("publish"),
+    ))
     return 0
 
 
