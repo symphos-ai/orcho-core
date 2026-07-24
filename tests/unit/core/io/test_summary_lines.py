@@ -147,6 +147,20 @@ def test_implement_done_shape():
 # ── gates / handoff / resume / delivery ──────────────────────────────────
 
 
+def test_delivery_line_keeps_checkout_commit_branch_and_pr() -> None:
+    assert _strip(
+        sl.delivery_line(
+            "abcdef123456",
+            "orcho/deliver/r1-feature",
+            pr_url="https://example.test/pr/7",
+            color=False,
+        )
+    ) == (
+        "✓ delivery · committed abcdef123456 · branch orcho/deliver/r1-feature "
+        "· PR https://example.test/pr/7"
+    )
+
+
 def test_gates_line_ok_uses_check_glyph_and_receipts_dir():
     ok = _strip(sl.gates_line(
         "after_phase(implement)",

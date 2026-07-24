@@ -56,6 +56,7 @@ def config_layout(
                 "enabled": True,
                 "interactive_default": "apply",
                 "auto_in_ci": "approve",
+                "publish": "auto",
             },
             "worktree": {"enabled": True, "isolation": "per_run"},
             "pre_run_dirty": {
@@ -300,6 +301,32 @@ def test_local_overlay_can_change_commit_default(
     )
     merged = config._merge_json_layers()
     assert merged["commit"]["auto_in_ci"] == "apply"
+
+
+def test_workspace_overlay_can_set_commit_publish_always(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["workspace"] / ".orcho" / "config.local.json",
+        {"commit": {"publish": "always"}},
+    )
+
+    merged = config._merge_json_layers()
+
+    assert merged["commit"]["publish"] == "always"
+
+
+def test_commit_publish_defaults_to_auto_in_json_and_app_config(
+    config_layout: dict[str, Path],
+) -> None:
+    raw_defaults = json.loads(
+        (config_layout["package"] / "config.defaults.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert raw_defaults["commit"]["publish"] == "auto"
+    assert config.AppConfig.load().commit["publish"] == "auto"
 
 
 def test_workspace_overlay_overrides_sandbox_limits(

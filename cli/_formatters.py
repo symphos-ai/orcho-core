@@ -304,11 +304,20 @@ def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
     status_text = str(delivery.get("status") or "").strip()
     action_text = str(delivery.get("action") or "").strip()
     verdict = str(delivery.get("release_verdict") or "").strip()
+    delivery_branch = str(delivery.get("delivery_branch") or "").strip()
     pr_url = str(delivery.get("pr_url") or "").strip()
     verification_missing = delivery.get("verification_missing")
     summary = str(delivery.get("release_summary") or "").strip()
     if not any(
-        (status_text, action_text, verdict, pr_url, verification_missing, summary)
+        (
+            status_text,
+            action_text,
+            verdict,
+            delivery_branch,
+            pr_url,
+            verification_missing,
+            summary,
+        )
     ):
         return
 
@@ -336,6 +345,11 @@ def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
         out.append(
             f"{_status_label('    Verification missing:')} "
             f"{_status_warning(missing)}"
+        )
+    if delivery_branch:
+        out.append(
+            f"{_status_label('    Branch:')} "
+            f"{_stdout_paint(delivery_branch, C.WHITE)}"
         )
     if pr_url:
         out.append(f"{_status_label('    PR:')} {_stdout_paint(pr_url, C.GREEN)}")

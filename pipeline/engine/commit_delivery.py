@@ -39,7 +39,8 @@ from pipeline.engine.delivery_branch import (
     publish_delivery_branch,
     resolve_delivery_branch,
 )
-from pipeline.engine.delivery_publish import publish_delivery
+from pipeline.engine.delivery_publication import publication_facts
+from pipeline.engine.delivery_publish import normalize_publish_gate, publish_delivery
 from pipeline.engine.run_diff import resolve_git_root
 from pipeline.run_state.release_verdict import is_release_blocked
 
@@ -159,8 +160,9 @@ class CommitDeliveryDecision:
     pr_intent: DeliveryPrIntent | None = None
     # ADR 0119/0121 — typed machine-readable twin of the human-readable
     # 'PR opened: {url}' line in ``delivery_notices``. Both are derived from the
-    # same :attr:`PublishResult.pr_url` at the single publish site
-    # (:func:`_deliver_published_branch`); ``None`` whenever no PR was opened
+    # same :attr:`PublishResult.pr_url` at the applicable publish site
+    # (the isolated publish path or ``commit_on_branch`` with ``always``);
+    # ``None`` whenever no PR was opened
     # (no provider, gh absent, offline, apply-draft, bypass, push-without-PR).
     pr_url: str | None = None
     # ADR 0119 — non-fatal delivery-branch diagnostics (rebase conflict,
@@ -899,6 +901,28 @@ def apply_commit_delivery(
             target_dirty_retries=retries,
         )
     sha = (_git_stdout(decision.project_path, ["rev-parse", "HEAD"]) or "").strip()
+    persist_fields = _delivery_branch_persist_fields(delivery_outcome)
+    if (
+        delivery_outcome is not None
+        and delivery_outcome.plan == "commit_on_branch"
+        and normalize_publish_gate(
+            (commit_config or {}).get("publish")
+        ) == "always"
+    ):
+        publish_result = publish_delivery(
+            delivery_outcome.pr_intent,
+            branch=delivery_outcome.delivery_branch,
+            cwd=decision.project_path,
+            commit_config=commit_config,
+        )
+        facts = publication_facts(delivery_outcome, publish_result)
+        persist_fields = {
+            "delivery_branch": facts.delivery_branch,
+            "pr_intent": facts.pr_intent,
+            "pr_url": facts.pr_url,
+            "delivery_warnings": facts.delivery_warnings,
+            "delivery_notices": facts.delivery_notices,
+        }
     return _persist(
         decision,
         run_dir=run_dir,
@@ -907,7 +931,7 @@ def apply_commit_delivery(
         files_staged=tuple(files_staged),
         untracked_delivered=staged_untracked,
         target_dirty_retries=retries,
-        **_delivery_branch_persist_fields(delivery_outcome),
+        **persist_fields,
     )
 
 
@@ -974,8 +998,8 @@ def _deliver_published_branch(
     satisfy its schema. Non-fatal rebase/offline diagnostics ride along on
     ``delivery_warnings`` / ``delivery_notices``.
 
-    ADR 0121: this is the single point that hands the published branch to a
-    registered git-provider plugin via :func:`publish_delivery` (push +
+    ADR 0121: this path hands the published branch to a registered git-provider
+    plugin via :func:`publish_delivery` (push +
     pull-request over the already-signed commit). An opened ``pr_url`` folds
     into ``delivery_notices`` as a string — no new wire field — and any publish
     warning folds into ``delivery_warnings``. A disabled gate, missing provider,
@@ -1001,13 +1025,7 @@ def _deliver_published_branch(
         cwd=decision.source_path,
         commit_config=commit_config,
     )
-    if result.pr_url:
-        delivery_notices = published.notices + (f"PR opened: {result.pr_url}",)
-    else:
-        delivery_notices = published.notices + (
-            f"delivery branch {published.delivery_branch} is ready; "
-            "open a pull request or push it manually",
-        )
+    facts = publication_facts(published, result)
     return _persist(
         decision,
         run_dir=run_dir,
@@ -1015,13 +1033,11 @@ def _deliver_published_branch(
         commit_sha=None,
         artifact_commit_sha=branch_sha,
         published_commit_sha=branch_sha,
-        delivery_branch=published.delivery_branch,
-        pr_intent=published.pr_intent,
-        # Same ``result.pr_url`` that shaped the 'PR opened' notice above;
-        # ``None`` when no PR was opened. Never re-parsed from notices.
-        pr_url=result.pr_url,
-        delivery_warnings=published.warnings + result.warnings,
-        delivery_notices=delivery_notices,
+        delivery_branch=facts.delivery_branch,
+        pr_intent=facts.pr_intent,
+        pr_url=facts.pr_url,
+        delivery_warnings=facts.delivery_warnings,
+        delivery_notices=facts.delivery_notices,
     )
 
 
@@ -2023,18 +2039,29 @@ def _render_local_delivery_branch(
         decision.final_message.splitlines()[0]
         if decision.final_message else ""
     )
+    checkout = help_line(
+        "switched to the delivery branch; working tree is clean", color=color,
+    )
+    if decision.pr_url:
+        _delivery_banner(
+            "PULL REQUEST OPENED ON DELIVERY BRANCH",
+            (
+                ("Commit", f"{sha7}  {first_line}".rstrip()),
+                ("Branch", decision.delivery_branch or ""),
+                ("PR", decision.pr_url),
+                ("Checkout", checkout),
+            ),
+            tone=C.GREEN,
+            output_fn=output_fn,
+            color=color,
+        )
+        return
     _delivery_banner(
         "COMMITTED TO LOCAL DELIVERY BRANCH",
         (
             ("Commit", f"{sha7}  {first_line}".rstrip()),
             ("Branch", decision.delivery_branch or ""),
-            (
-                "Checkout",
-                help_line(
-                    "switched to the delivery branch; working tree is clean",
-                    color=color,
-                ),
-            ),
+            ("Checkout", checkout),
             (
                 "Next",
                 "push the branch, then open a pull request if desired",

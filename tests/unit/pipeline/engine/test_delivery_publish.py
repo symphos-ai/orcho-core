@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from pipeline.engine.delivery_publish import (
     DELIVERY_PROVIDER_GROUP,
     PublishResult,
     collect_delivery_setup_hints,
+    normalize_publish_gate,
     publish_delivery,
 )
 
@@ -44,10 +46,12 @@ class _FakeProvider:
         *,
         pr_url: str | None = "https://example.invalid/pr/1",
         raises: bool = False,
+        warnings: tuple[str, ...] = (),
     ) -> None:
         self.calls: list[SimpleNamespace] = []
         self._pr_url = pr_url
         self._raises = raises
+        self._warnings = warnings
 
     def publish(
         self,
@@ -64,7 +68,19 @@ class _FakeProvider:
         )
         if self._raises:
             raise RuntimeError("provider blew up")
-        return PublishResult(pushed=True, pr_url=self._pr_url)
+        return PublishResult(
+            pushed=True, pr_url=self._pr_url, warnings=self._warnings
+        )
+
+
+class _ResultProvider:
+    """Provider fake that deliberately returns an arbitrary result object."""
+
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    def publish(self, *_: object, **__: object) -> object:
+        return self._result
 
 
 def _register(monkeypatch: pytest.MonkeyPatch, **providers: object) -> None:
@@ -87,7 +103,32 @@ def _pr_intent() -> DeliveryPrIntent:
     )
 
 
+def _publish_result_missing_fields() -> PublishResult:
+    """Create a malformed dataclass instance missing its optional fields."""
+    result = object.__new__(PublishResult)
+    object.__setattr__(result, "pushed", True)
+    return result
+
+
 # --- publish_delivery() orchestrator (no git) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("off", "off"),
+        (" AUTO ", "auto"),
+        ("AlWaYs", "always"),
+        ("", "auto"),
+        ("invalid", "auto"),
+        (None, "auto"),
+        (True, "auto"),
+    ],
+)
+def test_normalize_publish_gate_accepts_only_supported_modes(
+    raw: object, expected: str
+) -> None:
+    assert normalize_publish_gate(raw) == expected
 
 
 def test_publish_off_never_resolves_or_invokes_a_provider(
@@ -134,6 +175,23 @@ def test_publish_auto_invokes_registered_provider(
     assert call.remote == "origin"
 
 
+def test_publish_always_uses_the_same_provider_resolution_as_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _FakeProvider()
+    _register(monkeypatch, github=provider)
+
+    result = publish_delivery(
+        _pr_intent(),
+        branch="orcho/deliver/r1-x",
+        cwd=Path("/run/wt"),
+        commit_config={"publish": "always"},
+    )
+
+    assert result.pushed is True
+    assert len(provider.calls) == 1
+
+
 def test_publish_no_provider_degrades_without_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,6 +205,23 @@ def test_publish_no_provider_degrades_without_warning(
     )
 
     assert result == PublishResult(pushed=False)
+
+
+def test_publish_always_without_provider_matches_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _register(monkeypatch)
+
+    auto = publish_delivery(
+        _pr_intent(), branch="orcho/deliver/r1-x", cwd=Path("."),
+        commit_config={"publish": "auto"},
+    )
+    always = publish_delivery(
+        _pr_intent(), branch="orcho/deliver/r1-x", cwd=Path("."),
+        commit_config={"publish": "always"},
+    )
+
+    assert always == auto == PublishResult(pushed=False)
 
 
 def test_publish_provider_error_becomes_warning_not_raise(
@@ -165,6 +240,34 @@ def test_publish_provider_error_becomes_warning_not_raise(
     assert result.pr_url is None
     assert result.warnings
     assert "provider blew up" in result.warnings[0]
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        PublishResult(pushed=True, pr_url=123),  # type: ignore[arg-type]
+        PublishResult(pushed=True, warnings="provider warning"),  # type: ignore[arg-type]
+        PublishResult(pushed=True, warnings=["provider warning"]),  # type: ignore[arg-type]
+        _publish_result_missing_fields(),
+    ],
+    ids=["pr-url-int", "warnings-str", "warnings-list", "missing-fields"],
+)
+def test_publish_malformed_provider_result_degrades_to_typed_warning(
+    monkeypatch: pytest.MonkeyPatch, malformed: object
+) -> None:
+    _register(monkeypatch, github=_ResultProvider(malformed))
+
+    result = publish_delivery(
+        _pr_intent(),
+        branch="orcho/deliver/r1-x",
+        cwd=Path("."),
+        commit_config={"publish": "auto"},
+    )
+
+    assert result == PublishResult(
+        pushed=False,
+        warnings=("delivery publish provider returned an invalid result",),
+    )
 
 
 def test_publish_selects_named_provider(
@@ -270,12 +373,13 @@ def _apply(
     *,
     action: str = "approve",
     publish: str = "auto",
+    branch_policy: str = "worktree_branch",
 ):
     commit_config: dict = {
         "enabled": True,
         "auto_in_ci": action,
         "add_untracked": True,
-        "branch_policy": "worktree_branch",
+        "branch_policy": branch_policy,
         "publish": publish,
     }
     decision = resolve_commit_delivery(
@@ -332,6 +436,127 @@ def test_publish_off_does_not_invoke_provider_but_still_commits(
     assert delivered.delivery_branch is not None
     assert provider.calls == []
     assert any("ready" in n for n in delivered.delivery_notices)
+
+
+def test_commit_on_branch_always_publishes_target_checkout_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _FakeProvider(
+        pr_url="https://example.invalid/pr/always",
+        warnings=("provider warning",),
+    )
+    _register(monkeypatch, github=provider)
+    repo, _, run_dir = _make_run(tmp_path)
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    from pipeline.engine import commit_delivery
+
+    original_outcome = commit_delivery._resolve_delivery_branch_outcome
+
+    def _with_branch_warning(*args: object, **kwargs: object):
+        return replace(
+            original_outcome(*args, **kwargs), warnings=("branch warning",)
+        )
+
+    monkeypatch.setattr(
+        commit_delivery, "_resolve_delivery_branch_outcome", _with_branch_warning
+    )
+    delivered = _apply(
+        repo,
+        repo,
+        run_dir,
+        publish="always",
+        branch_policy="protect_default",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha == _head(repo)
+    assert delivered.published_commit_sha is None
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call.branch == delivered.delivery_branch
+    assert call.pr_intent == delivered.pr_intent
+    assert call.cwd == repo
+    assert call.remote == "origin"
+    assert delivered.pr_url == "https://example.invalid/pr/always"
+    assert delivered.to_dict()["pr_url"] == delivered.pr_url
+    assert f"PR opened: {delivered.pr_url}" in delivered.delivery_notices
+    assert delivered.delivery_warnings == ("branch warning", "provider warning")
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_commit_on_branch_always_degrades_to_branch_ready_after_publish_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raises: bool
+) -> None:
+    if raises:
+        _register(monkeypatch, github=_FakeProvider(raises=True))
+    else:
+        _register(monkeypatch)
+    repo, _, run_dir = _make_run(tmp_path)
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply(
+        repo,
+        repo,
+        run_dir,
+        publish="always",
+        branch_policy="protect_default",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha == _head(repo)
+    assert delivered.pr_url is None
+    assert any("is ready; open a pull request" in n for n in delivered.delivery_notices)
+    if raises:
+        assert any("provider blew up" in warning for warning in delivered.delivery_warnings)
+
+
+def test_commit_on_branch_auto_keeps_local_payload_and_skips_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _FakeProvider()
+    _register(monkeypatch, github=provider)
+    repo, _, run_dir = _make_run(tmp_path)
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    delivered = _apply(
+        repo,
+        repo,
+        run_dir,
+        publish="auto",
+        branch_policy="protect_default",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.commit_sha == _head(repo)
+    assert delivered.delivery_branch is not None
+    assert delivered.pr_url is None
+    assert delivered.delivery_notices == ()
+    assert provider.calls == []
+
+
+def test_commit_in_place_always_does_not_publish_delivery_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _FakeProvider()
+    _register(monkeypatch, github=provider)
+    repo, worktree, run_dir = _make_run(tmp_path)
+
+    delivered = _apply(
+        repo,
+        worktree,
+        run_dir,
+        publish="always",
+        branch_policy="bypass",
+    )
+
+    assert delivered.status == "committed"
+    assert delivered.delivery_branch is None
+    assert delivered.pr_intent is None
+    assert delivered.pr_url is None
+    assert delivered.delivery_warnings == ()
+    assert delivered.delivery_notices == ()
+    assert provider.calls == []
 
 
 def test_degrade_no_provider_notices_without_error(

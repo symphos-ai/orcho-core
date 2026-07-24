@@ -183,6 +183,7 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
                     "release_verdict": "APPROVED",
                     "release_summary": "Ready after verification receipt review.",
                     "verification_missing": ["lint"],
+                    "delivery_branch": "orcho/deliver/r1-feature",
                     "pr_url": "https://example.test/pr/1",
                 },
             }
@@ -267,6 +268,7 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
     assert "Delivery:" in rendered
     assert "Status: committed (approve)" in rendered
     assert "Verification missing: lint" in rendered
+    assert "Branch: orcho/deliver/r1-feature" in rendered
     assert "PR: https://example.test/pr/1" in rendered
     assert "Run dir:" in rendered
 
