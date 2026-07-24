@@ -38,6 +38,7 @@ from core.infra.paths import (
     workspace_config_dir,
 )
 
+_WORKSPACE_CONFIG_NAME = "config.json"
 _LOCAL_CONFIG_NAME = "config.local.json"
 _LOCAL_CONFIG_DISABLE_VALUES = ("1", "true", "yes", "on")
 
@@ -99,12 +100,20 @@ def _local_config_disabled() -> bool:
 def _iter_local_config_paths(
     *, workspace: Path | str | None = None
 ) -> Iterable[Path]:
-    """Yield local config candidates in increasing priority order."""
+    """Yield JSON config candidates in increasing priority order.
+
+    Package and user scopes remain personal-only. Workspace scope adds the
+    team-shared ``config.json`` immediately before its personal
+    ``config.local.json`` override.
+    """
     yield _CONFIG_DIR / _LOCAL_CONFIG_NAME
     yield user_config_dir() / _LOCAL_CONFIG_NAME
     if workspace is not None:
-        yield Path(workspace).expanduser() / ".orcho" / _LOCAL_CONFIG_NAME
+        ws_dir = Path(workspace).expanduser() / ".orcho"
+        yield ws_dir / _WORKSPACE_CONFIG_NAME
+        yield ws_dir / _LOCAL_CONFIG_NAME
     elif ws_dir := workspace_config_dir():
+        yield ws_dir / _WORKSPACE_CONFIG_NAME
         yield ws_dir / _LOCAL_CONFIG_NAME
 
 
@@ -138,10 +147,10 @@ def load_profile_overlays() -> dict[str, dict[str, dict]]:
     Returns ``{profile_name: {patch_key: patch_dict}}``. Phase patch keys
     target a single PhaseStep by phase name; the reserved ``"_profile"``
     key patches the top-level profile object itself. The returned
-    structure is the *aggregate* across all local layers — later layers
-    in :func:`_iter_local_config_paths` (workspace > user > package) win per
-    ``(profile, patch_key)`` key, mirroring the precedence the other overlay
-    sections already use.
+    structure is the *aggregate* across all JSON layers — later layers in
+    :func:`_iter_local_config_paths` (workspace personal > workspace shared >
+    user > package) win per ``(profile, patch_key)`` key, mirroring the
+    precedence the other overlay sections already use.
 
     Honors :envvar:`ORCHO_DISABLE_LOCAL_CONFIG` (returns ``{}`` when set)
     so test harnesses and CI runs can opt out of operator overrides.

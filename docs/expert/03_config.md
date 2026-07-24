@@ -2,13 +2,19 @@
 
 ## Settings precedence
 
-```
-env vars
-  >  $ORCHO_WORKSPACE/.orcho/config.local.json
-  >  ~/.orcho/config.local.json
-  >  _config/config.local.json
-  >  _config/config.defaults.json
-```
+| Priority (low → high) | Path | Audience |
+|---:|---|---|
+| 0 | `_config/config.defaults.json` | shipped defaults |
+| 1 | `_config/config.local.json` | package-local developer override |
+| 2 | `~/.orcho/config.local.json` | personal user preference |
+| 3 | `$ORCHO_WORKSPACE/.orcho/config.json` | committable team workspace policy |
+| 4 | `$ORCHO_WORKSPACE/.orcho/config.local.json` | gitignored personal workspace override |
+| 5 | environment variables | process-specific override |
+
+The workspace pair follows the familiar `settings.json` / `settings.local.json`
+naming pattern: the un-suffixed file is safe to share, while the `.local` file
+is personal and wins over it. `ORCHO_DISABLE_LOCAL_CONFIG=1` disables every
+non-default JSON overlay in this table; environment variables still apply.
 
 ## Environment variables
 
@@ -75,19 +81,26 @@ Hard timeout (`*_TIMEOUT`) is off by default (`0` / unset): long agent runs are 
 
 ---
 
-## config.local.json — local overrides
+## Shared and personal workspace configuration
 
-`orcho workspace init` creates the first workspace-local config:
+`orcho workspace init` scaffolds both workspace files without overwriting an
+existing file:
 
 ```
+$ORCHO_WORKSPACE/.orcho/config.json
 $ORCHO_WORKSPACE/.orcho/config.local.json
 ```
 
-This is the main file for settings of a specific workspace: models, effort,
-timeouts, artifact language, session policy, pipeline knobs, and the artifact
-mirror. The file is created with the real current values from the defaults,
-package-local, and user-global layers, so it can be read and edited right
-away. A repeated `workspace init` does not overwrite the file.
+Put team policy that should be reviewed and committed in `config.json`.
+It starts as a neutral comment-only JSON object, so a fresh workspace does not
+silently change runtime behavior. `.orcho/.gitignore` ignores only
+`config.local.json`, not `config.json`.
+
+Use `config.local.json` for personal workspace preferences: models, effort,
+timeouts, artifact language, session policy, pipeline knobs, artifact mirror,
+and workspace project aliases. It is generated with concrete starting values
+from defaults plus package/user personal layers, then overrides the shared
+workspace file. Repeated `workspace init` never overwrites either file.
 
 For machine-wide settings use:
 
@@ -155,8 +168,9 @@ not infer that it was pushed.
 
 ### profiles_v2 overlays
 
-Built-in execution profiles can be tuned locally through the `profiles_v2`
-block. Prefer the CLI writer so the result is validated before it is saved:
+Built-in execution profiles can be tuned through the `profiles_v2` block in
+either workspace file. Put team-wide overlays in shared `config.json` by hand;
+prefer the CLI writer for a validated personal override:
 
 ```bash
 orcho profile customize feature --mode pro --phase-effort implement=high

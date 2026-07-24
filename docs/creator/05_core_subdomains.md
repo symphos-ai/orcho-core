@@ -174,10 +174,12 @@ live in `_config/pipeline_profiles_v2.json` and are part of the installed
 package. A direct edit of that file survives exactly one `orcho-promote` run.
 
 For durable overrides without forking a profile, use the `profiles_v2` block in
-any `config.local.json` layer:
+any JSON config layer. Author team-wide overlays in workspace `config.json`;
+use `config.local.json` for personal ones:
 
 ```json
-// ~/.orcho/config.local.json   (or ./.orcho/config.local.json in the workspace)
+// $ORCHO_WORKSPACE/.orcho/config.json (shared)
+// or $ORCHO_WORKSPACE/.orcho/config.local.json (personal)
 {
   "profiles_v2": {
     "advanced": {
@@ -204,8 +206,14 @@ Semantics:
 
 Precedence (high → low, same as the other overlay sections):
 1. `$ORCHO_WORKSPACE/.orcho/config.local.json`
-2. `~/.orcho/config.local.json`
-3. `_config/config.local.json` (package)
+2. `$ORCHO_WORKSPACE/.orcho/config.json`
+3. `~/.orcho/config.local.json`
+4. `_config/config.local.json` (package)
+
+Environment variables are above this list. From low to high, the complete
+order is package → user → workspace shared → workspace personal → environment.
+The workspace names follow `settings.json` / `settings.local.json`: commit the
+shared team policy and keep the personal override gitignored.
 
 To disable the overlay path entirely (for CI / a harness pinned to the
 built-in shape): `ORCHO_DISABLE_LOCAL_CONFIG=1`.

@@ -1,4 +1,4 @@
-"""Layered ``config.local.json`` lookup semantics."""
+"""Layered workspace shared and personal config lookup semantics."""
 from __future__ import annotations
 
 import json
@@ -77,7 +77,24 @@ def config_layout(
         "package": package_config,
         "home": fake_home,
         "workspace": workspace,
+        "workspace_shared": workspace / ".orcho" / "config.json",
+        "workspace_personal": workspace / ".orcho" / "config.local.json",
     }
+
+
+@pytest.mark.parametrize("explicit_workspace", [False, True])
+def test_local_config_candidates_include_workspace_shared_before_personal(
+    config_layout: dict[str, Path],
+    explicit_workspace: bool,
+) -> None:
+    workspace = config_layout["workspace"] if explicit_workspace else None
+
+    assert list(config._iter_local_config_paths(workspace=workspace)) == [
+        config_layout["package"] / "config.local.json",
+        config_layout["home"] / ".orcho" / "config.local.json",
+        config_layout["workspace_shared"],
+        config_layout["workspace_personal"],
+    ]
 
 
 def test_package_only_layer(config_layout: dict[str, Path]) -> None:
@@ -115,10 +132,57 @@ def test_workspace_overrides_user(config_layout: dict[str, Path]) -> None:
         config_layout["workspace"] / ".orcho" / "config.local.json",
         {"phases": {"implement": {"model": "workspace-implement"}}},
     )
+    _write_json(
+        config_layout["workspace_shared"],
+        {"phases": {"implement": {"model": "shared-implement"}}},
+    )
 
     merged = config._merge_json_layers()
 
     assert merged["phases"]["implement"]["model"] == "workspace-implement"
+
+
+def test_workspace_personal_overrides_shared_and_shared_overrides_user(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["home"] / ".orcho" / "config.local.json",
+        {"phases": {"implement": {"model": "user-implement"}}},
+    )
+    _write_json(
+        config_layout["workspace_shared"],
+        {"phases": {"implement": {"model": "shared-implement"}}},
+    )
+
+    assert config._merge_json_layers()["phases"]["implement"]["model"] == (
+        "shared-implement"
+    )
+
+    _write_json(
+        config_layout["workspace_personal"],
+        {"phases": {"implement": {"model": "personal-implement"}}},
+    )
+
+    assert config._merge_json_layers()["phases"]["implement"]["model"] == (
+        "personal-implement"
+    )
+
+
+def test_absent_workspace_shared_preserves_personal_layer_behavior(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["home"] / ".orcho" / "config.local.json",
+        {"phases": {"implement": {"model": "user-implement"}}},
+    )
+    _write_json(
+        config_layout["workspace_personal"],
+        {"phases": {"implement": {"model": "personal-implement"}}},
+    )
+
+    assert config._merge_json_layers()["phases"]["implement"]["model"] == (
+        "personal-implement"
+    )
 
 
 def test_workspace_layer_off_when_env_unset(
@@ -128,6 +192,10 @@ def test_workspace_layer_off_when_env_unset(
     _write_json(
         config_layout["workspace"] / ".orcho" / "config.local.json",
         {"phases": {"implement": {"model": "workspace-implement"}}},
+    )
+    _write_json(
+        config_layout["workspace_shared"],
+        {"phases": {"implement": {"model": "shared-implement"}}},
     )
     monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
 
@@ -152,11 +220,35 @@ def test_disable_local_config_skips_all_layers(
         config_layout["workspace"] / ".orcho" / "config.local.json",
         {"phases": {"implement": {"model": "workspace-implement"}}},
     )
+    _write_json(
+        config_layout["workspace_shared"],
+        {"phases": {"implement": {"model": "shared-implement"}}},
+    )
     monkeypatch.setenv("ORCHO_DISABLE_LOCAL_CONFIG", "1")
 
     merged = config._merge_json_layers()
 
     assert merged["phases"]["implement"]["model"] == "default-implement"
+
+
+def test_workspace_commit_publish_personal_shared_then_default(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(config_layout["workspace_shared"], {"commit": {"publish": "off"}})
+    _write_json(
+        config_layout["workspace_personal"], {"commit": {"publish": "auto"}},
+    )
+
+    config.AppConfig.load.cache_clear()
+    assert config.AppConfig.load().commit["publish"] == "auto"
+
+    config_layout["workspace_personal"].unlink()
+    config.AppConfig.load.cache_clear()
+    assert config.AppConfig.load().commit["publish"] == "off"
+
+    config_layout["workspace_shared"].unlink()
+    config.AppConfig.load.cache_clear()
+    assert config.AppConfig.load().commit["publish"] == "auto"
 
 
 def test_per_phase_partial_override(config_layout: dict[str, Path]) -> None:

@@ -36,6 +36,20 @@ def test_creates_workspace_layout(tmp_path: Path) -> None:
     assert Path(r.env_file).is_file()
     assert Path(r.local_config_file).is_file()
     ws = Path(r.workspace_dir)
+    shared_config = ws / ".orcho" / "config.json"
+    gitignore = ws / ".orcho" / ".gitignore"
+    assert json.loads(shared_config.read_text(encoding="utf-8")) == {
+        "_comment": (
+            "Team-shared workspace configuration. Add active settings "
+            "deliberately; personal overrides belong in config.local.json."
+        ),
+    }
+    active_ignore_patterns = [
+        line for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert active_ignore_patterns == ["config.local.json"]
+    assert "config.json" not in active_ignore_patterns
     # .orcho/multiagent/prompts/ is part of the visible extension rails.
     assert (ws / ".orcho" / "multiagent" / "prompts").is_dir()
     assert (ws / ".orcho" / "multiagent" / "prompts" / "roles" / "README.md").is_file()
@@ -237,6 +251,7 @@ def test_workspace_local_config_snapshot_contains_override_surface(
     data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
 
     assert "$ORCHO_WORKSPACE/.orcho/config.local.json" in data["_comment"]
+    assert "workspace config.json" in data["_comment"]
     assert "Environment variables still win" in data["_comment"]
     assert "phases" in data
     assert "plan" in data["phases"]
@@ -600,6 +615,27 @@ def test_scaffold_does_not_overwrite_existing_files(tmp_path: Path) -> None:
     assert str(plugin) in r2.skipped_paths
 
 
+def test_scaffold_preserves_custom_workspace_config_files(tmp_path: Path) -> None:
+    first = init_workspace(tmp_path / "g")
+    config_dir = Path(first.workspace_dir) / ".orcho"
+    shared_config = config_dir / "config.json"
+    gitignore = config_dir / ".gitignore"
+    personal_config = Path(first.local_config_file)
+    expected = {
+        shared_config: '{"team": "custom"}\n',
+        gitignore: "custom.local.json\n",
+        personal_config: '{"phases": {"implement": {"effort": "high"}}}\n',
+    }
+    for path, body in expected.items():
+        path.write_text(body, encoding="utf-8")
+
+    second = init_workspace(tmp_path / "g")
+
+    for path, body in expected.items():
+        assert path.read_text(encoding="utf-8") == body
+        assert str(path) in second.skipped_paths
+
+
 def test_scaffold_does_not_overwrite_existing_task_files_readme(
     tmp_path: Path,
 ) -> None:
@@ -633,6 +669,8 @@ def test_no_scaffold_skips_extension_templates(tmp_path: Path) -> None:
     ws = Path(r.workspace_dir)
 
     assert Path(r.local_config_file).is_file()
+    assert not (ws / ".orcho" / "config.json").exists()
+    assert not (ws / ".orcho" / ".gitignore").exists()
     assert not (ws / ".orcho" / "multiagent").exists()
     assert not (ws / ".orcho" / ".task-files").exists()
     assert r.extension_points == ()
@@ -649,6 +687,8 @@ def test_dry_run_creates_nothing(tmp_path: Path) -> None:
     assert not root.exists(), "dry-run must not create the group root"
     assert r.created_paths, "result should still list what would be created"
     assert any(path.endswith(".orcho/multiagent/plugin.py") for path in r.created_paths)
+    assert any(path.endswith("workspace-orchestrator/.orcho/config.json") for path in r.created_paths)
+    assert any(path.endswith("workspace-orchestrator/.orcho/.gitignore") for path in r.created_paths)
     assert any(
         path.endswith("workspace-orchestrator/.orcho/multiagent/AGENTS.md")
         for path in r.created_paths

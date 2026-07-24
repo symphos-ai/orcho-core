@@ -85,20 +85,26 @@ function orcho-promote { & "$env:ORCHO_CORE_DEV\shell\orcho-promote.ps1" @args }
 
 ## Local config between DEV and STABLE
 
-`config.local.json` is looked up in layers. The last layer found wins:
+JSON config is looked up in layers. The last layer found wins:
 
 | Priority | Path | Purpose |
 |---:|---|---|
 | 1 | `_config/config.local.json` | Quick gitignored DEV edits inside the install |
-| 2 | `~/.orcho/config.local.json` | Shared user settings for DEV and STABLE |
-| 3 | `$ORCHO_WORKSPACE/.orcho/config.local.json` | Settings of a specific workspace |
+| 2 | `~/.orcho/config.local.json` | Personal user settings for DEV and STABLE |
+| 3 | `$ORCHO_WORKSPACE/.orcho/config.json` | Committable shared policy for one workspace |
+| 4 | `$ORCHO_WORKSPACE/.orcho/config.local.json` | Gitignored personal settings for one workspace |
 
-`orcho workspace init` creates `$ORCHO_WORKSPACE/.orcho/config.local.json`
-the first time and never overwrites it afterwards. The file contains all
-workspace-level knobs with real starting values from the defaults,
-package-local, and user-global layers. So models, efforts, artifact
-language, timeouts, and pipeline knobs can live in the workspace without
-being lost after `orcho-promote`.
+`orcho workspace init` creates a neutral shared `config.json` plus the
+personal `config.local.json` snapshot the first time and never overwrites
+either afterwards. The shared/personal names follow `settings.json` /
+`settings.local.json`: commit team policy, keep personal preferences ignored.
+The personal snapshot contains real starting values from defaults, package,
+user, and shared layers, so models, efforts, artifact language, timeouts, and
+pipeline knobs can live in the workspace without being lost after
+`orcho-promote`.
+
+Environment variables remain above every JSON layer. `ORCHO_DISABLE_LOCAL_CONFIG=1`
+disables package, user, shared-workspace, and personal-workspace JSON overlays.
 
 To migrate an old DEV-only file:
 

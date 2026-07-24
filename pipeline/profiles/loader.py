@@ -883,8 +883,8 @@ def _apply_profile_overlays(
 ) -> None:
     """Patch the raw JSON profile dict in place with operator overlays.
 
-    Overlay shape (consumed from ``profiles_v2`` block of any
-    ``config.local.json`` layer)::
+    Overlay shape (consumed from ``profiles_v2`` in any JSON config layer,
+    including workspace ``config.json`` and ``config.local.json``)::
 
         {"<profile_name>": {"<phase_name>": <patch_dict>, ...}, ...}
 
@@ -953,6 +953,7 @@ def load_profiles_v2(path: Path) -> dict[str, Profile]:
     Operator overlays: before parsing, the raw JSON dict is patched
     with any ``profiles_v2`` block declared in layered local config
     (``core/_config/config.local.json`` < ``~/.orcho/config.local.json``
+    < ``$ORCHO_WORKSPACE/.orcho/config.json``
     < ``$ORCHO_WORKSPACE/.orcho/config.local.json``). The overlay
     format is flat-by-phase-name — see
     :func:`core.infra.config.load_profile_overlays` for the shape and
