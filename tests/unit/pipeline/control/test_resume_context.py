@@ -526,6 +526,28 @@ class TestResumableUnattendedHandoffHalt:
         assert not is_resumable_unattended_handoff_halt(meta)
         assert is_terminal_resume_parent(meta)
 
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            {"status": "halted", "halt_reason": "other_halt"},
+            {"status": "halted"},
+            {"status": "interrupted", "halt_reason": "phase_handoff_unattended_halt"},
+        ],
+    )
+    def test_only_exact_status_reason_pair_is_resumable(self, meta) -> None:
+        assert not is_resumable_unattended_handoff_halt(meta)
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            {"status": "halted", "halt_reason": "phase_handoff_halt"},
+            {"status": "halted", "halt_reason": "other_halt"},
+            {"status": "interrupted", "halt_reason": "phase_handoff_unattended_halt"},
+        ],
+    )
+    def test_only_unattended_halt_avoids_terminal_handoff_path(self, meta) -> None:
+        assert is_terminal_resume_parent(meta) is (meta["halt_reason"] == "phase_handoff_halt")
+
 
 class TestIsTerminalFinalAcceptanceRejected:
     def test_rejected_reason_is_terminal(self) -> None:
@@ -646,6 +668,19 @@ class TestGetResumeIntentOptions:
         assert opts.can_checkpoint
         assert opts.default_mode == ResumeMode.CHECKPOINT
         assert opts.reason == "unattended-handoff-rearm"
+
+    @pytest.mark.parametrize(
+        "meta",
+        [
+            {"status": "halted", "halt_reason": "phase_handoff_halt"},
+            {"status": "halted", "halt_reason": "other_halt"},
+            {"status": "interrupted", "halt_reason": "phase_handoff_unattended_halt"},
+        ],
+    )
+    def test_non_exact_unattended_combinations_do_not_choose_rearm(self, meta) -> None:
+        opts = get_resume_intent_options(parent_meta=meta, has_new_task=False)
+
+        assert opts.reason != "unattended-handoff-rearm"
 
     def test_incomplete_offers_both_default_checkpoint(self) -> None:
         opts = get_resume_intent_options(

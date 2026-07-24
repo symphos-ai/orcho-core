@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from pipeline.project.finalization import (
     FinalizationContext,
     _render_agent_advice_summary,
@@ -469,10 +471,13 @@ def test_unattended_halt_keeps_verification_ledger_open(tmp_path, monkeypatch) -
     assert calls == []
 
 
-def test_other_terminal_paths_still_finalize_verification_ledger(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("halt_reason", [None, "phase_handoff_halt", "pre_run_dirty_halt"])
+def test_other_terminal_paths_still_finalize_verification_ledger(
+    tmp_path, monkeypatch, halt_reason,
+) -> None:
     run = _make_finalize_run(tmp_path)
     run.state.halt = True
-    run.state.halt_reason = "phase_handoff_halt"
+    run.state.halt_reason = halt_reason
     _wire_finalize_stubs(monkeypatch, accounting_enabled=False)
     calls: list[object] = []
     monkeypatch.setattr(
