@@ -1971,6 +1971,41 @@ class TestScheduledGateLiveBlock:
             [_decision("x", "bogus")], hook_label="before_delivery",
         ) == ()
 
+    def test_render_repeated_command_as_transition(self) -> None:
+        from pipeline.project.verification_timeline import (
+            render_scheduled_gate_live_block,
+        )
+
+        lines = render_scheduled_gate_live_block(
+            [
+                _decision(
+                    "cs", "executed_fail",
+                    receipt_path=(
+                        "verification_command_receipts/executions/"
+                        "cs--after_phase--implement--0001.json"
+                    ),
+                ),
+                _decision(
+                    "cs", "executed_pass",
+                    receipt_path=(
+                        "verification_command_receipts/executions/"
+                        "cs--after_phase--implement--0002.json"
+                    ),
+                ),
+            ],
+            hook_label="after_phase(implement)",
+        )
+
+        assert lines[1] == (
+            "commands: cs executed_fail -> cs executed_pass"
+        )
+        assert lines[2] == (
+            "receipts: verification_command_receipts/executions/"
+            "cs--after_phase--implement--0001.json · "
+            "verification_command_receipts/executions/"
+            "cs--after_phase--implement--0002.json"
+        )
+
     def test_fresh_receipt_on_disk_unexecuted_gate_renders_fresh_not_pass(
         self, tmp_path,
     ) -> None:
