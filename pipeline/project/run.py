@@ -258,12 +258,27 @@ def _auto_run_required_receipts_live(
     """
     from pipeline.project.verification_autorun import auto_run_required_receipts
 
-    if delivery_plan is None:
-        autorun_result = auto_run_required_receipts(run, phase, reason=reason)
-    else:
-        autorun_result = auto_run_required_receipts(
-            run, phase, reason=reason, delivery_plan=delivery_plan,
+    def announce_targets(commands: tuple[str, ...]) -> None:
+        if getattr(run, "_presentation", None) is not PresentationPolicy.TERMINAL:
+            return
+        from pipeline.project.gate_repair import (
+            _render_gate_command_start,
+            _render_gate_section_header,
         )
+
+        _render_gate_section_header(
+            len(commands), hook="before_phase", phase=phase,
+        )
+        for command in commands:
+            _render_gate_command_start(command)
+
+    autorun_result = auto_run_required_receipts(
+        run,
+        phase,
+        reason=reason,
+        delivery_plan=delivery_plan,
+        on_targets_resolved=announce_targets,
+    )
     if getattr(run, "_presentation", None) is PresentationPolicy.TERMINAL:
         from pipeline.project.verification_timeline import render_gate_live_block
 

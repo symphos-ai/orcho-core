@@ -151,14 +151,15 @@ def render_scheduled_gate_live_block(
     never PASS (and never an absent block). Builds:
 
     * a header ``Verification gates — {hook_label}``;
-    * a ``commands:`` line of ``name STATUS`` joined with `` · ``;
+    * a ``commands:`` line with one timeline per command; attempts of the same
+      command are joined with `` -> `` and different commands with `` · ``;
     * a ``receipts:`` line of the durable receipt paths carried by executed
       decisions (omitted when none).
 
     Returns ``()`` when there is no recognised decision to show. The strings
     carry no color; the caller overlays it.
     """
-    rendered: list[str] = []
+    command_timelines: dict[str, list[str]] = {}
     receipts: list[str] = []
     for record in events:
         if not isinstance(record, Mapping):
@@ -167,16 +168,19 @@ def render_scheduled_gate_live_block(
         command = str(record.get("command", ""))
         if status is None or not command:
             continue
-        rendered.append(f"{command} {status}")
+        command_timelines.setdefault(command, []).append(f"{command} {status}")
         receipt_path = record.get("receipt_path")
         if receipt_path:
             receipts.append(str(receipt_path))
 
-    if not rendered:
+    if not command_timelines:
         return ()
 
     lines = [f"Verification gates — {hook_label}"]
-    lines.append("commands: " + " · ".join(rendered))
+    lines.append(
+        "commands: "
+        + " · ".join(" -> ".join(attempts) for attempts in command_timelines.values())
+    )
     if receipts:
         lines.append("receipts: " + " · ".join(_dedupe(receipts)))
     return tuple(lines)

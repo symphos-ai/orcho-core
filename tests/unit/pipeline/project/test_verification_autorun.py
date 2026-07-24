@@ -322,14 +322,22 @@ def test_missing_required_is_materialized_then_classifies_present(
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)
     rec = _Recorder(run_dir).install(monkeypatch)
+    announced: list[tuple[str, ...]] = []
+
+    def announce(commands: tuple[str, ...]) -> None:
+        assert rec.env_calls == []
+        assert rec.run_calls == []
+        announced.append(commands)
 
     result = materialize_required_receipts(
         run_id="rid", run_dir=run_dir, project_dir=str(project),
         checkout=str(project), contract=contract, ctx=ctx,
         workspace=str(workspace), reason="pre-final",
+        on_targets_resolved=announce,
     )
 
     assert result.attempted is True
+    assert announced == [("lint", "unit")]
     assert result.ran_commands == ("lint", "unit")
     assert result.ran_envs == ("ci",)
     assert result.receipt_paths  # command receipts recorded
@@ -482,11 +490,13 @@ def test_fresh_passing_required_skipped_without_running(
     ctx = _ctx(contract, checkout=project, project=project,
                workspace=workspace, run_dir=run_dir)
     rec = _Recorder(run_dir).install(monkeypatch)
+    announced: list[tuple[str, ...]] = []
 
     result = materialize_required_receipts(
         run_id="rid", run_dir=run_dir, project_dir=str(project),
         checkout=str(project), contract=contract, ctx=ctx,
         workspace=str(workspace), reason="pre-final",
+        on_targets_resolved=announced.append,
     )
 
     assert result.attempted is True
@@ -494,6 +504,7 @@ def test_fresh_passing_required_skipped_without_running(
     assert result.ran_commands == ()
     assert rec.run_calls == []  # nothing executed
     assert rec.env_calls == []
+    assert announced == []
 
 
 # ── case 3: stale -> rerun once ───────────────────────────────────────────
@@ -1948,15 +1959,28 @@ def test_stage9_live_block_printed_in_terminal(
         ran_envs=("core-local",),
         ran_commands=("env-provenance", "lint", "cli-sdk-unit"),
     )
+    def materialize(*_args, **kwargs):
+        kwargs["on_targets_resolved"](
+            ("env-provenance", "lint", "cli-sdk-unit"),
+        )
+        return result
+
     monkeypatch.setattr(
         "pipeline.project.verification_autorun.auto_run_required_receipts",
-        lambda *a, **k: result,
+        materialize,
     )
     run, state = _phase_start_run(PresentationPolicy.TERMINAL)
 
     _PipelineRun._on_phase_pre(run, "final_acceptance", state)
 
     out = strip_ansi(capsys.readouterr().out)
+    assert (
+        "VERIFICATION GATE · before final_acceptance — running 3 checks"
+        in out
+    )
+    assert "▶ env-provenance   running…" in out
+    assert "▶ lint   running…" in out
+    assert "▶ cli-sdk-unit   running…" in out
     assert "Verification gates — pre-final auto-run" in out
     assert "core-local PASS" in out
     assert "env-provenance" in out and "lint" in out and "cli-sdk-unit" in out
@@ -2034,8 +2058,18 @@ def test_correction_review_materializes_receipts_before_review(
         ran_commands=("pytest-all",),
     )
 
-    def fake_autorun(run: Any, phase: str, *, reason: str) -> ReceiptAutoRunResult:
-        calls.append({"phase": phase, "reason": reason})
+    def fake_autorun(
+        run: Any,
+        phase: str,
+        *,
+        reason: str,
+        delivery_plan: Any | None = None,
+        on_targets_resolved: Any = None,
+    ) -> ReceiptAutoRunResult:
+        calls.append({
+            "phase": phase, "reason": reason, "delivery_plan": delivery_plan,
+        })
+        on_targets_resolved(("pytest-all",))
         return result
 
     monkeypatch.setattr(
@@ -2052,9 +2086,12 @@ def test_correction_review_materializes_receipts_before_review(
         {
             "phase": "review_changes",
             "reason": "pre-review correction required-receipt materialization",
+            "delivery_plan": None,
         },
     ]
     out = strip_ansi(capsys.readouterr().out)
+    assert "VERIFICATION GATE · before review_changes — running 1 check" in out
+    assert "▶ pytest-all   running…" in out
     assert "Verification gates — correction pre-review auto-run" in out
     assert "core-local PASS" in out
     assert "pytest-all" in out
