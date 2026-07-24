@@ -150,6 +150,18 @@ The detailed task and gate guide is:
 
 _CLAUDE_BODY: Final[str] = "@./AGENTS.md\n"
 
+_WORKSPACE_SHARED_CONFIG_BODY: Final[str] = (
+    "{\n"
+    '  "_comment": "Team-shared workspace configuration. Add active settings '
+    'deliberately; personal overrides belong in config.local.json."\n'
+    "}\n"
+)
+
+_WORKSPACE_GITIGNORE_BODY: Final[str] = (
+    "# Personal workspace overrides stay local. Commit config.json for shared policy.\n"
+    "config.local.json\n"
+)
+
 _PROMPT_README_BODY: Final[str] = """\
 # {title} Prompt Overrides
 
@@ -289,6 +301,8 @@ def scaffold_workspace_extensions(
         )
 
     files = {
+        root / "config.json": _WORKSPACE_SHARED_CONFIG_BODY,
+        root / ".gitignore": _WORKSPACE_GITIGNORE_BODY,
         agents_file: _AGENTS_BODY,
         claude_file: _CLAUDE_BODY,
         multiagent / "plugin.py": _PLUGIN_BODY,

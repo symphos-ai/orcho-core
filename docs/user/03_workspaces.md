@@ -56,7 +56,9 @@ The command creates:
 ├── workspace-orchestrator/    ← workspace configuration (created by the command)
 │   ├── orcho-env.sh           ← exports ORCHO_WORKSPACE / ORCHO_RUNSPACE
 │   ├── runspace/runs/         ← pipeline run results are written here
-│   ├── .orcho/config.local.json      ← workspace-local override config
+│   ├── .orcho/config.json            ← committable team workspace policy
+│   ├── .orcho/config.local.json      ← gitignored personal workspace overrides
+│   ├── .orcho/.gitignore             ← ignores config.local.json only
 │   ├── .orcho/multiagent/plugin.py  ← empty plugin template, safe by default
 │   ├── .orcho/multiagent/AGENTS.md  ← matching project agent-rule template
 │   ├── .orcho/multiagent/CLAUDE.md  ← shim shipped with the rule template
@@ -73,13 +75,18 @@ To make the shell see the new workspace:
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
 ```
 
-`workspace init` creates `.orcho/config.local.json` only on the first
-run. It holds the starting config of every workspace-level setting you
-can override for this group of projects: models and effort per phase,
-artifact language, timeouts, session policy, pipeline knobs, and the
-artifact mirror. The file is filled with the real current values so you
-can read and edit it right away. A repeated `workspace init` does not
-overwrite manual changes.
+`workspace init` creates `.orcho/config.json` and `.orcho/config.local.json`
+only when they are missing. `config.json` is a neutral, comment-only starting
+point for committable team policy. `config.local.json` is gitignored and holds
+personal workspace overrides with real starting values: models and effort per
+phase, artifact language, timeouts, session policy, pipeline knobs, and the
+artifact mirror. It wins over the shared file. A repeated `workspace init`
+does not overwrite either file or `.orcho/.gitignore`.
+
+The full order is package `config.local.json` → user `config.local.json` →
+workspace `config.json` → workspace `config.local.json` → environment
+variables. This matches the common `settings.json` / `settings.local.json`
+convention: commit the shared file; keep the local file personal.
 
 `workspace init` also creates discoverable extension-point guides. They
 are only created when missing and are never overwritten. Prompt overrides
@@ -121,8 +128,9 @@ Useful `orcho workspace init` flags:
   repo (by default the command refuses, to keep you out of trouble).
 - `--no-interactive` — skip interactive questions about unmarked
   folders (CI / non-TTY).
-- `--no-scaffold` — skip the extension-point README files and plugin
-  template.
+- `--no-scaffold` — skip extension-point templates, including the shared
+  `config.json` and `.orcho/.gitignore` scaffold; the personal config snapshot
+  is still created.
 
 ### Folders without auto-detection (nested git)
 
@@ -137,7 +145,7 @@ Folder 'my-unity-project' was not auto-detected as a project.
   Found nested git repo at 'UnityProj'. Use it as git root? [Y/n]
 ```
 
-After you agree, the `config.local.json` entry takes the form:
+After you agree, the personal `config.local.json` entry takes the form:
 
 ```json
 {
