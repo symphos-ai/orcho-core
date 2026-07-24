@@ -2424,7 +2424,10 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
         ),
         # Compact 'Delivery: ...' destination line, read from the terminal
         # ``commit_delivery`` audit record; empty when the run carries none.
-        delivery_summary_lines=render_delivery_destination_lines(run.session),
+        delivery_summary_lines=render_delivery_destination_lines(
+            run.session,
+            publish_gate=getattr(run, "_delivery_publish_gate", None),
+        ),
         terminal_delivery=terminal_delivery,
     )
 

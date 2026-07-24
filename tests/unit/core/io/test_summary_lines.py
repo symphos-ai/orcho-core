@@ -256,6 +256,38 @@ def test_delivery_line_published_branch_without_pr():
     assert "committed" not in line
 
 
+def test_delivery_line_degraded_publish_shows_ready_branch_and_reason():
+    line = _strip(sl.delivery_line(
+        "abcdef1",
+        "orcho/deliver/r1-x",
+        publish_gate="always",
+        delivery_warnings=("delivery publish provider is unavailable",),
+        delivery_notices=(
+            "delivery branch orcho/deliver/r1-x is ready; open a pull request",
+        ),
+        color=False,
+    ))
+    assert line == (
+        "⚠ delivery · branch orcho/deliver/r1-x ready · "
+        "reason: delivery publish provider is unavailable"
+    )
+
+
+def test_delivery_line_off_and_auto_local_paths_keep_existing_strings():
+    assert _strip(sl.delivery_line(
+        "abcdef1",
+        "orcho/deliver/r1-x",
+        publish_gate="off",
+        delivery_notices=(
+            "delivery branch orcho/deliver/r1-x is ready; open a pull request",
+        ),
+        color=False,
+    )) == "✓ delivery · committed abcdef1 · branch orcho/deliver/r1-x"
+    assert _strip(sl.delivery_line(
+        "abcdef1", "orcho/deliver/r1-x", publish_gate="auto", color=False,
+    )) == "✓ delivery · committed abcdef1 · branch orcho/deliver/r1-x"
+
+
 # ── truncation contract ──────────────────────────────────────────────────
 
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, get_args
 
+from core.io.delivery_summary import project_degraded_publish
 from pipeline.engine.commit_delivery import CommitDeliveryStatus
 from pipeline.run_state.release_verdict import is_rejected
 
@@ -111,6 +112,8 @@ def project_terminal_delivery(
 
 def render_delivery_destination_lines(
     session: Mapping[str, Any],
+    *,
+    publish_gate: object | None = None,
 ) -> tuple[str, ...]:
     """Return compact delivery-destination lines from ``commit_delivery``."""
     record = session.get("commit_delivery")
@@ -120,6 +123,9 @@ def render_delivery_destination_lines(
     if status is None:
         return ()
     if status == "committed":
+        degraded = project_degraded_publish(record, publish_gate=publish_gate)
+        if degraded is not None:
+            return (f"Delivery: {degraded.ready_text} — reason: {degraded.reason}",)
         branch = str(record.get("delivery_branch") or "")
         sha = str(record.get("commit_sha") or "")
         pr_url = str(record.get("pr_url") or "")

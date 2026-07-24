@@ -714,6 +714,32 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "Rounds:  2" in out
 
+    def test_status_shows_degraded_publish_ready_reason(
+        self, runs_dir: Path, capsys
+    ) -> None:
+        from cli.orcho import cmd_status
+
+        run = _write_run(runs_dir, "20260502_100000")
+        meta_path = run / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["commit_delivery"] = {
+            "status": "committed",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+            "delivery_warnings": ["delivery publish provider is unavailable"],
+            "delivery_notices": [
+                "delivery branch orcho/deliver/r1-feature is ready; "
+                "open a pull request",
+            ],
+        }
+        meta_path.write_text(json.dumps(meta))
+
+        assert cmd_status(_make_args(run_id=None)) == 0
+        out = capsys.readouterr().out
+        assert "Ready: branch orcho/deliver/r1-feature ready" in out
+        assert "reason: delivery publish provider is unavailable" in out
+        assert "PR: https://" not in out
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # cmd_metrics
