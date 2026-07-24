@@ -207,7 +207,19 @@ def _verification_contract_part(state: PipelineState, phase: str) -> Any:
             getattr(contract, "selection", ()),
         )
         if has_plan:
-            plan = _resolve_gate_plan(state, contract)
+            parsed_plan = getattr(state, "parsed_plan", None)
+            if parsed_plan is not None and phase in {"plan", "validate_plan"}:
+                from pipeline.verification_ownership import (
+                    build_planned_verification_gate_plan,
+                )
+
+                plan = build_planned_verification_gate_plan(
+                    parsed_plan,
+                    contract,
+                    state.extras,
+                )
+            else:
+                plan = _resolve_gate_plan(state, contract)
             gate_body = render_phase_gate_block(contract, plan, phase, ctx)
         else:
             gate_body = render_phase_block(contract, phase, ctx)
