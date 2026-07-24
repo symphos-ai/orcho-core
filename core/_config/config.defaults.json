@@ -68,11 +68,13 @@
     "enabled": false
   },
   "commit": {
-    "_comment": "Post-release commit delivery. When enabled and the run-owned worktree has a diff after an APPROVED release verdict, Orcho can fix / approve / apply / skip / halt delivery. interactive_default is the preselected interactive action; auto_in_ci controls unattended runs. add_untracked controls delivery of non-ignored untracked files; approve also stages them. include_pre_existing_dirty and git_user_identity are reserved follow-up knobs from ADR 0032; Phase B1 keeps pre-existing dirty state user-owned and relies on the repo's configured git identity.",
+    "_comment": "Post-release commit delivery. When enabled and the run-owned worktree has a diff after an APPROVED release verdict, Orcho can fix / approve / apply / skip / halt delivery. interactive_default is the preselected interactive action; auto_in_ci controls unattended runs. publish is off | auto | always (default auto); invalid values safely fall back to auto. add_untracked controls delivery of non-ignored untracked files; approve also stages them. include_pre_existing_dirty and git_user_identity are reserved follow-up knobs from ADR 0032; Phase B1 keeps pre-existing dirty state user-owned and relies on the repo's configured git identity.",
     "enabled": true,
     "default_strategy": "release_summary",
     "interactive_default": "approve",
     "auto_in_ci": "approve",
+    "publish": "auto",
+    "publish_provider": null,
     "add_untracked": true,
     "include_pre_existing_dirty": false,
     "git_user_identity": null

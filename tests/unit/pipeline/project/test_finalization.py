@@ -140,6 +140,35 @@ def test_delivery_line_published_branch_without_pr_is_actionable() -> None:
     )
 
 
+def test_delivery_line_checkout_branch_with_pr_keeps_all_facts() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": "https://example.test/pr/7",
+        },
+    }
+    assert render_delivery_destination_lines(session) == (
+        "Delivery: committed 0123456 onto orcho/deliver/r1-feature → "
+        "PR https://example.test/pr/7",
+    )
+
+
+def test_delivery_line_checkout_branch_without_pr_stays_local() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+        },
+    }
+    assert render_delivery_destination_lines(session) == (
+        "Delivery: committed 0123456 onto orcho/deliver/r1-feature",
+    )
+
+
 def test_delivery_line_checkout_commit_shows_sha7() -> None:
     session = {
         "commit_delivery": {

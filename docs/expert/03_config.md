@@ -135,6 +135,24 @@ just one field, for example `{"phases":{"implement":{"effort":"medium"}}}`,
 and `runtime/model` stay as defined by the lower layer. `repair_escalation`
 is optional — add it if the profile uses second-round repair.
 
+### Delivery publication
+
+`commit.publish` accepts exactly `off`, `auto`, or `always`; the default is
+`auto`. Invalid, blank, and unknown values safely fall back to `auto`.
+`off` avoids provider discovery. `always` requests best-effort publication only
+after a successful `commit_on_branch` delivery; it does not push the current or
+default branch, and `commit_in_place` is never published by this setting.
+
+For a protected-default workspace, the minimal local override is:
+
+```json
+{"commit":{"publish":"always"}}
+```
+
+An opened PR URL is confirmation of publication. Without one, treat the branch
+as ready for manual publication and consult the delivery notices/warnings; do
+not infer that it was pushed.
+
 ### profiles_v2 overlays
 
 Built-in execution profiles can be tuned locally through the `profiles_v2`

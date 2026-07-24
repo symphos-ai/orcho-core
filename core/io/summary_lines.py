@@ -435,6 +435,8 @@ def delivery_line(
         parts.append(f"PR {pr_url}")
     if branch:
         parts.append(f"branch {branch}")
+    if pr_url and sha:
+        parts.append(f"PR {pr_url}")
     return _join(parts, color=color, stream=stream)
 
 

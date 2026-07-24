@@ -627,6 +627,29 @@ keep it `halted` (`commit_decision_halt` / `commit_decision_fix`). The read-only
 companion `sdk.delivery_decision_state(run_id)` projects which actions are
 currently safe to offer.
 
+### Delivery publication facts
+
+The durable commit-delivery decision projected in `meta.commit_delivery`
+explains branch delivery without claiming an unverified push. The matching
+`commit_decisions/<id>.json` audit record retains the commit audit record.
+Relevant decision facts are:
+
+| Fact | Meaning |
+|---|---|
+| `commit_sha` | SHA of a commit that landed in the target checkout, when a checkout commit was made. |
+| `published_commit_sha` | SHA of the commit on an isolated published delivery branch, when that plan was used. |
+| `delivery_branch` and `pr_intent` | The existing dedicated delivery branch and provider-neutral PR intent, when applicable. |
+| `pr_url` | A PR URL returned by the provider; its presence confirms a PR was opened. |
+| `delivery_warnings` and `delivery_notices` | Non-fatal publication diagnostics and truthful operator guidance, including a branch-ready fallback. |
+
+With `commit.publish="always"`, a successful `commit_on_branch` delivery can
+ask the existing provider seam to publish that branch after the checkout commit
+exists. Provider absence, failure, or invalid output leaves `status="committed"`
+and preserves the branch and commit facts. No PR URL means the artifact does
+not prove a push. `always` never publishes `commit_in_place` and never means
+push the current or default branch. These are existing durable decision facts;
+this behavior does not introduce an SDK or MCP field.
+
 ### Cross-level commit delivery (cross runs only)
 
 After the cross release gate (CFA) approves — or the operator overrides a
