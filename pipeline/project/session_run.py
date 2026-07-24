@@ -40,6 +40,7 @@ from typing import Any
 from pipeline.plugins import load_plugin
 from pipeline.project.isolation_setup import (
     resolve_isolation_inputs,
+    scoped_isolation_id,
     setup_isolation,
 )
 from pipeline.project.profile_dispatch import (
@@ -589,20 +590,21 @@ def run_project_pipeline_session(
     provenance = read_resume_refusal_provenance(
         request.output_dir if request.resume_from else None,
     )
-    try:
-        _resolve_state(request, ctx)
-        if ctx.halted:
-            return ctx.session, request.output_dir, ctx.session_ts
-        session = _build_and_dispatch(request, ctx)
-    except ResumeControlError as error:
-        session = materialize_resume_control_refusal(
-            session=ctx.session,
-            output_dir=request.output_dir,
-            checkpoint=ctx.ckpt,
-            state=ctx.state,
-            provenance=provenance,
-            error=error,
-            task=request.task,
-            project_dir=request.project_dir,
-        )
+    with scoped_isolation_id(ctx.session_ts):
+        try:
+            _resolve_state(request, ctx)
+            if ctx.halted:
+                return ctx.session, request.output_dir, ctx.session_ts
+            session = _build_and_dispatch(request, ctx)
+        except ResumeControlError as error:
+            session = materialize_resume_control_refusal(
+                session=ctx.session,
+                output_dir=request.output_dir,
+                checkpoint=ctx.ckpt,
+                state=ctx.state,
+                provenance=provenance,
+                error=error,
+                task=request.task,
+                project_dir=request.project_dir,
+            )
     return session, request.output_dir, ctx.session_ts
