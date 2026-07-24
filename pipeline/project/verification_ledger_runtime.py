@@ -13,6 +13,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from pipeline.project.resume_control import ResumeControlError
 from pipeline.verification_execution import resolve_execution_eligibility
 from pipeline.verification_ledger import GateLedgerRow, GateTrailEvent, build_gate_ledger
 from pipeline.verification_ledger_store import (
@@ -29,7 +30,7 @@ from pipeline.verification_selection import (
 )
 
 
-class ResumeVerificationLedgerError(RuntimeError):
+class ResumeVerificationLedgerError(ResumeControlError):
     """A current plugin cannot execute the durable historical identity safely."""
 
 

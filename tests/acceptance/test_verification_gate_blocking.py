@@ -20,12 +20,18 @@ import pytest
 
 from pipeline.control.handoff_routing import GateIdentity
 from pipeline.plugins import PluginConfig
+from pipeline.project.app import run_project_pipeline
+from pipeline.project.types import ProjectRunRequest
 from pipeline.project.verification_handoff_retry import (
     VerificationHandoffRetryBlocked,
     VerificationHandoffRetryContext,
     apply_verification_handoff_retry,
 )
+from pipeline.project.verification_ledger_runtime import ResumeVerificationLedgerError
 from pipeline.project_orchestrator import run_pipeline
+from pipeline.verification_ledger_store import load_ledger
+from sdk.phase_handoff import phase_handoff_decide
+from sdk.runs import load_meta
 from tests.acceptance.test_full_mock_flow import (
     _build_clean_review_provider,
     _init_git_repo,
@@ -175,6 +181,110 @@ def test_small_task_handoff_omits_unexecutable_retry_feedback(tmp_path: Path) ->
     handoff = meta["phase_handoff"]
     assert handoff["trigger"] == "verification_gate_failed"
     assert "retry_feedback" not in handoff["available_actions"]
+
+
+@pytest.mark.git_worktree
+@pytest.mark.filesystem_heavy
+def test_unattended_small_task_gate_halt_rearms_then_completes(tmp_path: Path) -> None:
+    """ADR 0154 journey: halt → re-arm → decide → ordinary completion."""
+    project = tmp_path / "proj"
+    _init_git_repo(project)
+    run_dir = tmp_path / "runs" / "20260723_unattended_small_task"
+    run_dir.mkdir(parents=True)
+
+    def invoke(*, resume_from: str | None = None):
+        with patch(
+            "pipeline.project.session_run.load_plugin",
+            return_value=SMALL_TASK_HANDOFF_PLUGIN,
+        ):
+            return run_project_pipeline(ProjectRunRequest(
+                task="Add structured logging",
+                project_dir=str(project),
+                output_dir=run_dir,
+                resume_from=resume_from,
+                max_rounds=1,
+                profile_name="small_task",
+                provider=_build_clean_review_provider(),
+                no_interactive=True,
+                unattended=resume_from is None,
+            ))
+
+    halted = invoke()
+    first_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert halted.session["status"] == first_meta["status"] == "halted"
+    assert first_meta["halt_reason"] == "phase_handoff_unattended_halt"
+    assert load_meta(run_dir)["status"] == "halted"
+    persisted = first_meta["phase_handoff_unattended"]["phase_handoff"]
+    assert "retry_feedback" not in persisted["available_actions"]
+    assert load_ledger(run_dir).finalized is False
+
+    rearmed = invoke(resume_from=run_dir.name)
+    rearmed_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert rearmed.session["status"] == rearmed_meta["status"] == "awaiting_phase_handoff"
+    assert rearmed_meta.get("halt_reason") != "interrupted"
+    assert rearmed_meta["status"] != "interrupted"
+    assert rearmed_meta["phase_handoff"]["available_actions"] == persisted["available_actions"]
+    assert load_meta(run_dir)["status"] == "awaiting_phase_handoff"
+
+    phase_handoff_decide(
+        run_dir.name,
+        rearmed_meta["phase_handoff"]["id"],
+        "continue_with_waiver",
+        feedback="Accept the failed required gate for this mock journey.",
+        runs_dir=run_dir.parent,
+        cwd=None,
+    )
+    completed = invoke(resume_from=run_dir.name)
+    final_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert completed.session["status"] == final_meta["status"] == "done"
+    assert final_meta.get("halt_reason") != "interrupted"
+    assert final_meta["status"] != "interrupted"
+    assert load_meta(run_dir)["status"] == "done"
+    assert load_ledger(run_dir).finalized is True
+
+
+@pytest.mark.git_worktree
+@pytest.mark.filesystem_heavy
+def test_pre_run_dirty_resume_without_ledger_is_durable_typed_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resume ledger refusal retains the pre-run-dirty halt rather than interrupting."""
+    project = tmp_path / "proj"
+    _init_git_repo(project)
+    run_dir = tmp_path / "runs" / "20260723_pre_run_dirty"
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({
+        "task": "Add structured logging",
+        "project": str(project),
+        "status": "halted",
+        "halt_reason": "pre_run_dirty_halt",
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        "pipeline.project.session_run.setup_checkpoint_and_metrics",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ResumeVerificationLedgerError("resume has a verification contract but no scheduled-gate ledger"),
+        ),
+    )
+
+    with patch(
+        "pipeline.project.session_run.load_plugin",
+        return_value=SMALL_TASK_HANDOFF_PLUGIN,
+    ):
+        result = run_project_pipeline(ProjectRunRequest(
+            task="Add structured logging",
+            project_dir=str(project),
+            output_dir=run_dir,
+            resume_from=run_dir.name,
+            profile_name="small_task",
+            provider=_build_clean_review_provider(),
+        ))
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert result.session["status"] == meta["status"] == "halted"
+    assert meta["halt_reason"] == "pre_run_dirty_halt"
+    assert "no scheduled-gate ledger" in meta["resume_refusal"]["message"]
+    assert meta["status"] != "interrupted"
+    assert meta.get("halt_reason") != "interrupted"
 
 
 def test_verification_retry_feedback_preserves_human_directed_round_context(

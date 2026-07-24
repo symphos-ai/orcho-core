@@ -42,7 +42,10 @@ terminal row is exactly one of `not_selected`, `manual_available`, `suggested`,
 `skipped_fresh`, `executed_pass`, `executed_fail`, `residual_missing`,
 `residual_stale`, or `residual_failed`; non-selection preserves `paths`,
 `task_kind`, or `operator` when applicable. `manual_only` is a hook; `manual`
-is the policy. Finalization closes this artifact before evidence and DONE.
+is the policy. Finalization closes this artifact before evidence and DONE,
+except for `phase_handoff_unattended_halt`: ADR 0154 keeps that ledger open
+while the preserved handoff awaits its first checkpoint re-arm and operator
+decision.
 
 Resume reuses the snapshot and epoch decisions. Evidence copies the validated
 artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
@@ -222,6 +225,32 @@ Set by `_apply_phase_handoff_pause` (`project_orchestrator.py:3038-3051`):
 Popped on `phase_handoff_decide(halt)` and on resume `continue` /
 `retry_feedback`. See [ADR 0031](../adr/0031-generic-phase-handoff-contract.md)
 for the full lifecycle.
+
+### Unattended handoff halt and typed resume refusal
+
+An explicitly unattended run that cannot safely choose a handoff action ends
+with `status="halted"` and
+`halt_reason="phase_handoff_unattended_halt"`. Its
+`phase_handoff_unattended` block retains policy context plus the exact canonical
+payload; it is not a compact reconstruction:
+
+```json
+{
+  "reason": "implement_handoff",
+  "note": "auto-halted by unattended policy (...)",
+  "phase_handoff": {"id": "...", "artifacts": {}, "available_actions": ["continue_with_waiver", "halt"]}
+}
+```
+
+The first CHECKPOINT resume validates that nested payload and republishes it as
+ordinary `meta.phase_handoff` with `status="awaiting_phase_handoff"`; it does
+not run a phase or recompute the action list. A legacy or malformed block, a
+missing resume ledger, or ledger contract drift instead settles as
+`status="halted"` with the original halt reason when available (otherwise
+`"resume_control_refusal"`) and a diagnostic `resume_refusal` object containing
+`error_type`, `message`, `original_status`, and `halt_reason`. These typed
+outcomes are deliberately non-running so the unchanged atexit safety net does
+not rewrite them to `interrupted`.
 
 ### Byte format note
 

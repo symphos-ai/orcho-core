@@ -555,6 +555,7 @@ def resolve_projects_argv(
 # ── Resume mode classification ─────────────────────────────────────────────
 
 _PHASE_HANDOFF_HALT_REASON = "phase_handoff_halt"
+_PHASE_HANDOFF_UNATTENDED_HALT_REASON = "phase_handoff_unattended_halt"
 _COMMIT_DECISION_HALT_REASON = "commit_decision_halt"
 _COMMIT_DECISION_FIX_REASON = "commit_decision_fix"
 _COMMIT_DELIVERY_PENDING_REASON = "commit_delivery_pending"
@@ -598,6 +599,19 @@ def is_terminal_phase_handoff_halt(meta: Mapping[str, Any]) -> bool:
     return (
         meta.get("status") == "halted"
         and meta.get("halt_reason") == _PHASE_HANDOFF_HALT_REASON
+    )
+
+
+def is_resumable_unattended_handoff_halt(meta: Mapping[str, Any]) -> bool:
+    """True only for ADR 0154's checkpoint-rearmable unattended halt.
+
+    This intentionally differs from a normal ``phase_handoff_halt``: the
+    latter is an operator terminal decision, while the former has not yet
+    presented its preserved decision menu to an operator.
+    """
+    return (
+        meta.get("status") == "halted"
+        and meta.get("halt_reason") == _PHASE_HANDOFF_UNATTENDED_HALT_REASON
     )
 
 
@@ -663,7 +677,10 @@ def is_terminal_resume_parent(meta: Mapping[str, Any]) -> bool:
     """True when checkpoint-resume should not select this run by default."""
     return (
         is_terminal_success(meta)
-        or is_terminal_phase_handoff_halt(meta)
+        or (
+            is_terminal_phase_handoff_halt(meta)
+            and not is_resumable_unattended_handoff_halt(meta)
+        )
         or is_terminal_commit_decision_halt(meta)
         or is_terminal_commit_decision_fix(meta)
         or is_terminal_commit_delivery_pending(meta)
@@ -733,6 +750,14 @@ def get_resume_intent_options(
             default_mode=ResumeMode.FOLLOWUP,
             parent_status=parent_status,
             reason="terminal-halt",
+        )
+    if is_resumable_unattended_handoff_halt(parent_meta):
+        return ResumeIntentOptions(
+            can_checkpoint=True,
+            can_followup=True,
+            default_mode=ResumeMode.CHECKPOINT,
+            parent_status=parent_status,
+            reason="unattended-handoff-rearm",
         )
     if is_terminal_commit_decision_halt(parent_meta):
         # ``halt`` = operator gave up. A follow-up (with a new task) is still
@@ -1004,6 +1029,7 @@ __all__ = [
     "is_terminal_commit_delivery_scope_blocked",
     "is_terminal_final_acceptance_rejected",
     "is_terminal_phase_handoff_halt",
+    "is_resumable_unattended_handoff_halt",
     "is_terminal_resume_parent",
     "is_terminal_success",
     "load_resume_meta",

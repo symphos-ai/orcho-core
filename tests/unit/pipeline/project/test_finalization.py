@@ -453,6 +453,38 @@ def test_no_advice_evidence_renders_no_block_at_call_site(
     assert result.ci_agent_advice_summary is None
 
 
+def test_unattended_halt_keeps_verification_ledger_open(tmp_path, monkeypatch) -> None:
+    run = _make_finalize_run(tmp_path)
+    run.state.halt = True
+    run.state.halt_reason = "phase_handoff_unattended_halt"
+    _wire_finalize_stubs(monkeypatch, accounting_enabled=False)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.finalize",
+        lambda received: calls.append(received),
+    )
+
+    finalize_project_run(FinalizationContext(run=run))
+
+    assert calls == []
+
+
+def test_other_terminal_paths_still_finalize_verification_ledger(tmp_path, monkeypatch) -> None:
+    run = _make_finalize_run(tmp_path)
+    run.state.halt = True
+    run.state.halt_reason = "phase_handoff_halt"
+    _wire_finalize_stubs(monkeypatch, accounting_enabled=False)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.finalize",
+        lambda received: calls.append(received),
+    )
+
+    finalize_project_run(FinalizationContext(run=run))
+
+    assert calls == [run]
+
+
 # ── T2: companion delivery caveat (primary committed + companion dirty) ──────
 
 

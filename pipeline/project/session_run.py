@@ -580,8 +580,29 @@ def run_project_pipeline_session(
         request.output_dir.mkdir(parents=True, exist_ok=True)
     request = _promote_plan_only_followup(request)
     ctx = _resolve_profile_runtime(request)
-    _resolve_state(request, ctx)
-    if ctx.halted:
-        return ctx.session, request.output_dir, ctx.session_ts
-    session = _build_and_dispatch(request, ctx)
+    from pipeline.project.resume_control import (
+        ResumeControlError,
+        materialize_resume_control_refusal,
+        read_resume_refusal_provenance,
+    )
+
+    provenance = read_resume_refusal_provenance(
+        request.output_dir if request.resume_from else None,
+    )
+    try:
+        _resolve_state(request, ctx)
+        if ctx.halted:
+            return ctx.session, request.output_dir, ctx.session_ts
+        session = _build_and_dispatch(request, ctx)
+    except ResumeControlError as error:
+        session = materialize_resume_control_refusal(
+            session=ctx.session,
+            output_dir=request.output_dir,
+            checkpoint=ctx.ckpt,
+            state=ctx.state,
+            provenance=provenance,
+            error=error,
+            task=request.task,
+            project_dir=request.project_dir,
+        )
     return session, request.output_dir, ctx.session_ts

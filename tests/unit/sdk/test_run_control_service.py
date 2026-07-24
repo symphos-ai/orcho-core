@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from pipeline.cross_project.app_types import CrossRunRequest
-from pipeline.project.types import ProjectRunRequest
+from pipeline.project.types import ProjectRunRequest, ProjectRunResult
 from sdk.run_control.service import RunService
 from sdk.run_control.types import (
     CancelCommand,
@@ -186,6 +186,26 @@ class TestDecideDelivery:
 
 
 class TestResume:
+    def test_returns_existing_project_run_result_without_new_wire_type(
+        self, tmp_path: Path,
+    ) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        _make_run(runs, "20260101_000000", _project_meta(project=str(project)))
+        result = ProjectRunResult(
+            session={"status": "halted", "halt_reason": "resume_control_refusal"},
+            output_dir=runs / "20260101_000000", run_id="20260101_000000",
+        )
+        svc = _service(start_project=_Recorder(result))
+
+        out = svc.resume(ResumeCommand(
+            run_id="20260101_000000", runs_dir=runs, cwd=None,
+        ))
+
+        assert out is result
+
     def test_uses_passed_runs_dir_without_ambient(self, tmp_path: Path) -> None:
         # F1: workspace=None, cwd=None — resolution comes solely from the
         # passed runs_dir; no ambient config / walk-up leaks in.
