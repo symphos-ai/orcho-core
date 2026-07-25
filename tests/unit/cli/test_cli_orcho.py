@@ -118,6 +118,46 @@ class TestParser:
         assert args.task == "Do X"
         assert args.project == "/p"
 
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--from-run-plan",
+            "--no-worktree-isolation",
+            "--attach",
+            "--attach-text",
+            "--attach-image",
+            "--attach-binary",
+        ],
+    )
+    def test_cross_rejects_mono_only_flags(self, flag: str) -> None:
+        parser = self.build_parser()
+        argv = ["cross", "--task", "T", "--projects", "api:/p", flag]
+        if flag != "--no-worktree-isolation":
+            argv.append("value")
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(argv)
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--from-run-plan", "run-1"],
+            ["--no-worktree-isolation"],
+            ["--attach", "context.md"],
+            ["--attach-text", "context.txt"],
+            ["--attach-image", "context.png"],
+            ["--attach-binary", "context.bin"],
+        ],
+    )
+    def test_run_preserves_mono_only_flags(self, argv: list[str]) -> None:
+        args = self.build_parser().parse_args(["run", "--task", "T", "--project", "/p", *argv])
+        assert args.command == "run"
+
+    def test_cross_hypothesis_boolean_optional_action(self) -> None:
+        parser = self.build_parser()
+        assert parser.parse_args(["cross", "--no-hypothesis"]).hypothesis is False
+        assert parser.parse_args(["cross", "--hypothesis"]).hypothesis is True
+
     def test_managed_command_run_subcommand(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([

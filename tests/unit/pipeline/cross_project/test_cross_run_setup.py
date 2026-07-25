@@ -26,6 +26,7 @@ def test_setup_cross_run_persists_parent_meta_for_resume_discovery(
         task="cross run that may be interrupted during child dispatch",
         projects={"core": core, "mcp": mcp},
         model="fake-model",
+        mock=True,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=None,
@@ -43,6 +44,7 @@ def test_setup_cross_run_persists_parent_meta_for_resume_discovery(
     assert meta_path.is_file()
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert meta["status"] == "running"
+    assert meta["mock"] is True
     assert meta["profile"] == "feature"
     assert meta["projects"] == {
         "core": str(core),
@@ -57,6 +59,36 @@ def test_setup_cross_run_persists_parent_meta_for_resume_discovery(
         include_terminal_success=True,
         require_existing_project=True,
     ) == "20260623_090354"
+
+
+def test_setup_cross_run_persists_real_provider_mode_as_boolean(tmp_path) -> None:
+    run_dir = tmp_path / "runs" / "20260623_090355"
+    project = tmp_path / "project"
+    project.mkdir()
+    profile_setup = SimpleNamespace(
+        requested_profile=SimpleNamespace(name="feature"),
+        projected_profile_name="feature#project",
+    )
+
+    setup_cross_run(
+        task="real provider cross run",
+        projects={"project": project},
+        model="fake-model",
+        mock=False,
+        output_dir=run_dir,
+        cross_mode="full",
+        resume_from=None,
+        resume_mode=None,
+        followup_parent_run_id=None,
+        followup_parent_run_dir=None,
+        followup_parent_status=None,
+        followup_base_task=None,
+        resumed_meta=None,
+        profile_setup=profile_setup,
+        terminal=False,
+    )
+
+    assert json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))["mock"] is False
 
 
 def test_setup_cross_run_resume_does_not_clobber_existing_meta(
@@ -95,6 +127,7 @@ def test_setup_cross_run_resume_does_not_clobber_existing_meta(
         task="resume existing cross run",
         projects={},
         model="fake-model",
+        mock=False,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=run_dir.name,
@@ -134,6 +167,7 @@ def test_resume_hydrates_declared_child_sessions_in_request_order(tmp_path) -> N
         task="resume",
         projects=projects,
         model="fake-model",
+        mock=False,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=run_dir.name,

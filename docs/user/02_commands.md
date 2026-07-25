@@ -238,13 +238,28 @@ orcho cross \
   --projects api:~/www/api unity:~/www/unity-client
 ```
 
+`cross` has a deliberate subset of `run` options. Its cross-specific controls
+are:
+
 ```bash
-# Options (same as run, plus):
 --projects alias:/path alias2:/path2   # project list (alias:path)
 --mode plan                            # stop after the cross plan
 --mode full                            # full run (default)
---plan-file cross_plan.json            # start from an existing cross plan
+--plan-file cross_plan.json            # use an existing cross plan
+--hypothesis / --no-hypothesis          # override the profile's cross hypothesis step
 ```
+
+It accepts `--model` and canonical phase routing flags such as
+`--model-implement`, `--model-repair-changes`, `--model-review-changes`, and
+the matching `--runtime-*` flags. `orcho cross` adapts these to the direct
+engine's historical names; use the canonical names with the public facade.
+
+`--mock` is sticky for a cross run: after a mock run has been started,
+`orcho cross --resume ...` inherits mock mode even without another `--mock`.
+The CLI labels this inherited mode. To preserve a safe and coherent cross
+surface, `--from-run-plan`, `--no-worktree-isolation`, `--attach`,
+`--attach-text`, `--attach-image`, and `--attach-binary` are **mono-only**
+`orcho run` options; `cross` rejects them before execution.
 
 ---
 

@@ -67,6 +67,10 @@ from agents.runtimes import (
 from core.infra import config
 from core.io.ansi import C, paint
 from pipeline.cross_project.constants import CROSS_DEFAULT_PROFILE
+from pipeline.cross_project.provider_mode import (
+    ProviderModeError,
+    resolve_provider_mode,
+)
 from pipeline.cross_project.rendering import success, warn
 from pipeline.project.bootstrap import RunIdCollisionError
 from pipeline.project.phase_config import build_phase_config_from_overrides
@@ -477,6 +481,27 @@ Examples:
             sys.exit(2)
     args.resumed_meta = _resumed
 
+    # Resolve provider mode before building either the provider or its phase
+    # configuration.  A checkpoint resume inherits its persisted boolean mode
+    # unless the operator explicitly asks for --mock; legacy runs preserve the
+    # historical argv-driven real-provider fallback with a visible warning.
+    try:
+        _provider_mode = resolve_provider_mode(
+            explicit_mock=bool(args.mock),
+            resumed_meta=(_resumed.meta if _resumed is not None else None),
+        )
+    except ProviderModeError as exc:
+        print_error(str(exc))
+        sys.exit(2)
+    if _provider_mode.source == "inherited":
+        print(f"  ↳ Inherited provider mode: {_provider_mode.label}")
+    if _provider_mode.legacy_fallback_warning:
+        print(
+            "  ⚠ Resume metadata has no persisted provider mode; "
+            f"using legacy CLI fallback: {_provider_mode.label}",
+            file=sys.stderr,
+        )
+
     # Resolve effective profile: explicit ``--profile`` wins; otherwise
     # inherit from ``meta.profile`` on resume; else fall back to the
     # cross fresh-run default. Mirrors the same logic on the single-
@@ -665,10 +690,12 @@ Examples:
     from core.observability.logging import apply_output_mode
     apply_output_mode(args.output)
     _provider = make_provider(
-        args.mock,
+        _provider_mode.mock,
         mock_validate_plan_reject_rounds=args.mock_validate_plan_reject,
     )
-    _session_mode = SessionMode.STATELESS if args.mock else SessionMode.AUTO
+    _session_mode = (
+        SessionMode.STATELESS if _provider_mode.mock else SessionMode.AUTO
+    )
 
     # Hermetic mock mode: replace every PhaseAgentConfig slot with inline
     # stubs. Without this override, child sub-pipelines and cross gates
@@ -677,7 +704,7 @@ Examples:
     # those phases read off ``phase_config`` directly, not the ``provider``
     # arg. ``--mock`` MUST guarantee zero real CLI calls — mirrors the
     # symmetric override in ``project_orchestrator``.
-    if args.mock:
+    if _provider_mode.mock:
         _configured_phase_config = phase_config
         phase_config = make_mock_phase_config(
             validate_plan_reject_rounds=args.mock_validate_plan_reject,
@@ -756,6 +783,7 @@ Examples:
                 model=args.model,
                 output_dir=output_dir,
                 dry_run=args.dry_run,
+                mock=_provider_mode.mock,
                 provider=_provider,
                 phase_config=phase_config,
                 cross_mode=args.mode,

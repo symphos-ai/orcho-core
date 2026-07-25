@@ -1248,7 +1248,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=CROSS_EPILOG,
     )
-    _add_common_run_args(p_cross)
+    _add_common_run_args(p_cross, cross=True)
     cross_projects = p_cross.add_argument_group("Projects")
     # Required for fresh runs; optional for ``--resume`` which resolves
     # the project map from the persisted ``meta.json``. The orchestrator
@@ -1275,8 +1275,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Work kind: feature, small_task, complex_feature, planning, "
             "delivery_audit, code_review, research, refactor, migration, or "
-            "a custom installed profile with cross policy. On --resume / "
-            "--from-run-plan, defaults to meta.profile (inherit); explicit "
+            "a custom installed profile with cross policy. On --resume, "
+            "defaults to meta.profile (inherit); explicit "
             "--profile overrides and switches deliberately. On a fresh run "
             "without this flag, an interactive TTY shows a picker of "
             "cross-eligible profiles, while a non-interactive context "
@@ -1290,6 +1290,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Pre-existing cross_plan.json (canonical; NOT the cross_plan.md "
             "render — the parser requires a single JSON object). Typically the "
             "cross_plan.json from a prior --mode plan run, optionally edited."
+        ),
+    )
+    cross_workflow.add_argument(
+        "--hypothesis",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override the cross-plan hypothesis check. Omit to use the "
+            "selected profile's setting."
         ),
     )
     p_cross.set_defaults(func=cmd_cross)
@@ -2047,8 +2056,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_common_run_args(p: argparse.ArgumentParser) -> None:
-    """Add flags shared between `run` and `cross`."""
+def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> None:
+    """Add shared flags, omitting mono-only capabilities for ``cross``."""
     # Task is required for fresh runs and optional for ``--resume``;
     # the validating handler resolves the effective task from
     # explicit flags or persisted ``meta.json``. Argparse cannot
@@ -2122,17 +2131,18 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
             "recent run in the active workspace."
         ),
     )
-    workspace.add_argument(
-        "--from-run-plan", default=None, metavar="RUN_ID_OR_DIR",
-        help=(
-            "Start a NEW run that inherits the parsed plan from a parent "
-            "run. Accepts a bare run id or an explicit path; the parent "
-            "must contain parsed_plan.json. The selected profile is "
-            "projected to skip its leading plan + validate_plan block, "
-            "so the child run starts at implement. Mutually exclusive "
-            "with --resume."
-        ),
-    )
+    if not cross:
+        workspace.add_argument(
+            "--from-run-plan", default=None, metavar="RUN_ID_OR_DIR",
+            help=(
+                "Start a NEW run that inherits the parsed plan from a parent "
+                "run. Accepts a bare run id or an explicit path; the parent "
+                "must contain parsed_plan.json. The selected profile is "
+                "projected to skip its leading plan + validate_plan block, "
+                "so the child run starts at implement. Mutually exclusive "
+                "with --resume."
+            ),
+        )
 
     mock = p.add_argument_group("Mock and testing")
     mock.add_argument(
@@ -2146,14 +2156,15 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
             "Useful for testing manual approval flows."
         ),
     )
-    mock.add_argument(
-        "--no-worktree-isolation", action="store_true",
-        help=(
-            "Disable orcho-managed worktree isolation for this run; "
-            "agent mutates the user's source checkout directly "
-            "(legacy pre-GWT-1 behaviour)."
-        ),
-    )
+    if not cross:
+        mock.add_argument(
+            "--no-worktree-isolation", action="store_true",
+            help=(
+                "Disable orcho-managed worktree isolation for this run; "
+                "agent mutates the user's source checkout directly "
+                "(legacy pre-GWT-1 behaviour)."
+            ),
+        )
 
     p.set_defaults(output=config.cli_output_mode())
     output = p.add_argument_group("Output")
@@ -2209,23 +2220,24 @@ def _add_common_run_args(p: argparse.ArgumentParser) -> None:
         help="Override review runtime.",
     )
 
-    attachments = p.add_argument_group("Attachments")
-    attachments.add_argument(
-        "--attach", action="append", default=None, metavar="PATH",
-        help="File to attach as prompt context (kind auto-detected). May repeat.",
-    )
-    attachments.add_argument(
-        "--attach-text", action="append", default=None, metavar="PATH",
-        help="File to attach as TEXT (force kind regardless of extension).",
-    )
-    attachments.add_argument(
-        "--attach-image", action="append", default=None, metavar="PATH",
-        help="File to attach as IMAGE (.png/.jpg/etc). Runtime support may vary.",
-    )
-    attachments.add_argument(
-        "--attach-binary", action="append", default=None, metavar="PATH",
-        help="File to attach as BINARY (passthrough; runtime decides handling).",
-    )
+    if not cross:
+        attachments = p.add_argument_group("Attachments")
+        attachments.add_argument(
+            "--attach", action="append", default=None, metavar="PATH",
+            help="File to attach as prompt context (kind auto-detected). May repeat.",
+        )
+        attachments.add_argument(
+            "--attach-text", action="append", default=None, metavar="PATH",
+            help="File to attach as TEXT (force kind regardless of extension).",
+        )
+        attachments.add_argument(
+            "--attach-image", action="append", default=None, metavar="PATH",
+            help="File to attach as IMAGE (.png/.jpg/etc). Runtime support may vary.",
+        )
+        attachments.add_argument(
+            "--attach-binary", action="append", default=None, metavar="PATH",
+            help="File to attach as BINARY (passthrough; runtime decides handling).",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
