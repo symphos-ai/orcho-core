@@ -482,9 +482,8 @@ Examples:
     args.resumed_meta = _resumed
 
     # Resolve provider mode before building either the provider or its phase
-    # configuration.  A checkpoint resume inherits its persisted boolean mode
-    # unless the operator explicitly asks for --mock; legacy runs preserve the
-    # historical argv-driven real-provider fallback with a visible warning.
+    # configuration. A checkpoint resume requires and inherits its persisted
+    # boolean mode unless the operator explicitly asks for --mock.
     try:
         _provider_mode = resolve_provider_mode(
             explicit_mock=bool(args.mock),
@@ -495,12 +494,6 @@ Examples:
         sys.exit(2)
     if _provider_mode.source == "inherited":
         print(f"  ↳ Inherited provider mode: {_provider_mode.label}")
-    if _provider_mode.legacy_fallback_warning:
-        print(
-            "  ⚠ Resume metadata has no persisted provider mode; "
-            f"using legacy CLI fallback: {_provider_mode.label}",
-            file=sys.stderr,
-        )
 
     # Resolve effective profile: explicit ``--profile`` wins; otherwise
     # inherit from ``meta.profile`` on resume; else fall back to the
