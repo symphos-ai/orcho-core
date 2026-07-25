@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-ProviderModeSource = Literal["fresh", "explicit", "inherited", "legacy"]
+ProviderModeSource = Literal["fresh", "explicit", "inherited"]
 
 
 class ProviderModeError(ValueError):
@@ -25,7 +25,6 @@ class ProviderModeResolution:
 
     mock: bool
     source: ProviderModeSource
-    legacy_fallback_warning: bool = False
 
     @property
     def label(self) -> str:
@@ -37,37 +36,30 @@ def resolve_provider_mode(
     explicit_mock: bool,
     resumed_meta: Mapping[str, object] | None,
 ) -> ProviderModeResolution:
-    """Resolve fresh, explicit, inherited, and legacy cross provider modes.
+    """Resolve fresh, explicit, and inherited cross provider modes.
 
     ``--mock`` is the sole explicit override available on the current CLI and
-    wins over durable metadata.  A resumed run with a boolean top-level
-    ``mock`` inherits that value.  Metadata created before this field existed
-    retains the historical argv-driven behaviour, while a present non-boolean
-    value is rejected instead of being silently coerced.
+    may override a valid persisted value.  A resumed run with a boolean
+    top-level ``mock`` otherwise inherits that value.  Resume metadata without
+    the required field, or with a non-boolean value, is rejected before any
+    override instead of choosing a provider mode implicitly.
     """
-    legacy_fallback_warning = resumed_meta is not None and "mock" not in resumed_meta
-    if resumed_meta is not None and "mock" in resumed_meta:
-        persisted = resumed_meta["mock"]
-        if not isinstance(persisted, bool):
-            raise ProviderModeError(
-                "resumed cross run has invalid persisted mock mode: "
-                f"expected boolean, got {type(persisted).__name__}"
-            )
-    else:
-        persisted = None
-
-    if explicit_mock:
-        return ProviderModeResolution(
-            mock=True,
-            source="explicit",
-            legacy_fallback_warning=legacy_fallback_warning,
-        )
     if resumed_meta is None:
-        return ProviderModeResolution(mock=False, source="fresh")
-    if persisted is None:
         return ProviderModeResolution(
-            mock=False,
-            source="legacy",
-            legacy_fallback_warning=True,
+            mock=explicit_mock,
+            source="explicit" if explicit_mock else "fresh",
         )
+    if "mock" not in resumed_meta:
+        raise ProviderModeError(
+            "resumed cross run has no persisted provider mode; required "
+            "boolean meta.mock is missing, so this run cannot be resumed"
+        )
+    persisted = resumed_meta["mock"]
+    if not isinstance(persisted, bool):
+        raise ProviderModeError(
+            "resumed cross run has invalid persisted mock mode: "
+            f"expected boolean, got {type(persisted).__name__}"
+        )
+    if explicit_mock:
+        return ProviderModeResolution(mock=True, source="explicit")
     return ProviderModeResolution(mock=persisted, source="inherited")
