@@ -164,6 +164,10 @@ def run_cross_from_args(args: Any) -> int:
         argv += ["--max-rounds", str(args.max_rounds)]
     if int(getattr(args, "mock_validate_plan_reject", 0) or 0) > 0:
         argv += ["--mock-validate-plan-reject", str(int(args.mock_validate_plan_reject))]
+    if getattr(args, "hypothesis", None) is not None:
+        argv += ["--hypothesis" if args.hypothesis else "--no-hypothesis"]
+    if getattr(args, "model", None):
+        argv += ["--model", args.model]
     if getattr(args, "output_dir", None):
         argv += ["--output-dir", args.output_dir]
     if getattr(args, "dry_run", False):
@@ -190,13 +194,13 @@ def run_cross_from_args(args: Any) -> int:
         argv += ["--plan-file", args.plan_file]
     for flag, opt in [
         ("model_plan", "--model-plan"),
-        ("model_build", "--model-build"),
-        ("model_fix", "--model-fix"),
-        ("model_review", "--model-review"),
+        ("model_implement", "--model-build"),
+        ("model_repair_changes", "--model-fix"),
+        ("model_review_changes", "--model-review"),
         ("runtime_plan", "--runtime-plan"),
-        ("runtime_build", "--runtime-build"),
-        ("runtime_fix", "--runtime-fix"),
-        ("runtime_review", "--runtime-review"),
+        ("runtime_implement", "--runtime-build"),
+        ("runtime_repair_changes", "--runtime-fix"),
+        ("runtime_review_changes", "--runtime-review"),
     ]:
         val = getattr(args, flag, None)
         if val:
