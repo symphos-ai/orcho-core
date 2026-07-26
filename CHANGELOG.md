@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-07-26
+
+Stabilization release for the 0.5 line, driven by independent black-box
+release qualification of the installed CLI and MCP surfaces. No breaking
+contract changes.
+
+### Added
+
+- Workspaces support a shared, committable `.orcho/config.json` layer
+  alongside the personal `config.local.json` overlay, so teams can share
+  policy such as delivery publishing defaults.
+- Generated workspace scaffolds include guidance on verification ownership.
+
+### Fixed
+
+- Resuming an unattended verification-gate halt no longer crashes: the gate
+  context is re-armed safely, and stale gate retries park again with a typed
+  refusal instead of offering an unexecutable repair step.
+- Verification gate progress and retry attempts are presented clearly, and
+  workspace gate policy is chosen from the project's verification evidence.
+- Cross-project resumes preserve the recorded provider intent: the durable
+  provider mode is inherited by default, and resumes fail closed with a
+  typed error when the persisted mode is missing instead of silently
+  switching providers.
+- Engine-owned verification gates no longer leak into implement-phase
+  acceptance criteria during planning.
+- Delivery validates publish results before reporting them and clearly
+  surfaces degraded publish readiness in the run summary.
+- Isolation identifiers are scoped to the project run lifecycle.
+
 ## 0.5.0 - 2026-07-23
 
 ### Added
