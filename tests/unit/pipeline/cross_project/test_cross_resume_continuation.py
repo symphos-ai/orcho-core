@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from core.observability.events import append_event
 from pipeline.cross_project import project_dispatch
 from pipeline.cross_project.execution_graph import (
     CrossExecutionGraph,
@@ -17,7 +18,18 @@ from pipeline.cross_project.execution_graph import (
     CrossExecutionGraphNodeOwner,
     project_node_identity,
 )
+from pipeline.cross_project.execution_graph_state import (
+    CrossExecutionGraphStatus,
+    RunnerGateFact,
+    RunnerGateFacts,
+    reduce_cross_execution_graph_state,
+    select_first_ready_node,
+)
+from pipeline.cross_project.execution_graph_state_runtime import (
+    reduce_runtime_cross_execution_graph_state,
+)
 from pipeline.cross_project.handoff import resume_project_phase_handoff
+from pipeline.cross_project.parent_state_runtime import reduce_runtime_cross_parent_state
 from pipeline.cross_project.project_dispatch import (
     DispatchPorts,
     ProjectDispatchContext,
@@ -129,3 +141,73 @@ def test_project_handoff_resume_dispatches_remaining_ready_children_before_gates
     assert calls == ["alpha", "beta"]
     assert ctx.session["phases"]["projects"]["alpha"]["status"] == "done"
     assert ctx.session["phases"]["projects"]["beta"]["status"] == "done"
+
+
+def test_interrupted_child_resume_reaches_gates_after_both_children_done(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    projects = {alias: tmp_path / alias for alias in ("alpha", "beta")}
+    for path in projects.values():
+        path.mkdir()
+    alpha = {"status": "done", "phases": {}}
+    beta = {"status": "running", "phases": {"implement": {"status": "running"}}}
+    for alias, child in (("alpha", alpha), ("beta", beta)):
+        (run_dir / alias).mkdir()
+        (run_dir / alias / "meta.json").write_text(json.dumps(child), encoding="utf-8")
+    (run_dir / "events.jsonl").write_text(
+        json.dumps({
+            "seq": 1, "ts": "2026-01-01T00:00:00+00:00", "kind": "phase.start",
+            "phase": None, "payload": {"phase_key": "implement", "project_alias": "beta"},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    alpha_meta_before = (run_dir / "alpha" / "meta.json").read_bytes()
+    session = {
+        "projects": {alias: str(path) for alias, path in projects.items()},
+        "phases": {"projects": {"alpha": alpha, "beta": beta}},
+    }
+    checkpoint = {"sub_status": {"alpha": "done", "beta": "running"}}
+    calls: list[tuple[str, str | None]] = []
+
+    def child(request):
+        calls.append((request.project_alias, request.resume_from))
+        result = {"status": "done", "phases": {}}
+        (run_dir / "beta" / "meta.json").write_text(json.dumps(result), encoding="utf-8")
+        append_event(
+            run_dir,
+            "phase.end",
+            {"phase_key": "implement", "project_alias": "beta"},
+        )
+        return SimpleNamespace(session=result)
+
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", child)
+    ctx = ProjectDispatchContext(
+        task="resume", projects=projects, task_plan=None, resume_from=run_dir.name,
+        dry_run=False, max_rounds=1, code_model="test", phase_config=None,
+        child_profile=object(), requested_profile_name="test", has_global_plan=False,
+        provider=MagicMock(), hypothesis_enabled=False, followup_session_seeds_per_alias=None,
+        run_dir=run_dir, output_dir=run_dir, plan_output="", plan_review_dict=None,
+        cross_ckpt=checkpoint, session=session, cross_phase_usage={},
+        ports=DispatchPorts(MagicMock(), MagicMock(), MagicMock()), terminal=False,
+        execution_graph=_graph(),
+    )
+
+    assert run_project_dispatch(ctx).paused is False
+    assert calls == [("beta", "beta")]
+    assert (run_dir / "alpha" / "meta.json").read_bytes() == alpha_meta_before
+    assert set(session["phases"]["projects"]) == {"alpha", "beta"}
+
+    graph_state = reduce_runtime_cross_execution_graph_state(
+        _graph(), session, checkpoint, str(run_dir),
+    )
+    assert select_first_ready_node(graph_state).identity == "contract"
+    assert next(node for node in graph_state.nodes if node.identity == "cfa").status is CrossExecutionGraphStatus.PENDING
+
+    gate_state = reduce_cross_execution_graph_state(
+        _graph(),
+        reduce_runtime_cross_parent_state(session, checkpoint, run_dir),
+        RunnerGateFacts((RunnerGateFact("contract", completed=True),)),
+    )
+    assert select_first_ready_node(gate_state).identity == "cfa"

@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from core.observability.events import append_event
 from pipeline.cross_project import project_dispatch
 from pipeline.cross_project.execution_graph import (
     CrossExecutionGraph,
@@ -300,3 +301,83 @@ def test_graph_dispatch_skips_hydrated_producer_then_runs_ready_consumer(tmp_pat
     assert run_project_dispatch(ctx).paused is False
     assert calls == ["consumer"]
     assert ctx.session["phases"]["projects"]["producer"] is producer
+
+
+def test_resume_redispatches_only_interrupted_running_child(tmp_path, monkeypatch) -> None:
+    ctx = _context(tmp_path, ("alpha", "beta"))
+    ctx.execution_graph = _graph(
+        aliases=("alpha", "beta"), dependencies={"alpha": (), "beta": ()},
+    )
+    alpha = {"status": "done", "phases": {}}
+    beta = {"status": "running", "phases": {"implement": {"status": "running"}}}
+    for alias, session in (("alpha", alpha), ("beta", beta)):
+        (ctx.run_dir / alias).mkdir()
+        (ctx.run_dir / alias / "meta.json").write_text(json.dumps(session))
+    append_event(
+        ctx.run_dir,
+        "phase.start",
+        {"phase_key": "implement", "project_alias": "beta"},
+    )
+    alpha_meta_before = (ctx.run_dir / "alpha" / "meta.json").read_bytes()
+    ctx.session["phases"]["projects"] = {"alpha": alpha, "beta": beta}
+    calls: list[tuple[str, str | None]] = []
+
+    def child(request):
+        calls.append((request.project_alias, request.resume_from))
+        session = {"status": "done", "phases": {}}
+        (ctx.run_dir / request.project_alias / "meta.json").write_text(json.dumps(session))
+        return SimpleNamespace(session=session)
+
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", child)
+
+    assert run_project_dispatch(ctx).paused is False
+    assert calls == [("beta", "beta")]
+    assert (ctx.run_dir / "alpha" / "meta.json").read_bytes() == alpha_meta_before
+    assert ctx.session["phases"]["projects"]["alpha"] == alpha
+    assert ctx.session["phases"]["projects"]["beta"]["status"] == "done"
+
+
+def test_fresh_running_child_is_not_redispatched(tmp_path, monkeypatch) -> None:
+    ctx = _context(tmp_path, ("beta",))
+    ctx.resume_from = None
+    ctx.execution_graph = _graph(aliases=("beta",), dependencies={"beta": ()})
+    beta = {"status": "running", "phases": {"implement": {"status": "running"}}}
+    (ctx.run_dir / "beta").mkdir()
+    (ctx.run_dir / "beta" / "meta.json").write_text(json.dumps(beta))
+    append_event(
+        ctx.run_dir,
+        "phase.start",
+        {"phase_key": "implement", "project_alias": "beta"},
+    )
+    ctx.session["phases"]["projects"] = {"beta": beta}
+    monkeypatch.setattr(
+        project_dispatch,
+        "run_project_pipeline",
+        lambda _request: (_ for _ in ()).throw(AssertionError("live child was redispatched")),
+    )
+
+    assert run_project_dispatch(ctx).paused is False
+
+
+def test_resume_rearm_is_consumed_after_a_nonterminal_return(tmp_path, monkeypatch) -> None:
+    ctx = _context(tmp_path, ("beta",))
+    ctx.execution_graph = _graph(aliases=("beta",), dependencies={"beta": ()})
+    running = {"status": "running", "phases": {"implement": {"status": "running"}}}
+    (ctx.run_dir / "beta").mkdir()
+    (ctx.run_dir / "beta" / "meta.json").write_text(json.dumps(running))
+    append_event(
+        ctx.run_dir,
+        "phase.start",
+        {"phase_key": "implement", "project_alias": "beta"},
+    )
+    ctx.session["phases"]["projects"] = {"beta": running}
+    calls: list[str] = []
+
+    def child(request):
+        calls.append(request.project_alias)
+        return SimpleNamespace(session=running)
+
+    monkeypatch.setattr(project_dispatch, "run_project_pipeline", child)
+
+    assert run_project_dispatch(ctx).blocking_aliases == ("beta",)
+    assert calls == ["beta"]

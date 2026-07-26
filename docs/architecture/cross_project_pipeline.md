@@ -86,6 +86,27 @@ state is never persisted as a mutable graph ledger. Child phases and scheduled
 gates remain nested, child-owned observations; the checkpoint is routing-only.
 MCP/XF3 projection and parallel scheduling remain deferred.
 
+### Same-run interrupted-child resume (X2)
+
+An explicit resume of the same cross run may find a canonical physical child
+projection that is still `running` after the original parent invocation was
+interrupted.  For that invocation only, dispatch passes the alias through the
+ordinary graph reduction as transient rearm eligibility.  The project becomes
+`READY` only through its existing dependency reduction and stable topological
+selection; its child request resumes in place with `resume_from=<alias>`.
+Eligibility is consumed before that attempt, so a nonterminal return cannot
+produce a duplicate redispatch.
+
+This exception is deliberately narrow: on a fresh invocation, a canonical
+live `running` child remains `RUNNING` and is not selectable.  Exact child
+`meta.json` paths and typed operation facts remain authoritative; checkpoint
+state is not eligibility or completion evidence.  Completed siblings are not
+called or rewritten.  `contract_check` and `cross_final_acceptance` stay
+pending until the rearmed child is terminal and evaluable, then follow the
+normal graph order.  No generic recovery, process/PID ownership ledger,
+parallel scheduler, persisted rearm state, or public SDK/MCP wire change is
+introduced.  See [ADR 0160](../adr/0160-same-run-cross-resume-interrupted-child-redispatch.md).
+
 ## Canonical parent-state reduction
 
 `pipeline.run_state.cross_parent.reduce_cross_parent_state` is the single
