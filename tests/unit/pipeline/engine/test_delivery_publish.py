@@ -249,8 +249,12 @@ def test_publish_provider_error_becomes_warning_not_raise(
         PublishResult(pushed=True, warnings="provider warning"),  # type: ignore[arg-type]
         PublishResult(pushed=True, warnings=["provider warning"]),  # type: ignore[arg-type]
         _publish_result_missing_fields(),
+        {"pushed": True, "pr_url": None, "warnings": ()},
     ],
-    ids=["pr-url-int", "warnings-str", "warnings-list", "missing-fields"],
+    ids=[
+        "pr-url-int", "warnings-str", "warnings-list", "missing-fields",
+        "not-a-publishresult",
+    ],
 )
 def test_publish_malformed_provider_result_degrades_to_typed_warning(
     monkeypatch: pytest.MonkeyPatch, malformed: object

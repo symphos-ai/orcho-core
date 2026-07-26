@@ -62,3 +62,8 @@ def test_ready_notice_without_warning_uses_honest_fallback() -> None:
 
     assert outcome is not None
     assert outcome.reason == "publication did not return a PR URL"
+
+
+def test_non_mapping_delivery_record_is_not_degraded() -> None:
+    assert project_degraded_publish(None, publish_gate="always") is None
+    assert project_degraded_publish("branch ready", publish_gate="always") is None
