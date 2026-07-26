@@ -156,14 +156,24 @@ transcripts, infer identifiers from prefixes, discover child directories, or
 write a derived reducer artifact.
 
 On resume, the physical child `meta.json` files are the canonical source for
-the parent session's `phases.projects` payloads. Checkpoint sub-status remains
-only a routing cursor: it cannot manufacture a completed child or a release
-verdict. Missing, malformed, or incomplete physical release payloads therefore
-remain fail-closed rather than being replaced with a stale embedded snapshot.
-Completed contract and approved CFA results are reused from the durable parent
-session; the snapshot immediately before delivery contains those gate results
-and the hydrated child payloads, so an interruption at delivery resumes with
-the same reduction inputs and without re-invoking either gate.
+the parent session's `phases.projects` payloads. The adapter reads each declared
+`<run_dir>/<alias>/meta.json` exact path again before CFA and before terminal
+finalization. Checkpoint sub-status remains only a routing cursor: it cannot
+manufacture a completed child or a release verdict. Missing, malformed, or
+incomplete physical release payloads therefore remain fail-closed rather than
+being replaced with a stale embedded snapshot. A consumed `project:<alias>:…`
+decision clears the active parent handoff, resumes that child first, and then
+returns to ordinary graph scheduling for remaining ready children before either
+runner gate is admitted.
+
+Completed contract and approved CFA results are normally reused from the
+durable parent session. The exception is a paused CFA whose saved result has
+`source="precondition"`: `continue` invalidates that result and its handoff,
+persists the cleared state, rebuilds canonical child facts, and evaluates CFA
+again. A paused `agent` or `parse_error` CFA instead keeps the existing explicit
+operator override and audit marker; it does not invoke the reviewer again.
+These are internal lifecycle rules only: SDK, MCP, checkpoint, and public
+schema shapes do not change.
 
 `NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
 policy applies, and it is not an interface-compatibility verdict.
@@ -408,11 +418,10 @@ by their ADRs rather than re-narrated here:
   finalization maps onto the terminal status (`ok`/`disabled` → `done`,
   `partial` → `cross_delivery_partial`, `failed` → `cross_delivery_failed`,
   `halted` → `halted`).
-- **CFA pause/resume** (ADR 0038 cross parity; `cfa_gate.py`) — the gate
-  outcome is a typed enum (`approved_terminal` / `paused` /
-  `override_continue` / `halted` / `retry_consumed`); a paused resume
-  preserves the operator override marker, and settle-time clears the
-  `pending_gate` residue through the single run-state eviction point
+- **CFA pause/resume** (ADR 0159; `cfa_gate.py`) — an `agent` or
+  `parse_error` `continue` preserves the operator override marker, while a
+  `precondition` `continue` re-arms CFA from rebuilt canonical facts; settle
+  clears the `pending_gate` residue through the single run-state eviction point
   (ADR 0115).
 
 ## Improvement Plan

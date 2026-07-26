@@ -26,6 +26,12 @@ from pipeline.cross_project.finalization import (
     finalize_cross_run,
 )
 from pipeline.cross_project.terminal import finalize_cross_terminal
+from pipeline.run_state.cross_parent import (
+    ChildFacts,
+    CrossParentFacts,
+    Observation,
+    reduce_cross_parent_state,
+)
 
 
 def _read_meta(run_dir: Path) -> dict:
@@ -64,6 +70,7 @@ def _ctx(run_dir: Path, session: dict, **kw) -> CrossFinalizationContext:
             "contract_check_failure_reason"
         ),
         cross_phase_usage=kw.get("cross_phase_usage", {}),
+        parent_state=kw.get("parent_state"),
     )
 
 
@@ -166,6 +173,32 @@ def test_finalize_cross_run_done_clears_residual_handoff(
     meta = _read_meta(run_dir)
     assert meta["status"] == "done"
     assert "phase_handoff" not in meta
+
+
+def test_all_done_parent_finalizes_without_readiness_residue(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    state = reduce_cross_parent_state(
+        CrossParentFacts(
+            ("alpha", "beta"),
+            (
+                ChildFacts("alpha", Observation.PRESENT, "done"),
+                ChildFacts("beta", Observation.PRESENT, "done"),
+            ),
+        )
+    )
+    session = {"phases": {"projects": {}}}
+    ctx = _ctx(
+        run_dir, session, projects={"alpha": Path("/tmp/alpha"), "beta": Path("/tmp/beta")},
+        cfa_result=_make_cfa(approved=True), parent_state=state,
+    )
+
+    with patch("pipeline.engine.artifact_mirror.mirror_to_projects", return_value=[]):
+        result = finalize_cross_run(ctx)
+
+    assert result.status == "done"
+    assert result.halt_reason is None
+    assert session.get("halt_reason") != "cross_child_readiness_blocked"
 
 
 # ── (c) finalize_cross_run FAILED clears a residual handoff (F1) ────────

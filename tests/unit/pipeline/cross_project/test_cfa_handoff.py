@@ -681,6 +681,176 @@ def test_gate_resume_continue_synthesises_approved_result(tmp_path):
     assert "cfa_paused_state" not in cross_ckpt
 
 
+def test_precondition_continue_rearms_and_reinvokes_cfa(tmp_path, monkeypatch):
+    """A readiness precondition is stale after child resume, never waivable."""
+    import pipeline.cross_project.final_acceptance as fa_mod
+    from pipeline.cross_project.cfa_gate import evaluate_cfa_gate
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    handoff_id = "cfa:cross_final_acceptance:1"
+    _write_decision_artifact(run_dir, handoff_id, action="continue")
+    session = _seed_paused_session(run_dir, source="precondition")
+    cross_ckpt = {
+        "phase_handoff_pending": True,
+        "phase_handoff_id": handoff_id,
+        "phase_handoff_kind": "cfa",
+        "cfa_paused_state": {"source": "precondition", "round": 1},
+        "sub_status": {"alpha": "done", "beta": "done"},
+    }
+    (run_dir / "cross_checkpoint.json").write_text(
+        json.dumps(cross_ckpt), encoding="utf-8",
+    )
+    refreshed = _make_real_cfa_result(approved=True, source="agent")
+    calls = []
+    monkeypatch.setattr(
+        fa_mod,
+        "run_cross_final_acceptance",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or refreshed,
+    )
+
+    outcome = evaluate_cfa_gate(
+        cfa_ctx=object(), codex=object(), dry_run=False, run_dir=run_dir,
+        session=session, cross_ckpt=cross_ckpt, cross_phase_usage=None,
+        resume_from=run_dir.name, output_dir=True, terminal=False,
+        refresh_context=lambda: object(),
+    )
+
+    assert outcome.outcome == "approved_terminal"
+    assert outcome.cfa_result is refreshed
+    assert calls, "precondition continue must perform a fresh CFA evaluation"
+    assert "cross_final_acceptance" not in session["phases"]
+    assert "phase_handoff" not in session
+    assert session["status"] == "running"
+    assert cross_ckpt["phase_handoff_pending"] is False
+    assert "cfa_paused_state" not in cross_ckpt
+    persisted = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert "cross_final_acceptance" not in persisted["phases"]
+    assert "phase_handoff" not in persisted
+
+
+def test_rearmed_rejection_uses_a_new_handoff_id_and_requires_a_new_decision(
+    tmp_path, monkeypatch,
+):
+    """A re-armed rejection cannot consume the prior pause's continue."""
+    import pipeline.cross_project.final_acceptance as fa_mod
+    from pipeline.cross_project.cfa_gate import evaluate_cfa_gate
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    first_handoff_id = "cfa:cross_final_acceptance:1"
+    _write_decision_artifact(run_dir, first_handoff_id, action="continue")
+    session = _seed_paused_session(run_dir, source="precondition")
+    cross_ckpt = {
+        "phase_handoff_pending": True,
+        "phase_handoff_id": first_handoff_id,
+        "phase_handoff_kind": "cfa",
+        "cfa_paused_state": {"source": "precondition", "round": 1},
+        "sub_status": {},
+    }
+    rejected = _make_real_cfa_result(approved=False, source="precondition")
+    monkeypatch.setattr(
+        fa_mod, "run_cross_final_acceptance", lambda *args, **kwargs: rejected,
+    )
+
+    outcome = evaluate_cfa_gate(
+        cfa_ctx=object(), codex=object(), dry_run=False, run_dir=run_dir,
+        session=session, cross_ckpt=cross_ckpt, cross_phase_usage=None,
+        resume_from=run_dir.name, output_dir=True, terminal=False,
+        refresh_context=lambda: object(),
+    )
+
+    assert outcome.outcome == "paused"
+    assert cross_ckpt["phase_handoff_id"] == "cfa:cross_final_acceptance:2"
+    assert session["phase_handoff"]["id"] == "cfa:cross_final_acceptance:2"
+
+    with pytest.raises(RuntimeError, match="no decision artifact found"):
+        evaluate_cfa_gate(
+            cfa_ctx=object(), codex=object(), dry_run=False, run_dir=run_dir,
+            session=session, cross_ckpt=cross_ckpt, cross_phase_usage=None,
+            resume_from=run_dir.name, output_dir=True, terminal=False,
+            refresh_context=lambda: object(),
+        )
+
+
+def test_precondition_continue_recovers_interrupted_rearm(tmp_path, monkeypatch):
+    """A stale checkpoint resumes an already-persisted CFA invalidation."""
+    import pipeline.cross_project.final_acceptance as fa_mod
+    from pipeline.cross_project.cfa_gate import evaluate_cfa_gate
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    handoff_id = "cfa:cross_final_acceptance:1"
+    _write_decision_artifact(run_dir, handoff_id, action="continue")
+    # Simulate interruption after save_cross_session removed the stale CFA
+    # verdict and handoff, but before write_cross_checkpoint cleared markers.
+    session = {"status": "running", "phases": {}}
+    (run_dir / "meta.json").write_text(json.dumps(session), encoding="utf-8")
+    cross_ckpt = {
+        "phase_handoff_pending": True,
+        "phase_handoff_id": handoff_id,
+        "phase_handoff_kind": "cfa",
+        "cfa_paused_state": {"source": "precondition", "round": 1},
+        "sub_status": {"alpha": "done", "beta": "done"},
+    }
+    (run_dir / "cross_checkpoint.json").write_text(
+        json.dumps(cross_ckpt), encoding="utf-8",
+    )
+    refreshed = _make_real_cfa_result(approved=True, source="agent")
+    calls = []
+    monkeypatch.setattr(
+        fa_mod,
+        "run_cross_final_acceptance",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or refreshed,
+    )
+
+    outcome = evaluate_cfa_gate(
+        cfa_ctx=object(), codex=object(), dry_run=False, run_dir=run_dir,
+        session=session, cross_ckpt=cross_ckpt, cross_phase_usage=None,
+        resume_from=run_dir.name, output_dir=True, terminal=False,
+        refresh_context=lambda: object(),
+    )
+
+    assert outcome.outcome == "approved_terminal"
+    assert outcome.cfa_result is refreshed
+    assert calls, "interrupted precondition re-arm must retry fresh CFA"
+    assert cross_ckpt["phase_handoff_pending"] is False
+    assert "cfa_paused_state" not in cross_ckpt
+    persisted_checkpoint = json.loads(
+        (run_dir / "cross_checkpoint.json").read_text(encoding="utf-8"),
+    )
+    assert persisted_checkpoint["phase_handoff_pending"] is False
+    assert "cfa_paused_state" not in persisted_checkpoint
+
+
+def test_precondition_continue_requires_context_refresh(tmp_path):
+    """A caller cannot surface an incomplete re-arm outcome to finalization."""
+    from pipeline.cross_project.cfa_gate import evaluate_cfa_gate
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    handoff_id = "cfa:cross_final_acceptance:1"
+    _write_decision_artifact(run_dir, handoff_id, action="continue")
+    session = _seed_paused_session(run_dir, source="precondition")
+    cross_ckpt = {
+        "phase_handoff_pending": True,
+        "phase_handoff_id": handoff_id,
+        "phase_handoff_kind": "cfa",
+        "cfa_paused_state": {"source": "precondition", "round": 1},
+        "sub_status": {},
+    }
+
+    with pytest.raises(RuntimeError, match="requires refresh_context"):
+        evaluate_cfa_gate(
+            cfa_ctx=object(), codex=object(), dry_run=False, run_dir=run_dir,
+            session=session, cross_ckpt=cross_ckpt, cross_phase_usage=None,
+            resume_from=run_dir.name, output_dir=True, terminal=False,
+        )
+
+    assert session["phase_handoff"]["id"] == handoff_id
+    assert cross_ckpt["phase_handoff_pending"] is True
+
+
 def test_parse_error_override_synthesises_non_failing_source(tmp_path):
     """Codex P1 regression — a continue-override on a ``parse_error``
     pause must finalize as ``done``, not silently fail. The finalizer
