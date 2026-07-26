@@ -705,6 +705,11 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         isinstance(entry, dict) and entry.get("not_evaluable") is True
         for entry in (getattr(ctx, "contract_results", None) or {}).values()
     )
+    resuming_cfa_handoff = bool(
+        getattr(request, "resume_from", None)
+        and ctx.cross_ckpt.get("phase_handoff_pending")
+        and ctx.cross_ckpt.get("phase_handoff_kind") == "cfa"
+    )
     execution_graph = getattr(ctx, "execution_graph", None)
     if execution_graph is not None:
         graph_state = reduce_runtime_cross_execution_graph_state(
@@ -717,6 +722,7 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         if (
             cfa_node.status is CrossExecutionGraphStatus.BLOCKED
             and not readiness_precondition
+            and not resuming_cfa_handoff
         ):
             ctx.graph_gate_blocked = True
             return False
@@ -752,8 +758,11 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         and not readiness_precondition
         and selected_cfa is None
         and not (
-            request.resume_from
-            and cfa_node.status is CrossExecutionGraphStatus.COMPLETED
+            getattr(request, "resume_from", None)
+            and (
+                cfa_node.status is CrossExecutionGraphStatus.COMPLETED
+                or resuming_cfa_handoff
+            )
         )
     ):
         ctx.graph_gate_blocked = True
@@ -767,19 +776,30 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         result_to_phase_log_entry,
     )
 
-    _cfa_ctx = build_context(
-        cross_plan_markdown=ctx.plan_output,
-        aliases=tuple(request.projects.keys()),
-        session_phases=ctx.session["phases"],
-        common_cwd=str(ctx.review_common_cwd),
-        review_paths={a: str(p) for a, p in ctx.review_projects.items()},
-        child_states={child.alias: child for child in ctx.reduced_parent.children},
-        parent_blocked=bool(
-            ctx.reduced_parent.violations
-            or ctx.reduced_parent.active_operations
-            or ctx.reduced_parent.pending_decision
-        ),
-    )
+    def _build_cfa_context():
+        state_session = (
+            ctx.session
+            if isinstance(ctx.session.get("projects"), dict)
+            else {**ctx.session, "projects": {alias: str(path) for alias, path in request.projects.items()}}
+        )
+        ctx.reduced_parent = reduce_runtime_cross_parent_state(
+            state_session, ctx.cross_ckpt, ctx.run_dir,
+        )
+        return build_context(
+            cross_plan_markdown=ctx.plan_output,
+            aliases=tuple(request.projects.keys()),
+            session_phases=ctx.session["phases"],
+            common_cwd=str(ctx.review_common_cwd),
+            review_paths={a: str(p) for a, p in ctx.review_projects.items()},
+            child_states={child.alias: child for child in ctx.reduced_parent.children},
+            parent_blocked=bool(
+                ctx.reduced_parent.violations
+                or ctx.reduced_parent.active_operations
+                or ctx.reduced_parent.pending_decision
+            ),
+        )
+
+    _cfa_ctx = _build_cfa_context()
     _cfa_outcome = evaluate_cfa_gate(
         cfa_ctx=_cfa_ctx,
         codex=ctx.review_agent,
@@ -799,6 +819,7 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
             phase_kind=None,
             attempt=1,
         ),
+        refresh_context=_build_cfa_context,
     )
     ctx.cfa_outcome = _cfa_outcome
     # ``halted`` already wrote terminal state; skip the tail and return.

@@ -24,6 +24,37 @@ def _init_git_repo(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
 
 
+def _add_alpha_retry_gate(path: Path) -> None:
+    """Commit an alpha-only gate that fails once in its durable worktree."""
+    plugin = path / ".orcho" / "multiagent" / "plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "PLUGIN = " + repr({
+            "verification": {
+                "commands": {
+                    "alpha_once": {
+                        "run": [
+                            "python", "-c",
+                            "from pathlib import Path; p = Path('.alpha_gate_once'); "
+                            "first = not p.exists(); p.touch(); raise SystemExit(1 if first else 0)",
+                        ],
+                    },
+                },
+                "required": ["alpha_once"],
+                "gate_sets": {"required": {"commands": ["alpha_once"]}},
+                "selection": [{"always": ["required"]}],
+                "schedule": [{
+                    "after_phase": "implement", "policy": "require",
+                    "action": "handoff", "commands": ["alpha_once"],
+                }],
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".orcho/multiagent/plugin.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add alpha retry gate"], cwd=path, check=True)
+
+
 def test_cross_mock_resume_inherits_provider_mode_after_durable_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -117,3 +148,63 @@ def test_cross_mock_resume_inherits_provider_mode_after_durable_child(
     assert provider_modes == [True, True]
     assert real_provider_invocations == 0
     assert real_binary_invocations == 0
+
+
+def test_cross_cli_project_handoff_resume_retries_alpha_then_runs_beta(
+    tmp_path: Path,
+) -> None:
+    """Public CLI + SDK journey for project-handoff continuation."""
+    from cli.orcho import build_parser, cmd_cross
+    from sdk.phase_handoff import phase_handoff_decide
+
+    workspace = tmp_path / "workspace"
+    alpha = workspace / "alpha"
+    beta = workspace / "beta"
+    _init_git_repo(alpha)
+    _init_git_repo(beta)
+    _add_alpha_retry_gate(alpha)
+    run_id = "cross-project-handoff-resume"
+    run_dir = workspace / "runspace" / "runs" / run_id
+    run_dir.parent.mkdir(parents=True)
+    parser = build_parser()
+
+    fresh = parser.parse_args([
+        "cross", "--task", "Retry alpha before beta", "--profile", "feature",
+        "--projects", f"alpha:{alpha}", f"beta:{beta}",
+        "--workspace", str(workspace), "--output-dir", str(run_dir),
+        "--no-interactive", "--mock",
+    ])
+    assert cmd_cross(fresh) == 4
+    paused = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    handoff = paused["phase_handoff"]
+    assert paused["status"] == "awaiting_phase_handoff"
+    assert handoff["id"].startswith("project:alpha:")
+    assert not (run_dir / "beta" / "meta.json").exists()
+
+    phase_handoff_decide(
+        run_id, handoff["id"], "retry_feedback", feedback="Retry the alpha gate.",
+        runs_dir=run_dir.parent, cwd=None,
+    )
+    resumed = parser.parse_args([
+        "cross", "--resume", run_id, "--workspace", str(workspace),
+        "--no-interactive",
+    ])
+    assert cmd_cross(resumed) == 0
+
+    alpha_receipts = sorted(
+        (run_dir / "alpha" / "verification_command_receipts" / "executions").glob("*.json"),
+    )
+    assert [json.loads(path.read_text(encoding="utf-8"))["exit_code"] for path in alpha_receipts] == [1, 0]
+    assert (run_dir / "beta" / "meta.json").is_file()
+    alpha_meta = json.loads((run_dir / "alpha" / "meta.json").read_text(encoding="utf-8"))
+    beta_meta = json.loads((run_dir / "beta" / "meta.json").read_text(encoding="utf-8"))
+    parent_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert alpha_meta["status"] == beta_meta["status"] == "done"
+    assert parent_meta["status"] == "done"
+    assert "phase_handoff" not in parent_meta
+    assert parent_meta.get("halt_reason") != "cross_child_readiness_blocked"
+    cfa = parent_meta["phases"]["cross_final_acceptance"]
+    assert not any(
+        blocker["id"].startswith("CFA_MISSING_CHILD_")
+        for blocker in cfa["release_blockers"]
+    )

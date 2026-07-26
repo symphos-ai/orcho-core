@@ -13,13 +13,14 @@ operator's decision artifact and dispatches the three actions:
   ``status="halted"`` + ``halt_reason="phase_handoff_halt"`` and
   the gate returns ``outcome="halted"``. The caller MUST NOT
   invoke ``finalize_cross_run`` after this (no double run.end).
-* ``continue`` (operator override) → an APPROVED CFA result is
-  synthesised so the existing :func:`finalize_cross_run`
-  status-decision tree flows through the APPROVED branch and
-  emits ``run.end`` with ``status="done"``. The override marker is
-  stamped on ``session["phases"]["cross_final_acceptance"]
-  ["override"]`` for evidence/audit. Phase B will additionally
-  surface per-alias override on the delivery side.
+* ``continue`` on an ``agent`` or ``parse_error`` result is an operator
+  override: an APPROVED CFA result is synthesised so the existing
+  :func:`finalize_cross_run` status-decision tree flows through the
+  APPROVED branch and emits ``run.end`` with ``status="done"``. The
+  override marker is stamped on ``session["phases"]
+  ["cross_final_acceptance"]["override"]`` for evidence/audit.
+  A ``precondition`` result is instead invalidated and evaluated again
+  from fresh canonical child facts.
 * ``retry_feedback`` → deferred to Phase A2c (extends the CFA
   reviewer with a ``feedback`` parameter and re-invokes). Today the
   gate raises ``NotImplementedError`` so a stale decision artifact
@@ -94,12 +95,14 @@ class CfaGateOutcome:
         "approved_terminal",
         "cached_terminal",
         "paused",
+        "rearm_precondition",
         "override_continue",
         "halted",
         "retry_consumed",
     ]
     cfa_result: Any | None  # CrossFinalAcceptanceResult when not paused/halted
     override_marker: dict | None = None  # only populated on override_continue
+    next_pause_round: int | None = None  # only populated after precondition re-arm
 
 
 def load_completed_cfa_cache(
@@ -315,6 +318,7 @@ def _resume_cfa_decision(
     cross_ckpt: dict,
     output_dir: bool,
     terminal: bool,
+    refresh_context_available: bool,
 ) -> CfaGateOutcome:
     """Apply the operator's decision on a pending CFA handoff.
 
@@ -329,6 +333,7 @@ def _resume_cfa_decision(
     )
     from pipeline.cross_project.checkpoint import write_cross_checkpoint
     from pipeline.cross_project.terminal import finalize_cross_terminal
+    from pipeline.engine import save_session as save_cross_session
 
     handoff_id = str(cross_ckpt.get("phase_handoff_id") or "")
     if not handoff_id:
@@ -383,12 +388,52 @@ def _resume_cfa_decision(
             # to reading the persisted entry off disk so the override
             # can still preserve the original findings.
             prior_result = _load_prior_cfa_result_from_disk(run_dir, session)
-        if prior_result is None:
+        paused_state = cross_ckpt.get("cfa_paused_state")
+        rearming_after_interruption = (
+            prior_result is None
+            and isinstance(paused_state, dict)
+            and paused_state.get("source") == "precondition"
+        )
+        if prior_result is None and not rearming_after_interruption:
             raise RuntimeError(
                 f"Cannot resume cross run {run_dir.name!r} with CFA "
                 "continue action: no prior CFA result found on session "
                 "or in meta.json. The pause path must persist the "
                 "result before emitting the pause."
+            )
+        if rearming_after_interruption or (
+            prior_result is not None and prior_result.source == "precondition"
+        ):
+            if not refresh_context_available:
+                raise RuntimeError(
+                    "CFA precondition re-arm requires refresh_context to "
+                    "rebuild canonical child facts before evaluation."
+                )
+            # A precondition result records the old canonical child facts; it
+            # is not an agent verdict an operator may waive.  Remove it before
+            # the graph/cache can observe it as a completed CFA, then continue
+            # through evaluate_cfa_gate's normal fresh path using the context
+            # rebuilt by the resume coordinator.  Saving the invalidated
+            # session before its checkpoint cleanup can be interrupted; the
+            # persisted precondition paused-state marker is therefore also a
+            # sufficient idempotency witness for this already-started re-arm.
+            paused_round = (
+                paused_state.get("round")
+                if isinstance(paused_state, dict)
+                else None
+            )
+            next_pause_round = paused_round + 1 if isinstance(paused_round, int) else 2
+            session.setdefault("phases", {}).pop("cross_final_acceptance", None)
+            session.pop("phase_handoff", None)
+            session["status"] = "running"
+            _clear_cfa_checkpoint_markers(cross_ckpt)
+            if output_dir:
+                save_cross_session(run_dir, session)
+            write_cross_checkpoint(run_dir if output_dir else None, cross_ckpt)
+            return CfaGateOutcome(
+                outcome="rearm_precondition",
+                cfa_result=None,
+                next_pause_round=next_pause_round,
             )
         synthetic = _synthesise_approved_for_override(
             prior_result, decision.note,
@@ -627,6 +672,7 @@ def evaluate_cfa_gate(
     terminal: bool,
     max_rounds: int = CFA_DEFAULT_MAX_ROUNDS,
     on_fresh_start: Callable[[], None] | None = None,
+    refresh_context: Callable[[], Any] | None = None,
 ) -> CfaGateOutcome:
     """Gate the cross_final_acceptance phase with pause/decide semantics.
 
@@ -680,18 +726,25 @@ def evaluate_cfa_gate(
         :func:`finalize_cross_run`.
     """
     # ── Resume-decide branch ──────────────────────────────────────────
+    next_pause_round = None
     if (
         resume_from
         and cross_ckpt.get("phase_handoff_pending")
         and cross_ckpt.get("phase_handoff_kind") == "cfa"
     ):
-        return _resume_cfa_decision(
+        resumed = _resume_cfa_decision(
             run_dir=run_dir,
             session=session,
             cross_ckpt=cross_ckpt,
             output_dir=output_dir,
             terminal=terminal,
+            refresh_context_available=refresh_context is not None,
         )
+        if resumed.outcome != "rearm_precondition":
+            return resumed
+        assert refresh_context is not None
+        cfa_ctx = refresh_context()
+        next_pause_round = resumed.next_pause_round
 
     if resume_from:
         cached = load_completed_cfa_cache(session, run_dir)
@@ -730,7 +783,7 @@ def evaluate_cfa_gate(
         session=session,
         cross_ckpt=cross_ckpt,
         cfa_result=cfa_result,
-        round_n=1,
+        round_n=next_pause_round or 1,
         max_rounds=max_rounds,
         cross_phase_usage=cross_phase_usage,
         terminal=terminal,
