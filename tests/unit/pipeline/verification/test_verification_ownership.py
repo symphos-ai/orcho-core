@@ -131,3 +131,72 @@ def test_conflicts_render_valid_actionable_review() -> None:
     assert "commands_to_run[0]" in rejection
     assert "done criteria" in rejection
     assert "exact normalized argv" in rejection
+
+
+def _operator_policy_contract() -> VerificationContract:
+    contract = VerificationContract.from_plugin(PluginConfig(
+        work_mode="pro",
+        verification={
+            "commands": {
+                "lint": {"run": ["python", "-m", "ruff", "check", "."]},
+            },
+            "gate_sets": {"core": {"commands": ["lint"]}},
+            "selection": [{"always": ["core"]}],
+            "schedule": [
+                {
+                    "after_phase": "implement",
+                    "gate_sets": ["core"],
+                    "policy": "suggest",
+                },
+            ],
+        },
+    ))
+    assert contract is not None
+    return contract
+
+
+def _string_run_contract() -> VerificationContract:
+    contract = VerificationContract.from_plugin(PluginConfig(
+        work_mode="pro",
+        verification={
+            "commands": {"lint": {"run": "python -m ruff check ."}},
+            "gate_sets": {"core": {"commands": ["lint"]}},
+            "selection": [{"always": ["core"]}],
+            "schedule": [
+                {
+                    "after_phase": "implement",
+                    "gate_sets": ["core"],
+                    "policy": "require",
+                },
+            ],
+        },
+    ))
+    assert contract is not None
+    return contract
+
+
+def test_operator_executed_suggest_gate_is_not_an_engine_conflict() -> None:
+    plan = _plan("python -m ruff check .")
+
+    assert find_verification_ownership_conflicts(
+        plan, _operator_policy_contract(), {},
+    ) == ()
+
+
+def test_string_run_declaration_matches_exact_argv() -> None:
+    conflicts = find_verification_ownership_conflicts(
+        _plan("python -m ruff check ."),
+        _string_run_contract(),
+        {},
+    )
+
+    assert [
+        (conflict.location, conflict.gate_command)
+        for conflict in conflicts
+    ] == [("commands_to_run[0]", "lint")]
+
+
+def test_unparseable_plan_command_never_conflicts_or_crashes() -> None:
+    plan = _plan('echo "unbalanced')
+
+    assert find_verification_ownership_conflicts(plan, _contract(), {}) == ()

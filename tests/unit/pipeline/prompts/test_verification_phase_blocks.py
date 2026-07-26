@@ -256,3 +256,18 @@ def test_plan_is_memoized_in_state_extras() -> None:
     # executable routing plans gate_repair uses.
     assert "verification_gate_prompt_preview" in state.extras
     assert "verification_gate_routing_plans" not in state.extras
+
+
+def test_validate_plan_block_omitted_when_only_manual_gates_exist() -> None:
+    from pipeline.verification_contract import render_phase_gate_block
+
+    plan = SimpleNamespace(entries=(
+        SimpleNamespace(
+            command="smoke", hook="manual_only", phase="", policy="suggest",
+            action="handoff", primary_gate_set="delivery",
+        ),
+    ))
+
+    assert render_phase_gate_block(
+        _plan_contract(), plan, "validate_plan", PlaceholderContext(checkout="/co"),
+    ) is None
