@@ -36,6 +36,20 @@ def test_creates_workspace_layout(tmp_path: Path) -> None:
     assert Path(r.env_file).is_file()
     assert Path(r.local_config_file).is_file()
     ws = Path(r.workspace_dir)
+    shared_config = ws / ".orcho" / "config.json"
+    gitignore = ws / ".orcho" / ".gitignore"
+    assert json.loads(shared_config.read_text(encoding="utf-8")) == {
+        "_comment": (
+            "Team-shared workspace configuration. Add active settings "
+            "deliberately; personal overrides belong in config.local.json."
+        ),
+    }
+    active_ignore_patterns = [
+        line for line in gitignore.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert active_ignore_patterns == ["config.local.json"]
+    assert "config.json" not in active_ignore_patterns
     # .orcho/multiagent/prompts/ is part of the visible extension rails.
     assert (ws / ".orcho" / "multiagent" / "prompts").is_dir()
     assert (ws / ".orcho" / "multiagent" / "prompts" / "roles" / "README.md").is_file()
@@ -43,10 +57,16 @@ def test_creates_workspace_layout(tmp_path: Path) -> None:
     assert (ws / ".orcho" / "multiagent" / "prompts" / "formats" / "README.md").is_file()
     assert (ws / ".orcho" / "multiagent" / "plugin.py").is_file()
     assert (ws / ".orcho" / ".task-files" / "README.md").is_file()
+    assert (ws / ".orcho" / "multiagent" / "AGENTS.md").is_file()
+    assert (
+        ws / ".orcho" / "multiagent" / "CLAUDE.md"
+    ).read_text(encoding="utf-8") == "@./AGENTS.md\n"
     assert r.extension_points == (
         str(ws / ".orcho" / "multiagent" / "plugin.py"),
         str(ws / ".orcho" / "multiagent" / "prompts"),
         str(ws / ".orcho" / ".task-files"),
+        str(ws / ".orcho" / "multiagent" / "AGENTS.md"),
+        str(ws / ".orcho" / "multiagent" / "CLAUDE.md"),
     )
 
 
@@ -59,10 +79,86 @@ def test_task_files_readme_includes_authoring_guidance(tmp_path: Path) -> None:
     assert "## Writing a good task file" in readme
     assert "Verification is the engine's job" in readme
     assert "targeted tests" in readme
+    assert "direct `--task` input" in readme
+    assert "manual-only, declared but unscheduled" in readme
+    assert "lint on changed files" in readme
+    assert "orcho quality-gates --project" in readme
+    assert "Do not copy `orcho verify run ...` into the task" in readme
     assert (
         "https://github.com/symphos-ai/orcho-core/blob/main/"
         "docs/authoring-task-files.md"
     ) in readme
+
+
+def test_workspace_agent_rules_define_gate_ownership_for_all_task_inputs(
+    tmp_path: Path,
+) -> None:
+    result = init_workspace(tmp_path / "g")
+    agents = (
+        Path(result.workspace_dir) / ".orcho" / "multiagent" / "AGENTS.md"
+    ).read_text(encoding="utf-8")
+
+    assert "template belongs with the adjacent `plugin.py`" in agents
+    assert "root `AGENTS.md`" in agents
+    assert "When asked to configure Orcho" in agents
+    assert "manifests, package-manager scripts" in agents
+    assert "Do not call a command\n   cheap" in agents
+    assert "do not default every new gate to `warn`" in agents
+    assert "Use `require` immediately" in agents
+    assert "make the delivery boundary `require` as well" in agents
+    assert "Keep unproven, broad" in agents
+    assert "operator handoff" in agents
+    assert "orcho quality-gates --project ." in agents
+    assert "empty generated verification skeleton" in agents
+    assert "`--task`, `--task-file`, a\nfollow-up" in agents
+    assert "the Orcho engine owns its official execution" in agents
+    assert "focused tests, lint on changed files" in agents
+    assert "manual-only, declared but unscheduled" in agents
+    assert "Never invoke `orcho verify` from an implement subtask" in agents
+    assert "Work in the checkout supplied by Orcho" in agents
+
+
+def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
+    tmp_path: Path,
+) -> None:
+    result = init_workspace(tmp_path / "g")
+    plugin = (
+        Path(result.workspace_dir) / ".orcho" / "multiagent" / "plugin.py"
+    ).read_text(encoding="utf-8")
+
+    assert "delivery_policy" not in plugin
+    assert '"commands": {}' in plugin
+    assert '"gate_sets": {}' in plugin
+    assert '"selection": []' in plugin
+    assert '"schedule": []' in plugin
+    assert "ruff" not in plugin
+    assert "pyproject.toml" not in plugin
+
+    lines = plugin.splitlines()
+    start = lines.index("    # BEGIN ORCHO VERIFICATION EXAMPLE") + 1
+    end = lines.index("    # END ORCHO VERIFICATION EXAMPLE")
+    active_example = "\n".join(
+        line.removeprefix("    # ")
+        for line in lines[start:end]
+    )
+    project = tmp_path / "project"
+    plugin_dir = project / ".orcho" / "multiagent"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.py").write_text(
+        f"PLUGIN = {{\n{active_example}\n}}\n",
+        encoding="utf-8",
+    )
+
+    from pipeline.plugins import load_plugin
+    from pipeline.verification_contract import VerificationContract
+
+    contract = VerificationContract.from_plugin(load_plugin(str(project)))
+
+    assert contract is not None
+    # The empty skeleton remains validation-safe. Agents must select a policy
+    # from project evidence rather than copying one from the template.
+    assert contract.delivery_policy is None
+    assert tuple(contract.commands) == ()
 
 
 def test_workspace_plugin_scaffold_is_importable_empty_plugin(
@@ -155,6 +251,7 @@ def test_workspace_local_config_snapshot_contains_override_surface(
     data = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
 
     assert "$ORCHO_WORKSPACE/.orcho/config.local.json" in data["_comment"]
+    assert "workspace config.json" in data["_comment"]
     assert "Environment variables still win" in data["_comment"]
     assert "phases" in data
     assert "plan" in data["phases"]
@@ -518,6 +615,27 @@ def test_scaffold_does_not_overwrite_existing_files(tmp_path: Path) -> None:
     assert str(plugin) in r2.skipped_paths
 
 
+def test_scaffold_preserves_custom_workspace_config_files(tmp_path: Path) -> None:
+    first = init_workspace(tmp_path / "g")
+    config_dir = Path(first.workspace_dir) / ".orcho"
+    shared_config = config_dir / "config.json"
+    gitignore = config_dir / ".gitignore"
+    personal_config = Path(first.local_config_file)
+    expected = {
+        shared_config: '{"team": "custom"}\n',
+        gitignore: "custom.local.json\n",
+        personal_config: '{"phases": {"implement": {"effort": "high"}}}\n',
+    }
+    for path, body in expected.items():
+        path.write_text(body, encoding="utf-8")
+
+    second = init_workspace(tmp_path / "g")
+
+    for path, body in expected.items():
+        assert path.read_text(encoding="utf-8") == body
+        assert str(path) in second.skipped_paths
+
+
 def test_scaffold_does_not_overwrite_existing_task_files_readme(
     tmp_path: Path,
 ) -> None:
@@ -531,11 +649,28 @@ def test_scaffold_does_not_overwrite_existing_task_files_readme(
     assert str(readme) in r2.skipped_paths
 
 
+def test_scaffold_does_not_overwrite_existing_agent_rules(
+    tmp_path: Path,
+) -> None:
+    first = init_workspace(tmp_path / "g")
+    agents = (
+        Path(first.workspace_dir) / ".orcho" / "multiagent" / "AGENTS.md"
+    )
+    agents.write_text("# Custom project-group rules\n", encoding="utf-8")
+
+    second = init_workspace(tmp_path / "g")
+
+    assert agents.read_text(encoding="utf-8") == "# Custom project-group rules\n"
+    assert str(agents) in second.skipped_paths
+
+
 def test_no_scaffold_skips_extension_templates(tmp_path: Path) -> None:
     r = init_workspace(tmp_path / "g", no_scaffold=True)
     ws = Path(r.workspace_dir)
 
     assert Path(r.local_config_file).is_file()
+    assert not (ws / ".orcho" / "config.json").exists()
+    assert not (ws / ".orcho" / ".gitignore").exists()
     assert not (ws / ".orcho" / "multiagent").exists()
     assert not (ws / ".orcho" / ".task-files").exists()
     assert r.extension_points == ()
@@ -552,6 +687,16 @@ def test_dry_run_creates_nothing(tmp_path: Path) -> None:
     assert not root.exists(), "dry-run must not create the group root"
     assert r.created_paths, "result should still list what would be created"
     assert any(path.endswith(".orcho/multiagent/plugin.py") for path in r.created_paths)
+    assert any(path.endswith("workspace-orchestrator/.orcho/config.json") for path in r.created_paths)
+    assert any(path.endswith("workspace-orchestrator/.orcho/.gitignore") for path in r.created_paths)
+    assert any(
+        path.endswith("workspace-orchestrator/.orcho/multiagent/AGENTS.md")
+        for path in r.created_paths
+    )
+    assert any(
+        path.endswith("workspace-orchestrator/.orcho/multiagent/CLAUDE.md")
+        for path in r.created_paths
+    )
 
 
 def test_dry_run_still_produces_snippet_and_detection(tmp_path: Path) -> None:

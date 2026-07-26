@@ -72,6 +72,26 @@ class IsolationSetup:
     pre_run_dirty: Any = None
 
 
+@contextlib.contextmanager
+def scoped_isolation_id(session_ts: str):
+    """Expose one run's resolved isolation id for its full lifecycle.
+
+    The id is process-scoped because both worktree bootstrap and scheduled
+    verification commands inherit ``os.environ``.  Restore the caller's
+    ambient value on every exit so sequential direct, cross, and resumed runs
+    cannot leak identity into one another.
+    """
+    previous = os.environ.get("ORCHO_ISOLATION_ID")
+    os.environ["ORCHO_ISOLATION_ID"] = session_ts
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("ORCHO_ISOLATION_ID", None)
+        else:
+            os.environ["ORCHO_ISOLATION_ID"] = previous
+
+
 def resolve_isolation_inputs(
     *,
     project_path: Path,

@@ -106,6 +106,22 @@ checkout through pre-run dirty intake and can continue on top of it via
 project repo must have `user.name`, `user.email`, and working commit
 hooks configured.
 
+### Delivery branches and publication
+
+When delivery uses a dedicated branch, the result records the branch and its
+commit facts. A checkout commit has a `commit_sha`; an isolated delivery branch
+instead records its branch commit separately. If a workspace sets
+`commit.publish=always`, Orcho may make a best-effort provider call **after** a
+successful `commit_on_branch` commit. It only concerns that existing dedicated
+branch: it never pushes the current branch or the default branch, and an
+in-place commit is never published by this gate.
+
+A PR URL is the confirmation that a provider opened a pull request. Missing
+providers, provider errors, or an invalid provider response leave the commit
+intact and report a ready branch plus any warning. They do not mean that the
+branch was pushed; use the notices and warnings in the delivery result to see
+what is known.
+
 ### Delivery on REJECTED (ADR 0069)
 
 When `final_acceptance` returns **REJECTED** (`ship_ready: no`):

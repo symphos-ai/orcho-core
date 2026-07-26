@@ -129,7 +129,9 @@ def live_runs() -> Iterator[Callable[[LaunchResult], LaunchResult]]:
     yield _track
 
     for res in tracked:
-        with contextlib.suppress(ProcessLookupError):
+        # macOS raises EPERM (not ESRCH) when signalling a pgid whose leader
+        # is already a zombie; both mean there is nothing left to kill.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(res.run.pgid, signal.SIGKILL)
         with contextlib.suppress(Exception):
             res.popen.wait(timeout=10)

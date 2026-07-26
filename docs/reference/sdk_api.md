@@ -403,11 +403,18 @@ network failure.
 customize_profile(profile: str, *, ..., dry_run: bool = False) -> ProfileCustomizeResult
 ```
 
-Writes a validated `profiles_v2` overlay for a built-in profile into a local
-`config.local.json`. The default scope is workspace-local
+Writes a validated `profiles_v2` overlay for a built-in profile into the
+personal `config.local.json`. The default scope is workspace-local
 (`$ORCHO_WORKSPACE/.orcho/config.local.json`); `scope="user"` writes
-`~/.orcho/config.local.json`. `dry_run=True` validates and returns the target
-path without writing.
+`~/.orcho/config.local.json`. It does not write shared workspace
+`config.json`; team-owned overlays can be authored there manually and are
+overridden by this personal file. `dry_run=True` validates and returns the
+target path without writing.
+
+Configuration precedence is package → user → workspace shared → workspace
+personal → environment. This preserves the `settings.json` /
+`settings.local.json` convention: shared policy is committable, while the
+personal file is gitignored.
 
 Raises `ProfileCustomizeError` (with `exit_code=2`) when the request cannot be
 resolved or the resulting overlay does not pass the v2 profile schema.
@@ -566,7 +573,7 @@ Only these public SDK calls write to disk:
 | ----------------------------------- | --------------------------------------------- |
 | `refresh_pricing(provider, ...)`    | `~/.orcho/pricing.local.toml` (configurable)  |
 | `write_evidence_bundle(b, out_dir)` | `<out_dir>/<run_id>/evidence.{json,md}`       |
-| `customize_profile(profile, ...)`   | local `config.local.json` `profiles_v2` block |
+| `customize_profile(profile, ...)`   | personal `config.local.json` `profiles_v2` block |
 
 Every other public function is read-only (no filesystem writes, no
 network, no env mutation). The CLI's `_run_cli(call, formatter)`

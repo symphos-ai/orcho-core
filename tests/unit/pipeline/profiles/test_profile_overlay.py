@@ -1,4 +1,4 @@
-"""Local-config overlay for built-in profile JSON.
+"""Workspace shared and personal config overlays for built-in profile JSON.
 
 Operators override per-profile, per-phase fields via the ``profiles_v2``
 block in any layered ``config.local.json`` without touching the shipped
@@ -16,7 +16,8 @@ These tests pin:
 
 Filesystem isolation: ``ORCHO_WORKSPACE`` + the user-config home dir
 are redirected to ``tmp_path`` for every test so a real
-``~/.orcho/config.local.json`` on the developer's machine cannot leak
+``~/.orcho/config.local.json`` or workspace ``config.json`` on the developer's
+machine cannot leak
 into the assertion.
 """
 from __future__ import annotations
@@ -43,9 +44,10 @@ def isolated_config_layers(
 ) -> Iterator[dict[str, Path]]:
     """Redirect every overlay layer this test cares about into
     ``tmp_path`` so the test cannot read or write a real
-    ``config.local.json`` on disk.
+    config file on disk.
 
-    Yields a dict with ``package``, ``user``, ``workspace`` paths the
+    Yields a dict with ``package``, ``user``, ``workspace_shared``, and
+    ``workspace_personal`` paths the
     test populates as needed. The package layer is faked by
     monkeypatching ``_CONFIG_DIR`` inside ``core.infra.config``; the
     other two layers are redirected through ``paths.user_config_dir``
@@ -76,7 +78,8 @@ def isolated_config_layers(
     yield {
         "package": package_dir / "config.local.json",
         "user": user_dir / "config.local.json",
-        "workspace": workspace_dir / "config.local.json",
+        "workspace_shared": workspace_dir / "config.json",
+        "workspace_personal": workspace_dir / "config.local.json",
     }
 
 
@@ -89,7 +92,8 @@ def _write_layer(path: Path, body: dict) -> None:
 
 class TestLoadProfileOverlays:
     """:func:`core.infra.config.load_profile_overlays` reads
-    ``profiles_v2`` from the three local-config layers."""
+    ``profiles_v2`` from package, user, workspace shared, and workspace
+    personal config layers."""
 
     def test_returns_empty_when_no_layers_exist(
         self, isolated_config_layers: dict[str, Path],
@@ -117,10 +121,10 @@ class TestLoadProfileOverlays:
             },
         }
 
-    def test_workspace_layer_overrides_user_layer(
+    def test_workspace_shared_layer_overrides_user_layer(
         self, isolated_config_layers: dict[str, Path],
     ) -> None:
-        """Workspace > user > package precedence, mirroring the
+        """Workspace shared > user > package precedence, mirroring the
         existing phase-overlay precedence."""
         _write_layer(isolated_config_layers["user"], {
             "profiles_v2": {
@@ -131,7 +135,7 @@ class TestLoadProfileOverlays:
                 },
             },
         })
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_shared"], {
             "profiles_v2": {
                 "advanced": {
                     "validate_plan": {
@@ -145,12 +149,30 @@ class TestLoadProfileOverlays:
             "type": "human_bypass",
         }
 
+    def test_workspace_personal_layer_overrides_shared_layer(
+        self, isolated_config_layers: dict[str, Path],
+    ) -> None:
+        _write_layer(isolated_config_layers["workspace_shared"], {
+            "profiles_v2": {
+                "advanced": {"implement": {"effort": "medium"}},
+            },
+        })
+        _write_layer(isolated_config_layers["workspace_personal"], {
+            "profiles_v2": {
+                "advanced": {"implement": {"effort": "high"}},
+            },
+        })
+
+        overlays = cfg_module.load_profile_overlays()
+
+        assert overlays["advanced"]["implement"] == {"effort": "high"}
+
     def test_layers_union_disjoint_keys(
         self, isolated_config_layers: dict[str, Path],
     ) -> None:
         """Different (profile, phase) keys across layers union — neither
         clobbers the other."""
-        _write_layer(isolated_config_layers["user"], {
+        _write_layer(isolated_config_layers["workspace_shared"], {
             "profiles_v2": {
                 "advanced": {
                     "validate_plan": {
@@ -159,7 +181,7 @@ class TestLoadProfileOverlays:
                 },
             },
         })
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_personal"], {
             "profiles_v2": {
                 "lite": {
                     "implement": {"effort": "low"},
@@ -181,7 +203,7 @@ class TestLoadProfileOverlays:
     def test_profile_level_patch_passes_through(
         self, isolated_config_layers: dict[str, Path],
     ) -> None:
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_personal"], {
             "profiles_v2": {
                 "review": {
                     "_profile": {"worktree_isolation": "off"},
@@ -225,7 +247,7 @@ class TestLoadProfileOverlays:
         isolated_config_layers["user"].write_text(
             "{not valid json", encoding="utf-8",
         )
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_personal"], {
             "profiles_v2": {
                 "advanced": {
                     "validate_plan": {
@@ -465,7 +487,7 @@ class TestLoadProfilesV2WithOverlay:
         profile_json.write_text(
             json.dumps(_shipped_raw_advanced()), encoding="utf-8",
         )
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_personal"], {
             "profiles_v2": {
                 "advanced": {
                     "_profile": {"worktree_isolation": "off"},
@@ -497,7 +519,7 @@ class TestLoadProfilesV2WithOverlay:
             ),
             encoding="utf-8",
         )
-        _write_layer(isolated_config_layers["workspace"], {
+        _write_layer(isolated_config_layers["workspace_personal"], {
             "profiles_v2": {
                 name: {"_profile": {"worktree_isolation": "off"}}
                 for name in ("small_task", "planning", "delivery_audit", "task")

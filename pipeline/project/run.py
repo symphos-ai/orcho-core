@@ -258,12 +258,27 @@ def _auto_run_required_receipts_live(
     """
     from pipeline.project.verification_autorun import auto_run_required_receipts
 
-    if delivery_plan is None:
-        autorun_result = auto_run_required_receipts(run, phase, reason=reason)
-    else:
-        autorun_result = auto_run_required_receipts(
-            run, phase, reason=reason, delivery_plan=delivery_plan,
+    def announce_targets(commands: tuple[str, ...]) -> None:
+        if getattr(run, "_presentation", None) is not PresentationPolicy.TERMINAL:
+            return
+        from pipeline.project.gate_repair import (
+            _render_gate_command_start,
+            _render_gate_section_header,
         )
+
+        _render_gate_section_header(
+            len(commands), hook="before_phase", phase=phase,
+        )
+        for command in commands:
+            _render_gate_command_start(command)
+
+    autorun_result = auto_run_required_receipts(
+        run,
+        phase,
+        reason=reason,
+        delivery_plan=delivery_plan,
+        on_targets_resolved=announce_targets,
+    )
     if getattr(run, "_presentation", None) is PresentationPolicy.TERMINAL:
         from pipeline.project.verification_timeline import render_gate_live_block
 
@@ -788,6 +803,9 @@ class _PipelineRun:
     # 0034). Same lifecycle as the worktree token — set after the
     # sandbox resolver returns at run init, reset in ``finalize()``.
     _sandbox_cvar_token: object | None = None  # Token[SandboxPolicy | None]
+    # Runtime-only presentation context; deliberately not persisted because the
+    # durable delivery record does not encode the effective publish gate.
+    _delivery_publish_gate: object | None = None
 
     def __post_init__(self) -> None:
         if self._session_adapters is None:
@@ -1497,6 +1515,7 @@ class _PipelineRun:
         )
 
         app_cfg = config.AppConfig.load()
+        self._delivery_publish_gate = app_cfg.commit.get("publish")
 
         def commit_message_generator(decision):
             # Strategy is decided upstream by ``resolve_commit_delivery`` /
@@ -1651,6 +1670,9 @@ class _PipelineRun:
                     (decision.commit_sha or "")[:7],
                     decision.delivery_branch or None,
                     pr_url=decision.pr_url,
+                    publish_gate=self._delivery_publish_gate,
+                    delivery_warnings=decision.delivery_warnings,
+                    delivery_notices=decision.delivery_notices,
                 ))
             else:
                 render_delivery_outcome(

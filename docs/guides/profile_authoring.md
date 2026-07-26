@@ -69,12 +69,20 @@ orcho profile customize feature \
 
 By default this writes `$ORCHO_WORKSPACE/.orcho/config.local.json`; pass
 `--scope user` for `~/.orcho/config.local.json`, or `--dry-run` to validate
-without writing. The same command also accepts targeted patches:
+without writing. `profile customize` intentionally remains a personal-file
+writer; author a team-shared `profiles_v2` overlay manually in
+`$ORCHO_WORKSPACE/.orcho/config.json` when the policy should be committed.
+The personal file overrides the shared overlay. The same command also accepts
+targeted patches:
 
 ```bash
 orcho profile customize feature \
   --set validate_plan.execution.session_split=per_role
 ```
+
+The effective order is package → user → workspace shared → workspace personal
+→ environment, matching the familiar `settings.json` / `settings.local.json`
+split. Commit the shared team policy; keep the local override personal.
 
 Use `profile customize` for small changes to existing built-ins: `default_mode`,
 `change_handoff`, `implementation_execution`, `worktree_isolation`, phase

@@ -798,6 +798,26 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
     ctx.on_checkpoint = run._fsm_checkpoint
     ctx.on_metrics = run._fsm_metrics
 
+    # An ADR 0154 unattended halt has a preserved, undecided canonical payload.
+    # Re-publish it through the ordinary pause tail before decision replay,
+    # on-resume gates, or phase dispatch.  The bootstrap-only marker is removed
+    # so a subsequent decision resume takes the normal handoff path.
+    if run.session.pop("_resume_unattended_handoff_rearm", False):
+        from pipeline.control.resume_preflight import build_signal_from_active_payload
+
+        signal = build_signal_from_active_payload(run.session.get("phase_handoff", {}))
+        if signal is None:
+            from pipeline.project.resume_control import ResumeControlRefusal
+
+            raise ResumeControlRefusal(
+                "phase_handoff_unattended_halt",
+                "validated unattended handoff could not be rehydrated",
+            )
+        run.state.phase_handoff_request = signal
+        apply_phase_handoff_pause(run)
+        run._dispatch_active = False
+        return run.session
+
     # Phase 4 cutover: consume an active phase-handoff payload + matching
     # decision artifact before the main dispatch. The helper may execute
     # a single human-directed plan -> validate_plan retry round, strip

@@ -142,17 +142,22 @@ orcho run --task "..." --project . \
   --model-review-changes gpt-5.5               # reviewer
 ```
 
-`orcho cross` (cross-project) historically accepts the short names
-`--model-build` / `--model-fix` / `--model-review`, which map to the
-canonical `implement` / `repair_changes` / `review_changes`:
+`orcho cross` (the public cross-project facade) accepts the canonical names
+`--model-implement` / `--model-repair-changes` / `--model-review-changes`.
+It adapts them to the direct `orcho-cross` engine CLI's historical
+`--model-build` / `--model-fix` / `--model-review` aliases. The same naming
+rule applies to `--runtime-*` flags:
 
 ```bash
 orcho cross --task "..." --projects api:~/api unity:~/unity \
   --model-plan   'claude-opus-4-8[1m]' \
-  --model-build  'claude-opus-4-8[1m]' \   # → implement
-  --model-fix    'claude-opus-4-8[1m]' \   # → repair_changes
-  --model-review gpt-5.5               # → review_changes
+  --model-implement      'claude-opus-4-8[1m]' \
+  --model-repair-changes 'claude-opus-4-8[1m]' \
+  --model-review-changes gpt-5.5
 ```
+
+Use `orcho-cross` directly only when its historical `build` / `fix` / `review`
+aliases are required; do not mix those aliases into `orcho cross` examples.
 
 For finer control (per-phase in any binary) use the env vars
 `MODEL_<PHASE>` / `RUNTIME_<PHASE>` or keys in

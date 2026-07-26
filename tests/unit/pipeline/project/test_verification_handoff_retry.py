@@ -28,10 +28,18 @@ def _run() -> SimpleNamespace:
         "id": "gate:pytest-unit:1", "round": 1,
         "phase": "final_acceptance", "trigger": "verification_gate_failed",
     }
+    state = SimpleNamespace(
+        extras={}, human_feedback="", halt=False, halt_reason="",
+        phase_handoff_request=None,
+    )
+    state.stop = lambda reason: (
+        setattr(state, "halt", True), setattr(state, "halt_reason", reason),
+    )
     return SimpleNamespace(
         session={"phase_handoff": active, "status": "awaiting_phase_handoff"},
-        state=SimpleNamespace(extras={}, human_feedback="", halt=False, phase_handoff_request=None),
+        state=state,
         output_dir=None,
+        _ckpt=None,
     )
 
 
@@ -166,19 +174,15 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
     )
 
     assert outcome.paused is False
-    assert calls == [{"repair": {
-        "retry_context": VerificationHandoffRetryContext(
-            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
-            prior_round=1, fresh_round=2, loop_max_rounds=1,
-            human_retry_ordinal=1,
-        ),
-    }}, {
-        "retry_context": VerificationHandoffRetryContext(
-            identity=GateIdentity("pytest-unit", "after_phase", "implement"),
-            prior_round=1, fresh_round=2, loop_max_rounds=1,
-            human_retry_ordinal=1,
-        ),
-    }]
+    assert calls[0] == {"repair": {
+            "retry_context": VerificationHandoffRetryContext(
+                identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+                prior_round=1, fresh_round=2, loop_max_rounds=1,
+                human_retry_ordinal=1,
+            ),
+    }}
+    assert calls[1]["retry_context"] == calls[0]["repair"]["retry_context"]
+    assert calls[1]["profile"] is not None
     assert run.state.human_feedback == "Поправьте тест"
     assert run.state.extras["phase_handoff_override"]["feedback"] == "Поправьте тест"
 
@@ -270,6 +274,70 @@ def test_control_preflight_failure_preserves_active_recovery_subject(
             decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
         )
     assert run.session["phase_handoff"]["id"] == "gate:pytest-unit:1"
+
+
+def test_persisted_retry_on_repairless_profile_reparks_as_decidable_pause(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """A stale retry decision remains audit evidence but cannot trap the run."""
+    from pipeline.project.handoff import apply_phase_handoff_pause
+    from sdk.phase_handoff import phase_handoff_decide
+
+    run = _run()
+    run.output_dir = tmp_path
+    run._metrics = SimpleNamespace(save=lambda _path: None)
+    checkpoint_statuses: list[object] = []
+    run._ckpt = SimpleNamespace(set_status=checkpoint_statuses.append)
+    active = run.session["phase_handoff"]
+    active.update({
+        "round_extras_key": "repair_round",
+        "loop_max_rounds": 1,
+        "available_actions": ["continue", "retry_feedback", "halt", "continue_with_waiver"],
+        "artifacts": {
+            "gate_identity": {
+                "command": "pytest-unit", "hook": "after_phase", "phase": "implement",
+            },
+            "findings": [{"severity": "P1"}],
+            "short_summary": "pytest failed",
+        },
+        "last_output": "pytest failed",
+    })
+    old_artifact = tmp_path / "phase_handoff_decisions" / "old.json"
+    old_artifact.parent.mkdir()
+    old_artifact.write_text('{"audit":"retry_feedback"}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: None)
+
+    outcome = apply_verification_handoff_resume(
+        run=run, profile=object(), ctx=object(), active=active,
+        handoff_id="gate:pytest-unit:1", action="retry_feedback", feedback="retry",
+        note=None, decided_at="now",
+        identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+    assert outcome.paused is True
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.handoff_id == "gate:pytest-unit:1:retry_blocked"
+    assert signal.available_actions == ("continue", "halt", "continue_with_waiver")
+    assert signal.artifacts["gate_identity"] == active["artifacts"]["gate_identity"]
+    assert "no repair_changes" in signal.artifacts["retry_blocked_reason"]
+
+    apply_phase_handoff_pause(run)
+    import json
+    meta = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
+    assert meta["status"] == "awaiting_phase_handoff"
+    assert meta["phase_handoff"]["id"] == signal.handoff_id
+    assert checkpoint_statuses[-1].value == "awaiting_phase_handoff"
+    assert old_artifact.read_text(encoding="utf-8") == '{"audit":"retry_feedback"}\n'
+
+    decision = phase_handoff_decide(
+        run_id=tmp_path.name, handoff_id=signal.handoff_id, action="continue",
+        runs_dir=tmp_path.parent,
+    )
+    assert decision.handoff_id == signal.handoff_id
 
 
 @pytest.mark.parametrize("action", ["continue", "continue_with_waiver"])
@@ -452,7 +520,7 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
             prior_round=2, fresh_round=3, loop_max_rounds=2,
             human_retry_ordinal=1,
-        ),
+        ), profile=object(),
     )
 
     assert passed is False
@@ -534,7 +602,7 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
             fresh_round=3,
             loop_max_rounds=2,
             human_retry_ordinal=1,
-        ),
+        ), profile=object(),
     ) is False
 
     executions = [event for event in load_ledger(tmp_path).trail if event.kind == "execution"]
@@ -577,7 +645,7 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
             prior_round=1, fresh_round=2, loop_max_rounds=1,
             human_retry_ordinal=1,
-        ),
+        ), profile=object(),
     ) is True
     assert calls == [("pytest-unit", "after_phase", "implement")]
 

@@ -227,6 +227,29 @@ def test_local_delivery_branch_names_checkout_mutation_and_ordered_next_step(
     assert "(pushed)" not in joined
 
 
+def test_published_local_delivery_branch_banner_has_commit_branch_and_pr_once() -> None:
+    lines, out = _capture()
+    decision = _decision(
+        action="approve",
+        status="committed",
+        commit_sha="e96b71670985",
+        final_message="fix: published local delivery",
+        delivery_branch="orcho/deliver/r1-local",
+        pr_url="https://example.test/pr/99",
+        delivery_notices=("PR opened: https://example.test/pr/99",),
+    )
+
+    render_delivery_outcome(decision, output_fn=out)
+
+    joined = "\n".join(lines)
+    assert "PULL REQUEST OPENED ON DELIVERY BRANCH" in joined
+    assert joined.count("e96b716") == 1
+    assert joined.count("orcho/deliver/r1-local") == 1
+    assert joined.count("https://example.test/pr/99") == 1
+    assert "switched to the delivery branch; working tree is clean" in joined
+    assert "push the branch" not in joined
+
+
 def test_pr_opened_banner_uses_green_tone() -> None:
     lines: list[str] = []
     decision = _decision(

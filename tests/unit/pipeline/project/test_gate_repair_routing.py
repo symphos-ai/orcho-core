@@ -360,7 +360,11 @@ def test_action_handoff_escalates_immediately(monkeypatch) -> None:
 
     assert outcome.active and outcome.paused
     assert calls["repair"] == 0  # no repair attempted
-    assert run.state.phase_handoff_request is not None
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.available_actions == (
+        "continue", "retry_feedback", "halt", "continue_with_waiver",
+    )
 
 
 def test_action_abort_halts(monkeypatch) -> None:
@@ -401,7 +405,9 @@ def test_no_repair_step_falls_back_to_handoff(monkeypatch) -> None:
     outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
 
     assert outcome.active and outcome.paused
-    assert run.state.phase_handoff_request is not None
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.available_actions == ("continue", "halt", "continue_with_waiver")
 
 
 # ── Receipt persistence (ADR 0090) ───────────────────────────────────────────

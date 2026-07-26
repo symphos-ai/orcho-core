@@ -164,7 +164,10 @@ orcho run \
   --model-repair-changes 'glm-5.2[1m]'
 ```
 
-For a workspace, set phase routing in `.orcho/config.local.json`:
+For a team-wide workspace policy, set phase routing in
+`.orcho/config.json`; use `.orcho/config.local.json` for a personal override.
+The personal file wins, following the usual `settings.json` /
+`settings.local.json` convention:
 
 ```json
 {
@@ -178,6 +181,10 @@ For a workspace, set phase routing in `.orcho/config.local.json`:
   }
 }
 ```
+
+The full precedence is package → user → workspace shared → workspace personal
+→ environment: commit team routing in the shared file and reserve the local
+file for an individual's override.
 
 The resulting run artifacts and metrics will say `claude-glm` for the GLM-backed
 phases. That is the expected signal that Orcho is using the wrapper runtime

@@ -1737,12 +1737,26 @@ def _persist_ci_advice_aggregate(run: Any, agg: dict[str, Any]) -> None:
 def _record_unattended_halt(run: Any, signal: Any, resolution: Any) -> None:
     from pipeline.project.handoff_noninteractive import UNATTENDED_HALT_REASON
 
+    handoff_type = getattr(signal, "type", "")
+    handoff_type = getattr(handoff_type, "value", handoff_type)
+    payload = build_handoff_payload(
+        handoff_id=str(getattr(signal, "handoff_id", "") or ""),
+        phase=str(getattr(signal, "phase", "") or ""),
+        handoff_type=str(handoff_type or ""),
+        trigger=str(getattr(signal, "trigger", "") or ""),
+        verdict=str(getattr(signal, "verdict", "") or ""),
+        approved=bool(getattr(signal, "approved", False)),
+        round_extras_key=str(getattr(signal, "round_extras_key", "") or ""),
+        round_n=int(getattr(signal, "round", 0) or 0),
+        loop_max_rounds=int(getattr(signal, "loop_max_rounds", 0) or 0),
+        available_actions=getattr(signal, "available_actions", ()) or (),
+        artifacts=getattr(signal, "artifacts", {}) or {},
+        last_output=str(getattr(signal, "last_output", "") or ""),
+    )
     run.session[_UNATTENDED_BLOCK_KEY] = {
         "reason": resolution.reason,
         "note": resolution.note,
-        "handoff_id": str(getattr(signal, "handoff_id", "") or ""),
-        "phase": str(getattr(signal, "phase", "") or ""),
-        "trigger": str(getattr(signal, "trigger", "") or ""),
+        "phase_handoff": payload,
     }
     run.state.phase_handoff_request = None
     run.state.halt = True

@@ -118,6 +118,46 @@ class TestParser:
         assert args.task == "Do X"
         assert args.project == "/p"
 
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "--from-run-plan",
+            "--no-worktree-isolation",
+            "--attach",
+            "--attach-text",
+            "--attach-image",
+            "--attach-binary",
+        ],
+    )
+    def test_cross_rejects_mono_only_flags(self, flag: str) -> None:
+        parser = self.build_parser()
+        argv = ["cross", "--task", "T", "--projects", "api:/p", flag]
+        if flag != "--no-worktree-isolation":
+            argv.append("value")
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(argv)
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--from-run-plan", "run-1"],
+            ["--no-worktree-isolation"],
+            ["--attach", "context.md"],
+            ["--attach-text", "context.txt"],
+            ["--attach-image", "context.png"],
+            ["--attach-binary", "context.bin"],
+        ],
+    )
+    def test_run_preserves_mono_only_flags(self, argv: list[str]) -> None:
+        args = self.build_parser().parse_args(["run", "--task", "T", "--project", "/p", *argv])
+        assert args.command == "run"
+
+    def test_cross_hypothesis_boolean_optional_action(self) -> None:
+        parser = self.build_parser()
+        assert parser.parse_args(["cross", "--no-hypothesis"]).hypothesis is False
+        assert parser.parse_args(["cross", "--hypothesis"]).hypothesis is True
+
     def test_managed_command_run_subcommand(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args([
@@ -713,6 +753,32 @@ class TestCmdStatus:
         cmd_status(args)
         out = capsys.readouterr().out
         assert "Rounds:  2" in out
+
+    def test_status_shows_degraded_publish_ready_reason(
+        self, runs_dir: Path, capsys
+    ) -> None:
+        from cli.orcho import cmd_status
+
+        run = _write_run(runs_dir, "20260502_100000")
+        meta_path = run / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["commit_delivery"] = {
+            "status": "committed",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+            "delivery_warnings": ["delivery publish provider is unavailable"],
+            "delivery_notices": [
+                "delivery branch orcho/deliver/r1-feature is ready; "
+                "open a pull request",
+            ],
+        }
+        meta_path.write_text(json.dumps(meta))
+
+        assert cmd_status(_make_args(run_id=None)) == 0
+        out = capsys.readouterr().out
+        assert "Ready: branch orcho/deliver/r1-feature ready" in out
+        assert "reason: delivery publish provider is unavailable" in out
+        assert "PR: https://" not in out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2291,6 +2357,8 @@ class TestCmdWorkspaceInit:
         assert "Plugin template:" in out
         assert "Prompt overrides:" in out
         assert "Task files:" in out
+        assert "Agent rules template:" in out
+        assert "Claude shim template:" in out
         assert "MCP client setup" in out
         assert "choose one path" in out
         assert "one Orcho MCP server per workspace" in out

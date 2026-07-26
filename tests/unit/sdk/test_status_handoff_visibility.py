@@ -41,6 +41,7 @@ def _seed_paused(
     handoff_id: str,
     round_n: int,
     status: str = "awaiting_phase_handoff",
+    available_actions: list[str] | None = None,
 ) -> Path:
     """Write a run paused on a ``review_changes`` repair-round handoff."""
     run_dir = runs_dir / run_id
@@ -64,7 +65,7 @@ def _seed_paused(
             "round_extras_key": "repair_round",
             "round": round_n,
             "loop_max_rounds": 1,
-            "available_actions": ["continue", "retry_feedback", "halt"],
+            "available_actions": available_actions or ["continue", "retry_feedback", "halt"],
             "artifacts": {},
             "last_output": "critique",
         }
@@ -105,6 +106,29 @@ def test_load_status_no_pending_id_when_not_awaiting(tmp_path: Path) -> None:
     )
     status = load_status("20260612_done", runs_dir=runs, cwd=None)
     assert "phase_handoff" not in status.raw_meta
+
+
+def test_decide_rejects_retry_feedback_absent_from_repairless_handoff(
+    tmp_path: Path,
+) -> None:
+    """Runtime-published membership is the SDK's sole action authority."""
+    runs = tmp_path / "runs"
+    _seed_paused(
+        runs,
+        "20260723_repairless",
+        handoff_id="gate:pytest:1",
+        round_n=1,
+        available_actions=["continue", "halt", "continue_with_waiver"],
+    )
+
+    with pytest.raises(InvalidPhaseHandoffState, match="not in the active handoff"):
+        phase_handoff_decide(
+            run_id="20260723_repairless",
+            handoff_id="gate:pytest:1",
+            action="retry_feedback",
+            feedback="repair it",
+            runs_dir=runs,
+        )
 
 
 # ── CLI status renders the current pending id ──────────────────────────────
@@ -159,6 +183,7 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
                     "release_verdict": "APPROVED",
                     "release_summary": "Ready after verification receipt review.",
                     "verification_missing": ["lint"],
+                    "delivery_branch": "orcho/deliver/r1-feature",
                     "pr_url": "https://example.test/pr/1",
                 },
             }
@@ -243,6 +268,7 @@ def test_cli_status_renders_phase_usage_delivery_and_ignores_artifact_dirs(
     assert "Delivery:" in rendered
     assert "Status: committed (approve)" in rendered
     assert "Verification missing: lint" in rendered
+    assert "Branch: orcho/deliver/r1-feature" in rendered
     assert "PR: https://example.test/pr/1" in rendered
     assert "Run dir:" in rendered
 

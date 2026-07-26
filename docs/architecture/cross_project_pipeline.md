@@ -280,6 +280,22 @@ exposes one `--profile` flag — no separate `--sub-profile`. Profiles
 without `cross` metadata stay valid for mono runs; the cross runner
 rejects them with an actionable error.
 
+### Provider-mode authority on resume
+
+The parent `meta.json` owns the durable provider-mode marker as a top-level
+boolean `mock`. Every resumed CLI run validates this marker first. An explicit
+`--mock` may then override a valid persisted value; when it is absent, the
+runner inherits `meta.mock` before constructing the provider or phase agents.
+Therefore a previously mock cross run remains mock on checkpoint and follow-up
+resumes even when the operator does not repeat the flag. The CLI prints the
+effective inherited mode.
+
+Resume metadata without `mock`, or with a value that is not a boolean, is
+invalid and fails closed before provider construction. This marker is durable
+run intent, not event payload: `run.start`, MCP, and SDK wire shapes remain
+unchanged. See
+[ADR 0158](../adr/0158-cross-resume-requires-provider-mode.md).
+
 ### Handoff artifacts
 
 After cross planning approves, the cross runner writes per-child

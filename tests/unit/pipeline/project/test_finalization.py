@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from pipeline.project.finalization import (
     FinalizationContext,
     _render_agent_advice_summary,
@@ -135,6 +137,55 @@ def test_delivery_line_published_branch_without_pr_is_actionable() -> None:
     assert render_delivery_destination_lines(session) == (
         "Delivery: branch orcho/deliver/r1-feature ready — "
         "push if needed, then open a PR",
+    )
+
+
+def test_delivery_line_degraded_publish_shows_ready_branch_and_reason() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+            "delivery_warnings": ["delivery publish provider is unavailable"],
+            "delivery_notices": [
+                "delivery branch orcho/deliver/r1-feature is ready; "
+                "open a pull request",
+            ],
+        },
+    }
+    assert render_delivery_destination_lines(session, publish_gate="always") == (
+        "Delivery: branch orcho/deliver/r1-feature ready — reason: "
+        "delivery publish provider is unavailable",
+    )
+
+
+def test_delivery_line_checkout_branch_with_pr_keeps_all_facts() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": "https://example.test/pr/7",
+        },
+    }
+    assert render_delivery_destination_lines(session) == (
+        "Delivery: committed 0123456 onto orcho/deliver/r1-feature → "
+        "PR https://example.test/pr/7",
+    )
+
+
+def test_delivery_line_checkout_branch_without_pr_stays_local() -> None:
+    session = {
+        "commit_delivery": {
+            "status": "committed",
+            "commit_sha": "0123456789abcdef",
+            "delivery_branch": "orcho/deliver/r1-feature",
+            "pr_url": None,
+        },
+    }
+    assert render_delivery_destination_lines(session) == (
+        "Delivery: committed 0123456 onto orcho/deliver/r1-feature",
     )
 
 
@@ -451,6 +502,41 @@ def test_no_advice_evidence_renders_no_block_at_call_site(
     result = finalize_project_run(FinalizationContext(run=run))
 
     assert result.ci_agent_advice_summary is None
+
+
+def test_unattended_halt_keeps_verification_ledger_open(tmp_path, monkeypatch) -> None:
+    run = _make_finalize_run(tmp_path)
+    run.state.halt = True
+    run.state.halt_reason = "phase_handoff_unattended_halt"
+    _wire_finalize_stubs(monkeypatch, accounting_enabled=False)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.finalize",
+        lambda received: calls.append(received),
+    )
+
+    finalize_project_run(FinalizationContext(run=run))
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("halt_reason", [None, "phase_handoff_halt", "pre_run_dirty_halt"])
+def test_other_terminal_paths_still_finalize_verification_ledger(
+    tmp_path, monkeypatch, halt_reason,
+) -> None:
+    run = _make_finalize_run(tmp_path)
+    run.state.halt = True
+    run.state.halt_reason = halt_reason
+    _wire_finalize_stubs(monkeypatch, accounting_enabled=False)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.finalize",
+        lambda received: calls.append(received),
+    )
+
+    finalize_project_run(FinalizationContext(run=run))
+
+    assert calls == [run]
 
 
 # ── T2: companion delivery caveat (primary committed + companion dirty) ──────

@@ -147,6 +147,20 @@ def test_implement_done_shape():
 # ── gates / handoff / resume / delivery ──────────────────────────────────
 
 
+def test_delivery_line_keeps_checkout_commit_branch_and_pr() -> None:
+    assert _strip(
+        sl.delivery_line(
+            "abcdef123456",
+            "orcho/deliver/r1-feature",
+            pr_url="https://example.test/pr/7",
+            color=False,
+        )
+    ) == (
+        "✓ delivery · committed abcdef123456 · branch orcho/deliver/r1-feature "
+        "· PR https://example.test/pr/7"
+    )
+
+
 def test_gates_line_ok_uses_check_glyph_and_receipts_dir():
     ok = _strip(sl.gates_line(
         "after_phase(implement)",
@@ -240,6 +254,38 @@ def test_delivery_line_published_branch_without_pr():
     line = _strip(sl.delivery_line("", "orcho/deliver/r1-x", color=False))
     assert line == "✓ delivery · branch orcho/deliver/r1-x"
     assert "committed" not in line
+
+
+def test_delivery_line_degraded_publish_shows_ready_branch_and_reason():
+    line = _strip(sl.delivery_line(
+        "abcdef1",
+        "orcho/deliver/r1-x",
+        publish_gate="always",
+        delivery_warnings=("delivery publish provider is unavailable",),
+        delivery_notices=(
+            "delivery branch orcho/deliver/r1-x is ready; open a pull request",
+        ),
+        color=False,
+    ))
+    assert line == (
+        "⚠ delivery · branch orcho/deliver/r1-x ready · "
+        "reason: delivery publish provider is unavailable"
+    )
+
+
+def test_delivery_line_off_and_auto_local_paths_keep_existing_strings():
+    assert _strip(sl.delivery_line(
+        "abcdef1",
+        "orcho/deliver/r1-x",
+        publish_gate="off",
+        delivery_notices=(
+            "delivery branch orcho/deliver/r1-x is ready; open a pull request",
+        ),
+        color=False,
+    )) == "✓ delivery · committed abcdef1 · branch orcho/deliver/r1-x"
+    assert _strip(sl.delivery_line(
+        "abcdef1", "orcho/deliver/r1-x", publish_gate="auto", color=False,
+    )) == "✓ delivery · committed abcdef1 · branch orcho/deliver/r1-x"
 
 
 # ── truncation contract ──────────────────────────────────────────────────

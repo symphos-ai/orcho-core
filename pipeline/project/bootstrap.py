@@ -492,8 +492,27 @@ def init_session_with_atexit(
                         f"halt_reason={prior_reason!r}). Halt is "
                         "terminal — start a new run instead."
                     )
+                if (
+                    prior_status == "halted"
+                    and prior_reason == "phase_handoff_unattended_halt"
+                ):
+                    from pipeline.project.resume_control import (
+                        prepare_unattended_handoff_rearm,
+                    )
+
+                    rearm = prepare_unattended_handoff_rearm(prior_meta)
+                    session["phase_handoff"] = rearm.handoff
+                    session["phase_handoff_unattended"] = prior_meta[
+                        "phase_handoff_unattended"
+                    ]
+                    # Internal, one-pass signal for profile dispatch. It is
+                    # removed by the ordinary pause tail before the re-armed
+                    # state becomes durable.
+                    session["_resume_unattended_handoff_rearm"] = True
                 prior_handoff = prior_meta.get("phase_handoff")
-                if isinstance(prior_handoff, dict):
+                if isinstance(prior_handoff, dict) and not session.get(
+                    "_resume_unattended_handoff_rearm"
+                ):
                     session["phase_handoff"] = prior_handoff
                 # ADR 0101 / T2 (fix F1): carry a persisted operator
                 # ``runtime_override`` forward into the fresh session so the

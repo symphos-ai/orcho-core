@@ -50,6 +50,115 @@ class TestCrossOrchestratorMain:
     def _set_argv(self, monkeypatch, *args: str) -> None:
         monkeypatch.setattr(sys, "argv", ["orcho-cross", *args])
 
+    def _write_resumed_meta(
+        self, main_env: dict, run_id: str, *, mock: object = False,
+    ) -> None:
+        run_dir = main_env["workspace"] / "runspace" / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        meta = {
+            "task": "resumed task",
+            "projects": {"unity": str(main_env["unity"])},
+            "profile": "feature",
+            "status": "running",
+        }
+        if mock is not None:
+            meta["mock"] = mock
+        (run_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def test_resume_inherits_mock_mode_before_provider_construction(
+        self, main_env, monkeypatch, capsys,
+    ) -> None:
+        self._write_resumed_meta(main_env, "20260725_100001", mock=True)
+        from pipeline.cross_project import cli
+
+        make_provider = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(cli, "make_provider", make_provider)
+        self._set_argv(
+            monkeypatch, "--resume", "20260725_100001", "--no-interactive",
+            "--workspace", str(main_env["workspace"]),
+        )
+        cli.main()
+
+        assert make_provider.call_args.args[0] is True
+        assert main_env["run_cross_pipeline"].call_args.kwargs["mock"] is True
+        assert "Inherited provider mode: mock" in capsys.readouterr().out
+
+    def test_resume_inherits_real_mode_without_constructing_mock_provider(
+        self, main_env, monkeypatch, capsys,
+    ) -> None:
+        self._write_resumed_meta(main_env, "20260725_100002", mock=False)
+        from pipeline.cross_project import cli
+
+        make_provider = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(cli, "make_provider", make_provider)
+        self._set_argv(
+            monkeypatch, "--resume", "20260725_100002", "--no-interactive",
+            "--workspace", str(main_env["workspace"]),
+        )
+        cli.main()
+
+        assert make_provider.call_args.args[0] is False
+        assert main_env["run_cross_pipeline"].call_args.kwargs["mock"] is False
+        assert "Inherited provider mode: real" in capsys.readouterr().out
+
+    def test_explicit_mock_overrides_resumed_real_mode(
+        self, main_env, monkeypatch,
+    ) -> None:
+        self._write_resumed_meta(main_env, "20260725_100003", mock=False)
+        from pipeline.cross_project import cli
+
+        make_provider = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(cli, "make_provider", make_provider)
+        self._set_argv(
+            monkeypatch, "--resume", "20260725_100003", "--mock",
+            "--no-interactive", "--workspace", str(main_env["workspace"]),
+        )
+        cli.main()
+
+        assert make_provider.call_args.args[0] is True
+        assert main_env["run_cross_pipeline"].call_args.kwargs["mock"] is True
+
+    @pytest.mark.parametrize("explicit_args", [(), ("--mock",)])
+    def test_resume_without_provider_mode_fails_before_provider_construction(
+        self, main_env, monkeypatch, capsys, explicit_args,
+    ) -> None:
+        self._write_resumed_meta(main_env, "20260725_100004", mock=None)
+        from pipeline.cross_project import cli
+
+        make_provider = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(cli, "make_provider", make_provider)
+        self._set_argv(
+            monkeypatch, "--resume", "20260725_100004", *explicit_args,
+            "--no-interactive", "--workspace", str(main_env["workspace"]),
+        )
+
+        with pytest.raises(SystemExit) as raised:
+            cli.main()
+
+        assert raised.value.code == 2
+        assert make_provider.call_count == 0
+        assert main_env["run_cross_pipeline"].call_count == 0
+        assert "required boolean meta.mock is missing" in capsys.readouterr().err
+
+    def test_resume_rejects_non_boolean_persisted_mock_mode(
+        self, main_env, monkeypatch, capsys,
+    ) -> None:
+        self._write_resumed_meta(main_env, "20260725_100005", mock="true")
+        from pipeline.cross_project import cli
+
+        make_provider = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(cli, "make_provider", make_provider)
+        self._set_argv(
+            monkeypatch, "--resume", "20260725_100005", "--no-interactive",
+            "--workspace", str(main_env["workspace"]),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+
+        assert exc.value.code == 2
+        assert not make_provider.called
+        assert "invalid persisted mock mode" in capsys.readouterr().err
+
     def test_happy_path_calls_run_cross_pipeline_with_projects_dict(
         self, main_env, monkeypatch
     ) -> None:
@@ -326,6 +435,7 @@ class TestCrossOrchestratorMain:
             "task": "original",
             "projects": {"unity": str(main_env["unity"])},
             "status": "done",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,
@@ -362,6 +472,7 @@ class TestCrossOrchestratorMain:
             "task": "original cross",
             "projects": {"unity": str(main_env["unity"])},
             "status": "done",
+            "mock": True,
         }), encoding="utf-8")
         # Per-alias child meta carrying the Step-0 shape.
         alias_dir = parent_dir / "unity"
@@ -412,6 +523,7 @@ class TestCrossOrchestratorMain:
             "task": "original",
             "projects": {"unity": str(main_env["unity"])},
             "status": "done",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,
@@ -444,6 +556,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "interrupted",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,
@@ -490,6 +603,7 @@ class TestCrossOrchestratorMain:
             "status":      "halted",
             "halt_reason": "phase_handoff_halt",
             "halted_at":   "2026-05-24T20:00:00+00:00",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,
@@ -529,6 +643,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "done",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,
@@ -561,6 +676,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "interrupted",
+            "mock": True,
         }
         base_meta.update(meta_overrides)
         (parent_dir / "meta.json").write_text(
@@ -681,6 +797,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "interrupted",
+            "mock": True,
         }), encoding="utf-8")
 
         self._set_argv(
@@ -726,6 +843,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "interrupted",
+            "mock": True,
         }), encoding="utf-8")
 
         self._set_argv(
@@ -760,6 +878,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "interrupted",
+            "mock": True,
         }), encoding="utf-8")
 
         self._set_argv(
@@ -791,6 +910,7 @@ class TestCrossOrchestratorMain:
             "task": "T",
             "projects": {"unity": str(main_env["unity"])},
             "status": "done",
+            "mock": True,
         }), encoding="utf-8")
         self._set_argv(
             monkeypatch,

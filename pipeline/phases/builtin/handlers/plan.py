@@ -147,6 +147,7 @@ def _phase_plan(state: PipelineState) -> PipelineState:
             state.plugin,
             change_handoff=_change_handoff_for(state),
             prompt_spec=replan_spec,
+            verification_part=_verification_contract_part(state, "plan"),
         )
         # Phase 4.5 + 7b: project context must persist across replan rounds.
         # The architect needs the same AGENTS.md rules / TEXT attachments on

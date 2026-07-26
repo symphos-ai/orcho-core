@@ -160,36 +160,25 @@ def test_cross_from_args_assembles_full_argv_cascade(monkeypatch) -> None:
     pair branches in one pass, and asserts the success ``return 0`` (line 210).
     """
     captured = _capture_cross_argv(monkeypatch)
-    ns = argparse.Namespace(
-        task="T",
-        task_file="/tmp/task.md",
-        projects=["api:/a", "web:/w"],
-        workspace="/ws",
-        resume="20260101_000000",
-        decision=["contract_check=run"],
-        decision_feedback="looks good",
-        no_interactive=True,
-        max_rounds=5,
-        mock_validate_plan_reject=2,
-        output_dir="/out",
-        dry_run=True,
-        mock=True,
-        output="debug",  # non-summary → explicit --output debug (175)
-        verbose=False,
-        stream_output=False,
-        mode="plan",  # != full → --mode plan (181)
-        profile="lite",
-        session_split=["plan=fresh", "implement=reuse"],
-        plan_file="/plan.md",
-        model_plan="m1",
-        model_build="m2",
-        model_fix="m3",
-        model_review="m4",
-        runtime_plan="r1",
-        runtime_build="r2",
-        runtime_fix="r3",
-        runtime_review="r4",
-    )
+    # Parse through the public facade: its canonical destination names must
+    # reach the direct cross CLI's historical build/fix/review aliases.
+    from cli.orcho import build_parser
+
+    ns = build_parser().parse_args([
+        "cross", "--task", "T",
+        "--projects", "api:/a", "web:/w", "--workspace", "/ws",
+        "--resume", "20260101_000000", "--decision", "contract_check=run",
+        "--decision-feedback", "looks good", "--no-interactive",
+        "--max-rounds", "5", "--mock-validate-plan-reject", "2",
+        "--no-hypothesis", "--model", "default-model", "--output-dir", "/out",
+        "--dry-run", "--mock", "--output", "debug", "--mode", "plan",
+        "--profile", "lite", "--session-split", "plan=fresh",
+        "--session-split", "implement=reuse", "--plan-file", "/plan.md",
+        "--model-plan", "m1", "--model-implement", "m2",
+        "--model-repair-changes", "m3", "--model-review-changes", "m4",
+        "--runtime-plan", "r1", "--runtime-implement", "r2",
+        "--runtime-repair-changes", "r3", "--runtime-review-changes", "r4",
+    ])
     rc = runner.run_cross_from_args(ns)
     assert rc == 0
 
@@ -200,7 +189,6 @@ def test_cross_from_args_assembles_full_argv_cascade(monkeypatch) -> None:
         return argv[argv.index(flag) + 1]
 
     assert _val("--task") == "T"
-    assert _val("--task-file") == "/tmp/task.md"
     # --projects is variadic: both aliases follow the flag.
     pidx = argv.index("--projects")
     assert argv[pidx + 1 : pidx + 3] == ["api:/a", "web:/w"]
@@ -211,6 +199,8 @@ def test_cross_from_args_assembles_full_argv_cascade(monkeypatch) -> None:
     assert "--no-interactive" in argv
     assert _val("--max-rounds") == "5"
     assert _val("--mock-validate-plan-reject") == "2"
+    assert "--no-hypothesis" in argv
+    assert _val("--model") == "default-model"
     assert _val("--output-dir") == "/out"
     assert "--dry-run" in argv
     assert "--mock" in argv
@@ -252,6 +242,62 @@ def test_cross_from_args_stream_maps_to_output_live(monkeypatch) -> None:
     assert runner.run_cross_from_args(ns) == 0
     argv = captured["argv"]
     assert argv[argv.index("--output") + 1] == "live"
+
+
+# The facade parser is the inventory.  If a future optional cross action is
+# advertised without a row here, the action-set assertion fails before it can
+# become a silently dropped SDK argument.
+_CROSS_OPTION_MAPPINGS = [
+    (("--task", "-t"), ["--task", "T"], ["--task", "T"]),
+    (("--task-file",), ["--task-file", "task.md"], ["--task-file", "task.md"]),
+    (("--decision",), ["--decision", "contract_check=run"], ["--decision", "contract_check=run"]),
+    (("--decision-feedback",), ["--decision", "contract_check=run", "--decision-feedback", "note"], ["--decision-feedback", "note"]),
+    (("--no-interactive",), ["--no-interactive"], ["--no-interactive"]),
+    (("--max-rounds",), ["--max-rounds", "2"], ["--max-rounds", "2"]),
+    (("--session-split",), ["--session-split", "plan=fresh"], ["--session-split", "plan=fresh"]),
+    (("--dry-run",), ["--dry-run"], ["--dry-run"]),
+    (("--output-dir",), ["--output-dir", "/out"], ["--output-dir", "/out"]),
+    (("--workspace", "-w"), ["--workspace", "/ws"], ["--workspace", "/ws"]),
+    (("--resume",), ["--resume", "run-1"], ["--resume", "run-1"]),
+    (("--mock",), ["--mock"], ["--mock"]),
+    (("--mock-validate-plan-reject",), ["--mock-validate-plan-reject", "2"], ["--mock-validate-plan-reject", "2"]),
+    (("--output",), ["--output", "debug"], ["--output", "debug"]),
+    (("--stream-output",), ["--stream-output"], ["--output", "live"]),
+    (("--verbose", "-v"), ["--verbose"], ["--output", "debug"]),
+    (("--model",), ["--model", "m"], ["--model", "m"]),
+    (("--model-plan",), ["--model-plan", "m"], ["--model-plan", "m"]),
+    (("--model-implement",), ["--model-implement", "m"], ["--model-build", "m"]),
+    (("--model-repair-changes",), ["--model-repair-changes", "m"], ["--model-fix", "m"]),
+    (("--model-review-changes",), ["--model-review-changes", "m"], ["--model-review", "m"]),
+    (("--runtime-plan",), ["--runtime-plan", "r"], ["--runtime-plan", "r"]),
+    (("--runtime-implement",), ["--runtime-implement", "r"], ["--runtime-build", "r"]),
+    (("--runtime-repair-changes",), ["--runtime-repair-changes", "r"], ["--runtime-fix", "r"]),
+    (("--runtime-review-changes",), ["--runtime-review-changes", "r"], ["--runtime-review", "r"]),
+    (("--projects", "-p"), ["--projects", "api:/p"], ["--projects", "api:/p"]),
+    (("--mode",), ["--mode", "plan"], ["--mode", "plan"]),
+    (("--profile",), ["--profile", "feature"], ["--profile", "feature"]),
+    (("--plan-file",), ["--plan-file", "plan.json"], ["--plan-file", "plan.json"]),
+    (("--hypothesis", "--no-hypothesis"), ["--no-hypothesis"], ["--no-hypothesis"]),
+]
+
+
+@pytest.mark.parametrize(("option_strings", "sample", "expected"), _CROSS_OPTION_MAPPINGS)
+def test_cross_facade_option_inventory_maps_to_engine_argv(
+    monkeypatch, option_strings: tuple[str, ...], sample: list[str], expected: list[str],
+) -> None:
+    """Every advertised optional facade action has an engine argv mapping."""
+    from cli.orcho import build_parser
+
+    parser = build_parser()
+    cross = parser._subparsers._group_actions[0].choices["cross"]
+    advertised = {tuple(action.option_strings) for action in cross._actions if action.option_strings and action.dest != "help"}
+    assert advertised == {row[0] for row in _CROSS_OPTION_MAPPINGS}
+
+    captured = _capture_cross_argv(monkeypatch)
+    assert runner.run_cross_from_args(parser.parse_args(["cross", *sample])) == 0
+    argv = captured["argv"]
+    start = argv.index(expected[0])
+    assert argv[start : start + len(expected)] == expected
 
 
 # ── run_cross_from_args: SystemExit / AgentCallError / OrchoError ────────────

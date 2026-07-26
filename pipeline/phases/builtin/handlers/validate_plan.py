@@ -39,10 +39,31 @@ from pipeline.review_parser import (
     ReviewParseError,
     parse_review,
 )
-from pipeline.runtime.roles import SessionInvocationRole
+from pipeline.runtime.roles import PhaseHandoffType, SessionInvocationRole
+from pipeline.verification_ownership import (
+    find_verification_ownership_conflicts,
+    render_verification_ownership_rejection,
+)
 
 if TYPE_CHECKING:
     from pipeline.runtime import PipelineState
+
+
+def _ownership_conflict_requires_stop(
+    state: PipelineState,
+    plan_round: int,
+) -> bool:
+    """Fail closed when no replan or operator-decision path remains."""
+    max_rounds = int(state.extras.get("plan_round_max") or 0)
+    if max_rounds <= 0 or plan_round < max_rounds:
+        return False
+    active_step = getattr(state.lifecycle_ctx, "active_step", None)
+    policy = getattr(active_step, "handoff", None)
+    return (
+        policy is None
+        or policy.type is PhaseHandoffType.HUMAN_BYPASS
+    )
+
 
 def _phase_validate_plan(state: PipelineState) -> PipelineState:
     """validate_plan reviewer: validate the just-produced plan markdown.
@@ -53,6 +74,11 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
     REJECTED with the gate flag on.
     """
     agent = _require_agent(state, "validate_plan_agent")
+    ownership_conflicts = find_verification_ownership_conflicts(
+        state.parsed_plan,
+        state.extras.get("verification_contract"),
+        state.extras,
+    )
 
     from pipeline.prompts import plan_review_focus
 
@@ -81,7 +107,9 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
         phase="validate_plan",
         round_key="plan_round",
     ).continue_session
-    if state.dry_run:
+    if ownership_conflicts:
+        raw = render_verification_ownership_rejection(ownership_conflicts)
+    elif state.dry_run:
         raw = _approved_review_json(
             "validate_plan dry run skipped reviewer invocation."
         )
@@ -211,6 +239,18 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
     }
     if contract_repair is not None:
         entry["contract_repair"] = contract_repair
+    if ownership_conflicts:
+        entry["contract_conflict"] = "verification_ownership"
+        entry["verification_ownership_conflicts"] = [
+            {
+                "location": conflict.location,
+                "plan_command": conflict.plan_command,
+                "gate_command": conflict.gate_command,
+                "hook": conflict.hook,
+                "phase": conflict.phase,
+            }
+            for conflict in ownership_conflicts
+        ]
     state.phase_log["validate_plan"] = entry
     _print_review_preview(state, "validate_plan", "Plan validation")
     # Phase 5d-fixup + 6b: emit ``validate_plan.verdict`` event unconditionally.
@@ -224,6 +264,14 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
         approved=approved,
         critique=body,
     )
+    if ownership_conflicts and _ownership_conflict_requires_stop(
+        state,
+        plan_round,
+    ):
+        state.stop(
+            "validate_plan verification ownership conflict rejected before "
+            "implement"
+        )
 
     # Phase 3 cutover: handler-side gate-blocked halt was removed.
     # Pause semantics now live in the loop runner — a non-bypass

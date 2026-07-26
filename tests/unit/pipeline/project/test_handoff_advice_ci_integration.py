@@ -76,6 +76,7 @@ def _signal(
         handoff_id="h1",
         phase=phase,
         trigger=trigger,
+        type=SimpleNamespace(value="human_feedback_on_reject"),
         verdict="REJECTED",
         approved=False,
         available_actions=available_actions,
@@ -513,9 +514,20 @@ def test_unattended_implement_handoff_halts_instead_of_parking(
             "(reason=implement_handoff; phase=implement; trigger=rejected; "
             "ci_stop=advice_ineligible)"
         ),
-        "handoff_id": signal.handoff_id,
-        "phase": signal.phase,
-        "trigger": signal.trigger,
+        "phase_handoff": {
+            "id": signal.handoff_id,
+            "phase": signal.phase,
+            "type": "human_feedback_on_reject",
+            "trigger": signal.trigger,
+            "verdict": signal.verdict,
+            "approved": signal.approved,
+            "round_extras_key": "",
+            "round": signal.round,
+            "loop_max_rounds": signal.loop_max_rounds,
+            "available_actions": list(signal.available_actions),
+            "artifacts": signal.artifacts,
+            "last_output": signal.last_output,
+        },
     }
     assert len(wired.decide.calls) == 0
     if expect_terminal_message:

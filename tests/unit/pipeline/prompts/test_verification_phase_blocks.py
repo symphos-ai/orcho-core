@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from agents.entities import SubTask
+from pipeline.plan_parser import ParsedPlan
 from pipeline.plugins import PluginConfig
 from pipeline.verification_contract import (
     PlaceholderContext,
@@ -72,11 +74,64 @@ def test_plan_block_lists_env_summary_and_scheduled_gates() -> None:
     assert part is not None
     body = part.body
     assert body.startswith("Verification contract — plan:")
+    assert "The engine owns the selected scheduled gates below" in body
+    assert "done criteria" in body
+    assert "targeted checks" in body
     assert "envs: ci" in body
     assert "Scheduled gates:" in body
     # placeholder resolved + gate source shown via primary_gate_set.
     assert "ruff check /co" in body
     assert "<core>" in body and "<delivery>" in body
+
+
+def test_validate_plan_block_requires_rejection_of_ownership_conflicts() -> None:
+    state = _state(_plan_contract())
+    part = _part(state, "validate_plan")
+
+    assert part is not None
+    assert part.body.startswith("Verification contract — validate_plan:")
+    assert "Reject a plan" in part.body
+    assert "implement command, task spec, or done criterion" in part.body
+    assert "Targeted checks" in part.body
+    assert "ruff check /co" in part.body
+
+
+def test_validate_plan_resolves_path_gates_from_parsed_plan() -> None:
+    contract = VerificationContract.from_plugin(PluginConfig(
+        work_mode="pro",
+        verification={
+            "commands": {"path": {"run": "pytest -q tests/unit/path"}},
+            "gate_sets": {"path": {"commands": ["path"]}},
+            "selection": [{
+                "paths": ["pipeline/path/**"],
+                "include": ["path"],
+            }],
+            "schedule": [{
+                "after_phase": "implement",
+                "gate_sets": ["path"],
+                "policy": "require",
+            }],
+        },
+    ))
+    assert contract is not None
+    state = _state(contract)
+    state.parsed_plan = ParsedPlan(
+        short_summary="plan",
+        planning_context="context",
+        subtasks=(
+            SubTask(
+                id="T1",
+                goal="change path code",
+                files=("pipeline/path/worker.py",),
+            ),
+        ),
+        source="json",
+    )
+
+    part = _part(state, "validate_plan")
+
+    assert part is not None
+    assert "path <path>: pytest -q tests/unit/path" in part.body
 
 
 def test_implement_block_shows_debug_freedom_and_effective_action() -> None:
@@ -201,3 +256,18 @@ def test_plan_is_memoized_in_state_extras() -> None:
     # executable routing plans gate_repair uses.
     assert "verification_gate_prompt_preview" in state.extras
     assert "verification_gate_routing_plans" not in state.extras
+
+
+def test_validate_plan_block_omitted_when_only_manual_gates_exist() -> None:
+    from pipeline.verification_contract import render_phase_gate_block
+
+    plan = SimpleNamespace(entries=(
+        SimpleNamespace(
+            command="smoke", hook="manual_only", phase="", policy="suggest",
+            action="handoff", primary_gate_set="delivery",
+        ),
+    ))
+
+    assert render_phase_gate_block(
+        _plan_contract(), plan, "validate_plan", PlaceholderContext(checkout="/co"),
+    ) is None

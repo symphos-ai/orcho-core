@@ -1268,16 +1268,6 @@ Examples:
     if _resume_mode != _ResumeMode.CHECKPOINT:
         os.environ["ORCHO_RUN_ID"] = output_dir.name
 
-    # ADR 0131: stable per-worktree isolation namespace. v1 isolation is
-    # per-run, so this is the run/worktree identity — the documented contract a
-    # project keys external-resource isolation on (e.g.
-    # ``COMPOSE_PROJECT_NAME=orcho_$ORCHO_ISOLATION_ID`` + ephemeral ports).
-    # Set in ALL modes, including checkpoint resume (which reuses the same
-    # worktree via ``output_dir.name``), so worktree_bootstrap and gate commands
-    # target the same stack across a resume. Not stripped from gate env
-    # (RUN_SCOPED_ENV_CHANNELS), so both bootstrap and gates inherit it.
-    os.environ["ORCHO_ISOLATION_ID"] = output_dir.name
-
     # Propagate --mode (verification strictness) into ORCHO_WORK_MODE so the
     # default-mode projection at contract assembly picks it up as the explicit
     # per-run override. run_pipeline's signature is locked, so env is the

@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from pipeline.engine.delivery_branch import DeliveryPrIntent
 from pipeline.entry_points import discover_entry_points
@@ -41,8 +41,10 @@ from pipeline.entry_points import discover_entry_points
 __all__ = [
     "DELIVERY_PROVIDER_GROUP",
     "DeliveryPublisher",
+    "PublishGate",
     "PublishResult",
     "collect_delivery_setup_hints",
+    "normalize_publish_gate",
     "publish_delivery",
 ]
 
@@ -51,8 +53,25 @@ __all__ = [
 # author contract as every other Orcho extension point.
 DELIVERY_PROVIDER_GROUP = "orcho.delivery_providers"
 
-_PUBLISH_GATE_OFF = "off"
-_DEFAULT_PUBLISH_GATE = "auto"
+type PublishGate = Literal["off", "auto", "always"]
+_PUBLISH_GATE_OFF: PublishGate = "off"
+_DEFAULT_PUBLISH_GATE: PublishGate = "auto"
+_PUBLISH_GATES: frozenset[PublishGate] = frozenset({"off", "auto", "always"})
+
+
+def normalize_publish_gate(value: object) -> PublishGate:
+    """Return the supported ``commit.publish`` mode, defaulting to ``auto``.
+
+    Configuration is operator-provided and may arrive from JSON overlays or
+    third-party callers. Only ``off``, ``auto``, and ``always`` are valid;
+    blank, unknown, and non-string values deliberately degrade to ``auto``.
+    """
+    if not isinstance(value, str):
+        return _DEFAULT_PUBLISH_GATE
+    normalized = value.strip().lower()
+    if normalized in _PUBLISH_GATES:
+        return cast(PublishGate, normalized)
+    return _DEFAULT_PUBLISH_GATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +148,7 @@ def publish_delivery(
     * ``off`` — reproduce the ADR 0119 behavior (local branch only). Returns
       ``PublishResult(pushed=False)`` WITHOUT resolving or invoking any provider
       and without any shell call.
-    * ``auto`` (default) — resolve a provider from
+    * ``auto`` (default) and ``always`` — resolve a provider from
       :data:`DELIVERY_PROVIDER_GROUP` (by ``commit.publish_provider`` name, or
       the sole registration) and invoke ``publish()``. No provider registered
       degrades to ``PublishResult(pushed=False)`` (the commit site adds a
@@ -140,7 +159,7 @@ def publish_delivery(
     ``branch`` is the authoritative published branch name.
     """
     cfg = dict(commit_config or {})
-    gate = str(cfg.get("publish", _DEFAULT_PUBLISH_GATE) or "").strip().lower()
+    gate = normalize_publish_gate(cfg.get("publish", _DEFAULT_PUBLISH_GATE))
     if gate == _PUBLISH_GATE_OFF:
         # Disabled gate: never resolve a provider and never shell out. The
         # already-published local branch is the deliverable.
@@ -163,11 +182,29 @@ def publish_delivery(
             warnings=(f"delivery publish provider raised: {exc}",),
         )
     if not isinstance(result, PublishResult):
-        return PublishResult(
-            pushed=False,
-            warnings=("delivery publish provider returned an invalid result",),
-        )
-    return result
+        return _invalid_publish_result()
+    try:
+        pushed = result.pushed
+        pr_url = result.pr_url
+        warnings = result.warnings
+        if (
+            type(pushed) is not bool
+            or not isinstance(pr_url, str | type(None))
+            or not isinstance(warnings, tuple)
+            or not all(isinstance(warning, str) for warning in warnings)
+        ):
+            return _invalid_publish_result()
+    except Exception:  # noqa: BLE001 — malformed provider objects must not crash
+        return _invalid_publish_result()
+    return PublishResult(pushed=pushed, pr_url=pr_url, warnings=tuple(warnings))
+
+
+def _invalid_publish_result() -> PublishResult:
+    """Return the safe degradation for a provider contract violation."""
+    return PublishResult(
+        pushed=False,
+        warnings=("delivery publish provider returned an invalid result",),
+    )
 
 
 def collect_delivery_setup_hints(

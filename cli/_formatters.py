@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from core.io.ansi import C, paint
+from core.io.delivery_summary import project_degraded_publish
 from core.observability.accounting_display import (
     ACCOUNTING_REFERENCE_NOTE,
     format_cost_reference,
@@ -297,18 +298,29 @@ def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) ->
         )
 
 
-def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
+def _append_status_delivery(
+    out: list[str], raw_meta: dict[str, Any], *, publish_gate: object | None,
+) -> None:
     delivery = raw_meta.get("commit_delivery")
     if not isinstance(delivery, dict):
         return
     status_text = str(delivery.get("status") or "").strip()
     action_text = str(delivery.get("action") or "").strip()
     verdict = str(delivery.get("release_verdict") or "").strip()
+    delivery_branch = str(delivery.get("delivery_branch") or "").strip()
     pr_url = str(delivery.get("pr_url") or "").strip()
     verification_missing = delivery.get("verification_missing")
     summary = str(delivery.get("release_summary") or "").strip()
     if not any(
-        (status_text, action_text, verdict, pr_url, verification_missing, summary)
+        (
+            status_text,
+            action_text,
+            verdict,
+            delivery_branch,
+            pr_url,
+            verification_missing,
+            summary,
+        )
     ):
         return
 
@@ -336,6 +348,17 @@ def _append_status_delivery(out: list[str], raw_meta: dict[str, Any]) -> None:
         out.append(
             f"{_status_label('    Verification missing:')} "
             f"{_status_warning(missing)}"
+        )
+    if delivery_branch:
+        out.append(
+            f"{_status_label('    Branch:')} "
+            f"{_stdout_paint(delivery_branch, C.WHITE)}"
+        )
+    degraded = project_degraded_publish(delivery, publish_gate=publish_gate)
+    if degraded is not None:
+        out.append(
+            f"{_status_label('    Ready:')} "
+            f"{_status_warning(f'{degraded.ready_text} — reason: {degraded.reason}')}"
         )
     if pr_url:
         out.append(f"{_status_label('    PR:')} {_stdout_paint(pr_url, C.GREEN)}")
@@ -368,7 +391,12 @@ def _append_status_paths(
     )
 
 
-def format_status(status: RunStatus, *, verbose: bool = False) -> str:
+def format_status(
+    status: RunStatus,
+    *,
+    verbose: bool = False,
+    publish_gate: object | None = None,
+) -> str:
     """Render a human-readable status snapshot for one run."""
     out: list[str] = []
     sep = "─" * 60
@@ -433,7 +461,7 @@ def format_status(status: RunStatus, *, verbose: bool = False) -> str:
                 f"{_status_label('status=')}{_status_state(sp.status or '?')}"
             )
 
-    _append_status_delivery(out, status.raw_meta)
+    _append_status_delivery(out, status.raw_meta, publish_gate=publish_gate)
     _append_status_paths(out, status, status.raw_meta)
 
     if verbose and status.raw_meta:
@@ -1757,6 +1785,8 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             "Plugin template:",
             "Prompt overrides:",
             "Task files:",
+            "Agent rules template:",
+            "Claude shim template:",
         )
         for label, path in zip(labels, extension_points, strict=False):
             out.append(
