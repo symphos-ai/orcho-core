@@ -228,7 +228,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 timing="after_implement",
                 run_mode="auto",
                 policy="require",
-                kind="cheap",
+                cost="fast",
                 when="after_implement",
             ),
             GateRowView(
@@ -236,7 +236,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
                 timing="delivery",
                 run_mode="auto",
                 policy="warn",
-                kind="unknown",
+                cost="unknown",
                 when="pre-final",
             ),
         ),

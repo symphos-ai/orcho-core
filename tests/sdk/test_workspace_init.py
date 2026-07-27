@@ -102,7 +102,7 @@ def test_workspace_agent_rules_define_gate_ownership_for_all_task_inputs(
     assert "root `AGENTS.md`" in agents
     assert "When asked to configure Orcho" in agents
     assert "manifests, package-manager scripts" in agents
-    assert "Do not call a command\n   cheap" in agents
+    assert "Declare command `cost` as\n   `fast`, `moderate`, `slow`, or `unknown`" in agents
     assert "do not default every new gate to `warn`" in agents
     assert "Use `require` immediately" in agents
     assert "make the delivery boundary `require` as well" in agents
@@ -129,9 +129,16 @@ def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
     assert "delivery_policy" not in plugin
     assert '"commands": {}' in plugin
     assert '"gate_sets": {}' in plugin
+    assert "cost: fast|moderate|slow|unknown" in plugin
+    assert "default_cost" in plugin
+    assert "unknown > slow > moderate > fast" in plugin
+    assert "Cost never changes policy/action" in plugin
     assert '"selection": []' in plugin
     assert '"schedule": []' in plugin
     assert "ruff" not in plugin
+    assert "pytest" not in plugin
+    assert "npm" not in plugin
+    assert "node" not in plugin
     assert "pyproject.toml" not in plugin
 
     lines = plugin.splitlines()

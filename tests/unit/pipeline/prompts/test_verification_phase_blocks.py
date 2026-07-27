@@ -28,7 +28,7 @@ def _plan_contract() -> VerificationContract:
                 "default_env": "ci",
                 "commands": {
                     "lint": {"run": "ruff check {checkout}", "env": "ci",
-                             "cheap": True},
+                             "cost": "fast"},
                     "test": {"run": "pytest -q {checkout}"},
                     "smoke": {"run": "pytest -q {checkout}/smoke"},
                 },
@@ -41,7 +41,7 @@ def _plan_contract() -> VerificationContract:
                 "schedule": [
                     {"after_phase": "implement", "commands": ["test"]},
                     # lint is a warn-tier receipt by declaration, not by cost:
-                    # under ADR 0117 the cheap flag never lifts the blocking tier,
+                    # under ADR 0117 cost never lifts the blocking tier,
                     # so an authoritative warn receipt must be declared explicitly.
                     {"after_phase": "implement", "policy": "warn",
                      "commands": ["lint"]},

@@ -95,9 +95,9 @@ class TestDeriveEffectiveAction:
 
 class TestScheduleAbsenceDerivesPolicy:
     def test_schedule_without_policy_derives_from_base_and_work_mode(self) -> None:
-        # gate set default_policy=require, command required+cheap, pro -> require.
+        # gate set default_policy=require, command required+fast, pro -> require.
         contract = _contract(
-            commands={"test": {"run": "pytest", "cheap": True}},
+            commands={"test": {"run": "pytest", "cost": "fast"}},
             required=["test"],
             gate_sets={"core": {"commands": ["test"], "default_policy": "require"}},
             selection=[{"always": ["core"]}],
@@ -112,7 +112,7 @@ class TestScheduleAbsenceDerivesPolicy:
 
     def test_explicit_suggest_is_not_transformed(self) -> None:
         contract = _contract(
-            commands={"test": {"run": "pytest", "cheap": True}},
+            commands={"test": {"run": "pytest", "cost": "fast"}},
             required=["test"],
             gate_sets={"core": {"commands": ["test"]}},
             selection=[{"always": ["core"]}],
@@ -131,7 +131,7 @@ class TestScheduleAbsenceDerivesPolicy:
 class TestWorkModeChangesEffectivePolicy:
     def _contract_require_default(self) -> VerificationContract:
         return _contract(
-            commands={"lint": {"run": "ruff", "cheap": False}},
+            commands={"lint": {"run": "ruff", "cost": "slow"}},
             gate_sets={"core": {"commands": ["lint"], "default_policy": "require"}},
             selection=[{"always": ["core"]}],
             schedule=[{"after_phase": "implement", "commands": ["lint"]}],
@@ -140,14 +140,14 @@ class TestWorkModeChangesEffectivePolicy:
     def test_pro_honors_require_default(self) -> None:
         contract = self._contract_require_default()
         plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro"))
-        # pro honors the declared require tier; cost (cheap=False) is irrelevant.
+        # pro honors the declared require tier; cost is irrelevant.
         assert _entry(plan, "lint", "after_phase").policy == "require"
 
     def test_fast_honors_require_default(self) -> None:
         contract = self._contract_require_default()
         plan = build_scheduled_gate_plan(contract, SelectionContext(work_mode="fast"))
         # fast relaxes only the advisory suggest tier; require is honored despite
-        # the gate being expensive (cheap=False).
+        # the gate being slow.
         assert _entry(plan, "lint", "after_phase").policy == "require"
 
     def test_governed_not_required_uses_base_default(self) -> None:
@@ -162,17 +162,17 @@ class TestWorkModeChangesEffectivePolicy:
 class TestBlockingTierIndependentOfCost:
     """ADR 0117 guard tests: cost never changes whether a gate blocks."""
 
-    def test_require_not_cheap_stays_require_in_pro_and_fast(self) -> None:
-        # require-tier gate, command explicitly NOT cheap, no explicit
+    def test_require_slow_stays_require_in_pro_and_fast(self) -> None:
+        # require-tier gate, command explicitly slow, no explicit
         # schedule.policy -> derived. Must stay blocking (require) in pro AND fast.
         contract = _contract(
-            commands={"slow": {"run": "pytest", "cheap": False}},
+            commands={"slow": {"run": "pytest", "cost": "slow"}},
             required=["slow"],
             gate_sets={
                 "core": {
                     "commands": ["slow"],
                     "default_policy": "require",
-                    "default_cheap": False,
+                    "default_cost": "slow",
                 },
             },
             selection=[{"always": ["core"]}],
@@ -186,15 +186,15 @@ class TestBlockingTierIndependentOfCost:
 
     def test_suggest_tier_stays_advisory_regardless_of_cost(self) -> None:
         # suggest-tier gate stays advisory (never require) in pro and fast, with
-        # the command cheap or expensive.
-        def _build(work_mode: str, cheap: bool) -> str:
+        # the command fast or slow.
+        def _build(work_mode: str, cost: str) -> str:
             contract = _contract(
-                commands={"opt": {"run": "pytest", "cheap": cheap}},
+                commands={"opt": {"run": "pytest", "cost": cost}},
                 gate_sets={
                     "extra": {
                         "commands": ["opt"],
                         "default_policy": "suggest",
-                        "default_cheap": cheap,
+                        "default_cost": cost,
                     },
                 },
                 selection=[{"always": ["extra"]}],
@@ -206,11 +206,57 @@ class TestBlockingTierIndependentOfCost:
             return _entry(plan, "opt", "after_phase").policy
 
         for work_mode in ("pro", "fast"):
-            for cheap in (True, False):
-                assert _build(work_mode, cheap) != "require", (work_mode, cheap)
+            for cost in ("fast", "slow"):
+                assert _build(work_mode, cost) != "require", (work_mode, cost)
 
 
 class TestMergeDefaultsAndAttribution:
+    @pytest.mark.parametrize(
+        ("defaults", "expected"),
+        [
+            (("fast",), "fast"),
+            (("fast", "moderate"), "moderate"),
+            (("moderate", "slow"), "slow"),
+            (("slow", "unknown", "fast"), "unknown"),
+            ((None, None), "unknown"),
+        ],
+    )
+    def test_cost_resolves_conservatively_independent_of_set_order(
+        self, defaults: tuple[str | None, ...], expected: str,
+    ) -> None:
+        def build(order: tuple[str | None, ...]) -> str:
+            gate_sets = {
+                f"set_{index}": {
+                    "commands": ["test"],
+                    **({"default_cost": cost} if cost is not None else {}),
+                }
+                for index, cost in enumerate(order)
+            }
+            contract = _contract(
+                commands={"test": {"run": "pytest"}},
+                gate_sets=gate_sets,
+                selection=[{"always": list(gate_sets)}],
+                schedule=[{"after_phase": "implement", "commands": ["test"]}],
+            )
+            return _entry(
+                build_scheduled_gate_plan(contract, SelectionContext()),
+                "test", "after_phase",
+            ).cost
+
+        assert build(defaults) == expected
+        assert build(tuple(reversed(defaults))) == expected
+
+    def test_command_cost_overrides_gate_set_defaults(self) -> None:
+        contract = _contract(
+            commands={"test": {"run": "pytest", "cost": "fast"}},
+            gate_sets={"slow": {"commands": ["test"], "default_cost": "slow"}},
+            selection=[{"always": ["slow"]}],
+            schedule=[{"after_phase": "implement", "commands": ["test"]}],
+        )
+        assert _entry(
+            build_scheduled_gate_plan(contract, SelectionContext()), "test", "after_phase",
+        ).cost == "fast"
+
     def test_command_in_two_sets_merges_max_strictness(self) -> None:
         contract = _contract(
             commands={"test": {"run": "pytest"}},
@@ -239,15 +285,15 @@ class TestMergeDefaultsAndAttribution:
 
     def test_cost_does_not_affect_policy(self) -> None:
         # required command, no declared default_policy -> tier=require, honored by
-        # pro. Cost (default_cheap) is orthogonal: flipping it must not move the
+        # pro. Cost (default_cost) is orthogonal: flipping it must not move the
         # effective policy (ADR 0117).
-        def _build(default_cheap: bool):
+        def _build(default_cost: str):
             contract = _contract(
                 commands={"test": {"run": "pytest"}},
                 required=["test"],
                 gate_sets={
                     "a": {"commands": ["test"]},
-                    "b": {"commands": ["test"], "default_cheap": default_cheap},
+                    "b": {"commands": ["test"], "default_cost": default_cost},
                 },
                 selection=[{"always": ["a", "b"]}],
                 schedule=[{"after_phase": "implement", "commands": ["test"]}],
@@ -258,8 +304,27 @@ class TestMergeDefaultsAndAttribution:
             return _entry(plan, "test", "after_phase").policy
 
         # require tier from required-ness, NOT from cost.
-        assert _build(default_cheap=True) == "require"
-        assert _build(default_cheap=False) == "require"
+        assert _build(default_cost="fast") == "require"
+        assert _build(default_cost="slow") == "require"
+
+    @pytest.mark.parametrize("policy", ("manual", "suggest", "warn", "require"))
+    def test_cost_never_changes_policy_or_action(self, policy: str) -> None:
+        def build(cost: str) -> tuple[str, str, tuple[str, ...]]:
+            contract = _contract(
+                commands={"test": {"run": "pytest", "cost": cost}},
+                gate_sets={"core": {"commands": ["test"], "default_policy": policy}},
+                selection=[{"always": ["core"]}],
+                schedule=[{"after_phase": "implement", "commands": ["test"]}],
+            )
+            entry = _entry(
+                build_scheduled_gate_plan(contract, SelectionContext(work_mode="pro")),
+                "test", "after_phase",
+            )
+            return entry.policy, entry.action, (entry.command, entry.hook, entry.phase)
+
+        baseline = build("fast")
+        for cost in ("moderate", "slow", "unknown"):
+            assert build(cost) == baseline
 
     def test_schedule_gate_sets_restricts_merge_source(self) -> None:
         contract = _contract(

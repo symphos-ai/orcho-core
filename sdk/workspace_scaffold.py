@@ -38,6 +38,10 @@ PLUGIN = {
     # BEGIN ORCHO VERIFICATION EXAMPLE
     # "work_mode": "pro",
     # "verification": {
+    #     # A command may declare cost: fast|moderate|slow|unknown.
+    #     # A gate set may declare default_cost with the same values. Command
+    #     # cost wins; otherwise contributing defaults merge conservatively:
+    #     # unknown > slow > moderate > fast. Cost never changes policy/action.
     #     "commands": {},
     #     "gate_sets": {},
     #     "selection": [],
@@ -77,8 +81,8 @@ or copy commands from this template. Inspect the repository first:
    required services, dependency repositories, generated assets, credentials,
    serial-only infrastructure, and commands unsafe in an isolated worktree.
 4. Separate fast deterministic feedback from broad, slow, destructive,
-   networked, or credential-dependent verification. Do not call a command
-   cheap merely because its name sounds familiar.
+   networked, or credential-dependent verification. Declare command `cost` as
+   `fast`, `moderate`, `slow`, or `unknown` from evidence, not its name.
 5. Edit `.orcho/multiagent/plugin.py` using only facts found in this project:
    declare environments and commands, group them by purpose, select them by
    `always`, `paths`, `task_kind`, or `operator`, then schedule them or leave
@@ -95,7 +99,7 @@ or copy commands from this template. Inspect the repository first:
    code; environment, service, credential, and provenance failures need an
    operator handoff.
 7. Run `orcho quality-gates --project .` and fix every contract validation
-   error. Execute cheap candidate commands once to confirm their exact argv and
+   error. Execute bounded fast candidate commands once to confirm their exact argv and
    cwd. Do not launch broad or destructive candidates merely to finish setup;
    keep them operator-selected until deliberately validated.
 8. Report what was configured, why each gate is selected and scheduled, which

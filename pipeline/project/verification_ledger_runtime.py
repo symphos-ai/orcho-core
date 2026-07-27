@@ -117,6 +117,7 @@ def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> Schedu
                 row,
                 selected=True,
                 execution_policy=entry.policy,
+                cost=entry.cost,
                 executor=eligibility.executor,
                 trigger=eligibility.trigger,
                 consequence=eligibility.consequence,
@@ -271,6 +272,7 @@ def _replay_epoch(ledger: ScheduledGateLedger, contract: Any, events: list[GateT
             contributing_gate_sets=row.gate_sets,
             primary_gate_set=row.gate_sets[0] if row.gate_sets else "",
             activation_binding=row.activation_binding,
+            cost=row.cost,
         ))
     return _snapshot_plan(entries)
 
@@ -298,6 +300,7 @@ def _recorded_delivery_plan(
             contributing_gate_sets=row.gate_sets,
             primary_gate_set=row.gate_sets[0] if row.gate_sets else "",
             activation_binding=row.activation_binding,
+            cost=row.cost,
         ))
     return _snapshot_plan(entries)
 
@@ -323,6 +326,7 @@ def _resolve_snapshot_epoch(
             contributing_gate_sets=row.gate_sets,
             primary_gate_set=row.gate_sets[0] if row.gate_sets else "",
             activation_binding=row.activation_binding,
+            cost=row.cost,
         ))
     return _snapshot_plan(entries)
 
