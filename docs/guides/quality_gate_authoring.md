@@ -11,6 +11,9 @@ A quality gate is a registered post-phase check that produces a typed
 core ships one gate (`tests`); third-party plugins extend the registry
 through `orcho.quality_gates` entry_points (Phase 7).
 
+For project-native commands, use [scheduled verification](scheduled_verification.md)
+instead. This guide covers the separate legacy handler-extension mechanism.
+
 ## When to write one
 
 - **Add a verification step** that's not `tests`: lint, compile,

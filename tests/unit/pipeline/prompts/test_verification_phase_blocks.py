@@ -8,6 +8,7 @@ source is shown via ``primary_gate_set``; the whole config is never dumped.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 from agents.entities import SubTask
@@ -16,6 +17,7 @@ from pipeline.plugins import PluginConfig
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
+    render_phase_gate_block,
 )
 
 
@@ -74,7 +76,8 @@ def test_plan_block_lists_env_summary_and_scheduled_gates() -> None:
     assert part is not None
     body = part.body
     assert body.startswith("Verification contract — plan:")
-    assert "The engine owns the selected scheduled gates below" in body
+    assert "The engine owns engine-owned scheduled gates below" in body
+    assert "manual/suggest entries remain operator-owned" in body.lower()
     assert "done criteria" in body
     assert "targeted checks" in body
     assert "envs: ci" in body
@@ -82,6 +85,7 @@ def test_plan_block_lists_env_summary_and_scheduled_gates() -> None:
     # placeholder resolved + gate source shown via primary_gate_set.
     assert "ruff check /co" in body
     assert "<core>" in body and "<delivery>" in body
+    assert "cost=fast" in body and "cost=unknown" in body
 
 
 def test_validate_plan_block_requires_rejection_of_ownership_conflicts() -> None:
@@ -94,6 +98,7 @@ def test_validate_plan_block_requires_rejection_of_ownership_conflicts() -> None
     assert "implement command, task spec, or done criterion" in part.body
     assert "Targeted checks" in part.body
     assert "ruff check /co" in part.body
+    assert "cost=fast" in part.body
 
 
 def test_validate_plan_resolves_path_gates_from_parsed_plan() -> None:
@@ -142,8 +147,10 @@ def test_implement_block_shows_debug_freedom_and_effective_action() -> None:
     assert "Debug freely" in body
     # effective action after the work_mode transform (governed + after_phase
     # implement => repair_loop), effective policy require for the required gate.
-    assert "require; action=repair_loop] test" in body
+    assert "require; action=repair_loop; cost=unknown] test" in body
     assert "pytest -q /co" in body
+    assert "cost=unknown" in body
+    assert "engine executes engine-owned scheduled gates" in body
 
 
 def test_review_block_prioritizes_declared_receipts() -> None:
@@ -151,9 +158,10 @@ def test_review_block_prioritizes_declared_receipts() -> None:
     part = _part(state, "review_changes")
     assert part is not None
     body = part.body
-    assert "Declared receipts are authoritative" in body
+    assert "Engine-written receipts for engine-owned scheduled gates are authoritative" in body
     # warn (lint) and require (test/smoke) receipts are authoritative.
     assert "lint" in body and "test" in body
+    assert "manual/suggest entries remain operator-owned" in body.lower()
 
 
 def test_delivery_block_is_limited_to_before_delivery_gates() -> None:
@@ -162,7 +170,7 @@ def test_delivery_block_is_limited_to_before_delivery_gates() -> None:
     assert part is not None
     body = part.body
     assert body.startswith("Verification contract — final_acceptance:")
-    assert "require; action=handoff] smoke" in body
+    assert "engine-owned; require; action=handoff; cost=unknown] smoke" in body
     assert "pytest -q /co/smoke" in body
     # limited: the implement-only gates are NOT dumped into the delivery block.
     assert "ruff check" not in body
@@ -188,9 +196,91 @@ def test_delivery_block_describes_operator_owned_entries_without_actions() -> No
     ))
 
     assert body is not None
-    assert "operator available] lint" in body
-    assert "operator recommendation] smoke" in body
+    assert "operator-owned; available; cost=fast] lint" in body
+    assert "operator-owned; recommendation; cost=unknown] smoke" in body
     assert "manual->" not in body and "suggest->" not in body
+
+
+def test_raw_schedule_fallback_resolves_cost_or_defaults_to_unknown() -> None:
+    from pipeline.verification_contract import render_phase_block
+
+    block = render_phase_block(
+        _plan_contract(), "implement", PlaceholderContext(checkout="/co"),
+    )
+
+    assert block is not None
+    assert "test: pytest -q /co" in block and "cost=unknown" in block
+    assert "lint: ruff check /co" in block and "cost=fast" in block
+
+
+def _cost_contract(lint_cost: str) -> VerificationContract:
+    contract = VerificationContract.from_plugin(PluginConfig(
+        verification={
+            "commands": {
+                "fast": {"run": "fast", "cost": "fast"},
+                "moderate": {"run": "moderate", "cost": "moderate"},
+                "slow": {"run": "slow", "cost": "slow"},
+                "unknown": {"run": "unknown", "cost": "unknown"},
+                "lint": {"run": "lint", "cost": lint_cost},
+            },
+            "gate_sets": {
+                "all": {
+                    "commands": ["fast", "moderate", "slow", "unknown", "lint"],
+                },
+            },
+            "selection": [{"always": ["all"]}],
+            "schedule": [
+                {"after_phase": "implement", "policy": "warn", "commands": [
+                    "fast", "moderate", "slow", "unknown", "lint",
+                ]},
+                {"before_delivery": True, "policy": "warn", "commands": [
+                    "fast", "moderate", "slow", "unknown", "lint",
+                ]},
+            ],
+        },
+    ))
+    assert contract is not None
+    return contract
+
+
+def test_all_phase_projections_show_all_four_resolved_costs() -> None:
+    from pipeline.verification_selection import (
+        SelectionContext,
+        build_scheduled_gate_plan,
+    )
+
+    contract = _cost_contract("fast")
+    plan = build_scheduled_gate_plan(contract, SelectionContext())
+    for phase in ("plan", "validate_plan", "implement", "review_changes", "final_acceptance"):
+        block = render_phase_gate_block(
+            contract, plan, phase, PlaceholderContext(),
+        )
+        assert block is not None
+        for cost in ("fast", "moderate", "slow", "unknown"):
+            assert f"cost={cost}" in block
+
+
+def test_cost_only_mutation_does_not_change_rendered_gate_identity_or_ownership() -> None:
+    from pipeline.verification_selection import (
+        SelectionContext,
+        build_scheduled_gate_plan,
+    )
+
+    def render(cost: str) -> str:
+        contract = _cost_contract(cost)
+        plan = build_scheduled_gate_plan(contract, SelectionContext())
+        block = render_phase_gate_block(
+            contract, plan, "implement", PlaceholderContext(),
+        )
+        assert block is not None
+        return block
+
+    fast = render("fast")
+    slow = render("slow")
+    assert "cost=fast" in fast and "cost=slow" in slow
+    assert re.sub(r"; cost=(?:fast|moderate|slow|unknown)", "", fast) == re.sub(
+        r"; cost=(?:fast|moderate|slow|unknown)", "", slow,
+    )
 
 
 def test_block_is_run_scoped_with_resolved_placeholders() -> None:

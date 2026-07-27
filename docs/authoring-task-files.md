@@ -29,6 +29,9 @@ attribute:
   of the task's targeted evidence.
 - Do not duplicate the repository gate contract in each task file. The task
   should describe its local evidence, while the project owns its required gate.
+- Do not copy an exact selected scheduled-gate command into an implement task,
+  regardless of its cost. Selection, execution, and the immutable receipt stay
+  engine-owned; name bounded local evidence instead.
 - Do not accept unbounded claims such as “nothing anywhere broke.” Replace
   them with observable, scoped behavior or structure.
 

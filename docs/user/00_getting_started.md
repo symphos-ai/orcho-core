@@ -3,6 +3,9 @@
 Orcho takes a development task to a verified result: plan the work, run
 agents, pass review gates, collect evidence, and see the final change.
 
+For a project-specific readiness contract, start with the
+[scheduled verification guide](../guides/scheduled_verification.md).
+
 Everything starts with an Orcho workspace — a folder next to your
 project where Orcho keeps runs, evidence, metrics, and settings. After
 that you pick the control surface you prefer:

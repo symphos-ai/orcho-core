@@ -140,7 +140,9 @@ class PluginConfig:
     # Extra instructions appended to the PLAN phase prompt
     plan_prompt_extra: str = ""
 
-    # Extra instructions appended to the implement phase prompt
+    # Extra implementation guidance appended to the implement phase prompt.
+    # Do not use this to repeat scheduled verification commands: selection,
+    # execution, and receipts belong to the verification contract below.
     build_prompt_extra: str = ""
 
     # Extra instructions appended to the review_changes focus prompt
@@ -256,8 +258,10 @@ class PluginConfig:
     # dict describing the environment; only the names are surfaced in Stage 1.
     verification_envs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    # The verification contract body. Recognised keys: ``default_env``,
-    # ``required``, ``commands``, ``schedule``. Stored raw; never executed.
+    # The verification contract body. Recognised keys include ``default_env``,
+    # ``commands``, ``gate_sets``, ``selection``, ``schedule``, and ``required``.
+    # Stored raw here; typed validation and scheduled execution happen in the
+    # verification-contract layer.
     verification: dict[str, Any] = field(default_factory=dict)
 
     # Declared work mode. Expected values are ``fast`` / ``pro`` / ``governed``,

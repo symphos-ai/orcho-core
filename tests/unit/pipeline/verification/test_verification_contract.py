@@ -716,7 +716,7 @@ class TestStageOneNonePolicyProjection:
         contract = VerificationContract.from_plugin(plugin)
         block = render_phase_block(contract, "implement", PlaceholderContext(checkout="/co"))
         assert block is not None
-        assert "[after_phase/derived] lint: ruff check /co" in block
+        assert "[after_phase/derived cost=unknown] lint: ruff check /co" in block
 
     def test_header_summary_shows_derived_for_none_policy(self) -> None:
         plugin = _contract_plugin(
@@ -781,8 +781,8 @@ class TestRenderPhaseBlock:
         block = render_phase_block(contract, "implement", ctx)
         assert block is not None
         # implement only sees its after_phase entry.
-        assert "[after_phase/warn] lint: ruff check /co" in block
-        assert "[after_phase/warn] test: pytest -q" in block
+        assert "[after_phase/warn cost=unknown] lint: ruff check /co" in block
+        assert "[after_phase/warn cost=unknown] test: pytest -q" in block
         # before_delivery / manual_only entries are NOT shown for implement.
         assert "before_delivery" not in block
         assert "manual_only" not in block
@@ -792,7 +792,7 @@ class TestRenderPhaseBlock:
         ctx = PlaceholderContext()
         block = render_phase_block(contract, "final_acceptance", ctx)
         assert block is not None
-        assert "[before_delivery/require] test" in block
+        assert "[before_delivery/require cost=unknown] test" in block
         # implement-scoped after_phase entry is not shown on the final phase.
         assert "after_phase" not in block
 
