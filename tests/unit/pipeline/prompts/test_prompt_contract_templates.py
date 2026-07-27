@@ -384,6 +384,25 @@ class TestPublicContractBodyAnchors:
         assert "Protocol enums stay English" in body
         assert "JSON keys are protocol" in body
 
+    def test_release_json_short_summary_is_change_oriented(self) -> None:
+        """Verdict-specific summary guidance is code-owned schema text."""
+        from core.contracts.release_schema import RELEASE_SCHEMA_DOC
+
+        schema_doc = RELEASE_SCHEMA_DOC
+        assert (
+            "When verdict is APPROVED, state what changed and the behaviour "
+            "being released."
+        ) in schema_doc
+        assert (
+            "When verdict is REJECTED, state the attempted change and the "
+            "primary blocker preventing release."
+        ) in schema_doc
+        assert "a list or a recap of gates, receipts, or test counts" in schema_doc
+        assert "verification evidence" in schema_doc
+
+        body = release_json_contract().body
+        assert schema_doc in body
+
     # commit_message_json.
 
     def test_commit_message_json_without_language(self) -> None:

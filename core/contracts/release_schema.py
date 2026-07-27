@@ -274,6 +274,8 @@ Emit exactly one JSON object with this shape:
 
 Rules:
 - All six top-level keys are required; keep `short_summary` non-empty and <=280 chars.
+- `short_summary` is one or two concise, change-oriented sentences. When verdict is APPROVED, state what changed and the behaviour being released. When verdict is REJECTED, state the attempted change and the primary blocker preventing release.
+- Do not make `short_summary` a list or a recap of gates, receipts, or test counts. Put supporting verification detail in verification evidence; put release-stopping issues in `release_blockers` and missing proof in `verification_gaps`.
 - APPROVED requires `ship_ready=true`, no blockers/gaps, and shippable `contract_status`.
 - REJECTED requires `ship_ready=false` and at least one blocker or verification gap.
 - Blockers use P0/P1/P2 only; `id`, `title`, `body`, `required_fix`, `why_blocks_release` are non-empty.

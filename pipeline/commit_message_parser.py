@@ -18,7 +18,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from core.contracts.commit_decision_schema import (
-    _CC_HEADER_RE,
     CommitMessageSchemaError,
     validate_commit_message_dict,
 )
@@ -103,24 +102,13 @@ def render_commit_text(
         <blank line>
         BREAKING CHANGE: <body>          # only when breaking=True and body is non-empty
 
-    The subject is already formatted as a Conventional Commits header by
-    the LLM contract; this composer only handles the type/scope/bang
-    prefix and the body / breaking-change footer.
-
-    Idempotent on subjects that already include the ``<type>: `` prefix:
-    if the subject starts with ``"<type>: "`` (or ``"<type>(scope): "``),
-    the prefix is not duplicated. This keeps the executor friendly to
-    operator-edited subjects that already follow the convention.
+    The subject is an unprefixed imperative summary; structured ``type``,
+    ``scope``, and ``breaking`` fields always compose the header.
     """
     bang = "!" if breaking else ""
     header_prefix = f"{type}({scope}){bang}: " if scope else f"{type}{bang}: "
 
-    # Avoid duplicating the prefix if the model already produced it.
-    normalized_subject = subject.lstrip()
-    if _starts_with_conventional_header(normalized_subject, type):
-        header = normalized_subject
-    else:
-        header = header_prefix + normalized_subject
+    header = header_prefix + subject.lstrip()
 
     parts = [header]
     body_text = (body or "").strip()
@@ -129,26 +117,6 @@ def render_commit_text(
     if breaking and body_text:
         parts.extend(("", f"BREAKING CHANGE: {body_text}"))
     return "\n".join(parts).rstrip() + "\n"
-
-
-def _starts_with_conventional_header(subject: str, type: str) -> bool:
-    """True when ``subject`` already begins with a *fully-formed*
-    Conventional Commits header whose type matches ``type``.
-
-    Uses the same strict ``_CC_HEADER_RE`` the schema validates against
-    rather than a loose ``startswith`` check. Loose prefix detection
-    used to accept malformed headers like ``feat(api: drop X`` (no
-    closing paren) as "already-prefixed" and pass them through verbatim
-    — dropping any ``!`` or scope correction the structured fields
-    implied. The schema now rejects malformed headers up-front, but
-    keeping the render layer strict closes the same gap from the
-    other side (defense-in-depth: a future schema regression cannot
-    silently slip a malformed subject past the renderer).
-    """
-    match = _CC_HEADER_RE.match(subject)
-    return match is not None and match.group("type") == type
-
-
 def _from_dict(
     data: dict[str, Any],
     *,

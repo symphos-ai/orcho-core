@@ -201,6 +201,13 @@ class TestReleaseSchemaRequiredKeys:
         assert len(parsed.parse_warnings) == 1
         assert "short_summary" in parsed.parse_warnings[0]
 
+    def test_short_summary_content_remains_structural_only(self) -> None:
+        """Change-oriented summary guidance must not become NLP validation."""
+        payload = _approved()
+        payload["short_summary"] = "7 gates passed; 3 receipts; 42 tests."
+        validated = validate_release_dict(payload)
+        assert validated["short_summary"] == payload["short_summary"]
+
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 

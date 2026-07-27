@@ -7,8 +7,9 @@ Three related but distinct schemas live here:
 * :func:`validate_commit_message_dict` — the LLM-generated commit message
   the ``llm_generate`` strategy emits via the system-tail
   ``commit_message_json_contract``. The model output is one JSON object
-  with ``subject`` (Conventional Commits header), ``body``, ``type``,
-  optional ``scope``, and a boolean ``breaking`` flag.
+  with a raw imperative ``subject``, ``body``, ``type``, optional ``scope``,
+  and a boolean ``breaking`` flag. The structured fields are the sole source
+  of the Conventional Commits header.
 
 * :func:`validate_pending_dict` — the payload the orchestrator writes
   into ``meta.commit_decision`` (and persists in ``meta.json``) when it
@@ -29,14 +30,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Conventional Commits 1.0 header anchor.
-#   <type>(<scope>)?(!)?: <summary>
-# Used by :func:`validate_commit_message_dict` to detect when the
-# subject carries an explicit CC-style header so we can cross-check
-# its type / scope / bang against the structured fields. Subjects
-# without a header are treated as raw summaries — :func:`render_
-# commit_text` builds the header from the fields.
-_CC_HEADER_RE = re.compile(
+# Conventional Commits 1.0 header anchor: ``<type>(<scope>)?(!)?: <summary>``.
+# A subject must never carry this prefix: ``type``, ``scope``, and ``breaking``
+# are authoritative and the renderer constructs the header from them.
+_CONVENTIONAL_COMMIT_PREFIX_RE = re.compile(
     r"^(?P<type>[a-z][a-z0-9_-]*)"     # ``feat``, ``fix``, ``refactor``…
     r"(?:\((?P<scope>[^)]+)\))?"        # optional ``(scope)``
     r"(?P<bang>!)?"                     # optional ``!``
@@ -44,16 +41,13 @@ _CC_HEADER_RE = re.compile(
     r"(?P<summary>.+)$"                 # remainder is the summary
 )
 
-# Loose "looks like a CC header attempt" anchor — a subject that
-# starts with a lowercase token followed immediately by ``(``,
-# ``!``, or ``:`` is reaching for the CC shape. If it doesn't fully
-# parse under :data:`_CC_HEADER_RE` it is malformed (e.g.
-# ``feat(api: drop X`` — unclosed scope paren) and must be rejected.
-# Without this guard, schema validation would silently accept
-# malformed prefixes and the renderer's prefix-detection used to
-# treat them as already-prefixed — silently dropping the ``!`` and
-# any other field-driven correction.
-_CC_HEADER_LOOKS_LIKE_RE = re.compile(r"^[a-z][a-z0-9_-]*[(!:]")
+# A malformed Conventional Commits prefix is still prefix authoring. Keep this
+# deliberately looser than ``_CONVENTIONAL_COMMIT_PREFIX_RE`` so incomplete
+# attempts such as ``feat(api: change`` cannot become part of the rendered
+# imperative summary.
+_CONVENTIONAL_COMMIT_PREFIX_ATTEMPT_RE = re.compile(
+    r"^[a-z][a-z0-9_-]*[(!:]"
+)
 
 # ---------------------------------------------------------------------------
 # LLM commit_message JSON contract — what the ``llm_generate`` strategy emits.
@@ -150,64 +144,19 @@ def validate_commit_message_dict(data: Any) -> dict[str, Any]:
                 "(no whitespace, including tabs and other unicode spaces)"
             )
 
-    # Cross-field coherence: if the subject carries an explicit
-    # Conventional Commits header (``<type>(scope)?!?: ...``), its
-    # parts must agree with the structured ``type`` / ``scope`` /
-    # ``breaking`` fields. This catches the failure mode where an
-    # LLM emits a CC-style subject without ``!`` while flagging
-    # ``breaking=true`` in the JSON object — the renderer would
-    # keep the bang-less subject and the resulting commit silently
-    # lies about its breaking-change status. Mirroring rule for
-    # type/scope: a subject prefix that disagrees with the field is
-    # a contract violation, not a friendly auto-fix opportunity.
-    #
-    # Subjects without a CC-style prefix are intentionally accepted
-    # as raw summaries — ``render_commit_text`` builds the header
-    # from the fields. Two valid shapes for the same intent:
-    #   * subject="feat(api)!: drop X", type="feat", scope="api",
-    #     breaking=true  ✓
-    #   * subject="drop X", type="feat", scope="api",
-    #     breaking=true  ✓ (renderer prepends ``feat(api)!: ``).
-    #
-    # Defense-in-depth gate before the coherence check: if the
-    # subject *looks like* a CC header attempt (starts with
-    # ``<token>(``, ``<token>!``, or ``<token>:``) but fails the
-    # strict header regex, it is malformed (e.g. unclosed scope
-    # paren ``feat(api: drop X``). Reject explicitly — letting
-    # malformed headers through would (a) bypass the coherence
-    # check below and (b) hit the parser's prefix-detection which
-    # would silently treat them as already-prefixed and drop the
-    # ``!`` / scope correction the fields imply.
-    header = _CC_HEADER_RE.match(subject)
-    if header is None and _CC_HEADER_LOOKS_LIKE_RE.match(subject):
+    if _CONVENTIONAL_COMMIT_PREFIX_RE.match(subject):
         raise CommitMessageSchemaError(
-            f"commit_message.subject looks like a malformed Conventional "
-            f"Commits header ({subject!r}). Expected "
-            f"``<type>(<scope>)?!?: <summary>`` with a closing scope "
-            f"paren when present, or omit the prefix entirely and let "
-            f"the renderer compose the header from the type/scope/"
-            f"breaking fields."
+            "commit_message.subject must be an unprefixed imperative summary; "
+            "do not include a Conventional Commits header because type, scope, "
+            "and breaking are rendered from their structured fields"
         )
-    if header is not None:
-        header_type = header.group("type")
-        header_scope = header.group("scope")
-        header_breaking = header.group("bang") is not None
-        if header_type != commit_type:
-            raise CommitMessageSchemaError(
-                f"commit_message.subject header type {header_type!r} "
-                f"disagrees with commit_message.type {commit_type!r}"
-            )
-        if header_scope != scope:
-            raise CommitMessageSchemaError(
-                f"commit_message.subject header scope {header_scope!r} "
-                f"disagrees with commit_message.scope {scope!r}"
-            )
-        if header_breaking != breaking:
-            raise CommitMessageSchemaError(
-                f"commit_message.subject header breaking-marker "
-                f"({'!' if header_breaking else 'absent'}) disagrees "
-                f"with commit_message.breaking={breaking}"
-            )
+    if _CONVENTIONAL_COMMIT_PREFIX_ATTEMPT_RE.match(subject):
+        raise CommitMessageSchemaError(
+            "commit_message.subject must be an unprefixed imperative summary; "
+            "do not include a malformed Conventional Commits header because "
+            "type, scope, and breaking are rendered from their structured "
+            "fields"
+        )
 
     return data
 
@@ -216,7 +165,7 @@ COMMIT_MESSAGE_SCHEMA_DOC = """
 Emit exactly one JSON object with this shape:
 
 {
-  "subject": "<one-line Conventional Commits header, <=100 chars>",
+  "subject": "<one-line imperative summary without a Conventional Commits prefix, <=100 chars>",
   "body":    "<optional motivation / context paragraph; use \"\" if none>",
   "type":    "feat" | "fix" | "chore" | "docs" | "refactor" | "perf" |
              "test" | "build" | "ci" | "style" | "revert",
@@ -225,7 +174,7 @@ Emit exactly one JSON object with this shape:
 }
 
 Rules:
-- subject is required, single line, <=100 chars, written as "<type>(<scope>): <imperative summary>" or "<type>: <imperative summary>" when scope is null.
+- subject is required, single line, <=100 chars, and is only a short imperative summary (for example, "Rotate token validation"). Do not include ``type``, ``scope``, ``!``, or ``:`` header syntax; the renderer builds that header from the structured fields.
 - body may be empty ("") but the key must be present.
 - type comes from the closed list above (Conventional Commits 1.0 base).
 - scope, when present, is a short single-token noun ("auth", "control"); use null or omit when no scope applies.
