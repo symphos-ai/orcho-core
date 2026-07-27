@@ -6,7 +6,6 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.observability.events import append_event
 from pipeline.cross_project import project_dispatch
 from pipeline.cross_project.execution_graph import (
     CrossExecutionGraph,
@@ -313,11 +312,6 @@ def test_resume_redispatches_only_interrupted_running_child(tmp_path, monkeypatc
     for alias, session in (("alpha", alpha), ("beta", beta)):
         (ctx.run_dir / alias).mkdir()
         (ctx.run_dir / alias / "meta.json").write_text(json.dumps(session))
-    append_event(
-        ctx.run_dir,
-        "phase.start",
-        {"phase_key": "implement", "project_alias": "beta"},
-    )
     alpha_meta_before = (ctx.run_dir / "alpha" / "meta.json").read_bytes()
     ctx.session["phases"]["projects"] = {"alpha": alpha, "beta": beta}
     calls: list[tuple[str, str | None]] = []
@@ -344,11 +338,6 @@ def test_fresh_running_child_is_not_redispatched(tmp_path, monkeypatch) -> None:
     beta = {"status": "running", "phases": {"implement": {"status": "running"}}}
     (ctx.run_dir / "beta").mkdir()
     (ctx.run_dir / "beta" / "meta.json").write_text(json.dumps(beta))
-    append_event(
-        ctx.run_dir,
-        "phase.start",
-        {"phase_key": "implement", "project_alias": "beta"},
-    )
     ctx.session["phases"]["projects"] = {"beta": beta}
     monkeypatch.setattr(
         project_dispatch,
@@ -365,11 +354,6 @@ def test_resume_rearm_is_consumed_after_a_nonterminal_return(tmp_path, monkeypat
     running = {"status": "running", "phases": {"implement": {"status": "running"}}}
     (ctx.run_dir / "beta").mkdir()
     (ctx.run_dir / "beta" / "meta.json").write_text(json.dumps(running))
-    append_event(
-        ctx.run_dir,
-        "phase.start",
-        {"phase_key": "implement", "project_alias": "beta"},
-    )
     ctx.session["phases"]["projects"] = {"beta": running}
     calls: list[str] = []
 

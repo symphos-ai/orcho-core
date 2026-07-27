@@ -301,7 +301,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
     resume_rearm_aliases = frozenset(
         alias
         for alias, child in canonical_children.items()
-        if ctx.resume_from and child.execution.value == "running"
+        if ctx.resume_from and child.status == "running"
     )
     if isinstance(existing_children, dict):
         preserved = {
