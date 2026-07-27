@@ -102,3 +102,22 @@ def test_resolver_is_pure_and_has_no_forbidden_inputs_or_imports() -> None:
     imports = [node.module or "" for node in tree.body if isinstance(node, ast.ImportFrom)]
     assert all(not module.startswith("pipeline.project") for module in imports)
     assert "cheap" not in source.read_text(encoding="utf-8")
+
+
+def test_active_verification_cost_paths_have_no_legacy_cost_fields() -> None:
+    root = Path(__file__).parents[4]
+    active_paths = (
+        "pipeline/verification_cost.py",
+        "pipeline/verification_contract.py",
+        "pipeline/verification_selection.py",
+        "pipeline/verification_ledger.py",
+        "pipeline/verification_ledger_store.py",
+        "pipeline/project/verification_ledger_runtime.py",
+        "pipeline/evidence/collector.py",
+        "core/io/verification_header.py",
+    )
+    for relative in active_paths:
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "default_cheap" not in source, relative
+        assert "cheap" not in source, relative
+        assert "kind=\"cheap\"" not in source, relative

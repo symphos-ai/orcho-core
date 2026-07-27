@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pipeline.verification_cost import VERIFICATION_COSTS, VerificationCost
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -109,7 +110,7 @@ class ScheduleEntry:
 class GateSet:
     """A declared named set of commands plus optional gate-policy defaults.
 
-    ``default_policy`` / ``default_action`` / ``default_cheap`` are ``None`` when
+    ``default_policy`` / ``default_action`` / ``default_cost`` are ``None`` when
     omitted — absence is the input for the later work_mode transform, not a
     silent default. ``commands`` is required and validated against the declared
     command table.
@@ -119,7 +120,7 @@ class GateSet:
     commands: tuple[str, ...]
     default_policy: str | None = None
     default_action: str | None = None
-    default_cheap: bool | None = None
+    default_cost: VerificationCost | None = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ class VerificationContract:
     required: tuple[str, ...]
     work_mode: str
     # Declared named gate sets, keyed by name. Each carries its command list and
-    # optional policy/action/cheap defaults. Empty when none are declared.
+    # optional policy/action/cost defaults. Empty when none are declared.
     gate_sets: dict[str, GateSet] = field(default_factory=dict)
     # Ordered gate-set selection rules. Empty when none are declared.
     selection: tuple[SelectionRule, ...] = ()
@@ -285,6 +286,7 @@ def _normalize_commands(
             f"verification.commands must be a dict, got {type(value).__name__}",
         )
     out: dict[str, dict[str, Any]] = {}
+    allowed_keys = {"run", "env", "parity", "cost"}
     for name, spec in value.items():
         if isinstance(spec, str):
             cmd = {"run": spec}
@@ -294,6 +296,12 @@ def _normalize_commands(
             raise VerificationContractError(
                 f"verification.commands[{name!r}] must be a str or dict, got "
                 f"{type(spec).__name__}",
+            )
+        unknown = set(cmd) - allowed_keys
+        if unknown:
+            raise VerificationContractError(
+                f"verification.commands[{name!r}] has unknown field "
+                f"{sorted(unknown)[0]!r}",
             )
         env_ref = cmd.get("env")
         if env_ref is not None and env_ref not in envs:
@@ -308,10 +316,12 @@ def _normalize_commands(
                     f"verification.commands[{name!r}].parity must be "
                     f"absolute|differential, got {parity!r}",
                 )
-        if "cheap" in cmd and not isinstance(cmd["cheap"], bool):
+        if "cost" in cmd and (
+            not isinstance(cmd["cost"], str) or cmd["cost"] not in VERIFICATION_COSTS
+        ):
             raise VerificationContractError(
-                f"verification.commands[{name!r}].cheap must be a bool, got "
-                f"{type(cmd['cheap']).__name__}",
+                f"verification.commands[{name!r}].cost must be one of "
+                f"{VERIFICATION_COSTS!r}, got {cmd['cost']!r}",
             )
         out[str(name)] = cmd
     return out
@@ -353,7 +363,7 @@ def _normalize_gate_sets(
     """Normalise ``verification.gate_sets`` to a name->:class:`GateSet` mapping.
 
     Each gate set must declare a ``commands`` list of declared command names.
-    ``default_policy`` / ``default_action`` / ``default_cheap`` are optional;
+    ``default_policy`` / ``default_action`` / ``default_cost`` are optional;
     absence stays ``None`` (the input for the later work_mode transform), and an
     explicitly-present-but-invalid value raises. Absence of the whole mapping is
     an empty dict.
@@ -363,11 +373,18 @@ def _normalize_gate_sets(
             f"verification.gate_sets must be a dict, got {type(value).__name__}",
         )
     out: dict[str, GateSet] = {}
+    allowed_keys = {"commands", "default_policy", "default_action", "default_cost"}
     for name, spec in value.items():
         if not isinstance(spec, dict):
             raise VerificationContractError(
                 f"verification.gate_sets[{name!r}] must be a dict, got "
                 f"{type(spec).__name__}",
+            )
+        unknown = set(spec) - allowed_keys
+        if unknown:
+            raise VerificationContractError(
+                f"verification.gate_sets[{name!r}] has unknown field "
+                f"{sorted(unknown)[0]!r}",
             )
         cmd_refs = spec.get("commands")
         if not isinstance(cmd_refs, (list, tuple)):
@@ -393,18 +410,20 @@ def _normalize_gate_sets(
                 f"verification.gate_sets[{name!r}].default_action {default_action!r} "
                 f"is not one of {GATE_ACTIONS!r}",
             )
-        default_cheap = spec.get("default_cheap")
-        if default_cheap is not None and not isinstance(default_cheap, bool):
+        default_cost = spec.get("default_cost")
+        if "default_cost" in spec and (
+            not isinstance(default_cost, str) or default_cost not in VERIFICATION_COSTS
+        ):
             raise VerificationContractError(
-                f"verification.gate_sets[{name!r}].default_cheap must be a bool, "
-                f"got {type(default_cheap).__name__}",
+                f"verification.gate_sets[{name!r}].default_cost must be one of "
+                f"{VERIFICATION_COSTS!r}, got {default_cost!r}",
             )
         out[str(name)] = GateSet(
             name=str(name),
             commands=tuple(str(r) for r in cmd_refs),
             default_policy=default_policy,
             default_action=default_action,
-            default_cheap=default_cheap,
+            default_cost=default_cost,
         )
     return out
 

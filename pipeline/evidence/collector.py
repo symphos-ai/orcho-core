@@ -353,7 +353,11 @@ def _string_list_from_payload(
 
 def _build_scheduled_gate_ledger(run_dir: Path) -> dict[str, Any] | None:
     """Copy only a valid ledger artifact; terminal output is never consulted."""
-    from pipeline.verification_ledger_store import ledger_path, load_ledger
+    from pipeline.verification_ledger_store import (
+        SCHEMA_VERSION,
+        ledger_path,
+        load_ledger,
+    )
 
     if not ledger_path(run_dir).exists():
         return None
@@ -361,7 +365,7 @@ def _build_scheduled_gate_ledger(run_dir: Path) -> dict[str, Any] | None:
     from dataclasses import asdict
 
     return {
-        "schema_version": "1", "finalized": ledger.finalized,
+        "schema_version": SCHEMA_VERSION, "finalized": ledger.finalized,
         "rows": [asdict(row) for row in ledger.rows],
         "trail": [asdict(event) for event in ledger.trail],
     }

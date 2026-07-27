@@ -32,6 +32,7 @@ from pipeline.verification_contract import (
     SCHEDULE_HOOKS,
     SCHEDULE_POLICIES,
 )
+from pipeline.verification_cost import resolve_verification_cost
 
 if TYPE_CHECKING:
     from pipeline.verification_contract import GateSet, VerificationContract
@@ -114,6 +115,7 @@ class ScheduledGateEntry:
     contributing_gate_sets: tuple[str, ...]
     primary_gate_set: str
     activation_binding: str = ""
+    cost: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -186,10 +188,8 @@ def _merge_defaults(
     """Merge gate-set defaults: max-strictness policy/action.
 
     Only sets that *declare* a default contribute to that default; absence stays
-    ``None`` so the work_mode transform can decide later. Cost (``default_cheap``)
-    is *not* merged here — it is declared metadata read independently by the
-    verification header for display, and never feeds the blocking policy
-    (ADR 0117).
+    ``None`` so the work_mode transform can decide later. Cost is resolved
+    independently below and never feeds the blocking policy.
     """
     policy: str | None = None
     action: str | None = None
@@ -350,6 +350,10 @@ def build_scheduled_gate_plan(
                 contract, command_sets, res.gate_set_restriction,
             )
             base_policy, base_action = _merge_defaults(merge_source)
+            cost = resolve_verification_cost(
+                contract.commands[command].get("cost"),
+                (gate_set.default_cost for gate_set in merge_source),
+            )
 
             if hook == "manual_only" and unscheduled:
                 # A selected command with no applicable schedule has the
@@ -381,6 +385,7 @@ def build_scheduled_gate_plan(
                     contributing_gate_sets=command_sets,
                     primary_gate_set=primary,
                     activation_binding="always" if not command_sets else "selected",
+                    cost=cost,
                 ),
             )
 

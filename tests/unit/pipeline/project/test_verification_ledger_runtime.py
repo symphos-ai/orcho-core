@@ -23,9 +23,9 @@ from pipeline.verification_ledger_store import load_ledger
 from pipeline.verification_selection import SelectionContext
 
 
-def _contract(command: str = "check") -> VerificationContract:
+def _contract(command: str = "check", cost: str = "moderate") -> VerificationContract:
     contract = VerificationContract.from_plugin(PluginConfig(verification={
-        "commands": {command: {"run": "pytest"}},
+        "commands": {command: {"run": "pytest", "cost": cost}},
         "gate_sets": {"core": {"commands": [command]}},
         "selection": [{"always": ["core"]}],
         "schedule": [{"after_phase": "implement", "gate_sets": ["core"], "policy": "require"}],
@@ -190,6 +190,26 @@ def test_repeated_epoch_replays_recorded_plan_without_rebuilding(
     assert [entry.command for entry in replayed.entries] == [entry.command for entry in first.entries]
     assert run.state.extras["verification_gate_routing_plans"]["after_phase:implement"] is replayed
     assert len(load_ledger(tmp_path).trail) == 1
+
+
+@pytest.mark.parametrize("cost", ("fast", "moderate", "slow", "unknown"))
+def test_replay_and_resume_preserve_persisted_entry_cost(tmp_path: Path, cost: str) -> None:
+    contract = _contract(cost=cost)
+    first = _run(tmp_path, contract)
+    initialize(first.state)
+    selected = select_epoch(
+        first, contract, epoch="after_phase:implement", context=SelectionContext(),
+    )
+    replayed = select_epoch(
+        first, contract, epoch="after_phase:implement", context=SelectionContext(),
+    )
+    resumed = _run(tmp_path, contract, resume=True)
+    resumed_plan = select_epoch(
+        resumed, contract, epoch="after_phase:implement", context=SelectionContext(),
+    )
+    assert [entry.cost for entry in selected.entries] == [cost]
+    assert [entry.cost for entry in replayed.entries] == [cost]
+    assert [entry.cost for entry in resumed_plan.entries] == [cost]
 
 
 def test_path_selection_is_stable_across_late_context_and_resume(

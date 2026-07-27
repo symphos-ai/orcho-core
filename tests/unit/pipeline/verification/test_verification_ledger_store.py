@@ -32,6 +32,41 @@ def test_round_trip_preserves_order_and_exact_identities(tmp_path: Path) -> None
     assert [row.identity for row in loaded.rows] == [row.identity for row in ledger.rows]
 
 
+@pytest.mark.parametrize("cost", ("fast", "moderate", "slow", "unknown"))
+def test_schema_v2_round_trips_each_cost(tmp_path: Path, cost: str) -> None:
+    ledger = ScheduledGateLedger((
+        GateLedgerRow(
+            gate="one", hook="after_phase", phase="implement",
+            timing="after_implement", run_mode="auto", gate_sets=(),
+            condition="always", selected=True, execution_policy="require", cost=cost,
+        ),
+    ))
+    write_ledger(tmp_path, ledger)
+    raw = json.loads((tmp_path / "scheduled_gate_ledger.json").read_text())
+    assert raw["schema_version"] == "2"
+    assert load_ledger(tmp_path).rows[0].cost == cost
+
+
+def test_strict_loader_rejects_v1_legacy_kind_and_invalid_cost(tmp_path: Path) -> None:
+    write_ledger(tmp_path, ScheduledGateLedger((_row("one", "after_phase", "implement"),)))
+    path = tmp_path / "scheduled_gate_ledger.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["schema_version"] = "1"
+    with pytest.raises(LedgerStoreError, match="unsupported"):
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        load_ledger(tmp_path)
+    raw["schema_version"] = "2"
+    raw["rows"][0]["kind"] = raw["rows"][0].pop("cost")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(LedgerStoreError, match="invalid shape"):
+        load_ledger(tmp_path)
+    raw["rows"][0].pop("kind")
+    raw["rows"][0]["cost"] = "cheap"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(LedgerStoreError, match="invalid cost"):
+        load_ledger(tmp_path)
+
+
 def test_atomic_write_failure_keeps_previous_artifact_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original = ScheduledGateLedger((_row("one", "after_phase", "implement"),))
     write_ledger(tmp_path, original)

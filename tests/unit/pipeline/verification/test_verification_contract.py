@@ -370,7 +370,7 @@ class TestGateSets:
         assert gs.commands == ("lint",)
         assert gs.default_policy is None
         assert gs.default_action is None
-        assert gs.default_cheap is None
+        assert gs.default_cost is None
 
     def test_gate_set_with_defaults(self) -> None:
         plugin = _contract_plugin(
@@ -381,7 +381,7 @@ class TestGateSets:
                         "commands": ["lint"],
                         "default_policy": "require",
                         "default_action": "repair_loop",
-                        "default_cheap": True,
+                        "default_cost": "fast",
                     },
                 },
             },
@@ -391,7 +391,7 @@ class TestGateSets:
         gs = contract.gate_sets["core"]
         assert gs.default_policy == "require"
         assert gs.default_action == "repair_loop"
-        assert gs.default_cheap is True
+        assert gs.default_cost == "fast"
 
     def test_gate_set_missing_commands_raises(self) -> None:
         plugin = _contract_plugin(
@@ -426,25 +426,57 @@ class TestGateSets:
             VerificationContract.from_plugin(plugin)
 
 
-class TestCommandCheap:
-    def test_command_cheap_flag_preserved(self) -> None:
+class TestCommandCost:
+    def test_command_cost_preserved(self) -> None:
         plugin = _contract_plugin(
             verification={
-                "commands": {"lint": {"run": "ruff check .", "cheap": True}},
+                "commands": {"lint": {"run": "ruff check .", "cost": "fast"}},
             },
         )
         contract = VerificationContract.from_plugin(plugin)
         assert contract is not None
-        assert contract.commands["lint"]["cheap"] is True
+        assert contract.commands["lint"]["cost"] == "fast"
 
-    def test_command_cheap_must_be_bool(self) -> None:
+    @pytest.mark.parametrize("cost", ("instant", True, None))
+    def test_command_cost_must_be_known(self, cost: object) -> None:
         plugin = _contract_plugin(
             verification={
-                "commands": {"lint": {"run": "ruff check .", "cheap": "yes"}},
+                "commands": {"lint": {"run": "ruff check .", "cost": cost}},
             },
         )
-        with pytest.raises(VerificationContractError, match="cheap must be a bool"):
+        with pytest.raises(VerificationContractError, match="cost must be one of"):
             VerificationContract.from_plugin(plugin)
+
+    @pytest.mark.parametrize(
+        ("section", "field"),
+        (("commands", "cheap"), ("gate_sets", "default_cheap")),
+    )
+    def test_legacy_cost_fields_are_unknown(self, section: str, field: str) -> None:
+        verification = {"commands": {"lint": {"run": "ruff check ."}}}
+        if section == "commands":
+            verification["commands"]["lint"][field] = True
+        else:
+            verification["gate_sets"] = {"core": {"commands": ["lint"], field: True}}
+        with pytest.raises(VerificationContractError, match="unknown field"):
+            VerificationContract.from_plugin(_contract_plugin(verification=verification))
+
+    @pytest.mark.parametrize("cost", ("fast", "moderate", "slow", "unknown"))
+    def test_gate_set_cost_must_be_known(self, cost: str) -> None:
+        contract = VerificationContract.from_plugin(_contract_plugin(verification={
+            "commands": {"lint": "ruff check ."},
+            "gate_sets": {"core": {"commands": ["lint"], "default_cost": cost}},
+        }))
+        assert contract is not None
+        assert contract.gate_sets["core"].default_cost == cost
+
+    @pytest.mark.parametrize("cost", ("cheap", "", False, None))
+    def test_gate_set_cost_rejects_invalid_values(self, cost: object) -> None:
+        verification = {
+            "commands": {"lint": "ruff check ."},
+            "gate_sets": {"core": {"commands": ["lint"], "default_cost": cost}},
+        }
+        with pytest.raises(VerificationContractError, match="default_cost must be one of"):
+            VerificationContract.from_plugin(_contract_plugin(verification=verification))
 
 
 class TestSelection:
