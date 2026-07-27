@@ -35,7 +35,7 @@ def _reference_plugin() -> PluginConfig:
         "commands": {
             "env-provenance": {"env": "ci", "cost": "fast", "run": "prov"},
             "lint": {"env": "ci", "cost": "fast", "run": "ruff check ."},
-            "run-state-unit": {"env": "ci", "run": "pytest run_state"},
+            "run-state-unit": {"env": "ci", "run": "pytest run_state", "cost": "slow"},
             "verification-unit": {"env": "ci", "run": "pytest verification"},
             "cli-sdk-unit": {"env": "ci", "run": "pytest cli sdk"},
             "broad-non-e2e": {"env": "ci", "run": "pytest -m 'not e2e'"},
@@ -142,6 +142,8 @@ def test_profile_prints_three_axis_matrix(monkeypatch) -> None:
     assert "warn" in lint_line
     e2e_line = next(ln for ln in out.splitlines() if ln.strip().startswith("e2e"))
     assert "operator" in e2e_line
+    assert "fast" in out
+    assert "slow" in out
 
 
 def test_profile_without_final_phase_marks_warn_not_auto_run(monkeypatch) -> None:

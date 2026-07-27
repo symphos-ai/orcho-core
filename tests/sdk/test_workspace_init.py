@@ -5,6 +5,7 @@ rules, idempotency, dry-run safety, and MCP config merge semantics.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import stat
@@ -100,9 +101,15 @@ def test_workspace_agent_rules_define_gate_ownership_for_all_task_inputs(
 
     assert "template belongs with the adjacent `plugin.py`" in agents
     assert "root `AGENTS.md`" in agents
+    assert "Existing project instructions must be preserved" in agents
     assert "When asked to configure Orcho" in agents
     assert "manifests, package-manager scripts" in agents
-    assert "Declare command `cost` as\n   `fast`, `moderate`, `slow`, or `unknown`" in agents
+    assert "Classify command `cost` from observed properties" in agents
+    assert "`fast`: a bounded, deterministic local check" in agents
+    assert "`moderate`: a bounded check" in agents
+    assert "`slow`: a broad, expensive, service-heavy" in agents
+    assert "`unknown`: no reliable evidence yet" in agents
+    assert "independent of selection, executor, policy, action,\n   and consequence" in agents
     assert "do not default every new gate to `warn`" in agents
     assert "Use `require` immediately" in agents
     assert "make the delivery boundary `require` as well" in agents
@@ -110,12 +117,13 @@ def test_workspace_agent_rules_define_gate_ownership_for_all_task_inputs(
     assert "operator handoff" in agents
     assert "orcho quality-gates --project ." in agents
     assert "empty generated verification skeleton" in agents
-    assert "`--task`, `--task-file`, a\nfollow-up" in agents
+    assert "direct `--task` input, a\n`--task-file`, a follow-up, or an edited plan" in agents
     assert "the Orcho engine owns its official execution" in agents
     assert "focused tests, lint on changed files" in agents
     assert "manual-only, declared but unscheduled" in agents
     assert "Never invoke `orcho verify` from an implement subtask" in agents
     assert "Work in the checkout supplied by Orcho" in agents
+    assert not (Path(result.workspace_dir) / "AGENTS.md").exists()
 
 
 def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
@@ -126,13 +134,25 @@ def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
         Path(result.workspace_dir) / ".orcho" / "multiagent" / "plugin.py"
     ).read_text(encoding="utf-8")
 
+    tree = ast.parse(plugin)
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "PLUGIN"
+                for target in node.targets)
+    )
+    assert isinstance(assignment.value, ast.Dict)
+    assert assignment.value.keys == []
     assert "delivery_policy" not in plugin
     assert '"commands": {}' in plugin
     assert '"gate_sets": {}' in plugin
     assert "cost: fast|moderate|slow|unknown" in plugin
     assert "default_cost" in plugin
     assert "unknown > slow > moderate > fast" in plugin
-    assert "Cost never changes policy/action" in plugin
+    assert "cost overrides gate-set default_cost" in plugin
+    assert "unknown > slow > moderate > fast" in plugin
+    assert "independent display axis" in plugin
+    assert "selection,\n    #     # executor, policy, action, or consequence" in plugin
     assert '"selection": []' in plugin
     assert '"schedule": []' in plugin
     assert "ruff" not in plugin
@@ -140,6 +160,15 @@ def test_workspace_plugin_scaffold_includes_validation_safe_gate_pattern(
     assert "npm" not in plugin
     assert "node" not in plugin
     assert "pyproject.toml" not in plugin
+    assert "cheap" not in plugin
+    assert "default_cheap" not in plugin
+
+    from pipeline.verification_cost import resolve_verification_cost
+
+    assert resolve_verification_cost(
+        None, ("fast", "moderate", "slow", "unknown"),
+    ) == "unknown"
+    assert resolve_verification_cost("fast", ("unknown",)) == "fast"
 
     lines = plugin.splitlines()
     start = lines.index("    # BEGIN ORCHO VERIFICATION EXAMPLE") + 1

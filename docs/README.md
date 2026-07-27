@@ -19,6 +19,7 @@ Start here, in order:
 | [user/02_commands.md](user/02_commands.md) | Every `orcho` command with examples |
 | [user/03_workspaces.md](user/03_workspaces.md) | Connecting your project, workspaces, multiple repos |
 | [user/04_results.md](user/04_results.md) | What a run produces, how to read artifacts, diff delivery |
+| [guides/scheduled_verification.md](guides/scheduled_verification.md) | Declare, schedule, execute, and read verification receipts |
 | [user/early_adopter_install.md](user/early_adopter_install.md) | Full source-checkout install: core + MCP + Web |
 
 ---
@@ -46,6 +47,7 @@ Start here, in order:
 | File | What's inside |
 |------|-----------|
 | [guides/profile_authoring.md](guides/profile_authoring.md) | Declare your own pipeline profiles |
+| [guides/scheduled_verification.md](guides/scheduled_verification.md) | Practical scheduled verification contract |
 | [guides/quality_gate_authoring.md](guides/quality_gate_authoring.md) | Author quality gates and failure policies |
 | [guides/execution_mode_authoring.md](guides/execution_mode_authoring.md) | Custom execution modes for phases |
 | [guides/session_adapter_authoring.md](guides/session_adapter_authoring.md) | Session adapters for agent runtimes |

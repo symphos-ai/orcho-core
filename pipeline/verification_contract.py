@@ -18,7 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from pipeline.verification_cost import VERIFICATION_COSTS, VerificationCost
+from pipeline.verification_cost import (
+    VERIFICATION_COSTS,
+    VerificationCost,
+    resolve_verification_cost,
+)
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -974,7 +978,15 @@ def render_phase_block(
             if not cmd:
                 continue
             run = resolve_placeholders(str(cmd.get("run", "")), ctx)
-            lines.append(f"  [{entry.hook}/{policy_label}] {name}: {run}")
+            default_costs = (
+                contract.gate_sets[gate_set].default_cost
+                for gate_set in entry.gate_sets
+                if gate_set in contract.gate_sets
+            )
+            cost = resolve_verification_cost(cmd.get("cost"), default_costs)
+            lines.append(
+                f"  [{entry.hook}/{policy_label} cost={cost}] {name}: {run}",
+            )
 
     if len(lines) == 1:
         return None
@@ -1010,12 +1022,22 @@ def _gate_line(
         policy=entry.policy,
     ))
     if resolved.consequence == "required_action":
-        posture = f"require; action={entry.action}"
+        posture = f"engine-owned; require; action={entry.action}"
     elif resolved.executor == "operator":
-        posture = "operator available" if entry.policy == "manual" else "operator recommendation"
+        posture = (
+            "operator-owned; available"
+            if entry.policy == "manual"
+            else "operator-owned; recommendation"
+        )
     else:
-        posture = "engine warning; shipping allowed"
-    return f"  [{hook_label} {posture}] {entry.command} <{entry.primary_gate_set}>: {run}"
+        posture = "engine-owned; warning; shipping allowed"
+    cost = getattr(entry, "cost", None)
+    if cost not in VERIFICATION_COSTS:
+        cost = resolve_verification_cost(cmd.get("cost"), ())
+    return (
+        f"  [{hook_label} {posture}; cost={cost}] {entry.command} "
+        f"<{entry.primary_gate_set}>: {run}"
+    )
 
 
 def render_phase_gate_block(
@@ -1052,7 +1074,8 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  The engine owns the selected scheduled gates below. Do not "
+            "  The engine owns engine-owned scheduled gates below; "
+            "manual/suggest entries remain operator-owned. Do not "
             "copy their commands, or broader repository-wide/full-suite "
             "wrappers, into implement commands, task specs, or done criteria. "
             "Implement may name targeted checks for the concrete change.",
@@ -1075,7 +1098,7 @@ def render_phase_gate_block(
             "broader repository-wide/full-suite wrapper, into an implement "
             "command, task spec, or done criterion. Targeted checks for the "
             "concrete change remain valid.",
-            "  Engine-owned scheduled gates:",
+            "  Scheduled gates (manual/suggest entries remain operator-owned):",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
@@ -1091,6 +1114,9 @@ def render_phase_gate_block(
         lines = [
             f"Verification contract — {phase}:",
             "  Debug freely; the gates below are what will be checked next.",
+            "  The engine executes engine-owned scheduled gates and writes "
+            "their authoritative receipts; manual/suggest entries remain "
+            "operator-owned.",
             "  Scheduled gates after implement:",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
@@ -1110,9 +1136,10 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Declared receipts are authoritative; ad-hoc commands are "
-            "exploratory and must not invalidate a declared receipt.",
-            "  Authoritative receipts:",
+            "  Engine-written receipts for engine-owned scheduled gates are "
+            "authoritative; ad-hoc commands are exploratory and must not "
+            "invalidate them. Manual/suggest entries remain operator-owned.",
+            "  Scheduled receipts:",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
@@ -1123,8 +1150,9 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Require gates block on missing, failed, or stale receipts; "
-            "warnings are visible and shipping-allowed.",
+            "  Engine-owned require gates block on missing, failed, or stale "
+            "engine-written receipts; engine-owned warnings are visible and "
+            "shipping-allowed. Manual/suggest entries remain operator-owned.",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
