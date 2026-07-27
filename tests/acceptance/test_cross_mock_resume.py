@@ -1,10 +1,4 @@
-"""Public-facade acceptance coverage for durable cross mock resumes.
-
-The interruption seam runs only after the first child has returned from its
-real child pipeline call, so its child ``meta.json`` is already durable.  It is
-not a timer: if that proof cannot be made, the test fails before attempting a
-resume.
-"""
+"""Public-facade acceptance coverage for durable cross mock resumes."""
 from __future__ import annotations
 
 import json
@@ -59,21 +53,44 @@ def _add_alpha_retry_gate(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "add alpha retry gate"], cwd=path, check=True)
 
 
-def _cross_subprocess_script(argv: list[str], *, stop_before_beta_dispatch: bool) -> str:
+def _add_beta_required_gate(path: Path) -> None:
+    """Commit a beta gate so its declaration ledger is resume-critical."""
+    plugin = path / ".orcho" / "multiagent" / "plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "PLUGIN = " + repr({
+            "verification": {
+                "commands": {"beta_check": {"run": ["python", "-c", "pass"]}},
+                "gate_sets": {"required": {"commands": ["beta_check"]}},
+                "selection": [{"always": ["required"]}],
+                "schedule": [{
+                    "after_phase": "implement", "policy": "require",
+                    "gate_sets": ["required"],
+                }],
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".orcho/multiagent/plugin.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add beta required gate"], cwd=path, check=True)
+
+
+def _cross_subprocess_script(argv: list[str], *, stop_after_beta_start: bool) -> str:
     """Build an isolated CLI invocation with acceptance-only projection setup."""
     stop_seam = ""
-    if stop_before_beta_dispatch:
+    if stop_after_beta_start:
         stop_seam = """
 from pipeline.project import session_run
 
-_original_build_and_dispatch = session_run._build_and_dispatch
+_original_init_run_session = session_run.init_run_session
 
-def _stop_before_fresh_beta_dispatch(request, ctx):
-    if request.project_alias == "beta" and not request.resume_from:
+def _stop_after_beta_running_session(**kwargs):
+    session = _original_init_run_session(**kwargs)
+    if kwargs.get("output_dir") is not None and kwargs["output_dir"].name == "beta":
         os.kill(os.getpid(), signal.SIGSTOP)
-    return _original_build_and_dispatch(request, ctx)
+    return session
 
-session_run._build_and_dispatch = _stop_before_fresh_beta_dispatch
+session_run.init_run_session = _stop_after_beta_running_session
 """
     return f"""
 import os
@@ -141,6 +158,7 @@ def _wait_for_crash_window(run_dir: Path, *, timeout_seconds: float = 20) -> Non
                 has_beta_start
                 and beta.get("status") == "running"
                 and ckpt.get("sub_status", {}).get("beta") == "running"
+                and (run_dir / "beta" / "scheduled_gate_ledger.json").is_file()
                 and not typed_beta_operation
             ):
                 return
@@ -314,6 +332,7 @@ def test_cross_subprocess_resume_rearms_beta_before_first_operation(tmp_path: Pa
     beta = workspace / "beta"
     _init_git_repo(alpha)
     _init_git_repo(beta)
+    _add_beta_required_gate(beta)
     run_id = "cross-subprocess-beta-crash"
     run_dir = workspace / "runspace" / "runs" / run_id
     run_dir.parent.mkdir(parents=True)
@@ -325,7 +344,7 @@ def test_cross_subprocess_resume_rearms_beta_before_first_operation(tmp_path: Pa
         "--no-interactive", "--mock",
     ]
     producer = subprocess.Popen(
-        [sys.executable, "-c", _cross_subprocess_script(fresh_argv, stop_before_beta_dispatch=True)],
+        [sys.executable, "-c", _cross_subprocess_script(fresh_argv, stop_after_beta_start=True)],
         cwd=core_root,
         env={**os.environ, "ORCHO_WORKSPACE": str(workspace)},
         stdout=subprocess.PIPE,
@@ -351,7 +370,7 @@ def test_cross_subprocess_resume_rearms_beta_before_first_operation(tmp_path: Pa
             "--no-interactive",
         ]
         consumer = subprocess.run(
-            [sys.executable, "-c", _cross_subprocess_script(consumer_argv, stop_before_beta_dispatch=False)],
+            [sys.executable, "-c", _cross_subprocess_script(consumer_argv, stop_after_beta_start=False)],
             cwd=core_root,
             env={**os.environ, "ORCHO_WORKSPACE": str(workspace)},
             stdout=subprocess.PIPE,
