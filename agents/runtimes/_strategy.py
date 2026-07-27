@@ -824,16 +824,12 @@ def _mock_file_review_prompt(file_path: str, focus: str, cwd: str | None) -> str
 def _load_plugin_hints(cwd: str) -> tuple[str, list[str], str]:
     """Try to load file_hints and language from project plugin. Never raises."""
     try:
-        import importlib.util
-        from pathlib import Path
-        plugin_path = Path(cwd) / ".orcho" / "multiagent" / "plugin.py"
-        if not plugin_path.exists():
+        from pipeline.plugins import load_plugin
+
+        plugin = load_plugin(cwd)
+        if not plugin.loaded_plugin_path:
             return "", [], ""
-        spec = importlib.util.spec_from_file_location("_mp", plugin_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        p = getattr(mod, "PLUGIN", {})
-        return p.get("name", ""), p.get("file_hints", []), p.get("language", "")
+        return plugin.name, plugin.file_hints, plugin.language
     except Exception:
         return "", [], ""
 
