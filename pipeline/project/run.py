@@ -1508,6 +1508,7 @@ class _PipelineRun:
         )
         from pipeline.engine.commit_delivery import (
             COMMIT_DELIVERY_HALT_REASONS,
+            CommitMessageGenerationFailure,
             apply_commit_delivery,
             render_commit_message_prompt,
             render_delivery_outcome,
@@ -1537,8 +1538,10 @@ class _PipelineRun:
                     continue_session=False,
                 )
                 return parse_commit_message(raw).render()
-            except (CommitMessageParseError, CommitMessageSchemaError):
-                return None
+            except (CommitMessageParseError, CommitMessageSchemaError) as exc:
+                return CommitMessageGenerationFailure(
+                    f"{type(exc).__name__}: {exc}",
+                )
             except Exception as exc:
                 warn(f"commit message generation failed; using summary: {exc}")
                 return None

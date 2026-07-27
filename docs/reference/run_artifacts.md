@@ -642,7 +642,7 @@ Relevant decision facts are:
 | `published_commit_sha` | SHA of the commit on an isolated published delivery branch, when that plan was used. |
 | `delivery_branch` and `pr_intent` | The existing dedicated delivery branch and provider-neutral PR intent, when applicable. |
 | `pr_url` | A PR URL returned by the provider; its presence confirms a PR was opened. |
-| `delivery_warnings` and `delivery_notices` | Non-fatal publication diagnostics and truthful operator guidance, including a branch-ready fallback. |
+| `delivery_warnings` and `delivery_notices` | General non-fatal delivery diagnostics and truthful operator guidance, including commit-message generation fallback, branch/provider publication warnings, and a branch-ready fallback. |
 
 With `commit.publish="always"`, a successful `commit_on_branch` delivery can
 ask the existing provider seam to publish that branch after the checkout commit

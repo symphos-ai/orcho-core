@@ -70,7 +70,16 @@ CommitDeliveryStatus = Literal[
     # artifact.
     "verification_blocked",
 ]
-CommitMessageGenerator = Callable[["CommitDeliveryDecision"], str | None]
+@dataclass(frozen=True, slots=True)
+class CommitMessageGenerationFailure:
+    """A non-retryable rejection from the commit-message generation boundary."""
+
+    reason: str
+
+
+CommitMessageGenerator = Callable[
+    ["CommitDeliveryDecision"], str | CommitMessageGenerationFailure | None,
+]
 
 # Single source of truth mapping a halted commit-delivery ``status`` to its
 # recoverable ``halt_reason``. Both the live engine path
@@ -649,7 +658,7 @@ def resolve_commit_delivery(
         # must never leak into a public commit / PR (ADR 0121). The bypass /
         # publish-off local-commit path keeps its configured strategy verbatim.
         force_llm = _will_open_pr(cfg) and commit_message_generator is not None
-        final_message, actual_strategy = _resolve_final_commit_message(
+        final_message, actual_strategy, generation_warnings = _resolve_final_commit_message(
             decision,
             configured_strategy=commit_message_strategy,
             generator=commit_message_generator,
@@ -659,6 +668,7 @@ def resolve_commit_delivery(
             decision,
             final_message=final_message,
             commit_message_strategy=actual_strategy,
+            delivery_warnings=generation_warnings,
         )
     return decision
 
@@ -1301,8 +1311,12 @@ def _persist(
         pr_intent=pr_intent,
         # ADR 0121 — typed twin of the 'PR opened' notice, from PublishResult.
         pr_url=pr_url,
-        delivery_warnings=delivery_warnings,
-        delivery_notices=delivery_notices,
+        delivery_warnings=_merge_delivery_diagnostics(
+            decision.delivery_warnings, delivery_warnings,
+        ),
+        delivery_notices=_merge_delivery_diagnostics(
+            decision.delivery_notices, delivery_notices,
+        ),
     )
 
 
@@ -1726,15 +1740,35 @@ def _resolve_final_commit_message(
     configured_strategy: str,
     generator: CommitMessageGenerator | None,
     force_llm: bool = False,
-) -> tuple[str, str]:
+) -> tuple[str, str, tuple[str, ...]]:
     fallback = _message_from_release_summary(
         decision.release_summary, decision.run_id,
     )
     if (configured_strategy == "llm_generate" or force_llm) and generator is not None:
         generated = generator(decision)
         if isinstance(generated, str) and generated.strip():
-            return generated.strip(), "llm_generate"
-    return fallback, "release_summary"
+            return generated.strip(), "llm_generate", ()
+        if isinstance(generated, CommitMessageGenerationFailure):
+            return fallback, "release_summary", (
+                _commit_message_fallback_warning(generated.reason),
+            )
+    return fallback, "release_summary", ()
+
+
+def _commit_message_fallback_warning(reason: str) -> str:
+    """Render one bounded, durable diagnostic for an invalid agent payload."""
+    compact_reason = " ".join(reason.split())
+    if len(compact_reason) > 320:
+        compact_reason = compact_reason[:319].rstrip() + "…"
+    return (
+        "commit message generation rejected "
+        f"({compact_reason}); used release_summary fallback"
+    )
+
+
+def _merge_delivery_diagnostics(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    """Preserve diagnostic order while removing duplicates across delivery steps."""
+    return tuple(dict.fromkeys(item for group in groups for item in group))
 
 
 def render_commit_message_prompt(

@@ -293,7 +293,7 @@ def test_mock_publish_outward_authors_english_commit_title_and_body(
             def invoke(self, prompt: str, cwd: str, **_: object) -> str:
                 prompts_seen.append(prompt)
                 return (
-                    '{"subject": "fix(delivery): english outward message", '
+                    '{"subject": "english outward message", '
                     '"body": "Detailed English body.", "type": "fix", '
                     '"scope": "delivery", "breaking": false}'
                 )
