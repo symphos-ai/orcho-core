@@ -14,6 +14,7 @@ from pipeline.project.verification_ledger_runtime import (
     ResumeVerificationLedgerError,
     finalize,
     initialize,
+    initialize_contract,
     record_execution,
     select_epoch,
 )
@@ -87,6 +88,29 @@ def test_fresh_snapshot_precedes_first_selection(tmp_path: Path) -> None:
     assert load_ledger(tmp_path).trail == ()
     select_epoch(run, run.state.extras["verification_contract"], epoch="after_phase:implement", context=SelectionContext())
     assert any(event.kind == "selection" for event in load_ledger(tmp_path).trail)
+
+
+def test_contract_snapshot_can_precede_pipeline_state(tmp_path: Path) -> None:
+    contract = _contract()
+
+    initialize_contract(tmp_path, contract)
+
+    assert load_ledger(tmp_path).trail == ()
+    state = SimpleNamespace(
+        output_dir=tmp_path,
+        extras={"verification_contract": contract},
+    )
+    assert initialize(state) == load_ledger(tmp_path)
+
+
+def test_contract_snapshot_resume_remains_fail_closed_when_missing(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        ResumeVerificationLedgerError,
+        match="no scheduled-gate ledger",
+    ):
+        initialize_contract(tmp_path, _contract(), resume=True)
 
 
 def test_hook_selection_and_execution_are_full_identity_events(tmp_path: Path) -> None:

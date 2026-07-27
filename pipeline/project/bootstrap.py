@@ -301,9 +301,7 @@ def resolve_run_id_and_setup_logging(
     presentation: PresentationPolicy = PresentationPolicy.TERMINAL,
     preallocated_output_dir: bool = False,
 ) -> str:
-    """Resolve the run_id (resume > $ORCHO_RUN_ID > direct caller output
-    dir > minted timestamp), set up file-based run logging, and emit
-    ``run.start`` to the event-store.
+    """Resolve the run_id and set up file-based run logging.
 
     Returns the resolved ``session_ts`` used as checkpoint key, meta.json
     folder name, and event_store run_dir tag. See P2.5 contract for the
@@ -311,8 +309,8 @@ def resolve_run_id_and_setup_logging(
     pre-create the run folder and have the spawned process keep the same
     identifier.
 
-    ``profile_name`` (str) is recorded directly on the ``run.start``
-    event's ``profile`` field.
+    The caller publishes ``run.start`` only after mandatory declaration
+    artifacts are durable.
     """
     _env_run_id = os.environ.get("ORCHO_RUN_ID", "").strip() or None
     _direct_run_id = output_dir.name if output_dir is not None else None
@@ -355,6 +353,20 @@ def resolve_run_id_and_setup_logging(
         # event sinks are never gated by presentation).
         terminal=presentation is PresentationPolicy.TERMINAL,
     )
+    return session_ts
+
+
+def emit_run_start(
+    *,
+    task: str,
+    project_dir: str,
+    profile_name: str,
+    parent_run_id: str | None = None,
+    project_alias: str | None = None,
+    plan_source: str = "local",
+    projected_profile: str | None = None,
+) -> None:
+    """Publish the public running boundary after durable setup is ready."""
     # REA-3.6: child runs spawned by the cross orchestrator carry
     # ``parent_run_id`` + ``project_alias`` so MCP / evidence consumers can
     # reconstruct the parent → children timeline from events alone.
@@ -378,7 +390,6 @@ def resolve_run_id_and_setup_logging(
     if projected_profile:
         payload["projected_profile"] = projected_profile
     _events.emit("run.start", **payload)
-    return session_ts
 
 
 # ── session init + atexit guard + halted-resume refusal ───────────────────

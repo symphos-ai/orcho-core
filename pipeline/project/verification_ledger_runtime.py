@@ -34,10 +34,13 @@ class ResumeVerificationLedgerError(ResumeControlError):
     """A current plugin cannot execute the durable historical identity safely."""
 
 
-def initialize(state: Any, *, resume: bool = False) -> ScheduledGateLedger | None:
-    """Create the declaration snapshot before any scheduled decision, or load it."""
-    contract = getattr(state, "extras", {}).get("verification_contract")
-    output_dir = getattr(state, "output_dir", None)
+def initialize_contract(
+    output_dir: Path | None,
+    contract: Any,
+    *,
+    resume: bool = False,
+) -> ScheduledGateLedger | None:
+    """Persist or validate declarations before the run becomes observable."""
     if contract is None or output_dir is None:
         return None
     run_dir = Path(output_dir)
@@ -57,6 +60,13 @@ def initialize(state: Any, *, resume: bool = False) -> ScheduledGateLedger | Non
     ))
     write_ledger(run_dir, ledger)
     return ledger
+
+
+def initialize(state: Any, *, resume: bool = False) -> ScheduledGateLedger | None:
+    """Create the declaration snapshot before any scheduled decision, or load it."""
+    contract = getattr(state, "extras", {}).get("verification_contract")
+    output_dir = getattr(state, "output_dir", None)
+    return initialize_contract(output_dir, contract, resume=resume)
 
 
 def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> ScheduledGatePlan:
