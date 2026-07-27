@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.observability.events import append_event
 from pipeline.cross_project import project_dispatch
 from pipeline.cross_project.execution_graph import (
     CrossExecutionGraph,
@@ -156,13 +155,6 @@ def test_interrupted_child_resume_reaches_gates_after_both_children_done(
     for alias, child in (("alpha", alpha), ("beta", beta)):
         (run_dir / alias).mkdir()
         (run_dir / alias / "meta.json").write_text(json.dumps(child), encoding="utf-8")
-    (run_dir / "events.jsonl").write_text(
-        json.dumps({
-            "seq": 1, "ts": "2026-01-01T00:00:00+00:00", "kind": "phase.start",
-            "phase": None, "payload": {"phase_key": "implement", "project_alias": "beta"},
-        }) + "\n",
-        encoding="utf-8",
-    )
     alpha_meta_before = (run_dir / "alpha" / "meta.json").read_bytes()
     session = {
         "projects": {alias: str(path) for alias, path in projects.items()},
@@ -175,11 +167,6 @@ def test_interrupted_child_resume_reaches_gates_after_both_children_done(
         calls.append((request.project_alias, request.resume_from))
         result = {"status": "done", "phases": {}}
         (run_dir / "beta" / "meta.json").write_text(json.dumps(result), encoding="utf-8")
-        append_event(
-            run_dir,
-            "phase.end",
-            {"phase_key": "implement", "project_alias": "beta"},
-        )
         return SimpleNamespace(session=result)
 
     monkeypatch.setattr(project_dispatch, "run_project_pipeline", child)

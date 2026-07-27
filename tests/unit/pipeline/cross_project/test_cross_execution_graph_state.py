@@ -53,12 +53,7 @@ def _parent(*children: ChildFacts):
 
 
 def _running(alias: str) -> ChildFacts:
-    return ChildFacts(
-        alias,
-        Observation.PRESENT,
-        "running",
-        active_operations=(ActiveOperation(phase=PhaseIdentity("implement", alias)),),
-    )
+    return ChildFacts(alias, Observation.PRESENT, "running")
 
 
 def test_failed_producer_blocks_direct_and_transitive_consumers_but_not_independent() -> None:
@@ -107,7 +102,7 @@ def test_resume_rearms_interrupted_running_child_once() -> None:
     assert next(node for node in state.nodes if node.identity == "cfa").status is CrossExecutionGraphStatus.PENDING
 
 
-def test_fresh_running_child_remains_running() -> None:
+def test_fresh_running_child_without_active_operation_fails_closed() -> None:
     state = reduce_cross_execution_graph_state(
         _graph(),
         _parent(
@@ -118,8 +113,8 @@ def test_fresh_running_child_remains_running() -> None:
     )
     consumer = next(node for node in state.nodes if node.alias == "consumer")
 
-    assert consumer.status is CrossExecutionGraphStatus.RUNNING
-    assert consumer.reason is CrossExecutionGraphReason.CHILD_RUNNING
+    assert consumer.status is CrossExecutionGraphStatus.BLOCKED
+    assert consumer.reason is CrossExecutionGraphReason.CHILD_FAILED
     assert select_first_ready_node(state) is None
 
 
@@ -127,7 +122,12 @@ def test_resume_rearm_still_obeys_project_dependencies() -> None:
     state = reduce_cross_execution_graph_state(
         _graph(),
         _parent(
-            _running("producer"),
+            ChildFacts(
+                "producer",
+                Observation.PRESENT,
+                "running",
+                active_operations=(ActiveOperation(phase=PhaseIdentity("implement", "producer")),),
+            ),
             _running("consumer"),
             ChildFacts("independent", Observation.PRESENT, "done"),
         ),
