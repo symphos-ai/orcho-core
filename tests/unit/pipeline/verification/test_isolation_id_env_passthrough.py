@@ -55,6 +55,7 @@ def test_isolation_id_reaches_bootstrap_and_before_delivery_executor(
     observed: dict[str, object] = {}
     contract = _contract()
 
+    monkeypatch.setenv("ORCHO_RUN_ID", "parent-run-id")
     monkeypatch.setenv("ORCHO_ISOLATION_ID", "ambient-id")
     monkeypatch.setattr(
         session_run,
@@ -95,6 +96,7 @@ def test_isolation_id_reaches_bootstrap_and_before_delivery_executor(
     session_run.run_project_pipeline_session(request)
 
     assert observed["bootstrap"] == session_ts
+    assert "ORCHO_RUN_ID" not in captured_envs[0]
     assert captured_envs[0]["ORCHO_ISOLATION_ID"] == session_ts
     assert observed["receipt"]["env_overrides"] == {}
     assert os.environ["ORCHO_ISOLATION_ID"] == "ambient-id"
@@ -129,3 +131,7 @@ def test_isolation_id_is_removed_after_early_halt(monkeypatch, tmp_path: Path) -
 
 def test_isolation_id_is_not_stripped_from_gate_env() -> None:
     assert "ORCHO_ISOLATION_ID" not in RUN_SCOPED_ENV_CHANNELS
+
+
+def test_run_id_is_stripped_from_gate_env() -> None:
+    assert "ORCHO_RUN_ID" in RUN_SCOPED_ENV_CHANNELS
