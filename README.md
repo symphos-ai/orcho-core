@@ -350,7 +350,9 @@ Cost is evidence metadata: `fast` is bounded deterministic local feedback,
 `moderate` needs more setup or time, `slow` is broad or expensive, and
 `unknown` has no reliable predictable cost evidence. It never shortcuts
 selection, execution, policy, or action. See the practical [scheduled
-verification guide](docs/guides/scheduled_verification.md).
+verification guide](docs/guides/scheduled_verification.md). For worked
+Python, PHP/Docker, and TypeScript/browser portfolios, see the public
+[quality gate strategy](https://docs.orcho.dev/extend/quality-gate-strategy/).
 Without a configured project plugin, Orcho still runs, but it falls back to
 generic context and has no project-owned scheduled verification contract.
 For the full workflow—including read-only fine-tune suggestions,

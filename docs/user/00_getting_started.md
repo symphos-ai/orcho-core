@@ -169,7 +169,10 @@ an engineer reviews the resulting plugin and makes the final decision on
 commands, environments, selection, schedule, policy, and failure consequences.
 Use the [scheduled verification guide](../guides/scheduled_verification.md) for
 the authoring workflow and the [plugin reference](../expert/01_plugin.md) for
-every field.
+every field. The public
+[quality gate strategy](https://docs.orcho.dev/extend/quality-gate-strategy/)
+compares worked portfolios across Python, PHP/Docker, and
+TypeScript/browser projects.
 
 ## 4. Pick a control surface
 
