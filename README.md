@@ -48,6 +48,34 @@ architecture, file hints, prompts, or verification policy.
 
 ---
 
+## Quick start — your existing repository
+
+With Python 3.12+, `pipx`, and one supported coding-agent CLI on `PATH`,
+install Orcho once and initialise it from inside the repository you already
+have:
+
+```bash
+pipx install orcho
+
+cd ~/www/my-project
+orcho workspace init
+orcho run --project . --mock --task "Describe and implement one small change"
+orcho status
+```
+
+`workspace init` does not move, copy, or modify the repository layout. It
+registers the canonical project path and stores Orcho's control state in an
+external managed workspace. Later CLI commands resolve that workspace from
+`--project .`; no environment script or dedicated parent folder is required.
+
+The mock run exercises the delivery pipeline without calling a model. For a
+real run, remove `--mock` and make sure at least one supported coding-agent CLI
+is available on `PATH`.
+
+**Detailed walkthrough:** [Getting started](docs/user/00_getting_started.md)
+
+---
+
 ## Install
 
 `orcho` is the native CLI distribution — it installs the core CLI **and** the
@@ -179,24 +207,11 @@ For QA, release smokes, SDK checks, and repeatable recordings, see the
 
 ---
 
-## First time? Start here
+## Go deeper
 
-**→ [docs/user/00_getting_started.md](docs/user/00_getting_started.md)**
-
-The full path from zero to the first result: prerequisites → install →
-connect your project → first run.
-
-The primary journey starts inside the repository you already have:
-
-```bash
-cd ~/www/my-existing-project
-orcho workspace init
-orcho run --project . --mock --task "Describe one small change"
-```
-
-Orcho leaves the repository in place and stores its control workspace outside
-the checkout. A shared root is optional and is introduced later as a best
-practice for intentional cross-project work.
+The [getting-started guide](docs/user/00_getting_started.md) covers platform
+prerequisites, MCP client setup, real provider runs, evidence inspection, and
+the optional shared-root layout for intentional cross-project work.
 
 ---
 
@@ -218,7 +233,8 @@ Task
 
 ```bash
 # One project
-orcho run --task "Add input validation to /api/login" --project ~/my-project
+cd ~/my-project
+orcho run --task "Add input validation to /api/login" --project .
 
 # Several projects at once
 orcho cross --task "Add rate limiting: API + client" \
@@ -239,9 +255,11 @@ orcho status | orcho history | orcho metrics
 
 ---
 
-## Connecting a project
+## Optional project policy and verification
 
-Create `your-project/.orcho/multiagent/plugin.py`:
+Orcho runs in generic mode without project configuration. Add
+`your-project/.orcho/multiagent/plugin.py` only when you want to declare
+architecture context or authoritative verification:
 
 ```python
 PLUGIN = {
