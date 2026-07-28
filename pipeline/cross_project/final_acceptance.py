@@ -508,7 +508,8 @@ def _blocker_missing_child(
             required_fix=(
                 f"Разобрать, почему sub-pipeline [{alias}] не завершился "
                 "(crash, неверная конфигурация или отсутствующий project), "
-                "исправить причину и перезапустить cross pipeline."
+                "исправить причину, принять handoff decision и возобновить "
+                "этот же cross run."
             ),
             why=(
                 "Согласованное изменение нельзя выпускать без успешного "
@@ -525,7 +526,7 @@ def _blocker_missing_child(
         required_fix=(
             f"Investigate why the [{alias}] sub-pipeline did not "
             f"complete (crash, mis-config, or missing project), fix "
-            f"the cause, and re-run the cross pipeline."
+            f"the cause, decide its handoff, and resume this same cross run."
         ),
         why=(
             "The coordinated change cannot ship without a successful "

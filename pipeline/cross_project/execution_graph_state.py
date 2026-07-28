@@ -149,8 +149,16 @@ def reduce_cross_execution_graph_state(
     graph: CrossExecutionGraph,
     parent: CrossParentState,
     gate_facts: RunnerGateFacts | None = None,
+    resume_rearm_aliases: frozenset[str] = frozenset(),
 ) -> CrossExecutionGraphState:
-    """Project graph status solely from immutable graph and canonical facts."""
+    """Project graph state from canonical facts and transient resume eligibility.
+
+    ``resume_rearm_aliases`` is deliberately caller-owned and non-durable.  A
+    listed alias remains eligible only when its exact physical child status is
+    ``"running"``; it then re-enters the ordinary dependency reduction as
+    pending rather than being inferred terminal from a checkpoint cursor or
+    from the absence of an active operation.
+    """
     gate_facts = gate_facts or RunnerGateFacts()
     invalid = _invalid(graph, parent, gate_facts)
     children = {child.alias: child for child in parent.children}
@@ -170,6 +178,14 @@ def reduce_cross_execution_graph_state(
             # completion fact; required missing children remain pending.
             if not node.required and child.execution is ChildExecution.PENDING:
                 state = CrossExecutionGraphNodeState(node.identity, node.kind, CrossExecutionGraphStatus.SKIPPED, CrossExecutionGraphReason.OPTIONAL_PROJECT_NOT_RUN, alias)
+            elif child.status == "running" and alias in resume_rearm_aliases:
+                state = CrossExecutionGraphNodeState(
+                    node.identity,
+                    node.kind,
+                    CrossExecutionGraphStatus.PENDING,
+                    CrossExecutionGraphReason.DEPENDENCY_PENDING,
+                    alias,
+                )
             elif child.execution is ChildExecution.RUNNING:
                 state = CrossExecutionGraphNodeState(node.identity, node.kind, CrossExecutionGraphStatus.RUNNING, CrossExecutionGraphReason.CHILD_RUNNING, alias, _operations(alias, child.active_operations))
             elif child.execution is ChildExecution.PAUSED:

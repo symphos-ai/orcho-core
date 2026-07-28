@@ -228,18 +228,29 @@ orcho status | orcho history | orcho metrics
 Create `your-project/.orcho/multiagent/plugin.py`:
 
 ```python
-from pipeline.plugins import PluginConfig
-
-plugin = PluginConfig(
-    name="My Project",
-    tech_stack="FastAPI + PostgreSQL",
-    architecture="REST API. Routes: app/routes/, Services: app/services/",
-    file_hints=["app/routes/", "app/services/", "tests/"],
-    build_prompt_extra="Run: pytest -x after changes.",
-    review_focus_extra="Check N+1 queries, missing validations.",
-)
+PLUGIN = {
+    "name": "My Project",
+    "language": "Python 3.12",
+    "architecture": "REST API. Routes: app/routes/, services: app/services/.",
+    "file_hints": ["app/routes/", "app/services/", "tests/"],
+    "verification_envs": {"project": {"python": "python"}},
+    "verification": {
+        "default_env": "project",
+        "commands": {"lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"}},
+        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "require"}},
+        "selection": [{"always": ["hygiene"]}],
+        "schedule": [{"after_phase": "implement", "gate_sets": ["hygiene"], "action": "repair_loop"}],
+    },
+}
 ```
 
+This declares a command, selects it, gives it a scheduled identity, lets Orcho
+execute it, records an immutable receipt, and uses that receipt for readiness.
+Cost is evidence metadata: `fast` is bounded deterministic local feedback,
+`moderate` needs more setup or time, `slow` is broad or expensive, and
+`unknown` has no reliable predictable cost evidence. It never shortcuts
+selection, execution, policy, or action. See the practical [scheduled
+verification guide](docs/guides/scheduled_verification.md).
 Without `plugin.py`, orcho runs in generic mode.
 
 ---

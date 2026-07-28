@@ -18,6 +18,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pipeline.verification_cost import (
+    VERIFICATION_COSTS,
+    VerificationCost,
+    resolve_verification_cost,
+)
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -109,7 +114,7 @@ class ScheduleEntry:
 class GateSet:
     """A declared named set of commands plus optional gate-policy defaults.
 
-    ``default_policy`` / ``default_action`` / ``default_cheap`` are ``None`` when
+    ``default_policy`` / ``default_action`` / ``default_cost`` are ``None`` when
     omitted — absence is the input for the later work_mode transform, not a
     silent default. ``commands`` is required and validated against the declared
     command table.
@@ -119,7 +124,7 @@ class GateSet:
     commands: tuple[str, ...]
     default_policy: str | None = None
     default_action: str | None = None
-    default_cheap: bool | None = None
+    default_cost: VerificationCost | None = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +158,7 @@ class VerificationContract:
     required: tuple[str, ...]
     work_mode: str
     # Declared named gate sets, keyed by name. Each carries its command list and
-    # optional policy/action/cheap defaults. Empty when none are declared.
+    # optional policy/action/cost defaults. Empty when none are declared.
     gate_sets: dict[str, GateSet] = field(default_factory=dict)
     # Ordered gate-set selection rules. Empty when none are declared.
     selection: tuple[SelectionRule, ...] = ()
@@ -285,6 +290,7 @@ def _normalize_commands(
             f"verification.commands must be a dict, got {type(value).__name__}",
         )
     out: dict[str, dict[str, Any]] = {}
+    allowed_keys = {"run", "env", "parity", "cost"}
     for name, spec in value.items():
         if isinstance(spec, str):
             cmd = {"run": spec}
@@ -294,6 +300,12 @@ def _normalize_commands(
             raise VerificationContractError(
                 f"verification.commands[{name!r}] must be a str or dict, got "
                 f"{type(spec).__name__}",
+            )
+        unknown = set(cmd) - allowed_keys
+        if unknown:
+            raise VerificationContractError(
+                f"verification.commands[{name!r}] has unknown field "
+                f"{sorted(unknown)[0]!r}",
             )
         env_ref = cmd.get("env")
         if env_ref is not None and env_ref not in envs:
@@ -308,10 +320,12 @@ def _normalize_commands(
                     f"verification.commands[{name!r}].parity must be "
                     f"absolute|differential, got {parity!r}",
                 )
-        if "cheap" in cmd and not isinstance(cmd["cheap"], bool):
+        if "cost" in cmd and (
+            not isinstance(cmd["cost"], str) or cmd["cost"] not in VERIFICATION_COSTS
+        ):
             raise VerificationContractError(
-                f"verification.commands[{name!r}].cheap must be a bool, got "
-                f"{type(cmd['cheap']).__name__}",
+                f"verification.commands[{name!r}].cost must be one of "
+                f"{VERIFICATION_COSTS!r}, got {cmd['cost']!r}",
             )
         out[str(name)] = cmd
     return out
@@ -353,7 +367,7 @@ def _normalize_gate_sets(
     """Normalise ``verification.gate_sets`` to a name->:class:`GateSet` mapping.
 
     Each gate set must declare a ``commands`` list of declared command names.
-    ``default_policy`` / ``default_action`` / ``default_cheap`` are optional;
+    ``default_policy`` / ``default_action`` / ``default_cost`` are optional;
     absence stays ``None`` (the input for the later work_mode transform), and an
     explicitly-present-but-invalid value raises. Absence of the whole mapping is
     an empty dict.
@@ -363,11 +377,18 @@ def _normalize_gate_sets(
             f"verification.gate_sets must be a dict, got {type(value).__name__}",
         )
     out: dict[str, GateSet] = {}
+    allowed_keys = {"commands", "default_policy", "default_action", "default_cost"}
     for name, spec in value.items():
         if not isinstance(spec, dict):
             raise VerificationContractError(
                 f"verification.gate_sets[{name!r}] must be a dict, got "
                 f"{type(spec).__name__}",
+            )
+        unknown = set(spec) - allowed_keys
+        if unknown:
+            raise VerificationContractError(
+                f"verification.gate_sets[{name!r}] has unknown field "
+                f"{sorted(unknown)[0]!r}",
             )
         cmd_refs = spec.get("commands")
         if not isinstance(cmd_refs, (list, tuple)):
@@ -393,18 +414,20 @@ def _normalize_gate_sets(
                 f"verification.gate_sets[{name!r}].default_action {default_action!r} "
                 f"is not one of {GATE_ACTIONS!r}",
             )
-        default_cheap = spec.get("default_cheap")
-        if default_cheap is not None and not isinstance(default_cheap, bool):
+        default_cost = spec.get("default_cost")
+        if "default_cost" in spec and (
+            not isinstance(default_cost, str) or default_cost not in VERIFICATION_COSTS
+        ):
             raise VerificationContractError(
-                f"verification.gate_sets[{name!r}].default_cheap must be a bool, "
-                f"got {type(default_cheap).__name__}",
+                f"verification.gate_sets[{name!r}].default_cost must be one of "
+                f"{VERIFICATION_COSTS!r}, got {default_cost!r}",
             )
         out[str(name)] = GateSet(
             name=str(name),
             commands=tuple(str(r) for r in cmd_refs),
             default_policy=default_policy,
             default_action=default_action,
-            default_cheap=default_cheap,
+            default_cost=default_cost,
         )
     return out
 
@@ -955,7 +978,15 @@ def render_phase_block(
             if not cmd:
                 continue
             run = resolve_placeholders(str(cmd.get("run", "")), ctx)
-            lines.append(f"  [{entry.hook}/{policy_label}] {name}: {run}")
+            default_costs = (
+                contract.gate_sets[gate_set].default_cost
+                for gate_set in entry.gate_sets
+                if gate_set in contract.gate_sets
+            )
+            cost = resolve_verification_cost(cmd.get("cost"), default_costs)
+            lines.append(
+                f"  [{entry.hook}/{policy_label} cost={cost}] {name}: {run}",
+            )
 
     if len(lines) == 1:
         return None
@@ -991,12 +1022,22 @@ def _gate_line(
         policy=entry.policy,
     ))
     if resolved.consequence == "required_action":
-        posture = f"require; action={entry.action}"
+        posture = f"engine-owned; require; action={entry.action}"
     elif resolved.executor == "operator":
-        posture = "operator available" if entry.policy == "manual" else "operator recommendation"
+        posture = (
+            "operator-owned; available"
+            if entry.policy == "manual"
+            else "operator-owned; recommendation"
+        )
     else:
-        posture = "engine warning; shipping allowed"
-    return f"  [{hook_label} {posture}] {entry.command} <{entry.primary_gate_set}>: {run}"
+        posture = "engine-owned; warning; shipping allowed"
+    cost = getattr(entry, "cost", None)
+    if cost not in VERIFICATION_COSTS:
+        cost = resolve_verification_cost(cmd.get("cost"), ())
+    return (
+        f"  [{hook_label} {posture}; cost={cost}] {entry.command} "
+        f"<{entry.primary_gate_set}>: {run}"
+    )
 
 
 def render_phase_gate_block(
@@ -1033,7 +1074,8 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  The engine owns the selected scheduled gates below. Do not "
+            "  The engine owns engine-owned scheduled gates below; "
+            "manual/suggest entries remain operator-owned. Do not "
             "copy their commands, or broader repository-wide/full-suite "
             "wrappers, into implement commands, task specs, or done criteria. "
             "Implement may name targeted checks for the concrete change.",
@@ -1056,7 +1098,7 @@ def render_phase_gate_block(
             "broader repository-wide/full-suite wrapper, into an implement "
             "command, task spec, or done criterion. Targeted checks for the "
             "concrete change remain valid.",
-            "  Engine-owned scheduled gates:",
+            "  Scheduled gates (manual/suggest entries remain operator-owned):",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
@@ -1072,6 +1114,9 @@ def render_phase_gate_block(
         lines = [
             f"Verification contract — {phase}:",
             "  Debug freely; the gates below are what will be checked next.",
+            "  The engine executes engine-owned scheduled gates and writes "
+            "their authoritative receipts; manual/suggest entries remain "
+            "operator-owned.",
             "  Scheduled gates after implement:",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
@@ -1091,9 +1136,10 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Declared receipts are authoritative; ad-hoc commands are "
-            "exploratory and must not invalidate a declared receipt.",
-            "  Authoritative receipts:",
+            "  Engine-written receipts for engine-owned scheduled gates are "
+            "authoritative; ad-hoc commands are exploratory and must not "
+            "invalidate them. Manual/suggest entries remain operator-owned.",
+            "  Scheduled receipts:",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)
@@ -1104,8 +1150,9 @@ def render_phase_gate_block(
             return None
         lines = [
             f"Verification contract — {phase}:",
-            "  Require gates block on missing, failed, or stale receipts; "
-            "warnings are visible and shipping-allowed.",
+            "  Engine-owned require gates block on missing, failed, or stale "
+            "engine-written receipts; engine-owned warnings are visible and "
+            "shipping-allowed. Manual/suggest entries remain operator-owned.",
         ]
         lines.extend(_gate_line(contract, e, p, ctx) for e, p in relevant)
         return "\n".join(lines)

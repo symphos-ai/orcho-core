@@ -197,7 +197,7 @@ def test_finalized_ledger_blocks_resume_before_spawn(tmp_path: Path, monkeypatch
     (run / "meta.json").write_text(json.dumps({"task": "resume", "status": "failed"}))
     # A valid empty finalized ledger is enough: no subprocess can reopen it.
     (run / "scheduled_gate_ledger.json").write_text(json.dumps({
-        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+        "schema_version": "2", "finalized": True, "rows": [], "trail": [],
     }))
     monkeypatch.setattr(
         "sdk.run_control.launch._spawn_detached",

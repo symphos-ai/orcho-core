@@ -95,7 +95,7 @@ def _contract(
     work_mode: str = "governed",
     commands: dict | None = None,
 ) -> VerificationContract:
-    commands = commands or {"test": {"run": "pytest", "cheap": True}}
+    commands = commands or {"test": {"run": "pytest", "cost": "fast"}}
     schedule = [
         {
             **entry,

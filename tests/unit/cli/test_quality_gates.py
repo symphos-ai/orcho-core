@@ -26,16 +26,16 @@ from pipeline.runtime import PhaseStep, Profile
 def _reference_plugin() -> PluginConfig:
     """A plugin whose declared contract mirrors the repo's own multiagent shape.
 
-    baseline (warn/cheap) is always; run-state/verification/cli-sdk (require) are
+    baseline (warn/fast) is always; run-state/verification/cli-sdk (require) are
     path-gated; broad (require) is always; e2e (suggest) is operator/manual — the
     mix that exercises when / policy / activation together.
     """
     verification = {
         "default_env": "ci",
         "commands": {
-            "env-provenance": {"env": "ci", "cheap": True, "run": "prov"},
-            "lint": {"env": "ci", "cheap": True, "run": "ruff check ."},
-            "run-state-unit": {"env": "ci", "run": "pytest run_state"},
+            "env-provenance": {"env": "ci", "cost": "fast", "run": "prov"},
+            "lint": {"env": "ci", "cost": "fast", "run": "ruff check ."},
+            "run-state-unit": {"env": "ci", "run": "pytest run_state", "cost": "slow"},
             "verification-unit": {"env": "ci", "run": "pytest verification"},
             "cli-sdk-unit": {"env": "ci", "run": "pytest cli sdk"},
             "broad-non-e2e": {"env": "ci", "run": "pytest -m 'not e2e'"},
@@ -45,7 +45,7 @@ def _reference_plugin() -> PluginConfig:
             "baseline": {
                 "commands": ["env-provenance", "lint"],
                 "default_policy": "warn",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
             "run-state": {"commands": ["run-state-unit"], "default_policy": "require"},
             "verification": {
@@ -133,7 +133,7 @@ def test_profile_prints_three_axis_matrix(monkeypatch) -> None:
     rc, out, err = _run(monkeypatch, ["quality-gates", "--profile", "withfinal"])
     assert rc == 0, err
     header = next(ln for ln in out.splitlines() if "selection" in ln)
-    assert header.split() == ["gate", "trigger", "executor", "policy", "consequence", "selection"]
+    assert header.split() == ["gate", "trigger", "executor", "policy", "cost", "consequence", "selection"]
     ver_line = next(ln for ln in out.splitlines() if "verification-unit" in ln)
     assert "after_phase" in ver_line
     assert "require" in ver_line
@@ -142,6 +142,8 @@ def test_profile_prints_three_axis_matrix(monkeypatch) -> None:
     assert "warn" in lint_line
     e2e_line = next(ln for ln in out.splitlines() if ln.strip().startswith("e2e"))
     assert "operator" in e2e_line
+    assert "fast" in out
+    assert "slow" in out
 
 
 def test_profile_without_final_phase_marks_warn_not_auto_run(monkeypatch) -> None:

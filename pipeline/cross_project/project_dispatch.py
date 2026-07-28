@@ -293,6 +293,16 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
             state_session, ctx.cross_ckpt, ctx.run_dir
         ).children
     }
+    # A physical running child is ordinarily live work and must remain out of
+    # selection.  An explicit same-run resume is the sole exception: it
+    # re-arms the existing child once, through the ordinary graph reducer.
+    # This set is invocation-scoped (not checkpoint/session state) and is
+    # consumed before dispatch, so a nonterminal return cannot loop.
+    resume_rearm_aliases = frozenset(
+        alias
+        for alias, child in canonical_children.items()
+        if ctx.resume_from and child.status == "running"
+    )
     if isinstance(existing_children, dict):
         preserved = {
             alias: child_entry
@@ -354,7 +364,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
 
     blocking_aliases: list[str] = []
 
-    def dispatch(alias: str) -> object:
+    def dispatch(alias: str, *, resume_rearm: bool = False) -> object:
         project_path = ctx.projects[alias]
         return _dispatch_one_alias(
             ctx,
@@ -366,6 +376,7 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
             implementation_order=implementation_order,
             full_plan_markdown=full_plan_markdown,
             units_by_alias=units_by_alias,
+            resume_rearm=resume_rearm,
         )
 
     if ctx.execution_graph is not None:
@@ -381,14 +392,20 @@ def run_project_dispatch(ctx: ProjectDispatchContext) -> ProjectDispatchResult:
                 blocking_aliases.append(alias)
         while True:
             state = reduce_runtime_cross_execution_graph_state(
-                ctx.execution_graph, state_session, ctx.cross_ckpt, str(ctx.run_dir)
+                ctx.execution_graph,
+                state_session,
+                ctx.cross_ckpt,
+                str(ctx.run_dir),
+                resume_rearm_aliases,
             )
             selected = select_first_ready_project(state)
             if selected is None:
                 blocking_aliases.extend(selected_blocking_aliases(state))
                 break
             # Project aliases are structurally resolved by the graph reducer.
-            outcome = dispatch(selected.alias)
+            resume_rearm = selected.alias in resume_rearm_aliases
+            resume_rearm_aliases = resume_rearm_aliases - {selected.alias}
+            outcome = dispatch(selected.alias, resume_rearm=resume_rearm)
             if outcome is _DISPATCH_PAUSED:
                 return ProjectDispatchResult(paused=True, blocking_aliases=tuple(blocking_aliases))
             if outcome is _DISPATCH_FAILURE:
@@ -431,6 +448,7 @@ def _dispatch_one_alias(
     implementation_order: str = "",
     full_plan_markdown: str = "",
     units_by_alias: dict[str, Any] | None = None,
+    resume_rearm: bool = False,
 ) -> object:
     """Single per-alias iteration. Returns one of the two module sentinels."""
     unit = (units_by_alias or {}).get(alias)
@@ -452,9 +470,10 @@ def _dispatch_one_alias(
     ):
         ctx.ports.success(f"[{alias}] already done in previous run — skipping")
         return _DISPATCH_CONTINUE
-    sub_resume = (
-        alias if (sub_status in {"failed", "awaiting_phase_handoff"} and ctx.resume_from) else None
-    )
+    sub_resume = alias if (
+        ctx.resume_from
+        and (resume_rearm or sub_status in {"failed", "awaiting_phase_handoff"})
+    ) else None
 
     # ``▶`` arrow distinguishes the per-project sub-run header from
     # the cross-orchestrator's own ``═══`` banners. ``plan=`` wording

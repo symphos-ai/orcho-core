@@ -11,7 +11,9 @@ from core.io.git_helpers import create_worktree
 from pipeline.engine import commit_delivery
 from pipeline.engine.commit_delivery import (
     CommitDeliveryDecision,
+    CommitMessageGenerationFailure,
     apply_commit_delivery,
+    render_delivery_outcome,
     resolve_commit_delivery,
 )
 from pipeline.engine.pre_run_dirty import (
@@ -747,7 +749,7 @@ def test_llm_generate_strategy_uses_generated_commit_message(
     assert artifact["final_message"] == "fix(delivery): use agent commit message"
 
 
-def test_llm_generate_strategy_falls_back_to_release_summary(
+def test_llm_generate_rejection_falls_back_once_with_durable_diagnostic(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -755,6 +757,17 @@ def test_llm_generate_strategy_falls_back_to_release_summary(
     run_dir = tmp_path / "run"
     worktree = _new_worktree(repo, run_dir)
     (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+
+    calls: list[CommitDeliveryDecision] = []
+
+    def rejected_generator(
+        decision: CommitDeliveryDecision,
+    ) -> CommitMessageGenerationFailure:
+        calls.append(decision)
+        return CommitMessageGenerationFailure(
+            "CommitMessageSchemaError: commit_message.subject must be an "
+            "unprefixed imperative summary",
+        )
 
     decision = resolve_commit_delivery(
         project_dir=repo,
@@ -769,11 +782,53 @@ def test_llm_generate_strategy_falls_back_to_release_summary(
             "default_strategy": "llm_generate",
         },
         no_interactive=True,
-        commit_message_generator=lambda _decision: " \n",
+        commit_message_generator=rejected_generator,
     )
 
+    assert len(calls) == 1
     assert decision.final_message == "docs: keep summary default"
     assert decision.commit_message_strategy == "release_summary"
+    assert decision.delivery_warnings == (
+        "commit message generation rejected (CommitMessageSchemaError: "
+        "commit_message.subject must be an unprefixed imperative summary); "
+        "used release_summary fallback",
+    )
+
+    delivered = apply_commit_delivery(
+        decision,
+        run_dir=run_dir,
+        commit_config={"add_untracked": True, "branch_policy": "bypass"},
+    )
+    assert delivered.delivery_warnings == decision.delivery_warnings
+    output: list[str] = []
+    render_delivery_outcome(delivered, output_fn=output.append)
+    assert "CommitMessageSchemaError" in "\n".join(output)
+    assert "used release_summary fallback" in "\n".join(output)
+
+
+def test_persist_merges_generation_and_publication_warnings(
+    tmp_path: Path,
+) -> None:
+    decision = CommitDeliveryDecision(
+        action="skip",
+        status="pending",
+        run_id="r1",
+        decision_id="r1",
+        project_path=tmp_path,
+        source_path=tmp_path,
+        baseline_ref="HEAD",
+        delivery_warnings=("generation rejected; used release_summary fallback",),
+    )
+    persisted = commit_delivery._persist(
+        decision,
+        run_dir=tmp_path,
+        status="skipped",
+        delivery_warnings=("provider publish unavailable",),
+    )
+    assert persisted.delivery_warnings == (
+        "generation rejected; used release_summary fallback",
+        "provider publish unavailable",
+    )
 
 
 def test_skip_leaves_diff_only_in_run_worktree(tmp_path: Path) -> None:
@@ -2460,7 +2515,7 @@ def test_commit_message_generator_not_disabled_by_release_summary_strategy(
         def invoke(self, prompt: str, cwd: str, **kwargs: object) -> str:
             self.calls.append({"prompt": prompt, "cwd": cwd, **kwargs})
             return (
-                '{"subject": "fix(delivery): generated message", '
+                '{"subject": "Generate delivery message", '
                 '"body": "", "type": "fix", "scope": "delivery", '
                 '"breaking": false}'
             )
@@ -2515,7 +2570,7 @@ def test_commit_message_generator_not_disabled_by_release_summary_strategy(
     _PipelineRun._run_commit_delivery(stub, diff_cwd=worktree)
 
     # Generator returned a real message (NOT None) despite release_summary.
-    assert generated == ["fix(delivery): generated message\n"]
+    assert generated == ["fix(delivery): Generate delivery message\n"]
     assert agent.calls, "agent must be invoked when a final_acceptance agent exists"
     # content_language (English) drove the directive, not the Russian operator lang.
     assert "in English" in str(agent.calls[0]["prompt"])

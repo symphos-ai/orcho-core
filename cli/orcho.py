@@ -237,7 +237,7 @@ def cmd_web(args: argparse.Namespace) -> int:
         from orcho_web.launcher import main as web_main
     except ImportError:
         print(
-            "orcho-web is not installed.\nInstall it with: pip install orcho-web",
+            "The web interface is not available in this Orcho installation.",
             file=sys.stderr,
         )
         return 1
@@ -252,11 +252,8 @@ def cmd_tui(args: argparse.Namespace) -> int:
     try:
         from orcho_tui.cli import main as tui_main
     except ImportError:
-        # The terminal UI is an optional component. The `tui` command is always
-        # reserved by the CLI; a selective install just needs the extra pulled in.
         print(
-            'orcho-tui is not installed.\n'
-            'Install it with:  pip install "orcho[tui]"   (or: pip install orcho-tui)',
+            "The terminal interface is not available in this Orcho installation.",
             file=sys.stderr,
         )
         return 1

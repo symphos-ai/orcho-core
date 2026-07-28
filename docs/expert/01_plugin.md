@@ -2,11 +2,9 @@
 
 ## Why a plugin
 
-Without a plugin Orcho runs in generic mode. With a plugin it knows:
-- What language/stack the project is written in
-- Which files and directories are key
-- How to run tests (via the ``tests`` quality gate)
-- Extra instructions for each phase
+Without a plugin Orcho runs in generic mode. A plugin carries project context
+and declares scheduled verification. Start with the
+[scheduled verification guide](../guides/scheduled_verification.md).
 
 ## Location
 
@@ -23,8 +21,6 @@ core falls back to generic defaults when a field is not set. The plugin exports
 unknown keys and logs a warning instead of failing.
 
 ```python
-from pipeline.plugins import PluginConfig
-
 PLUGIN = dict(
     # ── Identity ────────────────────────────────────────────────
     name="My Project",              # Name (shown in logs)
@@ -65,26 +61,23 @@ PLUGIN = dict(
         Always check existing similar endpoints before creating new ones.
         Keep controllers thin — business logic goes to services.
     """,
-    build_prompt_extra="""
-        Run: composer test  — after making changes.
-        Follow PSR-12 coding standard.
-    """,
+    build_prompt_extra="Follow PSR-12 coding standard.",
     review_focus_extra="""
         Check: N+1 queries, missing indexes, unvalidated inputs.
     """,
 
-    # ── Testing (Phase 5e: declarative gate config) ─────────────
-    # The former ``testing: TestingConfig`` field is gone — the config
-    # moved inside ``quality_gates["tests"]``. The built-in ``tests``
-    # gate parses this dict into ``TestingConfig`` inside the
-    # pipeline; custom plugins declare the config with the same
-    # schema without constructing ``TestingConfig`` directly.
-    quality_gates={
-        "tests": {
-            "run_command": "pytest tests/ -x -q",
-            "fail_keyword": "FAILED",
-            "timeout": 120,
+    # ── Scheduled verification ─────────────────────────────────
+    verification_envs={"project": {"python": "python"}},
+    verification={
+        "default_env": "project",
+        "commands": {
+            "lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"},
         },
+        "gate_sets": {
+            "hygiene": {"commands": ["lint"], "default_policy": "require"},
+        },
+        "selection": [{"always": ["hygiene"]}],
+        "schedule": [{"after_phase": "implement", "gate_sets": ["hygiene"], "action": "repair_loop"}],
     },
 
     # Runtime selection is not configured in PluginConfig. Use
@@ -92,7 +85,34 @@ PLUGIN = dict(
 )
 ```
 
-## Minimal plugin (real example)
+## Verification contract
+
+Use these fields in this order when reviewing or authoring a plugin:
+
+1. `verification_envs` names the command contexts.
+2. `verification.commands` names native commands and their `cost`; a
+   gate-set `default_cost` supplies it when a command omits one.
+3. `verification.gate_sets` groups commands and provides defaults.
+4. `verification.selection` chooses groups by `always`, `paths`, `task_kind`,
+   or `operator` intent.
+5. `verification.schedule` gives selected groups a phase hook; `work_mode`
+   influences derived policy, while explicit `policy` and `action` remain the
+   declared outcome.
+
+Selection says *which evidence applies*; schedule says *when it has an
+identity*; the executor runs it; policy/action decides the consequence; and an
+immutable receipt preserves the result. These axes are independent. See the
+[practical guide](../guides/scheduled_verification.md) for the full contract.
+
+## Legacy quality-gate extension mechanism
+
+`quality_gates` is a separate, older extension mechanism for registered
+post-phase handlers such as the built-in `tests` gate. It is not how native
+scheduled commands are declared. Third-party handler authors should use
+[quality gate authoring](../guides/quality_gate_authoring.md); scheduled
+verification belongs in the fields above.
+
+## Minimal plugin
 
 ```python
 PLUGIN = dict(
@@ -100,7 +120,7 @@ PLUGIN = dict(
     language="PHP 8.3",
     architecture="Custom MVC. Controllers: src/Controller/, Models: src/Model/",
     file_hints=["src/Controller/", "src/Model/", "src/Service/"],
-    build_prompt_extra="Run: vendor/bin/behat after changes.",
+    build_prompt_extra="Keep controllers thin and validate inputs at boundaries.",
     review_focus_extra="Check SQL injection, PDO param binding, missing migrations.",
 )
 ```

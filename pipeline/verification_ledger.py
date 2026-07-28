@@ -34,6 +34,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
+from pipeline.verification_cost import (
+    VerificationCost,
+    resolve_verification_cost,
+)
 from pipeline.verification_selection import (
     SelectionContext,
     build_scheduled_gate_plan,
@@ -94,17 +98,17 @@ def gate_run_mode(hook: str) -> str:
     return _RUN_MODE.get(hook, _UNKNOWN_RUN_MODE)
 
 
-# ── policy / kind derivation (single source) ───────────────────────────────
+# ── policy / cost derivation (single source) ───────────────────────────────
 #
 # The declared receipt-enforcement policy and declared cost of each gate — once
 # owned by the private ``core.io.verification_header._gate_policy`` /
-# ``_gate_kind`` the banner used to compute in its own pass. They now live on the
+# ``_gate_cost`` the banner used to compute in its own pass. They now live on the
 # ledger row so both the banner and the ``quality-gates`` command read one
-# projection instead of recomputing policy/kind twice.
+# projection instead of recomputing policy/cost twice.
 
 # The string for any property not knowable at run-header time (an effective
-# policy that would only resolve after the work_mode transform, or a cost with no
-# declared ``cheap`` flag). Surfaced honestly rather than hidden or invented.
+# policy that would only resolve after the work_mode transform, or a missing cost
+# declaration). Surfaced honestly rather than hidden or invented.
 _UNKNOWN = "unknown"
 
 # Declared schedule policies ordered weakest -> strongest. Used only to pick the
@@ -138,22 +142,15 @@ def _gate_policy(entry: ScheduleEntry, backing: Sequence[GateSet]) -> str:
     return _UNKNOWN
 
 
-def _gate_kind(
+def _gate_cost(
     contract: VerificationContract, command: str, backing: Sequence[GateSet],
 ) -> str:
-    """Declared cost for a command: ``cheap`` when any declared source says so.
-
-    Mirrors :func:`pipeline.verification_selection._merge_defaults`' OR-ed cheap:
-    the row is ``cheap`` when the per-command ``cheap`` is true OR any backing gate
-    set declares ``default_cheap`` true. Anything else (all sources false or
-    undeclared) is ``unknown`` — we do not invent a cost taxonomy without a
-    declared source.
-    """
+    """Resolve declaration cost through the shared typed-cost resolver."""
     spec = contract.commands.get(command, {})
-    cheap = spec.get("cheap") is True or any(
-        gate_set.default_cheap for gate_set in backing
+    return resolve_verification_cost(
+        spec.get("cost"),
+        (gate_set.default_cost for gate_set in backing),
     )
-    return "cheap" if cheap else _UNKNOWN
 
 
 def _execution_policy(
@@ -251,15 +248,13 @@ class GateLedgerRow:
       (manual|suggest|warn|require), or ``unknown`` when it would only resolve after
       the work_mode transform (from :func:`_gate_policy`). This is the ledger's
       single source of policy; the banner no longer recomputes it.
-    * ``kind`` — declared cost: ``cheap`` when the command (or its gate set)
-      declares ``cheap``/``default_cheap``, else ``unknown`` (from
-      :func:`_gate_kind`). No cost taxonomy is invented without a declared source.
+    * ``cost`` — resolved typed command cost (from :func:`_gate_cost`).
     * ``when`` — the derived operator-facing stage the gate actually runs at,
       from :func:`effective_stage` over ``policy`` / ``hook`` / ``phase`` and the
       builder's ``has_final_phase``. ``""`` for a directly-constructed row that
       did not pass through the builder.
 
-    ``policy`` / ``kind`` / ``when`` all default so direct construction (e.g. in a
+    ``policy`` / ``cost`` / ``when`` all default so direct construction (e.g. in a
     test) stays valid without supplying them.
     """
 
@@ -275,7 +270,7 @@ class GateLedgerRow:
     activation_binding: str = ""
     resolved: str | None = None
     policy: str = _UNKNOWN
-    kind: str = _UNKNOWN
+    cost: VerificationCost = "unknown"
     when: str = ""
     # Durable scheduled-gate axes (ADR 0132).  The presentation fields above
     # remain for the current header consumers; these facts are deliberately not
@@ -482,8 +477,8 @@ def build_gate_ledger(
     re-implemented. With neither supplied (run start) every ``resolved`` is
     ``None``.
 
-    Policy / kind / when: each row also carries its effective declared receipt
-    policy (:func:`_gate_policy`), declared cost (:func:`_gate_kind`), and the
+    Policy / cost / when: each row also carries its effective declared receipt
+    policy (:func:`_gate_policy`), resolved declaration cost (:func:`_gate_cost`), and the
     derived operator-facing stage ``when`` (:func:`effective_stage` over the
     policy/hook/phase and ``has_final_phase``). ``has_final_phase`` — whether the
     active profile has a final delivery phase (``True`` / ``False`` / ``None`` for
@@ -503,7 +498,7 @@ def build_gate_ledger(
         # command listed both directly and via a set keeps the set's identity.
         # ``backing`` carries the gate-set NAMES (condition/gate_sets column);
         # ``backing_sets`` carries the resolved :class:`GateSet` objects for the
-        # policy/kind derivation in the same pass.
+        # policy/cost derivation in the same pass.
         backing: dict[str, list[str]] = {}
         backing_sets: dict[str, list[GateSet]] = {}
         order: list[str] = []
@@ -533,7 +528,7 @@ def build_gate_ledger(
                 backing[command], entry.hook, conditions,
             )
             policy = _gate_policy(entry, backing_sets[command])
-            kind = _gate_kind(contract, command, backing_sets[command])
+            cost = _gate_cost(contract, command, backing_sets[command])
             rows.append(
                 GateLedgerRow(
                     gate=command,
@@ -547,7 +542,7 @@ def build_gate_ledger(
                     selection_task_kinds=selection_task_kinds,
                     activation_binding=activation_binding,
                     policy=policy,
-                    kind=kind,
+                    cost=cost,
                     when=effective_stage(
                         policy, entry.hook, entry.phase, has_final_phase,
                     ),
@@ -645,6 +640,7 @@ def _resolve_row(
         resolved=resolved,
         selected=selected,
         execution_policy=policy,
+        cost=planned_entry.cost if planned_entry is not None else row.cost,
         executor=executor,
         trigger=trigger,
         consequence=consequence,

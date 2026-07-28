@@ -49,6 +49,7 @@ _TIMEOUT_S = 60
 # needs one of these values must declare it in its ``env`` block, which is
 # applied after the strip.
 RUN_SCOPED_ENV_CHANNELS: tuple[str, ...] = (
+    "ORCHO_RUN_ID",
     AUTODETECT_DECISION_ENV,
     WORK_MODE_ENV,
 )

@@ -297,6 +297,7 @@ def resume_project_phase_handoff(
     from pipeline.cross_project.terminal import (
         finalize_cross_terminal as _finalize_cross_terminal,
     )
+    from pipeline.engine import save_session as _save_cross_session
     from pipeline.run_state.terminal import evict_cross_handoff_markers
     from sdk.phase_handoff import phase_handoff_decide
 
@@ -347,7 +348,16 @@ def resume_project_phase_handoff(
         runs_dir=run_dir,
         cwd=None,
     )
+    # The parent proxy is consumed now that the decision has been applied to
+    # its physical child.  Leave the child checkpoint cursor in place so its
+    # own resume is selected, but remove the parent pause before the next
+    # canonical reduction: otherwise the durable parent meta contributes a
+    # stale pending decision after the checkpoint markers are evicted.
+    session.pop("phase_handoff", None)
+    session["status"] = "running"
     evict_cross_handoff_markers(cross_ckpt)
     cross_ckpt.setdefault("sub_status", {})[_alias] = "awaiting_phase_handoff"
+    if output_dir:
+        _save_cross_session(run_dir, session)
     _write_cross_checkpoint(run_dir, cross_ckpt)
     return False

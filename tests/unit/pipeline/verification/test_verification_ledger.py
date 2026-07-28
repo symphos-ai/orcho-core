@@ -63,8 +63,8 @@ def _reference_contract() -> VerificationContract:
         "delivery_policy": "warn",
         "required": ["env-provenance", "lint"],
         "commands": {
-            "env-provenance": {"env": "ci", "cheap": True, "run": "prov"},
-            "lint": {"env": "ci", "cheap": True, "run": "ruff check ."},
+            "env-provenance": {"env": "ci", "cost": "fast", "run": "prov"},
+            "lint": {"env": "ci", "cost": "fast", "run": "ruff check ."},
             "run-state-unit": {"env": "ci", "run": "pytest run_state"},
             "verification-unit": {"env": "ci", "run": "pytest verification"},
             "cli-sdk-unit": {"env": "ci", "run": "pytest cli sdk"},
@@ -75,7 +75,7 @@ def _reference_contract() -> VerificationContract:
             "baseline": {
                 "commands": ["env-provenance", "lint"],
                 "default_policy": "warn",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
             "run-state": {"commands": ["run-state-unit"], "default_policy": "require"},
             "verification": {
@@ -408,7 +408,7 @@ def test_resolve_accepts_prebuilt_plan_by_identity() -> None:
     assert rows[("after_phase", "implement")].resolved == "dormant"
 
 
-# ── policy / kind carried on the row ────────────────────────────────────────
+# ── policy / cost carried on the row ────────────────────────────────────────
 
 
 def test_policy_carried_on_row() -> None:
@@ -423,14 +423,13 @@ def test_policy_carried_on_row() -> None:
     assert _row(ledger, "e2e").policy == "suggest"
 
 
-def test_kind_carried_on_row() -> None:
+def test_cost_carried_on_row() -> None:
     ledger = build_gate_ledger(_reference_contract())
-    # env-provenance / lint declare cheap (and baseline default_cheap is true).
-    assert _row(ledger, "env-provenance").kind == "cheap"
-    assert _row(ledger, "lint").kind == "cheap"
-    # No cheap declared anywhere for these -> honest 'unknown'.
+    assert _row(ledger, "env-provenance").cost == "fast"
+    assert _row(ledger, "lint").cost == "fast"
+    # No cost declared anywhere for these -> honest 'unknown'.
     for gate in _NARROW + ("broad-non-e2e", "e2e"):
-        assert _row(ledger, gate).kind == "unknown", gate
+        assert _row(ledger, gate).cost == "unknown", gate
 
 
 def test_policy_strictest_backing_default_when_entry_omits() -> None:
@@ -613,6 +612,27 @@ def test_reducer_covers_all_nine_terminal_dispositions() -> None:
     assert set(cases) == TERMINAL_DISPOSITIONS
     for expected, (candidate, events) in cases.items():
         assert reduce_disposition(candidate, events) == expected
+
+
+def test_cost_does_not_change_consequence_or_disposition() -> None:
+    from pipeline.verification_execution import resolve_execution_eligibility
+
+    baseline = None
+    for cost in ("fast", "moderate", "slow", "unknown"):
+        row = replace(_durable_row(selected=True), cost=cost)
+        eligibility = resolve_execution_eligibility(
+            True, row.execution_policy, row.hook, row.phase,
+        )
+        observed = (
+            eligibility.consequence,
+            reduce_disposition(
+                row,
+                (GateTrailEvent("check", "after_phase", "implement", "reuse", "fresh"),),
+            ),
+        )
+        if baseline is None:
+            baseline = observed
+        assert observed == baseline
 
 
 def test_not_selected_carries_each_explicit_selection_reason() -> None:

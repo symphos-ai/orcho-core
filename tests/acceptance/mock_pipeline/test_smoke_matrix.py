@@ -39,7 +39,7 @@ def _stage4_contract() -> VerificationContract:
             verification={
                 "default_env": "ci",
                 "commands": {
-                    "lint": {"run": "ruff check .", "env": "ci", "cheap": True},
+                    "lint": {"run": "ruff check .", "env": "ci", "cost": "fast"},
                     "test": {"run": "pytest -q"},
                     "smoke": {"run": "pytest -q smoke"},
                 },
@@ -140,8 +140,8 @@ def test_scheduled_gate_artifact_evidence_and_sdk_keep_duplicate_identities(
         encoding="utf-8",
     )
     rows = (
-        GateLedgerRow("check", "after_phase", "implement", "after_implement", "auto", (), "always", selected=True, execution_policy="require", disposition="executed_pass"),
-        GateLedgerRow("check", "before_delivery", "", "delivery", "auto", (), "on_path", selected=False, execution_policy="require", selection_reason="paths", disposition="not_selected"),
+        GateLedgerRow("check", "after_phase", "implement", "after_implement", "auto", (), "always", selected=True, execution_policy="require", cost="fast", disposition="executed_pass"),
+        GateLedgerRow("check", "before_delivery", "", "delivery", "auto", (), "on_path", selected=False, execution_policy="require", cost="slow", selection_reason="paths", disposition="not_selected"),
     )
     trail = (GateTrailEvent("check", "after_phase", "implement", "execution", "pass"),)
     write_ledger(run_dir, ScheduledGateLedger(rows, trail, finalized=True))
@@ -151,6 +151,8 @@ def test_scheduled_gate_artifact_evidence_and_sdk_keep_duplicate_identities(
     sdk_rows = get_verification_timeline(run_id="mock-ledger").rows
 
     artifact_rows = evidence["scheduled_gate_ledger"]["rows"]
+    assert evidence["scheduled_gate_ledger"]["schema_version"] == "2"
+    assert [row["cost"] for row in artifact_rows] == ["fast", "slow"]
     assert [(row["gate"], row["hook"], row["phase"]) for row in artifact_rows] == [
         (row.command, row.hook, row.phase) for row in sdk_rows
     ]

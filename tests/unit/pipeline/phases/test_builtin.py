@@ -517,8 +517,14 @@ class TestPlanHandler:
         default_registry().get("plan")(state)
 
         prompt, _cwd = architect.calls[0]
-        assert "The engine owns the selected scheduled gates below" in prompt
-        assert "ruff check ." in prompt
+        assert (
+            "The engine owns engine-owned scheduled gates below; "
+            "manual/suggest entries remain operator-owned."
+        ) in prompt
+        assert (
+            "[after_phase(implement) engine-owned; require; "
+            "action=repair_loop; cost=unknown] lint <hygiene>: ruff check ."
+        ) in prompt
 
     def test_success_materializes_declared_write_scope_with_plugin_allowance(self) -> None:
         payload = json.dumps({

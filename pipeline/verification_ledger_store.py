@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from pipeline.verification_cost import VERIFICATION_COSTS
 from pipeline.verification_ledger import (
     TERMINAL_DISPOSITIONS,
     GateLedgerRow,
@@ -24,7 +25,7 @@ from pipeline.verification_ledger import (
 )
 
 FILENAME = "scheduled_gate_ledger.json"
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 class LedgerStoreError(ValueError):
@@ -170,11 +171,13 @@ def _row_from_wire(value: Any) -> GateLedgerRow:
         value = {**value, key: tuple(value[key])}
     for key in (
         "gate", "hook", "phase", "timing", "run_mode", "condition",
-        "activation_binding", "policy", "kind", "when", "execution_policy",
+        "activation_binding", "policy", "cost", "when", "execution_policy",
         "consequence",
     ):
         if not isinstance(value[key], str):
             raise LedgerStoreError(f"scheduled-gate ledger row {key} must be a string")
+    if value["cost"] not in VERIFICATION_COSTS:
+        raise LedgerStoreError("scheduled-gate ledger row has invalid cost")
     for key in ("declared", "selectable"):
         if not isinstance(value[key], bool):
             raise LedgerStoreError(f"scheduled-gate ledger row {key} must be bool")

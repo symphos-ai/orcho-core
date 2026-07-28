@@ -1,14 +1,12 @@
-"""Public-facade acceptance coverage for durable cross mock resumes.
-
-The interruption seam runs only after the first child has returned from its
-real child pipeline call, so its child ``meta.json`` is already durable.  It is
-not a timer: if that proof cannot be made, the test fails before attempting a
-resume.
-"""
+"""Public-facade acceptance coverage for durable cross mock resumes."""
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +20,150 @@ def _init_git_repo(path: Path) -> None:
     (path / "README.md").write_text("# test\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+def _add_alpha_retry_gate(path: Path) -> None:
+    """Commit an alpha-only gate that fails once in its durable worktree."""
+    plugin = path / ".orcho" / "multiagent" / "plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "PLUGIN = " + repr({
+            "verification": {
+                "commands": {
+                    "alpha_once": {
+                        "run": [
+                            "python", "-c",
+                            "from pathlib import Path; p = Path('.alpha_gate_once'); "
+                            "first = not p.exists(); p.touch(); raise SystemExit(1 if first else 0)",
+                        ],
+                    },
+                },
+                "required": ["alpha_once"],
+                "gate_sets": {"required": {"commands": ["alpha_once"]}},
+                "selection": [{"always": ["required"]}],
+                "schedule": [{
+                    "after_phase": "implement", "policy": "require",
+                    "action": "handoff", "commands": ["alpha_once"],
+                }],
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".orcho/multiagent/plugin.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add alpha retry gate"], cwd=path, check=True)
+
+
+def _add_beta_required_gate(path: Path) -> None:
+    """Commit a beta gate so its declaration ledger is resume-critical."""
+    plugin = path / ".orcho" / "multiagent" / "plugin.py"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "PLUGIN = " + repr({
+            "verification": {
+                "commands": {"beta_check": {"run": ["python", "-c", "pass"]}},
+                "gate_sets": {"required": {"commands": ["beta_check"]}},
+                "selection": [{"always": ["required"]}],
+                "schedule": [{
+                    "after_phase": "implement", "policy": "require",
+                    "gate_sets": ["required"],
+                }],
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".orcho/multiagent/plugin.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add beta required gate"], cwd=path, check=True)
+
+
+def _cross_subprocess_script(argv: list[str], *, stop_after_beta_start: bool) -> str:
+    """Build an isolated CLI invocation with acceptance-only projection setup."""
+    stop_seam = ""
+    if stop_after_beta_start:
+        stop_seam = """
+from pipeline.project import session_run
+
+_original_init_run_session = session_run.init_run_session
+
+def _stop_after_beta_running_session(**kwargs):
+    session = _original_init_run_session(**kwargs)
+    if kwargs.get("output_dir") is not None and kwargs["output_dir"].name == "beta":
+        os.kill(os.getpid(), signal.SIGSTOP)
+    return session
+
+session_run.init_run_session = _stop_after_beta_running_session
+"""
+    return f"""
+import os
+import signal
+from dataclasses import replace
+
+from cli.orcho import build_parser, cmd_cross
+from core.infra import config
+from pipeline.cross_project import profile_projection
+
+profile_projection._reject_non_bypass_handoff_in_projection = lambda *_args: None
+profile_projection._reject_non_bypass_handoff = lambda *_args: None
+_original_reset_config = config._reset_config
+
+def _reset_with_delivery_disabled():
+    _original_reset_config()
+    _base_config = config.AppConfig.load()
+    config.AppConfig.load = lambda: replace(
+        _base_config, commit={{**_base_config.commit, "enabled": False}}
+    )
+
+config._reset_config = _reset_with_delivery_disabled
+{stop_seam}
+raise SystemExit(cmd_cross(build_parser().parse_args({argv!r})))
+"""
+
+
+def _event_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _snapshot_tree(path: Path) -> dict[str, bytes]:
+    return {
+        item.relative_to(path).as_posix(): item.read_bytes()
+        for item in sorted(path.rglob("*"))
+        if item.is_file()
+    }
+
+
+def _wait_for_crash_window(run_dir: Path, *, timeout_seconds: float = 20) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        beta_meta = run_dir / "beta" / "meta.json"
+        checkpoint = run_dir / "cross_checkpoint.json"
+        if beta_meta.exists() and checkpoint.exists():
+            beta = json.loads(beta_meta.read_text(encoding="utf-8"))
+            ckpt = json.loads(checkpoint.read_text(encoding="utf-8"))
+            beta_events = [
+                event
+                for event in _event_rows(run_dir / "events.jsonl")
+                if event.get("payload", {}).get("project_alias") == "beta"
+            ]
+            has_beta_start = any(event.get("kind") == "run.start" for event in beta_events)
+            typed_beta_operation = any(
+                event.get("kind") in {"phase.start", "gate.start"}
+                for event in beta_events
+            )
+            if (
+                has_beta_start
+                and beta.get("status") == "running"
+                and ckpt.get("sub_status", {}).get("beta") == "running"
+                and (run_dir / "beta" / "scheduled_gate_ledger.json").is_file()
+                and not typed_beta_operation
+            ):
+                return
+        time.sleep(0.05)
+    raise AssertionError("producer did not reach the durable beta pre-dispatch crash window")
 
 
 def test_cross_mock_resume_inherits_provider_mode_after_durable_child(
@@ -117,3 +259,152 @@ def test_cross_mock_resume_inherits_provider_mode_after_durable_child(
     assert provider_modes == [True, True]
     assert real_provider_invocations == 0
     assert real_binary_invocations == 0
+
+
+def test_cross_cli_project_handoff_resume_retries_alpha_then_runs_beta(
+    tmp_path: Path,
+) -> None:
+    """Public CLI + SDK journey for project-handoff continuation."""
+    from cli.orcho import build_parser, cmd_cross
+    from sdk.phase_handoff import phase_handoff_decide
+
+    workspace = tmp_path / "workspace"
+    alpha = workspace / "alpha"
+    beta = workspace / "beta"
+    _init_git_repo(alpha)
+    _init_git_repo(beta)
+    _add_alpha_retry_gate(alpha)
+    run_id = "cross-project-handoff-resume"
+    run_dir = workspace / "runspace" / "runs" / run_id
+    run_dir.parent.mkdir(parents=True)
+    parser = build_parser()
+
+    fresh = parser.parse_args([
+        "cross", "--task", "Retry alpha before beta", "--profile", "feature",
+        "--projects", f"alpha:{alpha}", f"beta:{beta}",
+        "--workspace", str(workspace), "--output-dir", str(run_dir),
+        "--no-interactive", "--mock",
+    ])
+    assert cmd_cross(fresh) == 4
+    paused = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    handoff = paused["phase_handoff"]
+    assert paused["status"] == "awaiting_phase_handoff"
+    assert handoff["id"].startswith("project:alpha:")
+    assert not (run_dir / "beta" / "meta.json").exists()
+
+    phase_handoff_decide(
+        run_id, handoff["id"], "retry_feedback", feedback="Retry the alpha gate.",
+        runs_dir=run_dir.parent, cwd=None,
+    )
+    resumed = parser.parse_args([
+        "cross", "--resume", run_id, "--workspace", str(workspace),
+        "--no-interactive",
+    ])
+    assert cmd_cross(resumed) == 0
+
+    alpha_receipts = sorted(
+        (run_dir / "alpha" / "verification_command_receipts" / "executions").glob("*.json"),
+    )
+    assert [json.loads(path.read_text(encoding="utf-8"))["exit_code"] for path in alpha_receipts] == [1, 0]
+    assert (run_dir / "beta" / "meta.json").is_file()
+    alpha_meta = json.loads((run_dir / "alpha" / "meta.json").read_text(encoding="utf-8"))
+    beta_meta = json.loads((run_dir / "beta" / "meta.json").read_text(encoding="utf-8"))
+    parent_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert alpha_meta["status"] == beta_meta["status"] == "done"
+    assert parent_meta["status"] == "done"
+    assert "phase_handoff" not in parent_meta
+    assert parent_meta.get("halt_reason") != "cross_child_readiness_blocked"
+    cfa = parent_meta["phases"]["cross_final_acceptance"]
+    assert not any(
+        blocker["id"].startswith("CFA_MISSING_CHILD_")
+        for blocker in cfa["release_blockers"]
+    )
+
+
+@pytest.mark.serial
+@pytest.mark.slow_process
+@pytest.mark.git_worktree
+@pytest.mark.filesystem_heavy
+def test_cross_subprocess_resume_rearms_beta_before_first_operation(tmp_path: Path) -> None:
+    """A SIGKILL in beta's pre-dispatch seam resumes only that declared child."""
+    workspace = tmp_path / "workspace"
+    alpha = workspace / "alpha"
+    beta = workspace / "beta"
+    _init_git_repo(alpha)
+    _init_git_repo(beta)
+    _add_beta_required_gate(beta)
+    run_id = "cross-subprocess-beta-crash"
+    run_dir = workspace / "runspace" / "runs" / run_id
+    run_dir.parent.mkdir(parents=True)
+    core_root = Path(__file__).resolve().parents[2]
+    fresh_argv = [
+        "cross", "--task", "Resume beta after a process crash", "--profile", "feature",
+        "--projects", f"alpha:{alpha}", f"beta:{beta}",
+        "--workspace", str(workspace), "--output-dir", str(run_dir),
+        "--no-interactive", "--mock",
+    ]
+    producer = subprocess.Popen(
+        [sys.executable, "-c", _cross_subprocess_script(fresh_argv, stop_after_beta_start=True)],
+        cwd=core_root,
+        env={**os.environ, "ORCHO_WORKSPACE": str(workspace)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        try:
+            _wait_for_crash_window(run_dir)
+        except AssertionError:
+            if producer.poll() is not None:
+                producer_output, _ = producer.communicate(timeout=10)
+                raise AssertionError(producer_output) from None
+            raise
+        alpha_before = _snapshot_tree(run_dir / "alpha")
+        os.killpg(producer.pid, signal.SIGKILL)
+        producer_output, _ = producer.communicate(timeout=10)
+        assert producer.returncode == -signal.SIGKILL, producer_output
+
+        consumer_argv = [
+            "cross", "--resume", run_id, "--workspace", str(workspace),
+            "--no-interactive",
+        ]
+        consumer = subprocess.run(
+            [sys.executable, "-c", _cross_subprocess_script(consumer_argv, stop_after_beta_start=False)],
+            cwd=core_root,
+            env={**os.environ, "ORCHO_WORKSPACE": str(workspace)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=60,
+        )
+        assert consumer.returncode == 0, consumer.stdout
+    finally:
+        if producer.poll() is None:
+            os.killpg(producer.pid, signal.SIGKILL)
+            producer.communicate(timeout=10)
+
+    events = _event_rows(run_dir / "events.jsonl")
+    alpha_starts = [
+        event for event in events
+        if event.get("kind") == "run.start"
+        and event.get("payload", {}).get("project_alias") == "alpha"
+    ]
+    beta_starts = [
+        event for event in events
+        if event.get("kind") == "run.start"
+        and event.get("payload", {}).get("project_alias") == "beta"
+    ]
+    assert len(alpha_starts) == 1
+    assert len(beta_starts) >= 2
+    assert _snapshot_tree(run_dir / "alpha") == alpha_before
+
+    beta_meta = json.loads((run_dir / "beta" / "meta.json").read_text(encoding="utf-8"))
+    parent_meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert beta_meta["status"] == "done"
+    assert parent_meta["status"] == "done"
+    cfa = parent_meta["phases"]["cross_final_acceptance"]
+    assert not any(
+        blocker["id"] == "CFA_MISSING_CHILD_beta"
+        for blocker in cfa["release_blockers"]
+    )
