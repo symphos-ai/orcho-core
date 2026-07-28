@@ -147,6 +147,13 @@ includes workspace settings, prompt override guides, a copyable plugin
 template, and a task-file guide. Re-running `workspace init` is idempotent and
 leaves existing scaffold files untouched.
 
+The generated plugin is a safe, language-neutral starting point rather than a
+finished project contract. A generic smoke run works immediately, but the
+recommended next step is to adapt the scaffold into
+`<project>/.orcho/multiagent/plugin.py` using the repository's real
+architecture, commands, and environments. That configured plugin is where
+Orcho gains durable project context and authoritative scheduled verification.
+
 ## 4. Pick a control surface
 
 ### MCP — the recommended path

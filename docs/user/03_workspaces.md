@@ -19,15 +19,20 @@ the workspace path explicitly.
 
 ---
 
-## Better results with plugin.py
+## Configure the generated plugin scaffold
 
-To give the agent your project's specifics, add a `plugin.py`:
+`workspace init` creates a language-neutral plugin scaffold in the control
+workspace and prints its exact path. It is intentionally inert because init
+does not guess project commands or policy. Generic mode can run immediately,
+but effective recurring use depends on adapting that scaffold to the project.
+
+Copy it into the project and configure it from repository evidence:
 
 ```
 your-project/
 └── .orcho/
     └── multiagent/
-        └── plugin.py    ← create this file
+        └── plugin.py    ← configured project copy of the generated scaffold
 ```
 
 **Minimal plugin.py:**
@@ -46,8 +51,10 @@ PLUGIN = {
 }
 ```
 
-With a plugin the agent knows the project language, how to run tests,
-and which files matter. Declare scheduled readiness with the
+With a configured plugin the agent knows the project language, how to run
+tests, and which files matter. More importantly, recurring readiness commands
+become engine-owned scheduled gates instead of prose repeated across tasks.
+Declare scheduled readiness with the
 [scheduled verification guide](../guides/scheduled_verification.md); the full
 field reference is in [../expert/01_plugin.md](../expert/01_plugin.md).
 
