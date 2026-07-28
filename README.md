@@ -319,6 +319,14 @@ the generated scaffold to `your-project/.orcho/multiagent/plugin.py`, merge the
 generated agent rules into the project's root instructions, and complete the
 configuration from facts found in the repository:
 
+If the project already has tests, linting, build checks, and CI, do not invent
+another quality system. Reuse those project-native commands in the plugin.
+CI remains the independent repository gate; the plugin lets Orcho select and
+run the relevant proof inside the task lifecycle, route a fixable failure back
+to repair, and attach durable receipts to readiness before delivery. It also
+keeps broad checks out of task prose, where planning and implementation agents
+can otherwise run them redundantly.
+
 ```python
 PLUGIN = {
     "name": "My Project",

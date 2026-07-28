@@ -35,6 +35,32 @@ your-project/
         └── plugin.py    ← configured project copy of the generated scaffold
 ```
 
+### Why configure it when the project already has CI?
+
+A mature CI setup is the best source for plugin configuration. The plugin
+should reference the same project-native lint, test, build, and analysis
+commands; it should not create a parallel quality system or replace CI.
+
+CI and Orcho answer different lifecycle questions:
+
+- CI independently protects the repository after code is pushed.
+- The Orcho contract says which existing proof applies to this task, when it
+  runs during the task lifecycle, and whether failure means repair, operator
+  handoff, warning, or blocked delivery.
+- Immutable receipts bind each official execution to the run's readiness
+  evidence instead of relying on an agent's statement that a command passed.
+- Selection and schedule rules avoid running every broad check for every
+  change. Cost records the expected burden for humans and agents; it does not
+  change selection, policy, or consequences.
+- Engine ownership keeps recurring broad commands out of task acceptance, so
+  planning and implementation agents do not launch duplicate suites.
+
+This can shorten the feedback loop: a fixable lint or test failure can return
+to repair before final delivery, while an environment or credential failure can
+be handed to the operator instead of being misclassified as a code defect.
+Keep CI as the independent repository gate; use the plugin to make its
+authoritative checks available earlier and more deliberately inside Orcho.
+
 **Minimal plugin.py:**
 ```python
 PLUGIN = {
@@ -44,9 +70,11 @@ PLUGIN = {
     "verification": {
         "default_env": "project",
         "commands": {"lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"}},
-        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "warn"}},
+        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "require"}},
         "selection": [{"always": ["hygiene"]}],
-        "schedule": [{"after_phase": "implement", "gate_sets": ["hygiene"]}],
+        "schedule": [
+            {"after_phase": "implement", "gate_sets": ["hygiene"], "action": "repair_loop"},
+        ],
     },
 }
 ```
