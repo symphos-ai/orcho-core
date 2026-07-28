@@ -266,10 +266,15 @@ source ~/work/my-product/workspace-orchestrator/orcho-env.sh
 Then run cross-project work with an explicit project list:
 
 ```bash
+cd ~/work/my-product
 orcho cross \
   --task "Change the API contract and update both consumers" \
-  --projects api:~/work/my-product/api web:~/work/my-product/web
+  --projects api web
 ```
+
+The aliases come from the projects registered by `workspace init`.
+`alias:/absolute/path` remains available for projects that are not registered
+in the active workspace.
 
 This layout is a best practice, not an engine requirement. Absolute project
 paths remain valid when repositories cannot or should not share a parent.

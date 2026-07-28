@@ -126,10 +126,14 @@ From there, register/use the intended repositories explicitly:
 
 ```bash
 # Cross-project run
+cd ~/www/my-workspace
 orcho cross \
   --task "Add OAuth2 support" \
-  --projects api:~/www/my-workspace/api frontend:~/www/my-workspace/frontend
+  --projects api frontend
 ```
+
+These are registered project aliases. Use `alias:/absolute/path` only when a
+project is not registered in the active workspace.
 
 Useful `orcho workspace init` flags:
 

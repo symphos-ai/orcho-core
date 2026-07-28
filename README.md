@@ -102,10 +102,15 @@ history, evidence, and MCP configuration. Cross-project work can then name the
 registered repositories explicitly:
 
 ```bash
+cd ~/work/my-product
 orcho cross \
   --task "Change the API contract and update the frontend" \
-  --projects backend:~/work/my-product/backend frontend:~/work/my-product/frontend
+  --projects backend frontend
 ```
+
+`workspace init` registers the directory names as aliases, so repeating their
+absolute paths is unnecessary. `--projects` remains explicit because one
+workspace may contain more repositories than a particular change should touch.
 
 See [Connecting your project](docs/user/03_workspaces.md) for the complete
 shared-workspace setup and configuration precedence.
