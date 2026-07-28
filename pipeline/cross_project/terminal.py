@@ -27,6 +27,7 @@ def finalize_cross_terminal(
     session: dict,
     status: str,
     halt_reason: str | None = None,
+    failure_reason: str | None = None,
     cross_ckpt: dict | None = None,
 ) -> None:
     """Persist a terminal status for a cross run.
@@ -49,7 +50,9 @@ def finalize_cross_terminal(
        both the session mirror and the checkpoint copy — this is the single
        settle-only clearing point for that gate-decision key (ADR 0115
        slice 4); the persist in step 2b writes the cleaned checkpoint.
-    2. Writes ``meta.json`` via :func:`save_cross_session` so the new
+    2. Stores ``failure_reason`` when supplied, then writes ``meta.json`` via
+       :func:`save_cross_session` so the terminal state and cause reach disk
+       together.
        field hits disk synchronously.
     2b. Persists the (pending_gate-cleared) ``cross_ckpt`` via
        :func:`write_cross_checkpoint` when one was threaded.
@@ -73,6 +76,8 @@ def finalize_cross_terminal(
         halt_reason=effective_reason,
         cross_ckpt=cross_ckpt,
     )
+    if failure_reason is not None:
+        session["failure_reason"] = failure_reason
     if run_dir is None:
         return
     save_cross_session(run_dir, session)
