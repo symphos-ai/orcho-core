@@ -1864,7 +1864,7 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             f"cd {shlex.quote(primary_project.path)}"
         ))
         out.append(_workspace_command(
-            "orcho run --project . --task '...' --mock"
+            "orcho run --task '...' --mock"
         ))
         out.append(_workspace_command("orcho status"))
     else:

@@ -139,8 +139,7 @@ see how Orcho behaves:
 
 ```bash
 orcho run --mock \
-  --task "Add input validation to the login endpoint. Return 400 if email is empty." \
-  --project .
+  --task "Add input validation to the login endpoint. Return 400 if email is empty."
 ```
 
 Then the real run (drops `--mock`, so it calls your code-agent CLI and
@@ -148,8 +147,7 @@ spends tokens):
 
 ```bash
 orcho run \
-  --task "Add input validation to the login endpoint. Return 400 if email is empty." \
-  --project .
+  --task "Add input validation to the login endpoint. Return 400 if email is empty."
 ```
 
 Pick a small real task, and run Orcho on a separate branch or a copy of
