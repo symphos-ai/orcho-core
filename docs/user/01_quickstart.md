@@ -120,7 +120,13 @@ orcho workspace init
 The repository is not moved or copied. Orcho registers its absolute path and
 creates a managed control workspace outside the checkout. The command prints
 that workspace path and MCP client setup, but later CLI commands resolve it
-from `--project` automatically.
+from the current project directory automatically.
+
+Init also prints a generated plugin scaffold and matching agent-rule
+templates. The safe scaffold is enough for a generic smoke run; adapting it
+into `<project>/.orcho/multiagent/plugin.py` from the repository's real
+architecture, commands, and environments is the recommended next step before
+relying on Orcho for project readiness.
 
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`
 from the shell: it is an MCP tool, not a terminal command. Add the

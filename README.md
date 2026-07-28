@@ -42,9 +42,11 @@ Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
 Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
 Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
-No engine fork is required for project-specific context. Orcho can run in
-generic mode; add an optional `plugin.py` when the project needs explicit
-architecture, file hints, prompts, or verification policy.
+No engine fork is required for project-specific context. Orcho starts with a
+safe generic fallback, and `workspace init` creates a language-neutral plugin
+scaffold. Completing that scaffold for the project is the recommended setup:
+it gives Orcho explicit architecture context, file hints, and authoritative
+verification policy instead of making every run rediscover them.
 
 ---
 
@@ -305,11 +307,17 @@ orcho status | orcho history | orcho metrics
 
 ---
 
-## Optional project policy and verification
+## Configure the generated project plugin
 
-Orcho runs in generic mode without project configuration. Add
-`your-project/.orcho/multiagent/plugin.py` only when you want to declare
-architecture context or authoritative verification:
+`workspace init` prints the path to a generated plugin scaffold and its matching
+agent-rule templates. The scaffold is deliberately inert: init has not
+inspected the repository deeply enough to invent commands, environments, or
+delivery policy safely.
+
+Generic mode is sufficient for the first smoke run. For sustained use, copy
+the generated scaffold to `your-project/.orcho/multiagent/plugin.py`, merge the
+generated agent rules into the project's root instructions, and complete the
+configuration from facts found in the repository:
 
 ```python
 PLUGIN = {
@@ -335,7 +343,8 @@ Cost is evidence metadata: `fast` is bounded deterministic local feedback,
 `unknown` has no reliable predictable cost evidence. It never shortcuts
 selection, execution, policy, or action. See the practical [scheduled
 verification guide](docs/guides/scheduled_verification.md).
-Without `plugin.py`, orcho runs in generic mode.
+Without a configured project plugin, Orcho still runs, but it falls back to
+generic context and has no project-owned scheduled verification contract.
 
 ---
 
