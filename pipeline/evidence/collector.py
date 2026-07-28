@@ -111,7 +111,7 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         "created_at": _now_iso(),
         "task": meta.get("task") or _payload_get(run_start, "task", ""),
         "profile": meta.get("profile") or _payload_get(run_start, "profile", ""),
-        "plan": _build_plan_record(events, meta),
+        "plan": _build_plan_record(target, events, meta, run_start),
         "phases": _build_phases(events),
         "gates": _build_gates(events),
         "commands": [
@@ -276,79 +276,21 @@ def _infer_status(run_end: _RawEvent | None) -> str:
 # ── Plan record ─────────────────────────────────────────────────────────────
 
 def _build_plan_record(
-    events: list[_RawEvent], meta: dict[str, Any],
+    run_dir: Path,
+    events: list[_RawEvent],
+    meta: dict[str, Any],
+    run_start: _RawEvent | None,
 ) -> dict[str, Any]:
-    """Compose the embedded plan-contract record.
+    """Pass the collector's durable inputs to the focused plan projection."""
+    from pipeline.evidence.plan_record import build_plan_record
 
-    Source of truth: the ``plan.parsed`` event (REA-2) — it carries the
-    architect's typed contract surface without re-parsing markdown.
-    Falls through to empty plan fields when no parse event fired.
-    """
     parsed = _find_event(events, "plan.parsed", reverse=True)
-    if parsed is None:
-        return {
-            "source": "absent",
-            "short_summary": "",
-            "planning_context": "",
-            "subtask_count": 0,
-            "has_contract": False,
-            "goal": None,
-            "acceptance_criteria": [],
-            "owned_files": [],
-            "commands_to_run": [],
-            "risks": [],
-            "review_focus": [],
-            "mcp_context": [],
-            "subtasks": [],
-        }
-    payload = parsed.payload
-    return {
-        "source": str(payload.get("source", "json")),
-        "short_summary": str(payload.get("short_summary") or ""),
-        "planning_context": str(payload.get("planning_context") or ""),
-        "subtask_count": int(payload.get("subtask_count", 0)),
-        "has_contract": bool(payload.get("has_contract", False)),
-        "goal": payload.get("goal") or None,
-        "acceptance_criteria": _string_list_from_payload(
-            payload, "acceptance_criteria", "acceptance_criteria_count",
-        ),
-        "owned_files": _string_list_from_payload(
-            payload, "owned_files", "owned_files_count",
-        ),
-        "commands_to_run": _string_list_from_payload(
-            payload, "commands_to_run", "commands_to_run_count",
-        ),
-        "risks": _string_list_from_payload(payload, "risks"),
-        "review_focus": _string_list_from_payload(payload, "review_focus"),
-        "mcp_context": [
-            dict(x) for x in payload.get("mcp_context", [])
-            if isinstance(x, dict)
-        ],
-        "subtasks": [
-            dict(x) for x in payload.get("subtasks", [])
-            if isinstance(x, dict)
-        ],
-    }
-
-
-def _string_list_from_payload(
-    payload: dict[str, Any],
-    key: str,
-    count_key: str | None = None,
-) -> list[str]:
-    """Return a typed contract list from ``plan.parsed`` payload.
-
-    REA-3 stores the real list values when present. The count fallback
-    preserves compatibility with REA-2 events written before the full
-    contract payload was added.
-    """
-    value = payload.get(key)
-    if isinstance(value, list):
-        return [str(x) for x in value if isinstance(x, str)]
-    if count_key is None:
-        return []
-    n = int(payload.get(count_key, 0) or 0)
-    return [f"<entry {i + 1}>" for i in range(n)]
+    return build_plan_record(
+        run_dir,
+        meta=meta,
+        run_start_payload=run_start.payload if run_start is not None else None,
+        mono_plan_payload=parsed.payload if parsed is not None else None,
+    )
 
 
 def _build_scheduled_gate_ledger(run_dir: Path) -> dict[str, Any] | None:

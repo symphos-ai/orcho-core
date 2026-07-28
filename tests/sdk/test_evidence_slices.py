@@ -12,6 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.cross_project.plan_parser import (
+    parse_cross_plan,
+    write_cross_plan_artifacts,
+)
 from sdk import (
     ErrorsAndHalt,
     PlanSummary,
@@ -283,6 +287,52 @@ def test_get_plan_summary_returns_typed_projection(tmp_path: Path) -> None:
     assert isinstance(summary, PlanSummary)
     # Minimal assertion — the exact shape depends on the collector's plan
     # extraction; we check the call doesn't raise and returns the dataclass.
+
+
+def test_get_plan_summary_projects_canonical_cross_plan(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    aliases = ["api", "web"]
+    run_dir = _seed_run(runs, "20260510_271000_ffffff", meta={
+        "task": "cross demo",
+        "status": "done",
+        "projects": {alias: {"path": f"/{alias}"} for alias in aliases},
+    })
+    data = {
+        "short_summary": "Coordinate API and web.",
+        "interface_contract": "API response is consumed by web.",
+        "implementation_order": ["API before web."],
+        "subtasks": [
+            {"alias": "api", "goal": "Update API.", "spec": "Produce response."},
+            {"alias": "web", "goal": "Update web.", "spec": "Consume response."},
+        ],
+    }
+    parsed = parse_cross_plan(json.dumps(data), aliases)
+    write_cross_plan_artifacts(
+        run_dir,
+        parsed,
+        task="cross demo",
+        projects={alias: Path(f"/{alias}") for alias in aliases},
+        aliases=aliases,
+    )
+
+    summary = get_plan_summary(
+        "20260510_271000_ffffff", runs_dir=runs, cwd=None,
+    )
+
+    assert summary == PlanSummary(
+        source="json",
+        short_summary="Coordinate API and web.",
+        planning_context="API response is consumed by web.",
+        subtask_count=2,
+        has_contract=True,
+        goal=None,
+        acceptance_criteria=(),
+        owned_files=(),
+        commands_to_run=(),
+        risks=(),
+        review_focus=(),
+    )
 
 
 # ── errors / halt ──────────────────────────────────────────────────────────
