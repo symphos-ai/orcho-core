@@ -74,6 +74,44 @@ is available on `PATH`.
 
 **Detailed walkthrough:** [Getting started](docs/user/00_getting_started.md)
 
+### Next step — a shared product workspace
+
+The in-place flow above is the fastest way to start. For a long-lived product,
+especially one split across repositories such as a backend and frontend, the
+recommended second step is to keep the related repositories under one
+intentional root and place the Orcho workspace there too:
+
+```text
+~/work/my-product/
+├── backend/
+├── frontend/
+└── workspace-orchestrator/  # created by Orcho
+```
+
+If the repositories already share a parent, use it. If they do not, reorganise
+them when that is practical; Orcho still accepts absolute paths, so this layout
+is a best practice rather than a requirement.
+
+Initialise the product root and activate its shared workspace:
+
+```bash
+orcho workspace init ~/work/my-product
+source ~/work/my-product/workspace-orchestrator/orcho-env.sh
+```
+
+This gives mono-project and cross-project runs one place for aliases, policy,
+history, evidence, and MCP configuration. Cross-project work can then name the
+registered repositories explicitly:
+
+```bash
+orcho cross \
+  --task "Change the API contract and update the frontend" \
+  --projects backend:~/work/my-product/backend frontend:~/work/my-product/frontend
+```
+
+See [Connecting your project](docs/user/03_workspaces.md) for the complete
+shared-workspace setup and configuration precedence.
+
 ---
 
 ## Install
