@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-07-28
+
+This release strengthens cross-project recovery, makes verification cost a
+typed scheduling signal, and normalizes generated delivery messages.
+
+### Added
+
+- Verification commands expose `fast`, `moderate`, `slow`, and `unknown` cost
+  metadata across plugin contracts, prompts, workspace scaffolds, and public
+  documentation.
+- Cross-project evidence includes canonical plan and execution-state details
+  needed by durable readers.
+
+### Changed
+
+- The former boolean `cheap` verification vocabulary is replaced by the typed
+  `cost` contract.
+- Generated commit subjects follow one normalized authorship and release
+  summary contract.
+- Scheduled-verification onboarding explains cost-aware targeted feedback
+  without transferring engine-owned gates into implementation tasks.
+
+### Fixed
+
+- Cross-project resumes re-arm final acceptance after resumable child handoffs
+  and redispatch interrupted same-run children exactly once.
+- Parent cross-runs settle truthfully when a provider fails, and required gate
+  declarations are persisted before a run becomes publicly observable.
+- Verification subprocesses receive the correct run isolation identity.
+- Hidden unavailable interface commands no longer recommend packages that are
+  not published.
+
+### Security
+
+- Release-path GitHub Actions use immutable pins, CodeQL runs for protected
+  release branches, and dependency updates preserve the reviewed workflow
+  lifecycle.
+
 ## 0.5.1 - 2026-07-26
 
 Stabilization release for the 0.5 line, driven by independent black-box
