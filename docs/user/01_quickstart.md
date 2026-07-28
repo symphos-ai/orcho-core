@@ -128,6 +128,10 @@ into `<project>/.orcho/multiagent/plugin.py` from the repository's real
 architecture, commands, and environments is the recommended next step before
 relying on Orcho for project readiness.
 
+See [Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold)
+for the deterministic fine-tune candidate, the agent-assisted setup workflow,
+and the engineer approval boundary.
+
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`
 from the shell: it is an MCP tool, not a terminal command. Add the
 server to the client config first. For Codex CLI/app, Claude Code,

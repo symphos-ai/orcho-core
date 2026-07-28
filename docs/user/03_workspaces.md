@@ -58,6 +58,50 @@ Declare scheduled readiness with the
 [scheduled verification guide](../guides/scheduled_verification.md); the full
 field reference is in [../expert/01_plugin.md](../expert/01_plugin.md).
 
+### Accelerate setup without delegating the decision
+
+Start with a read-only candidate:
+
+```bash
+cd /path/to/project
+orcho workspace fine-tune --dry-run
+```
+
+Fine-tune uses repository markers to propose environments and commands. It
+does not write `plugin.py`, infer a complete gate lifecycle, or approve the
+proposal.
+
+For deeper setup, adopt the generated agent-rule template alongside the
+plugin: merge its rules into the project's existing root `AGENTS.md`, preserve
+the existing instructions, and keep the generated root `CLAUDE.md` shim. Then
+ask the coding agent to configure Orcho for the repository. The generated rules
+require it to inspect manifests, package scripts, CI workflows, developer
+documentation, services, credentials, and worktree constraints instead of
+guessing from the language.
+
+A useful request is:
+
+```text
+Inspect this repository and configure the generated Orcho plugin from
+repository evidence. Reuse project-native commands, classify their cost,
+propose selection, schedule, policy, and failure routing, and report every
+unresolved assumption. Do not invent commands or silently weaken failures.
+```
+
+The agent may prepare the plugin diff and run bounded candidate checks to
+accelerate setup. The engineer remains the authority: review the discovered
+commands and environments, decide which checks are load-bearing, approve their
+selection, schedule, policy, and failure consequences, then inspect the
+resolved contract:
+
+```bash
+orcho quality-gates
+```
+
+Do not rely on the configured gates until that review is complete. Automation
+shortens repository discovery and drafting; it does not replace the engineering
+decision about what is authoritative or release-blocking.
+
 ---
 
 ## Best practice for several related projects

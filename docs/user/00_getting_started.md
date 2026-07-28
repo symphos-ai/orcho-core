@@ -154,6 +154,18 @@ recommended next step is to adapt the scaffold into
 architecture, commands, and environments. That configured plugin is where
 Orcho gains durable project context and authoritative scheduled verification.
 
+For the complete setup path, including agent-assisted discovery, see
+[Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold).
+The read-only `orcho workspace fine-tune --dry-run` command can propose an
+initial contract from repository markers, and the generated agent rules tell a
+coding agent how to inspect manifests, CI, and developer documentation before
+drafting the project configuration. Both are setup accelerators, not authority:
+an engineer reviews the resulting plugin and makes the final decision on
+commands, environments, selection, schedule, policy, and failure consequences.
+Use the [scheduled verification guide](../guides/scheduled_verification.md) for
+the authoring workflow and the [plugin reference](../expert/01_plugin.md) for
+every field.
+
 ## 4. Pick a control surface
 
 ### MCP — the recommended path

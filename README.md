@@ -341,6 +341,9 @@ selection, execution, policy, or action. See the practical [scheduled
 verification guide](docs/guides/scheduled_verification.md).
 Without a configured project plugin, Orcho still runs, but it falls back to
 generic context and has no project-owned scheduled verification contract.
+For the full workflow—including read-only fine-tune suggestions,
+agent-assisted repository discovery, and the engineer approval boundary—see
+[Configure the generated plugin scaffold](docs/user/03_workspaces.md#configure-the-generated-plugin-scaffold).
 
 ---
 
