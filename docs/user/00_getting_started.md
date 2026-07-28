@@ -153,6 +153,11 @@ recommended next step is to adapt the scaffold into
 `<project>/.orcho/multiagent/plugin.py` using the repository's real
 architecture, commands, and environments. That configured plugin is where
 Orcho gains durable project context and authoritative scheduled verification.
+Existing tests and CI make this setup more grounded, not less necessary: reuse
+their project-native commands rather than defining a second quality system.
+CI remains an independent repository control, while Orcho gains in-run
+selection, repair or handoff routing, durable receipts, and readiness evidence
+before delivery.
 
 For the complete setup path, including agent-assisted discovery, see
 [Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold).
