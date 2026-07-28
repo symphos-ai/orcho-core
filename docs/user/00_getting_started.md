@@ -181,8 +181,8 @@ config files. Copy-paste instructions live in
 ### CLI — the terminal path
 
 Use the CLI directly from the project. No env script is required for the
-project-oriented journey: `--project` resolves the managed workspace created
-by init.
+project-oriented journey: the current directory identifies the project and
+resolves the managed workspace created by init.
 
 Try it first with `--mock`. This runs the full pipeline end-to-end with a
 mock agent instead of a real model — no tokens spent, nothing calls your
@@ -191,8 +191,7 @@ real run:
 
 ```bash
 orcho run --mock \
-  --task "Add input validation: return 400 if email is empty or not valid format" \
-  --project .
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
 Then the real run (this one calls your configured code-agent CLI and spends
@@ -200,16 +199,14 @@ tokens):
 
 ```bash
 orcho run \
-  --task "Add input validation: return 400 if email is empty or not valid format" \
-  --project .
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
 The native Windows command has the same shape:
 
 ```powershell
 orcho run `
-  --task "Add input validation: return 400 if email is empty or not valid format" `
-  --project .
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
 Orcho will change files in the project you point it at. For a first run,

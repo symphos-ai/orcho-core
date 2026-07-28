@@ -8,13 +8,14 @@ the control workspace:
 ```bash
 cd /path/to/any/project
 orcho workspace init
-orcho run --task "Add tests for auth module" --project . --mock
+orcho run --task "Add tests for auth module" --mock
 ```
 
 Orcho stores its run state outside the checkout in a deterministic managed
 workspace. The repository remains the canonical edit and delivery target.
-Later CLI calls resolve the managed workspace from `--project`, while the MCP
-snippet printed by init carries the workspace path explicitly.
+Later CLI calls use the current directory as the project and resolve its
+managed workspace automatically, while the MCP snippet printed by init carries
+the workspace path explicitly.
 
 ---
 

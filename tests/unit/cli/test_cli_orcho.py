@@ -2437,7 +2437,7 @@ class TestCmdWorkspaceInit:
         assert "Project:" in captured.out
         assert str(root) in captured.out
         assert "Registered project:" in captured.out
-        assert "orcho run --project . --task '...' --mock" in captured.out
+        assert "orcho run --task '...' --mock" in captured.out
         assert "Next shell step:" not in captured.out
         assert not (root / "workspace-orchestrator").exists()
 

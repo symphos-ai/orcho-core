@@ -57,14 +57,15 @@ pipx install orcho
 
 cd ~/www/my-project
 orcho workspace init
-orcho run --project . --mock --task "Describe and implement one small change"
+orcho run --mock --task "Describe and implement one small change"
 orcho status
 ```
 
 `workspace init` does not move, copy, or modify the repository layout. It
 registers the canonical project path and stores Orcho's control state in an
 external managed workspace. Later CLI commands resolve that workspace from
-`--project .`; no environment script or dedicated parent folder is required.
+the current project directory; no `--project` flag, environment script, or
+dedicated parent folder is required.
 
 The mock run exercises the delivery pipeline without calling a model. For a
 real run, remove `--mock` and make sure at least one supported coding-agent CLI
@@ -279,7 +280,7 @@ Task
 ```bash
 # One project
 cd ~/my-project
-orcho run --task "Add input validation to /api/login" --project .
+orcho run --task "Add input validation to /api/login"
 
 # Several projects at once
 orcho cross --task "Add rate limiting: API + client" \
