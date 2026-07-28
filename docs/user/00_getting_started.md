@@ -260,13 +260,18 @@ Initialise that shared root explicitly:
 
 ```bash
 orcho workspace init ~/work/my-product
+```
+
+Either run from `~/work/my-product` and let Orcho discover the workspace, or
+activate it once in a Unix shell to run from any directory:
+
+```bash
 source ~/work/my-product/workspace-orchestrator/orcho-env.sh
 ```
 
 Then run cross-project work with an explicit project list:
 
 ```bash
-cd ~/work/my-product
 orcho cross \
   --task "Change the API contract and update both consumers" \
   --projects api web

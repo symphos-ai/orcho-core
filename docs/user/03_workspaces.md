@@ -82,7 +82,8 @@ The command creates:
 └── mobile/                    ← your project 3
 ```
 
-To make the shell see the new workspace:
+Run from `~/www/my-workspace` to use cwd discovery. To make a Unix shell use
+this workspace from any directory instead:
 
 ```bash
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
@@ -126,7 +127,6 @@ From there, register/use the intended repositories explicitly:
 
 ```bash
 # Cross-project run
-cd ~/www/my-workspace
 orcho cross \
   --task "Add OAuth2 support" \
   --projects api frontend

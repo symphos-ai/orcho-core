@@ -90,10 +90,17 @@ If the repositories already share a parent, use it. If they do not, reorganise
 them when that is practical; Orcho still accepts absolute paths, so this layout
 is a best practice rather than a requirement.
 
-Initialise the product root and activate its shared workspace:
+Initialise the product root:
 
 ```bash
 orcho workspace init ~/work/my-product
+```
+
+Then either run commands from `~/work/my-product`, where Orcho discovers the
+workspace automatically, or activate it once in a Unix shell and run from any
+directory:
+
+```bash
 source ~/work/my-product/workspace-orchestrator/orcho-env.sh
 ```
 
@@ -102,7 +109,6 @@ history, evidence, and MCP configuration. Cross-project work can then name the
 registered repositories explicitly:
 
 ```bash
-cd ~/work/my-product
 orcho cross \
   --task "Change the API contract and update the frontend" \
   --projects backend frontend
