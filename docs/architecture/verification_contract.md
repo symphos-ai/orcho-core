@@ -379,10 +379,12 @@ the run's real outcome.
 
 A project whose gates run against a live Compose stack can run under worktree
 isolation without collision by keying the stack on `ORCHO_ISOLATION_ID` — a
-stable, per-worktree namespace Orcho exports into the environment (alongside
-`ORCHO_RUN_ID`, and — like it — not stripped from gate command environments).
-Bring the stack up in `worktree_bootstrap`, run gates against it, and tear it
-down in `worktree_teardown`:
+stable, per-worktree namespace Orcho exports into gate command environments.
+`ORCHO_RUN_ID` is orchestration identity and is stripped from verification
+subprocesses unless a verification environment declares it explicitly; it must
+not be used as an infrastructure namespace. Bring the stack up in
+`worktree_bootstrap`, run gates against it, and tear it down in
+`worktree_teardown`:
 
 ```python
 PLUGIN = {
