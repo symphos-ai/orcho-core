@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from sdk.run_control.launch import LaunchSpec, launch_run, resume_run
+from sdk.workspace_paths import managed_workspace_dir
 
 
 class _Popen:
@@ -74,3 +75,24 @@ def test_resume_strips_ambient_pipeline_override(
     assert env["ORCHO_RUN_ID"] == "run"
     assert "ORCHO_PIPELINE" not in env
     assert result.run.command[result.run.command.index("--profile") + 1] == "task"
+
+
+def test_launch_infers_managed_workspace_from_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "projects" / "api"
+    (project / ".git").mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    workspace = managed_workspace_dir(project)
+    (workspace / "runspace" / "runs").mkdir(parents=True)
+    _capture_spawn(monkeypatch)
+
+    result = launch_run(
+        LaunchSpec(project_dir=str(project), task="Do it", mock=True),
+        run_id="managed",
+    )
+
+    command = result.run.command
+    assert command[command.index("--workspace") + 1] == str(workspace)
+    assert result.run.run_dir == workspace / "runspace" / "runs" / "managed"

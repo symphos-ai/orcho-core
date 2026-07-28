@@ -102,29 +102,25 @@ orcho-mcp --help
 
 ---
 
-## Create a workspace
+## Connect the repository you already have
 
-Create or pick a parent folder for your project:
-
-```text
-~/www/my-workspace/
-├── my-project/              ← your repo
-└── workspace-orchestrator/  ← Orcho creates this itself
-    └── .orcho/              ← settings and extension-point guides
-```
+Open the project in its current location and initialise Orcho from there:
 
 ```bash
-# macOS / Linux (and WSL2 / Git Bash on Windows)
-orcho workspace init ~/www/my-workspace
-source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
+cd ~/www/my-project
+orcho workspace init
 ```
 
 ```powershell
-# native Windows / PowerShell — orcho-env.sh is bash, so set the vars directly
-orcho workspace init $HOME\www\my-workspace
-$env:ORCHO_WORKSPACE = "$HOME\www\my-workspace\workspace-orchestrator"
-$env:ORCHO_RUNSPACE  = "$env:ORCHO_WORKSPACE\runspace"
+# native Windows / PowerShell
+Set-Location $HOME\www\my-project
+orcho workspace init
 ```
+
+The repository is not moved or copied. Orcho registers its absolute path and
+creates a managed control workspace outside the checkout. The command prints
+that workspace path and MCP client setup, but later CLI commands resolve it
+from `--project` automatically.
 
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`
 from the shell: it is an MCP tool, not a terminal command. Add the
@@ -144,7 +140,7 @@ see how Orcho behaves:
 ```bash
 orcho run --mock \
   --task "Add input validation to the login endpoint. Return 400 if email is empty." \
-  --project ~/www/my-workspace/my-project
+  --project .
 ```
 
 Then the real run (drops `--mock`, so it calls your code-agent CLI and
@@ -153,7 +149,7 @@ spends tokens):
 ```bash
 orcho run \
   --task "Add input validation to the login endpoint. Return 400 if email is empty." \
-  --project ~/www/my-workspace/my-project
+  --project .
 ```
 
 Pick a small real task, and run Orcho on a separate branch or a copy of
@@ -165,7 +161,8 @@ Orcho will:
 3. Review the code
 4. Fix the findings
 
-The result lands in `workspace-orchestrator/runspace/runs/{timestamp}/`.
+The result lands in the managed workspace path printed by
+`orcho workspace init`, under `runspace/runs/{timestamp}/`.
 
 ---
 

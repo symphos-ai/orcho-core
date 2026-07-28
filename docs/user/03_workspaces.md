@@ -1,14 +1,20 @@
 # Connecting your project
 
-## The minimum to start
+## Start inside the repository you already have
 
-Orcho works with **any** project without any setup:
+Do not move or re-parent a repository to adopt Orcho. Enter it and initialise
+the control workspace:
 
 ```bash
-orcho run --task "Add tests for auth module" --project /path/to/any/project
+cd /path/to/any/project
+orcho workspace init
+orcho run --task "Add tests for auth module" --project . --mock
 ```
 
-The agent figures out the project structure on its own.
+Orcho stores its run state outside the checkout in a deterministic managed
+workspace. The repository remains the canonical edit and delivery target.
+Later CLI calls resolve the managed workspace from `--project`, while the MCP
+snippet printed by init carries the workspace path explicitly.
 
 ---
 
@@ -46,10 +52,11 @@ field reference is in [../expert/01_plugin.md](../expert/01_plugin.md).
 
 ---
 
-## Several projects (workspace)
+## Best practice for several related projects
 
-If you work with several related repositories, create a parent folder
-and let Orcho lay the rails:
+After the single-project journey is working, related repositories benefit from
+one intentional shared root. This is recommended for cross-project operation,
+not required for ordinary Orcho use:
 
 ```bash
 orcho workspace init ~/www/my-workspace
@@ -115,7 +122,7 @@ a setup playbook for discovering project-native commands and environments,
 choosing selection and scheduling, validating the contract, and reporting
 unresolved assumptions.
 
-From there — the usual commands:
+From there, register/use the intended repositories explicitly:
 
 ```bash
 # Cross-project run
@@ -127,11 +134,13 @@ orcho cross \
 Useful `orcho workspace init` flags:
 
 - `--dry-run` — show what would be created, touching nothing.
+- `--workspace-dir PATH` — override the managed control-workspace location
+  when initialising a single existing repository.
 - `--mcp-config ~/www/my-workspace/.mcp.json` — also write the MCP
   client snippet into `.mcp.json`. Existing entries for other servers
   are preserved.
-- `--force` — allow initialising a directory that itself looks like a
-  repo (by default the command refuses, to keep you out of trouble).
+- `--force` — continue scaffolding without an installed agent runtime or
+  replace a conflicting MCP entry.
 - `--no-interactive` — skip interactive questions about unmarked
   folders (CI / non-TTY).
 - `--no-scaffold` — skip extension-point templates, including the shared

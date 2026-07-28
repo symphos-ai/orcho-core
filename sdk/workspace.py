@@ -1,8 +1,17 @@
 """sdk/workspace.py — workspace bootstrap.
 
-:func:`init_workspace` lays the minimum filesystem rails Orcho needs
-against a *project-group* directory: a directory that holds one or
-more project repositories side-by-side. The classic shape::
+:func:`init_workspace` lays the minimum filesystem rails Orcho needs.
+The primary journey connects one existing project in place and stores the
+control workspace outside the checkout::
+
+    ~/www/proj-a/            ← user's existing project repo
+    ~/.local/share/orcho/workspaces/proj-a-<digest>/
+        workspace-orchestrator/   ← created by this function
+            runspace/
+                runs/
+            .orcho/
+
+An explicit project-group directory keeps the shared multi-repository shape::
 
     ~/www/my-org/
         proj-a/              ← user's project repo
@@ -22,10 +31,8 @@ snippet or merges it into a `.mcp.json` file.
 Idempotent and safe:
 
 * refuses ``/`` and the user home directory exactly;
-* refuses a target that itself looks like an individual project repo
-  (``.git`` or one of the canonical manifest files at the root)
-  unless ``force=True`` — the command expects a *group root*, not a
-  single project;
+* recognises an individual project repo and registers it without scanning or
+  modifying sibling repositories;
 * never deletes;
 * never overwrites a file destructively (rewrites only when content
   is byte-identical or the file is an Orcho-owned key inside a
@@ -55,6 +62,11 @@ from sdk.runtimes import (
     detect_cli_runtimes,
     runtime_installed,
 )
+from sdk.workspace_paths import (
+    managed_workspace_dir,
+    project_repo_marker,
+    resolve_workspace_init_target,
+)
 from sdk.workspace_scaffold import scaffold_workspace_extensions
 
 # ─── Constants ──────────────────────────────────────────────────────────────
@@ -76,16 +88,6 @@ _LOCAL_CONFIG_FILE: Final[str] = "config.local.json"
 #: Name of the bash file that exports ``ORCHO_WORKSPACE`` /
 #: ``ORCHO_RUNSPACE`` for the user's shell.
 _ENV_FILE: Final[str] = "orcho-env.sh"
-
-#: Markers used to recognise an individual project repository.
-_PROJECT_REPO_MARKERS: Final[frozenset[str]] = frozenset({
-    ".git",
-    "pyproject.toml",
-    "package.json",
-    "composer.json",
-    "go.mod",
-    "Cargo.toml",
-})
 
 #: Subdirectories of the group root we never report as projects.
 _EXCLUDED_CHILD_NAMES: Final[frozenset[str]] = frozenset({
@@ -186,6 +188,16 @@ class WorkspaceInitResult:
     extension_points: tuple[str, ...] = ()
     missing_runtimes: tuple[str, ...] = ()
     runtime_override: str | None = None
+    topology: str = "group"
+    primary_project: DetectedProject | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializedWorkspace:
+    created: tuple[Path, ...]
+    skipped: tuple[Path, ...]
+    warnings: tuple[str, ...]
+    extension_points: tuple[str, ...]
 
 
 # ─── Public entry point ─────────────────────────────────────────────────────
@@ -194,6 +206,7 @@ class WorkspaceInitResult:
 def init_workspace(
     project_group_root: Path | str,
     *,
+    workspace_dir: Path | str | None = None,
     workspace_name: str | None = None,
     mcp_config: Path | str | None = None,
     mcp_server_name: str | None = None,
@@ -206,75 +219,65 @@ def init_workspace(
     no_scaffold: bool = False,
     runtime_override: str | None = None,
 ) -> WorkspaceInitResult:
-    """Initialise an Orcho workspace under ``project_group_root``.
+    """Initialise an Orcho workspace for a project or project group.
 
-    See module docstring for full semantics. Raises
-    :class:`sdk.errors.WorkspaceInitError` on refused targets or
-    config conflicts.
+    When ``project_group_root`` itself is a project repository, the repository
+    is registered in place and its control workspace is created in the managed
+    platform-data location (or at ``workspace_dir`` when explicitly supplied).
+    A non-project directory keeps the project-group discovery topology and
+    creates ``workspace-orchestrator/`` below that directory.
 
     ``runtime_override`` switches every configured phase whose runtime
     executable is not on PATH over to the given (installed) runtime in
     the personal workspace-local config — both when the file is first created
     and when it already exists.
     """
-    group_root = _coerce_group_root(project_group_root, dry_run=dry_run)
-    _refuse_unsafe_root(group_root)
-    _refuse_repo_root(group_root, force=force)
+    input_root = _coerce_group_root(project_group_root, dry_run=dry_run)
+    _refuse_unsafe_root(input_root)
+    target = resolve_workspace_init_target(
+        input_root,
+        workspace_dir=workspace_dir,
+    )
+    primary_project = (
+        DetectedProject(name=input_root.name, path=str(input_root))
+        if target.project_name is not None else None
+    )
+    resolved_workspace = target.workspace_dir
 
     # Pre-switch availability view — recorded on the result so callers
     # can render "runtime X missing" / "switched to Y" without probing
     # PATH again.
     availability = assess_runtime_availability(
-        planned_phase_runtimes(group_root).values()
+        planned_phase_runtimes(
+            input_root,
+            workspace_dir=resolved_workspace,
+        ).values()
     )
 
-    workspace_dir = group_root / _WORKSPACE_SUBDIR
-    runspace_dir = workspace_dir / _RUNSPACE_SUBDIR
+    runspace_dir = resolved_workspace / _RUNSPACE_SUBDIR
     runs_dir = runspace_dir / _RUNS_SUBDIR
-    local_config_dir = workspace_dir / _ORCHO_CONFIG_DIR
+    local_config_dir = resolved_workspace / _ORCHO_CONFIG_DIR
     local_config_file = local_config_dir / _LOCAL_CONFIG_FILE
-    env_file = workspace_dir / _ENV_FILE
+    env_file = resolved_workspace / _ENV_FILE
 
-    created: list[Path] = []
-    skipped: list[Path] = []
-    warnings: list[str] = []
-
-    # Directories — additive.
-    for d in (
-        workspace_dir,
+    layout = _materialize_workspace_layout(
+        resolved_workspace,
         runspace_dir,
         runs_dir,
         local_config_dir,
-    ):
-        if d.is_dir():
-            skipped.append(d)
-        else:
-            created.append(d)
-            if not dry_run:
-                d.mkdir(parents=True, exist_ok=True)
+        env_file=env_file,
+        dry_run=dry_run,
+        no_scaffold=no_scaffold,
+    )
+    created = list(layout.created)
+    skipped = list(layout.skipped)
+    warnings = list(layout.warnings)
 
-    # Env script — non-destructive write.
-    env_action = _write_env_file(env_file, dry_run=dry_run)
-    if env_action == "created":
-        created.append(env_file)
-    elif env_action == "identical":
-        skipped.append(env_file)
-    elif env_action == "differs":
-        warnings.append(
-            f"existing {env_file.name} differs from the generated template; "
-            "leaving it untouched. Delete it and re-run to regenerate."
-        )
-        skipped.append(env_file)
-
-    extension_points: tuple[str, ...] = ()
-    if not no_scaffold:
-        scaffold = scaffold_workspace_extensions(workspace_dir, dry_run=dry_run)
-        created.extend(scaffold.created_paths)
-        skipped.extend(scaffold.skipped_paths)
-        warnings.extend(scaffold.warnings)
-        extension_points = scaffold.extension_points
-
-    detected = _detect_projects(group_root)
+    detected = (
+        [primary_project]
+        if primary_project is not None
+        else _detect_projects(input_root)
+    )
 
     # Workspace-local config — non-destructive scaffold.
     config_action = _write_workspace_local_config(
@@ -297,11 +300,11 @@ def init_workspace(
     # MCP snippet — always computed, optionally written.
     server_name = (
         mcp_server_name
-        or _default_server_name(workspace_name or group_root.name)
+        or _default_server_name(workspace_name or input_root.name)
     )
     snippet = _build_mcp_snippet(
         server_name=server_name,
-        workspace_dir=workspace_dir,
+        workspace_dir=resolved_workspace,
         orcho_mcp_command=orcho_mcp_command,
     )
 
@@ -317,9 +320,115 @@ def init_workspace(
             dry_run=dry_run,
         )
 
+    return _build_workspace_init_result(
+        input_root=input_root,
+        resolved_workspace=resolved_workspace,
+        runs_dir=runs_dir,
+        env_file=env_file,
+        local_config_file=local_config_file,
+        detected=detected,
+        created=created,
+        skipped=skipped,
+        warnings=warnings,
+        server_name=server_name,
+        snippet=snippet,
+        mcp_config_path=mcp_config_path,
+        mcp_config_action=mcp_config_action,
+        dry_run=dry_run,
+        extra_projects=extra_projects,
+        undetected_count=undetected_count,
+        interactive=interactive,
+        extension_points=layout.extension_points,
+        availability=availability,
+        runtime_override=runtime_override,
+        topology=target.topology,
+        primary_project=primary_project,
+    )
+
+
+def _materialize_workspace_layout(
+    workspace_dir: Path,
+    runspace_dir: Path,
+    runs_dir: Path,
+    local_config_dir: Path,
+    *,
+    env_file: Path,
+    dry_run: bool,
+    no_scaffold: bool,
+) -> _MaterializedWorkspace:
+    """Create additive workspace rails without project discovery or config."""
+    created: list[Path] = []
+    skipped: list[Path] = []
+    warnings: list[str] = []
+    for directory in (
+        workspace_dir,
+        runspace_dir,
+        runs_dir,
+        local_config_dir,
+    ):
+        if directory.is_dir():
+            skipped.append(directory)
+        else:
+            created.append(directory)
+            if not dry_run:
+                directory.mkdir(parents=True, exist_ok=True)
+
+    env_action = _write_env_file(env_file, dry_run=dry_run)
+    if env_action == "created":
+        created.append(env_file)
+    elif env_action == "identical":
+        skipped.append(env_file)
+    elif env_action == "differs":
+        warnings.append(
+            f"existing {env_file.name} differs from the generated template; "
+            "leaving it untouched. Delete it and re-run to regenerate."
+        )
+        skipped.append(env_file)
+
+    extension_points: tuple[str, ...] = ()
+    if not no_scaffold:
+        scaffold = scaffold_workspace_extensions(workspace_dir, dry_run=dry_run)
+        created.extend(scaffold.created_paths)
+        skipped.extend(scaffold.skipped_paths)
+        warnings.extend(scaffold.warnings)
+        extension_points = scaffold.extension_points
+    return _MaterializedWorkspace(
+        created=tuple(created),
+        skipped=tuple(skipped),
+        warnings=tuple(warnings),
+        extension_points=extension_points,
+    )
+
+
+def _build_workspace_init_result(
+    *,
+    input_root: Path,
+    resolved_workspace: Path,
+    runs_dir: Path,
+    env_file: Path,
+    local_config_file: Path,
+    detected: list[DetectedProject],
+    created: list[Path],
+    skipped: list[Path],
+    warnings: list[str],
+    server_name: str,
+    snippet: dict,
+    mcp_config_path: Path | None,
+    mcp_config_action: str,
+    dry_run: bool,
+    extra_projects: Sequence[ExtraProject],
+    undetected_count: int,
+    interactive: bool,
+    extension_points: tuple[str, ...],
+    availability,
+    runtime_override: str | None,
+    topology: str,
+    primary_project: DetectedProject | None,
+) -> WorkspaceInitResult:
+    """Assemble the immutable public result after workspace materialisation."""
     return WorkspaceInitResult(
-        group_root=str(group_root),
-        workspace_dir=str(workspace_dir),
+        group_root=str(input_root),
+        workspace_dir=str(resolved_workspace),
         runs_dir=str(runs_dir),
         env_file=str(env_file),
         local_config_file=str(local_config_file),
@@ -343,6 +452,8 @@ def init_workspace(
             if runtime_override and availability.missing_runtimes
             else None
         ),
+        topology=topology,
+        primary_project=primary_project,
     )
 
 
@@ -356,17 +467,16 @@ def preflight_workspace_target(
 ) -> Path:
     """Validate an ``init`` target WITHOUT mutating the filesystem.
 
-    Resolves the target and applies the same refusals as
-    :func:`init_workspace` (filesystem root, exact ``$HOME``, and a single
-    project repo-root unless ``force``), then returns the resolved group
-    root. Callers MUST run this before any interactive discovery or prompt
+    Resolves the target and applies the same unsafe-root refusals as
+    :func:`init_workspace`, then returns the resolved input root. A project
+    repository is a valid primary onboarding target. Callers MUST run this
+    before any interactive discovery or prompt
     so we never mutate a child (e.g. ``git init``) on a target we would
     ultimately reject. Raises :class:`WorkspaceInitError` on a refused
     target.
     """
     group_root = _coerce_group_root(project_group_root, dry_run=True)
     _refuse_unsafe_root(group_root)
-    _refuse_repo_root(group_root, force=force)
     return group_root
 
 
@@ -408,28 +518,6 @@ def _refuse_unsafe_root(group_root: Path) -> None:
             f"refusing to initialise the user home directory exactly ({home}). "
             "Pick a subdirectory."
         )
-
-
-def _refuse_repo_root(group_root: Path, *, force: bool) -> None:
-    """If the target itself looks like a single project repo, refuse.
-
-    Repo-likeness is the presence of any of :data:`_PROJECT_REPO_MARKERS`
-    *at the root*. Child directories that look like repos are fine —
-    that's the expected case.
-    """
-    if force:
-        return
-    if not group_root.exists():
-        return  # nothing to inspect on a not-yet-created dir
-    for marker in _PROJECT_REPO_MARKERS:
-        if (group_root / marker).exists():
-            raise WorkspaceInitError(
-                f"{group_root} looks like an individual project repo "
-                f"(found {marker!r} at the root). `orcho workspace init` "
-                "expects a *group* directory that holds one or more "
-                "project repos. Re-run with --force if this is "
-                "intentional, or point at the parent directory."
-            )
 
 
 # ─── Internals: env script ──────────────────────────────────────────────────
@@ -657,7 +745,11 @@ def _override_runtimes_in_file(
     return True
 
 
-def planned_phase_runtimes(project_group_root: Path | str) -> dict[str, str]:
+def planned_phase_runtimes(
+    project_group_root: Path | str,
+    *,
+    workspace_dir: Path | str | None = None,
+) -> dict[str, str]:
     """Per-phase runtime ids the workspace under ``project_group_root`` uses.
 
     Combines the config seed (package defaults plus package/user local
@@ -669,10 +761,17 @@ def planned_phase_runtimes(project_group_root: Path | str) -> dict[str, str]:
     from core.infra import config as core_config
 
     seed = _workspace_local_config_seed()
-    local_file = (
-        Path(project_group_root).expanduser()
-        / _WORKSPACE_SUBDIR / _ORCHO_CONFIG_DIR / _LOCAL_CONFIG_FILE
+    input_root = Path(project_group_root).expanduser()
+    resolved_workspace = (
+        Path(workspace_dir).expanduser()
+        if workspace_dir is not None
+        else (
+            managed_workspace_dir(input_root)
+            if project_repo_marker(input_root) is not None
+            else input_root / _WORKSPACE_SUBDIR
+        )
     )
+    local_file = resolved_workspace / _ORCHO_CONFIG_DIR / _LOCAL_CONFIG_FILE
     if local_file.is_file():
         try:
             local = json.loads(local_file.read_text(encoding="utf-8"))
@@ -944,7 +1043,7 @@ def _detect_projects(group_root: Path) -> list[DetectedProject]:
 
 
 def _looks_like_project(d: Path) -> bool:
-    return any((d / marker).exists() for marker in _PROJECT_REPO_MARKERS)
+    return project_repo_marker(d) is not None
 
 
 __all__ = [

@@ -1729,7 +1729,12 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
     )
 
     out: list[str] = ["", paint(header, C.GREEN, C.BOLD), ""]
-    out.append(_workspace_kv("Project group:", result.group_root))
+    topology = getattr(result, "topology", "group")
+    primary_project = getattr(result, "primary_project", None)
+    if topology == "project" and primary_project is not None:
+        out.append(_workspace_kv("Project:", primary_project.path))
+    else:
+        out.append(_workspace_kv("Project group:", result.group_root))
     out.append(_workspace_kv("Workspace:", result.workspace_dir))
     out.append(_workspace_kv("Runs:", result.runs_dir))
     out.append(_workspace_kv("Env:", result.env_file))
@@ -1741,9 +1746,17 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
     interactive = getattr(result, "interactive", False)
 
     if result.detected_projects:
-        out.append(_workspace_heading("Detected projects:"))
+        label = (
+            "Registered project:"
+            if topology == "project"
+            else "Detected projects:"
+        )
+        out.append(_workspace_heading(label))
         for p in result.detected_projects:
-            out.append(f"    - {paint(p.name, C.GREEN)}")
+            out.append(
+                f"    - {paint(p.name, C.GREEN)} "
+                f"{paint(f'({p.path})', C.GREY)}"
+            )
         out.append("")
     else:
         # Only claim the group root is truly empty when there were no
@@ -1837,16 +1850,28 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             out.append(f"    {paint(f'⚠ {w}', C.YELLOW)}")
         out.append("")
 
-    out.append(_workspace_heading("Next shell step:"))
-    out.append(_workspace_command(f"source {result.env_file}"))
-    out.append("")
-    out.append(_workspace_heading("Try:"))
-    out.append(_workspace_command(f"orcho status --workspace {result.workspace_dir}"))
-    if result.detected_projects:
-        first = result.detected_projects[0].path
+    if topology == "project" and primary_project is not None:
+        out.append(_workspace_heading("Try from the project:"))
         out.append(_workspace_command(
-            f"orcho run --project {first} --task '...' --mock"
+            f"cd {shlex.quote(primary_project.path)}"
         ))
+        out.append(_workspace_command(
+            "orcho run --project . --task '...' --mock"
+        ))
+        out.append(_workspace_command("orcho status"))
+    else:
+        out.append(_workspace_heading("Next shell step:"))
+        out.append(_workspace_command(f"source {result.env_file}"))
+        out.append("")
+        out.append(_workspace_heading("Try:"))
+        out.append(_workspace_command(
+            f"orcho status --workspace {result.workspace_dir}"
+        ))
+        if result.detected_projects:
+            first = shlex.quote(result.detected_projects[0].path)
+            out.append(_workspace_command(
+                f"orcho run --project {first} --task '...' --mock"
+            ))
     out.append("")
 
     # MCP snippet — always shown. When a config file was touched, also

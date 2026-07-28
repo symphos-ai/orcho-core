@@ -38,6 +38,7 @@ class RuntimeGateDecision:
 def workspace_runtime_gate(
     project_group_root: str,
     *,
+    workspace_dir: str | None = None,
     no_interactive: bool,
     dry_run: bool,
     force: bool,
@@ -50,9 +51,15 @@ def workspace_runtime_gate(
     unless ``force`` (scaffold anyway) or ``dry_run`` (a preview must
     stay printable; the formatter surfaces the warning instead).
     """
-    availability = assess_runtime_availability(
-        planned_phase_runtimes(project_group_root).values()
+    planned = (
+        planned_phase_runtimes(project_group_root)
+        if workspace_dir is None
+        else planned_phase_runtimes(
+            project_group_root,
+            workspace_dir=workspace_dir,
+        )
     )
+    availability = assess_runtime_availability(planned.values())
 
     if not availability.any_installed:
         if force or dry_run:
