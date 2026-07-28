@@ -3,9 +3,8 @@
 Covers two regressions the delegate refactor is responsible for not
 re-introducing:
 
-1. When orcho-web is not installed, the delegate prints an actionable
- install hint to stderr and returns rc=1 (rather than crashing or
- printing a Python traceback).
+1. When the web integration is unavailable, the delegate reports that fact
+   without advertising an unpublished installation package.
 2. The argparse parser exposes ``--headless``, and the delegate forwards
  it to ``orcho_web.launcher.main``.
 """
@@ -31,8 +30,8 @@ def test_parser_default_headless_false():
     assert args.headless is False
 
 
-def test_cmd_web_install_hint_when_orcho_web_missing(monkeypatch, capsys):
-    """If `orcho_web` import fails, return 1 and print install hint to stderr."""
+def test_cmd_web_unavailable_does_not_claim_a_public_install(monkeypatch, capsys):
+    """If `orcho_web` import fails, return 1 without an invalid install hint."""
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
@@ -49,8 +48,8 @@ def test_cmd_web_install_hint_when_orcho_web_missing(monkeypatch, capsys):
     captured = capsys.readouterr()
 
     assert rc == 1
-    assert "orcho-web is not installed" in captured.err
-    assert "pip install orcho-web" in captured.err
+    assert "web interface is not available" in captured.err
+    assert "pip install" not in captured.err
 
 
 def test_cmd_web_forwards_headless(monkeypatch):

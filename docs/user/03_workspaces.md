@@ -25,18 +25,24 @@ your-project/
 
 **Minimal plugin.py:**
 ```python
-from pipeline.plugins import PluginConfig
-
-plugin = PluginConfig(
-    name="My Project",
-    tech_stack="FastAPI + PostgreSQL",
-    test_runner="pytest",
-)
+PLUGIN = {
+    "name": "My Project",
+    "language": "Python 3.12",
+    "verification_envs": {"project": {"python": "python"}},
+    "verification": {
+        "default_env": "project",
+        "commands": {"lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"}},
+        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "warn"}},
+        "selection": [{"always": ["hygiene"]}],
+        "schedule": [{"after_phase": "implement", "gate_sets": ["hygiene"]}],
+    },
+}
 ```
 
 With a plugin the agent knows the project language, how to run tests,
-and which files matter. The full field reference is in
-[../expert/01_plugin.md](../expert/01_plugin.md).
+and which files matter. Declare scheduled readiness with the
+[scheduled verification guide](../guides/scheduled_verification.md); the full
+field reference is in [../expert/01_plugin.md](../expert/01_plugin.md).
 
 ---
 
@@ -103,8 +109,8 @@ files, direct `--task` input, and follow-ups: scheduled project gates remain
 engine-owned, while implementation can still run focused tests, lint on
 changed files, and other bounded feedback. Commands that are manual-only or
 not configured may be requested explicitly. The plugin template includes a
-commented, language-neutral gate pattern that starts at `warn` and declares no
-commands until the project has been inspected. The matching agent rules include
+commented, language-neutral declaration pattern to complete after the project
+has been inspected. The matching agent rules include
 a setup playbook for discovering project-native commands and environments,
 choosing selection and scheduling, validating the contract, and reporting
 unresolved assumptions.

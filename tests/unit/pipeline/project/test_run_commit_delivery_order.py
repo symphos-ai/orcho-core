@@ -127,7 +127,7 @@ def test_pipeline_run_wires_llm_commit_message_generator(
         def invoke(self, prompt: str, cwd: str, **kwargs: object) -> str:
             self.calls.append({"prompt": prompt, "cwd": cwd, **kwargs})
             return (
-                '{"subject": "fix(delivery): generated message", '
+                '{"subject": "Generate delivery message", '
                 '"body": "", "type": "fix", "scope": "delivery", '
                 '"breaking": false}'
             )
@@ -195,7 +195,7 @@ def test_pipeline_run_wires_llm_commit_message_generator(
 
     _PipelineRun._run_commit_delivery(stub, diff_cwd=worktree)
 
-    assert generated_messages == ["fix(delivery): generated message\n"]
+    assert generated_messages == ["fix(delivery): Generate delivery message\n"]
     assert agent.calls
     assert agent.calls[0]["cwd"] == str(worktree)
     assert agent.calls[0]["mutates_artifacts"] is False
@@ -204,8 +204,90 @@ def test_pipeline_run_wires_llm_commit_message_generator(
     assert stub.session["commit_delivery"]["strategy"] == "llm_generate"
     assert (
         stub.session["commit_delivery"]["final_message"]
-        == "fix(delivery): generated message\n"
+        == "fix(delivery): Generate delivery message\n"
     )
+
+
+def test_pipeline_run_persists_invalid_agent_commit_message_fallback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    class _InvalidCommitMessageAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def invoke(self, *_args: object, **_kwargs: object) -> str:
+            self.calls += 1
+            return (
+                '{"subject": "fix(delivery): prefixed subject", '
+                '"body": "", "type": "fix", "scope": "delivery", '
+                '"breaking": false}'
+            )
+
+    agent = _InvalidCommitMessageAgent()
+    monkeypatch.setattr(
+        cd,
+        "_run_owned_patch",
+        lambda *_args, **_kwargs: "diff --git a/a.py b/a.py\n",
+    )
+    monkeypatch.setattr(cd, "_changed_paths", lambda *_args, **_kwargs: ("a.py",))
+    monkeypatch.setattr(cd, "_untracked_paths", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        cd,
+        "apply_commit_delivery",
+        lambda decision, **_kwargs: replace(
+            decision, status="committed", commit_sha="deadbeef",
+        ),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.run.config.AppConfig.load",
+        lambda: SimpleNamespace(
+            commit={
+                "enabled": True,
+                "auto_in_ci": "approve",
+                "default_strategy": "llm_generate",
+                "publish": "off",
+            },
+            content_language="English",
+        ),
+    )
+    monkeypatch.setattr(
+        "core.observability.logging.get_output_mode", lambda: "live",
+    )
+    stub = SimpleNamespace(
+        output_dir=run_dir,
+        session={"status": "done", "phases": {"final_acceptance": {
+            "verdict": "APPROVED", "short_summary": "Deliver fallback",
+        }}},
+        project_path=project_dir,
+        parent_run_id=None,
+        project_alias=None,
+        no_interactive=True,
+        worktree_context=None,
+        session_ts="r1",
+        phase_config=SimpleNamespace(final_acceptance_agent=agent),
+        _commit_delivery_baseline=lambda: "HEAD",
+    )
+
+    _PipelineRun._run_commit_delivery(stub, diff_cwd=worktree)
+
+    record = stub.session["commit_delivery"]
+    assert agent.calls == 1
+    assert record["strategy"] == "release_summary"
+    assert record["final_message"] == "Deliver fallback"
+    assert len(record["delivery_warnings"]) == 1
+    assert "CommitMessageSchemaError" in record["delivery_warnings"][0]
+    assert "used release_summary fallback" in record["delivery_warnings"][0]
+    output = strip_ansi(capsys.readouterr().out)
+    assert "CommitMessageSchemaError" in output
 
 
 def test_pipeline_run_forces_content_language_authorship_on_publish_outward(
@@ -240,7 +322,7 @@ def test_pipeline_run_forces_content_language_authorship_on_publish_outward(
         def invoke(self, prompt: str, cwd: str, **kwargs: object) -> str:
             self.calls.append({"prompt": prompt, "cwd": cwd, **kwargs})
             return (
-                '{"subject": "fix(delivery): english outward message", '
+                '{"subject": "Generate English outward message", '
                 '"body": "", "type": "fix", "scope": "delivery", '
                 '"breaking": false}'
             )
@@ -305,7 +387,7 @@ def test_pipeline_run_forces_content_language_authorship_on_publish_outward(
     assert agent.calls, "generator must be called on the publish-outward path"
     record = stub.session["commit_delivery"]
     assert record["strategy"] == "llm_generate"
-    assert record["final_message"] == "fix(delivery): english outward message"
+    assert record["final_message"] == "fix(delivery): Generate English outward message"
     assert "Русское" not in record["final_message"]
     # content_language (English) drove the body-language directive.
     assert "in English" in str(agent.calls[0]["prompt"])

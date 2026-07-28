@@ -376,7 +376,7 @@ def test_continuation_read_models_preserve_retained_followup_and_preflight_block
         "task": "resume", "status": "failed",
     }), encoding="utf-8")
     (parent / "scheduled_gate_ledger.json").write_text(json.dumps({
-        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+        "schema_version": "2", "finalized": True, "rows": [], "trail": [],
     }), encoding="utf-8")
 
     finalized_status = load_status("finalized-parent", runs_dir=parent.parent, cwd=None)

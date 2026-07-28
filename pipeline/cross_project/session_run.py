@@ -78,6 +78,7 @@ from pipeline.cross_project.run_setup import (
     setup_cross_run,
 )
 from pipeline.cross_project.task_plan import normalize_cross_task_plan
+from pipeline.cross_project.terminal import finalize_cross_terminal
 from pipeline.cross_project.usage import (
     _capture_invoke_usage,
     _print_cross_checks_usage,
@@ -705,6 +706,11 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         isinstance(entry, dict) and entry.get("not_evaluable") is True
         for entry in (getattr(ctx, "contract_results", None) or {}).values()
     )
+    resuming_cfa_handoff = bool(
+        getattr(request, "resume_from", None)
+        and ctx.cross_ckpt.get("phase_handoff_pending")
+        and ctx.cross_ckpt.get("phase_handoff_kind") == "cfa"
+    )
     execution_graph = getattr(ctx, "execution_graph", None)
     if execution_graph is not None:
         graph_state = reduce_runtime_cross_execution_graph_state(
@@ -717,6 +723,7 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         if (
             cfa_node.status is CrossExecutionGraphStatus.BLOCKED
             and not readiness_precondition
+            and not resuming_cfa_handoff
         ):
             ctx.graph_gate_blocked = True
             return False
@@ -752,8 +759,11 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         and not readiness_precondition
         and selected_cfa is None
         and not (
-            request.resume_from
-            and cfa_node.status is CrossExecutionGraphStatus.COMPLETED
+            getattr(request, "resume_from", None)
+            and (
+                cfa_node.status is CrossExecutionGraphStatus.COMPLETED
+                or resuming_cfa_handoff
+            )
         )
     ):
         ctx.graph_gate_blocked = True
@@ -767,19 +777,30 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
         result_to_phase_log_entry,
     )
 
-    _cfa_ctx = build_context(
-        cross_plan_markdown=ctx.plan_output,
-        aliases=tuple(request.projects.keys()),
-        session_phases=ctx.session["phases"],
-        common_cwd=str(ctx.review_common_cwd),
-        review_paths={a: str(p) for a, p in ctx.review_projects.items()},
-        child_states={child.alias: child for child in ctx.reduced_parent.children},
-        parent_blocked=bool(
-            ctx.reduced_parent.violations
-            or ctx.reduced_parent.active_operations
-            or ctx.reduced_parent.pending_decision
-        ),
-    )
+    def _build_cfa_context():
+        state_session = (
+            ctx.session
+            if isinstance(ctx.session.get("projects"), dict)
+            else {**ctx.session, "projects": {alias: str(path) for alias, path in request.projects.items()}}
+        )
+        ctx.reduced_parent = reduce_runtime_cross_parent_state(
+            state_session, ctx.cross_ckpt, ctx.run_dir,
+        )
+        return build_context(
+            cross_plan_markdown=ctx.plan_output,
+            aliases=tuple(request.projects.keys()),
+            session_phases=ctx.session["phases"],
+            common_cwd=str(ctx.review_common_cwd),
+            review_paths={a: str(p) for a, p in ctx.review_projects.items()},
+            child_states={child.alias: child for child in ctx.reduced_parent.children},
+            parent_blocked=bool(
+                ctx.reduced_parent.violations
+                or ctx.reduced_parent.active_operations
+                or ctx.reduced_parent.pending_decision
+            ),
+        )
+
+    _cfa_ctx = _build_cfa_context()
     _cfa_outcome = evaluate_cfa_gate(
         cfa_ctx=_cfa_ctx,
         codex=ctx.review_agent,
@@ -799,6 +820,7 @@ def _run_release_gate(request: CrossRunRequest, ctx: _CrossRunContext) -> bool:
             phase_kind=None,
             attempt=1,
         ),
+        refresh_context=_build_cfa_context,
     )
     ctx.cfa_outcome = _cfa_outcome
     # ``halted`` already wrote terminal state; skip the tail and return.
@@ -1022,41 +1044,62 @@ def run_cross_pipeline_session(
 ) -> tuple[dict, Path | None, str]:
     """Coordinator backing the typed cross orchestration boundary; sequences the focused setup + domain modules, returning ``(session, output_dir, run_id)`` for :class:`CrossRunResult`. Never calls ``sys.exit``."""
     ctx = _setup_cross_run(request)
-    _run_cross_hypothesis(request, ctx)
-    _resolve_global_plan_steps(ctx)
-    if (
-        request.resume_from
-        and ctx.cross_ckpt.get("phase_handoff_pending")
-        and ctx.cross_ckpt.get("phase_handoff_kind") == "project"
-    ):
-        # The helper validates and applies the durable decision artifact. Keep
-        # only its exact alias as one-shot continuation routing; the graph
-        # reducer still owns every ordinary readiness decision.
-        alias = ctx.cross_ckpt.get("phase_handoff_project_alias")
-        if resume_project_phase_handoff(
-            cross_ckpt=ctx.cross_ckpt,
-            run_dir=ctx.run_dir,
-            output_dir=request.output_dir,
-            session=ctx.session,
-            success=ctx.r.success,
+    try:
+        _run_cross_hypothesis(request, ctx)
+        _resolve_global_plan_steps(ctx)
+        if (
+            request.resume_from
+            and ctx.cross_ckpt.get("phase_handoff_pending")
+            and ctx.cross_ckpt.get("phase_handoff_kind") == "project"
+        ):
+            # The helper validates and applies the durable decision artifact.
+            # Keep only its exact alias as one-shot continuation routing; the
+            # graph reducer still owns every ordinary readiness decision.
+            alias = ctx.cross_ckpt.get("phase_handoff_project_alias")
+            if resume_project_phase_handoff(
+                cross_ckpt=ctx.cross_ckpt,
+                run_dir=ctx.run_dir,
+                output_dir=request.output_dir,
+                session=ctx.session,
+                success=ctx.r.success,
+            ):
+                return ctx.session, ctx.run_dir, ctx.session_ts
+            if not isinstance(alias, str) or alias not in ctx.aliases:
+                raise RuntimeError("resolved project handoff has invalid alias")
+            ctx.resolved_handoff_alias = alias
+        if _run_planning(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if _run_dispatch_and_contract(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if ctx.graph_gate_blocked:
+            _run_delivery_and_finalize(request, ctx)
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if _run_release_gate(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if ctx.graph_gate_blocked:
+            _run_delivery_and_finalize(request, ctx)
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if (
+            not ctx.release_skipped_by_policy
+            and _finalize_release_verdict(request, ctx)
         ):
             return ctx.session, ctx.run_dir, ctx.session_ts
-        if not isinstance(alias, str) or alias not in ctx.aliases:
-            raise RuntimeError("resolved project handoff has invalid alias")
-        ctx.resolved_handoff_alias = alias
-    if _run_planning(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if _run_dispatch_and_contract(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if ctx.graph_gate_blocked:
         _run_delivery_and_finalize(request, ctx)
         return ctx.session, ctx.run_dir, ctx.session_ts
-    if _run_release_gate(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if ctx.graph_gate_blocked:
-        _run_delivery_and_finalize(request, ctx)
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if not ctx.release_skipped_by_policy and _finalize_release_verdict(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    _run_delivery_and_finalize(request, ctx)
-    return ctx.session, ctx.run_dir, ctx.session_ts
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {exc}"
+        try:
+            finalize_cross_terminal(
+                run_dir=ctx.run_dir,
+                session=ctx.session,
+                status="failed",
+                halt_reason="cross_unhandled_exception",
+                failure_reason=failure_reason,
+                cross_ckpt=ctx.cross_ckpt,
+            )
+        except Exception as settlement_exc:
+            exc.add_note(
+                "Cross parent terminal settlement also failed: "
+                f"{type(settlement_exc).__name__}: {settlement_exc}"
+            )
+        raise

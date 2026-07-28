@@ -38,6 +38,11 @@ PLUGIN = {
     # BEGIN ORCHO VERIFICATION EXAMPLE
     # "work_mode": "pro",
     # "verification": {
+    #     # A command may declare cost: fast|moderate|slow|unknown. A command
+    #     # cost overrides gate-set default_cost. Otherwise contributing defaults
+    #     # merge conservatively: unknown > slow > moderate > fast.
+    #     # Cost is an independent display axis: it never changes selection,
+    #     # executor, policy, action, or consequence.
     #     "commands": {},
     #     "gate_sets": {},
     #     "selection": [],
@@ -61,7 +66,7 @@ This template belongs with the adjacent `plugin.py` verification contract.
 When adopting that plugin in a project, merge these rules into the project's
 root `AGENTS.md` and keep a root `CLAUDE.md` shim pointing to it. Native agent
 runtimes discover root instruction files; Orcho does not inject this template
-into prompts or overwrite existing project rules.
+into prompts or overwrite existing project rules. Existing project instructions must be preserved rather than overwritten.
 
 ## Configuring Orcho for this project
 
@@ -76,9 +81,15 @@ or copy commands from this template. Inspect the repository first:
 3. Identify the real execution environment: checkout-relative binaries,
    required services, dependency repositories, generated assets, credentials,
    serial-only infrastructure, and commands unsafe in an isolated worktree.
-4. Separate fast deterministic feedback from broad, slow, destructive,
-   networked, or credential-dependent verification. Do not call a command
-   cheap merely because its name sounds familiar.
+4. Classify command `cost` from observed properties, not its name:
+   - `fast`: a bounded, deterministic local check that provides quick feedback.
+   - `moderate`: a bounded check that needs materially more setup or time than
+     fast feedback, but is still routine to run locally.
+   - `slow`: a broad, expensive, service-heavy, or long-running proof.
+   - `unknown`: no reliable evidence yet, or variable/destructive/networked or
+     credential-dependent behavior whose cost cannot be predicted safely.
+   Cost is a display axis independent of selection, executor, policy, action,
+   and consequence; changing cost must not change any of those decisions.
 5. Edit `.orcho/multiagent/plugin.py` using only facts found in this project:
    declare environments and commands, group them by purpose, select them by
    `always`, `paths`, `task_kind`, or `operator`, then schedule them or leave
@@ -95,7 +106,7 @@ or copy commands from this template. Inspect the repository first:
    code; environment, service, credential, and provenance failures need an
    operator handoff.
 7. Run `orcho quality-gates --project .` and fix every contract validation
-   error. Execute cheap candidate commands once to confirm their exact argv and
+   error. Execute bounded fast candidate commands once to confirm their exact argv and
    cwd. Do not launch broad or destructive candidates merely to finish setup;
    keep them operator-selected until deliberately validated.
 8. Report what was configured, why each gate is selected and scheduled, which
@@ -114,8 +125,8 @@ You can also inspect the effective contract with:
 
     orcho quality-gates --project /path/to/project
 
-Apply the same rules whether the task comes from `--task`, `--task-file`, a
-follow-up, or an edited plan:
+Apply the same rules whether the task comes from direct `--task` input, a
+`--task-file`, a follow-up, or an edited plan:
 
 - If a broad or recurring command is selected and scheduled by the project
   verification contract, the Orcho engine owns its official execution and

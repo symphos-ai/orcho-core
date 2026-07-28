@@ -68,6 +68,7 @@ def reduce_runtime_cross_execution_graph_state(
     session: dict[str, Any],
     checkpoint: dict[str, Any],
     run_dir: str,
+    resume_rearm_aliases: frozenset[str] = frozenset(),
 ) -> CrossExecutionGraphState:
     """Compose existing canonical child reduction with runner gate facts.
 
@@ -78,6 +79,7 @@ def reduce_runtime_cross_execution_graph_state(
         graph,
         reduce_runtime_cross_parent_state(session, checkpoint, run_dir),
         build_runtime_runner_gate_facts(graph, session, checkpoint),
+        resume_rearm_aliases,
     )
 
 

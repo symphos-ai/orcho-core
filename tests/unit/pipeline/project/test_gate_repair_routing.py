@@ -22,7 +22,7 @@ from pipeline.verification_failure import classify_receipt
 
 def _contract(**verification) -> VerificationContract:
     base = {
-        "commands": {"test": {"run": "pytest", "cheap": True}},
+        "commands": {"test": {"run": "pytest", "cost": "fast"}},
         "required": ["test"],
         "gate_sets": {"core": {"commands": ["test"]}},
         "selection": [{"always": ["core"]}],

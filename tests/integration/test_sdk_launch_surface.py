@@ -396,7 +396,7 @@ def test_finalized_resume_preflight_never_spawns(
     (run_dir / "meta.json").write_text(json.dumps({"status": "failed", "task": "t"}))
     (run_dir / "run_supervisor.json").write_text(json.dumps({"project_dir": str(project_dir)}))
     (run_dir / "scheduled_gate_ledger.json").write_text(json.dumps({
-        "schema_version": "1", "finalized": True, "rows": [], "trail": [],
+        "schema_version": "2", "finalized": True, "rows": [], "trail": [],
     }))
     monkeypatch.setattr(
         "sdk.run_control.launch._spawn_detached",

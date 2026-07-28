@@ -86,6 +86,32 @@ state is never persisted as a mutable graph ledger. Child phases and scheduled
 gates remain nested, child-owned observations; the checkpoint is routing-only.
 MCP/XF3 projection and parallel scheduling remain deferred.
 
+### Same-run interrupted-child resume (X2)
+
+An explicit resume of the same cross run may find a physical child
+`meta.json` whose durable `status` is `"running"` after the original parent
+invocation was interrupted. This physical status is distinct from canonical
+`ChildExecution`: without a typed active operation, the canonical reducer
+keeps the child fail-closed as `TERMINAL` with
+`status_unknown:running`, rather than classifying it as `RUNNING`.
+
+Only the dispatch of that explicit same-run resume passes the alias to the
+graph reducer as transient rearm eligibility. The alias then re-enters the
+ordinary dependency reduction and stable topological selection; its child
+request resumes in place with `resume_from=<alias>`. Eligibility is consumed
+before dispatch, so a nonterminal return cannot produce a duplicate
+redispatch.
+
+Ordinary disk, SDK, and MCP readers call the reducer without this transient
+context and therefore retain the fail-closed canonical result. Exact child
+`meta.json` paths and typed operation facts remain authoritative; checkpoint
+state is not eligibility or completion evidence. Completed siblings are not
+called or rewritten. `contract_check` and `cross_final_acceptance` stay
+pending until the rearmed child is terminal and evaluable, then follow the
+normal graph order. No generic recovery, process/PID ownership ledger,
+parallel scheduler, persisted rearm policy or state, or public SDK/MCP wire
+change is introduced. See [ADR 0160](../adr/0160-same-run-cross-resume-interrupted-child-redispatch.md).
+
 ## Canonical parent-state reduction
 
 `pipeline.run_state.cross_parent.reduce_cross_parent_state` is the single
@@ -156,14 +182,24 @@ transcripts, infer identifiers from prefixes, discover child directories, or
 write a derived reducer artifact.
 
 On resume, the physical child `meta.json` files are the canonical source for
-the parent session's `phases.projects` payloads. Checkpoint sub-status remains
-only a routing cursor: it cannot manufacture a completed child or a release
-verdict. Missing, malformed, or incomplete physical release payloads therefore
-remain fail-closed rather than being replaced with a stale embedded snapshot.
-Completed contract and approved CFA results are reused from the durable parent
-session; the snapshot immediately before delivery contains those gate results
-and the hydrated child payloads, so an interruption at delivery resumes with
-the same reduction inputs and without re-invoking either gate.
+the parent session's `phases.projects` payloads. The adapter reads each declared
+`<run_dir>/<alias>/meta.json` exact path again before CFA and before terminal
+finalization. Checkpoint sub-status remains only a routing cursor: it cannot
+manufacture a completed child or a release verdict. Missing, malformed, or
+incomplete physical release payloads therefore remain fail-closed rather than
+being replaced with a stale embedded snapshot. A consumed `project:<alias>:…`
+decision clears the active parent handoff, resumes that child first, and then
+returns to ordinary graph scheduling for remaining ready children before either
+runner gate is admitted.
+
+Completed contract and approved CFA results are normally reused from the
+durable parent session. The exception is a paused CFA whose saved result has
+`source="precondition"`: `continue` invalidates that result and its handoff,
+persists the cleared state, rebuilds canonical child facts, and evaluates CFA
+again. A paused `agent` or `parse_error` CFA instead keeps the existing explicit
+operator override and audit marker; it does not invoke the reviewer again.
+These are internal lifecycle rules only: SDK, MCP, checkpoint, and public
+schema shapes do not change.
 
 `NOT_EVALUABLE` is neither `SKIPPED` nor `REJECTED`: no `on_skip`
 policy applies, and it is not an interface-compatibility verdict.
@@ -408,11 +444,10 @@ by their ADRs rather than re-narrated here:
   finalization maps onto the terminal status (`ok`/`disabled` → `done`,
   `partial` → `cross_delivery_partial`, `failed` → `cross_delivery_failed`,
   `halted` → `halted`).
-- **CFA pause/resume** (ADR 0038 cross parity; `cfa_gate.py`) — the gate
-  outcome is a typed enum (`approved_terminal` / `paused` /
-  `override_continue` / `halted` / `retry_consumed`); a paused resume
-  preserves the operator override marker, and settle-time clears the
-  `pending_gate` residue through the single run-state eviction point
+- **CFA pause/resume** (ADR 0159; `cfa_gate.py`) — an `agent` or
+  `parse_error` `continue` preserves the operator override marker, while a
+  `precondition` `continue` re-arms CFA from rebuilt canonical facts; settle
+  clears the `pending_gate` residue through the single run-state eviction point
   (ADR 0115).
 
 ## Improvement Plan

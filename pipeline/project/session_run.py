@@ -52,6 +52,7 @@ from pipeline.project.run_setup import (
     init_run_session,
     print_pipeline_header,
     project_verification_contract,
+    publish_run_start,
     resolve_phase_identities,
     setup_checkpoint_and_metrics,
     setup_run_id,
@@ -183,7 +184,8 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
     (``local`` → ``run``) on the ``--from-run-plan`` path; the resolved
     value is threaded forward into logging, session init, and dispatch.
 
-    ``phase_config`` is synthesized (idempotent for a supplied config)
+    Verification declarations are persisted before ``run.start`` becomes
+    observable. ``phase_config`` is synthesized (idempotent for a supplied config)
     before the header so the Pipeline block can surface the ``[Claude]``
     / ``[Codex]`` chip per phase. The header banner + ``Run dir`` line
     render only under TERMINAL (the gate lives in
@@ -256,6 +258,19 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         verification_contract,
         profile=_profile.v2_profile,
         cli_mode=os.environ.get("ORCHO_WORK_MODE") or None,
+    )
+    from pipeline.project.verification_ledger_runtime import initialize_contract
+
+    if not request.resume_from:
+        initialize_contract(request.output_dir, verification_contract)
+    publish_run_start(
+        task=request.task,
+        project_dir=request.project_dir,
+        profile_name=_profile.resolved_profile_name,
+        parent_run_id=request.parent_run_id,
+        project_alias=request.project_alias,
+        plan_source=_profile.plan_source,
+        projected_profile=_profile.projected_profile_name,
     )
 
     # Account-identity diagnostics (best-effort, diagnostic only). Probe ONLY
@@ -571,8 +586,8 @@ def run_project_pipeline_session(
 
     The run output dir is materialised here — once, idempotently — so
     every transport (CLI, MCP, direct library calls) shares one creation
-    point ahead of the first ``run.start`` / ``phase.start`` emit and the
-    ``meta.json`` / ``events.jsonl`` writes that follow. A follow-up run
+    point ahead of declaration persistence, ``run.start`` / ``phase.start``,
+    and the ``meta.json`` / ``events.jsonl`` writes that follow. A follow-up run
     that reuses the parent's physical worktree never materialises a child
     ``checkout``; this still guarantees its own child run dir exists for
     run metadata regardless of that worktree reuse.

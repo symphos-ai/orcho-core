@@ -142,7 +142,7 @@ def test_derived_only_schedule_effect_mentions_receipts() -> None:
 
 def test_gate_row_carries_orthogonal_columns() -> None:
     contract = _contract(
-        commands={"lint": {"run": "ruff check .", "cheap": True}},
+        commands={"lint": {"run": "ruff check .", "cost": "fast"}},
         schedule=[
             {"after_phase": "implement", "policy": "warn", "commands": ["lint"]},
         ],
@@ -155,7 +155,7 @@ def test_gate_row_carries_orthogonal_columns() -> None:
     assert row.timing == "after_implement"
     assert row.run_mode == "auto"
     assert row.policy == "warn"
-    assert row.kind == "cheap"
+    assert row.cost == "fast"
     assert row.activation_binding == "always"
 
 
@@ -183,7 +183,7 @@ def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
-            "manuals": {"commands": ["e2e"], "default_cheap": False},
+            "manuals": {"commands": ["e2e"], "default_cost": "slow"},
         },
         schedule=[
             {"manual_only": True, "gate_sets": ["manuals"]},
@@ -194,8 +194,7 @@ def test_manual_only_gate_via_gate_sets_with_empty_commands() -> None:
     row = _gate(view, "e2e")
     assert row.timing == "operator"
     assert row.run_mode == "operator"
-    # default_cheap=False is non-cheap with no declared taxonomy -> unknown.
-    assert row.kind == "unknown"
+    assert row.cost == "slow"
 
 
 def test_gate_set_default_policy_fills_unknown_entry_policy() -> None:
@@ -241,14 +240,14 @@ def test_gate_set_default_policy_drives_top_summary() -> None:
 def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     # F1: a command listed BOTH directly (entry.commands) and via entry.gate_sets
     # for the same hook/phase must not let the bare direct row shadow the gate
-    # set's declared defaults — policy/kind come from the gate set, not unknown.
+    # set's declared defaults — policy/cost come from the gate set, not unknown.
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
         gate_sets={
             "manuals": {
                 "commands": ["e2e"],
                 "default_policy": "suggest",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
         },
         schedule=[
@@ -264,7 +263,7 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     assert row.timing == "operator"
     assert row.run_mode == "operator"
     assert row.policy == "suggest"
-    assert row.kind == "cheap"
+    assert row.cost == "fast"
     # ...and the declared data drives the summary, not auto-derived.
     assert "declared in contract" in view.policy_source
     assert "auto-derived" not in view.policy_source
@@ -272,9 +271,9 @@ def test_mixed_source_command_keeps_gate_set_defaults() -> None:
     assert view.warned is False
 
 
-def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
+def test_multiple_gate_sets_pick_strictest_policy_and_conservative_cost() -> None:
     # F1: one command backed by two gate_sets with differing defaults must take
-    # the strictest declared policy and OR the cheap flag, mirroring
+    # the strictest declared policy and conservative cost, mirroring
     # verification_selection._merge_defaults — never the first/laxer source.
     contract = _contract(
         commands={"e2e": {"run": "pytest -m e2e"}},
@@ -282,12 +281,12 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
             "baseline": {
                 "commands": ["e2e"],
                 "default_policy": "suggest",
-                "default_cheap": False,
+                "default_cost": "slow",
             },
             "strict": {
                 "commands": ["e2e"],
                 "default_policy": "suggest",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
         },
         schedule=[
@@ -298,7 +297,7 @@ def test_multiple_gate_sets_pick_strictest_policy_and_or_cheap() -> None:
     assert view is not None
     row = _gate(view, "e2e")
     assert row.policy == "suggest"
-    assert row.kind == "cheap"  # OR-ed across gate sets, not the first False
+    assert row.cost == "slow"  # conservative across gate sets, not declaration order
     # Summary reflects the strictest declared policy too.
     assert "suggest" in view.policy_source
     assert view.effect == "suggested; missing/failed receipts noted, not blocking"
@@ -325,7 +324,7 @@ def test_gate_set_default_policy_warn_warns_in_summary() -> None:
 
 
 def test_unavailable_properties_render_unknown() -> None:
-    # No entry policy, no gate-set default, no declared cheap -> both honest.
+    # No entry policy, no gate-set default, no declared cost -> both honest.
     contract = _contract(
         commands={"lint": "ruff check ."},
         schedule=[
@@ -336,7 +335,7 @@ def test_unavailable_properties_render_unknown() -> None:
     assert view is not None
     row = _gate(view, "lint")
     assert row.policy == "suggest"
-    assert row.kind == "unknown"
+    assert row.cost == "unknown"
 
 
 def _reference_contract() -> VerificationContract:
@@ -347,8 +346,8 @@ def _reference_contract() -> VerificationContract:
     """
     return _contract(
         commands={
-            "env-provenance": {"run": "prov", "cheap": True},
-            "lint": {"run": "ruff check .", "cheap": True},
+            "env-provenance": {"run": "prov", "cost": "fast"},
+            "lint": {"run": "ruff check .", "cost": "fast"},
             "run-state-unit": {"run": "pytest run_state"},
             "verification-unit": {"run": "pytest verification"},
             "cli-sdk-unit": {"run": "pytest cli sdk"},
@@ -530,7 +529,7 @@ def test_render_gate_matrix_column_contract_and_reuse() -> None:
     # Header row + one row per gate.
     assert len(matrix) == len(view.gates) + 1
     header = strip_ansi(matrix[0]).split()
-    assert header == ["gate", "trigger", "executor", "policy", "consequence", "selection"]
+    assert header == ["gate", "trigger", "executor", "policy", "cost", "consequence", "selection"]
     # The banner renders through the same helper: every matrix data row appears
     # verbatim inside the banner output (indented under the ``gates`` label).
     banner = _strip(render_verification_header(view, compact=False))
@@ -557,7 +556,7 @@ def _warn_view() -> VerificationHeaderView:
                 timing="after_implement",
                 run_mode="auto",
                 policy="warn",
-                kind="cheap",
+                cost="fast",
                 condition="always",
                 when="pre-final",
             ),
@@ -566,7 +565,7 @@ def _warn_view() -> VerificationHeaderView:
                 timing="operator",
                 run_mode="manual",
                 policy="require",
-                kind="unknown",
+                cost="unknown",
                 condition="operator",
                 when="operator",
             ),
@@ -644,7 +643,7 @@ def test_effect_value_painted_only_when_warned() -> None:
                 timing="after_implement",
                 run_mode="auto",
                 policy="suggest",
-                kind="unknown",
+                cost="unknown",
             ),
         ),
         policy_source="no scheduled gates",

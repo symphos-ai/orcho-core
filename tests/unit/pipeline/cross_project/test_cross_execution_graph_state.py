@@ -52,6 +52,10 @@ def _parent(*children: ChildFacts):
     return reduce_cross_parent_state(CrossParentFacts(("producer", "consumer", "independent"), children))
 
 
+def _running(alias: str) -> ChildFacts:
+    return ChildFacts(alias, Observation.PRESENT, "running")
+
+
 def test_failed_producer_blocks_direct_and_transitive_consumers_but_not_independent() -> None:
     state = reduce_cross_execution_graph_state(_graph(), _parent(
         ChildFacts("producer", Observation.PRESENT, "failed"),
@@ -77,6 +81,63 @@ def test_all_statuses_and_runner_gate_facts_are_immutable() -> None:
     assert reduce_cross_execution_graph_state(graph, parent, RunnerGateFacts((RunnerGateFact("contract", skipped=True),))) == state
     unrecorded = reduce_cross_execution_graph_state(graph, parent)
     assert next(node for node in unrecorded.nodes if node.identity == "contract").status is CrossExecutionGraphStatus.PENDING
+
+
+def test_resume_rearms_interrupted_running_child_once() -> None:
+    state = reduce_cross_execution_graph_state(
+        _graph(),
+        _parent(
+            ChildFacts("producer", Observation.PRESENT, "done"),
+            _running("consumer"),
+            ChildFacts("independent", Observation.PRESENT, "done"),
+        ),
+        resume_rearm_aliases=frozenset({"consumer"}),
+    )
+    by_alias = {node.alias: node for node in state.nodes if node.alias}
+
+    assert by_alias["producer"].status is CrossExecutionGraphStatus.COMPLETED
+    assert by_alias["consumer"].status is CrossExecutionGraphStatus.READY
+    assert select_first_ready_node(state).alias == "consumer"
+    assert next(node for node in state.nodes if node.identity == "contract").status is CrossExecutionGraphStatus.PENDING
+    assert next(node for node in state.nodes if node.identity == "cfa").status is CrossExecutionGraphStatus.PENDING
+
+
+def test_fresh_running_child_without_active_operation_fails_closed() -> None:
+    state = reduce_cross_execution_graph_state(
+        _graph(),
+        _parent(
+            ChildFacts("producer", Observation.PRESENT, "done"),
+            _running("consumer"),
+            ChildFacts("independent", Observation.PRESENT, "done"),
+        ),
+    )
+    consumer = next(node for node in state.nodes if node.alias == "consumer")
+
+    assert consumer.status is CrossExecutionGraphStatus.BLOCKED
+    assert consumer.reason is CrossExecutionGraphReason.CHILD_FAILED
+    assert select_first_ready_node(state) is None
+
+
+def test_resume_rearm_still_obeys_project_dependencies() -> None:
+    state = reduce_cross_execution_graph_state(
+        _graph(),
+        _parent(
+            ChildFacts(
+                "producer",
+                Observation.PRESENT,
+                "running",
+                active_operations=(ActiveOperation(phase=PhaseIdentity("implement", "producer")),),
+            ),
+            _running("consumer"),
+            ChildFacts("independent", Observation.PRESENT, "done"),
+        ),
+        resume_rearm_aliases=frozenset({"consumer"}),
+    )
+    consumer = next(node for node in state.nodes if node.alias == "consumer")
+
+    assert consumer.status is CrossExecutionGraphStatus.PENDING
+    assert consumer.reason is CrossExecutionGraphReason.DEPENDENCY_PENDING
+    assert select_first_ready_node(state) is None
 
 
 def test_reason_vocabulary_is_closed_and_stable() -> None:

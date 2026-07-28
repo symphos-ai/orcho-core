@@ -5215,7 +5215,9 @@ class TestTuiDispatch:
     ``orcho web`` → ``orcho-web``: a lazy, guarded import so ``orcho-core`` keeps
     no hard dependency on its sibling."""
 
-    def test_not_installed_prints_install_hint(self, monkeypatch, capsys) -> None:
+    def test_unavailable_interface_does_not_claim_a_public_install(
+        self, monkeypatch, capsys
+    ) -> None:
         import argparse
         import builtins
 
@@ -5231,7 +5233,9 @@ class TestTuiDispatch:
         monkeypatch.setattr(builtins, "__import__", _no_orcho_tui)
         args = argparse.Namespace(run_id=None, run_dir="/x", follow=False, replay=False)
         assert cmd_tui(args) == 1
-        assert "orcho-tui is not installed" in capsys.readouterr().err
+        error = capsys.readouterr().err
+        assert "terminal interface is not available" in error
+        assert "pip install" not in error
 
     def test_dispatch_translates_argv(self, monkeypatch) -> None:
         import argparse

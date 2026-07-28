@@ -51,7 +51,7 @@ PLUGIN = {
         "commands": {
             "env-provenance": {
                 "env": "core-local",
-                "cheap": True,
+                "cost": "fast",
                 "run": [
                     "python",
                     "-c",
@@ -64,13 +64,13 @@ PLUGIN = {
             },
             "lint": {
                 "env": "core-local",
-                "cheap": True,
+                "cost": "fast",
                 "run": ["python", "-m", "ruff", "check", "."],
             },
             "run-state-unit": {
                 "env": "core-local",
                 "parity": "differential",
-                "cheap": False,
+                "cost": "moderate",
                 "run": [
                     "python",
                     "-m",
@@ -84,7 +84,7 @@ PLUGIN = {
             "verification-unit": {
                 "env": "core-local",
                 "parity": "differential",
-                "cheap": False,
+                "cost": "moderate",
                 "run": [
                     "python",
                     "-m",
@@ -99,7 +99,7 @@ PLUGIN = {
             "cli-sdk-unit": {
                 "env": "core-local",
                 "parity": "differential",
-                "cheap": False,
+                "cost": "moderate",
                 "run": [
                     "python",
                     "-m",
@@ -112,7 +112,7 @@ PLUGIN = {
             "broad-non-e2e": {
                 "env": "core-local",
                 "parity": "differential",
-                "cheap": False,
+                "cost": "slow",
                 "run": [
                     "python",
                     "-m",
@@ -125,7 +125,7 @@ PLUGIN = {
             "e2e": {
                 "env": "core-local",
                 "parity": "differential",
-                "cheap": False,
+                "cost": "slow",
                 "run": ["python", "-m", "pytest", "-q", "-m", "e2e"],
             },
         },
@@ -134,38 +134,38 @@ PLUGIN = {
                 "commands": ["env-provenance"],
                 "default_policy": "require",
                 "default_action": "handoff",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
             "hygiene": {
                 "commands": ["lint"],
                 "default_policy": "require",
                 "default_action": "repair_loop",
-                "default_cheap": True,
+                "default_cost": "fast",
             },
             "run-state": {
                 "commands": ["run-state-unit"],
                 "default_policy": "require",
-                "default_cheap": False,
+                "default_cost": "moderate",
             },
             "verification": {
                 "commands": ["verification-unit"],
                 "default_policy": "require",
-                "default_cheap": False,
+                "default_cost": "moderate",
             },
             "cli-sdk": {
                 "commands": ["cli-sdk-unit"],
                 "default_policy": "require",
-                "default_cheap": False,
+                "default_cost": "moderate",
             },
             "broad": {
                 "commands": ["broad-non-e2e"],
                 "default_policy": "require",
-                "default_cheap": False,
+                "default_cost": "slow",
             },
             "e2e": {
                 "commands": ["e2e"],
                 "default_policy": "suggest",
-                "default_cheap": False,
+                "default_cost": "slow",
             },
         },
         "selection": [

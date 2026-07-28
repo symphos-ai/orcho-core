@@ -379,10 +379,12 @@ the run's real outcome.
 
 A project whose gates run against a live Compose stack can run under worktree
 isolation without collision by keying the stack on `ORCHO_ISOLATION_ID` — a
-stable, per-worktree namespace Orcho exports into the environment (alongside
-`ORCHO_RUN_ID`, and — like it — not stripped from gate command environments).
-Bring the stack up in `worktree_bootstrap`, run gates against it, and tear it
-down in `worktree_teardown`:
+stable, per-worktree namespace Orcho exports into gate command environments.
+`ORCHO_RUN_ID` is orchestration identity and is stripped from verification
+subprocesses unless a verification environment declares it explicitly; it must
+not be used as an infrastructure namespace. Bring the stack up in
+`worktree_bootstrap`, run gates against it, and tear it down in
+`worktree_teardown`:
 
 ```python
 PLUGIN = {
@@ -514,7 +516,7 @@ The user-facing strictness control. Gate policies are derived defaults, not
 something the operator tunes per gate:
 
 ```text
-fast      move quickly, use gates as hints and cheap feedback
+fast      move quickly, use gates as hints and fast feedback
 pro       balanced default, run important gates and repair obvious failures
 governed  strict delivery discipline, require declared proof before key transitions
 ```
@@ -593,7 +595,7 @@ the MCP wire (see the falsifier in ADR 0081).
 
 ```text
 gate_sets:  name -> { commands: [...] (required),
-                      default_policy?, default_action?, default_cheap? }
+                      default_policy?, default_action?, default_cost? }
 selection:  ordered rules, each with exactly one type key:
               { always:    [sets] }
               { task_kind:  <str>, include: [sets] }
@@ -708,8 +710,16 @@ merged_default_policy = max strictness (manual < suggest < warn < require) among
                         contributing sets that declare one  (None if none)
 merged_default_action = max strictness (continue_warn < repair_loop < handoff
                         < abort) among contributing sets that declare one
-merged_cheap          = command.cheap OR any contributing default_cheap
+resolved_cost          = command.cost when declared; otherwise the most
+                         conservative applicable default_cost:
+                         unknown > slow > moderate > fast; unknown if none
 ```
+
+`cost` / `default_cost` accept only `fast`, `moderate`, `slow`, or `unknown`.
+Cost is display and scheduling metadata only: it does not enter selection,
+policy/action derivation, execution eligibility, consequence, disposition, or
+receipt freshness. The resolver is order-independent, so swapping contributing
+gate-set declarations cannot change a conflict result.
 
 A schedule entry's optional `gate_sets` narrows the merge **source** only — it
 does not change `contributing_gate_sets` / `primary_gate_set` attribution. The
@@ -1888,7 +1898,7 @@ declared contract. Nothing is executed and nothing is written in any mode.
 
 Each gate row separates the command's identity from three orthogonal,
 operator-facing axes (rendered as columns alongside `run` = auto/manual and
-`kind` = declared cost):
+`cost` = resolved command cost):
 
 - **`when`** — the stage the gate *actually runs at*, which the raw schedule
   hook alone cannot express. It is a pure derivation of the gate's effective

@@ -2,8 +2,8 @@
 
 The typed project entry surface (``pipeline/project/app.py``) turns a
 resolved profile + runtime into a live run: it must allocate the run id
-and wire logging (emitting the ``run.start`` event), print the operator
-header, initialise the persisted session (``meta.json`` + atexit
+and wire logging, publish ``run.start`` after mandatory declarations are
+durable, print the operator header, initialise the persisted session (``meta.json`` + atexit
 graceful-exit hook), seed the metrics collector, and open the checkpoint
 store. This module owns that work, calling the low-level primitives in
 :mod:`pipeline.project.bootstrap` and returning typed objects so the
@@ -14,9 +14,10 @@ reorder them — each function is called at its existing point in the run
 body):
 
 * :func:`setup_run_id` runs after profile resolution and before
-  ``load_plugin`` / runtime setup, so the ``run.start`` event + initial
-  logging carry the final projected profile name and a planning-only
-  ``--from-run-plan`` refusal fires before any run-dir I/O.
+  ``load_plugin`` / runtime setup, so logging carries the final run identity
+  and a planning-only ``--from-run-plan`` refusal fires before any run-dir I/O.
+* :func:`publish_run_start` runs after verification declarations are durable,
+  so the public running boundary is always safe to resume.
 * :func:`print_pipeline_header` runs after runtime setup (it needs the
   synthesized ``phase_config`` for the per-phase ``[Claude]`` / ``[Codex]``
   chips) and is a no-op unless ``presentation`` is TERMINAL.
@@ -42,6 +43,7 @@ from pipeline.engine.session import save_session
 from pipeline.plugins import PluginConfig, describe_plugin
 from pipeline.project.auto_detect import AUTODETECT_DECISION_ENV
 from pipeline.project.bootstrap import (
+    emit_run_start,
     init_checkpoint_with_resume,
     init_session_with_atexit,
     resolve_run_id_and_setup_logging,
@@ -79,11 +81,11 @@ def setup_run_id(
     presentation: PresentationPolicy,
     preallocated_output_dir: bool = False,
 ) -> str:
-    """Allocate the run id, wire logging, and emit ``run.start``.
+    """Allocate the run id and wire logging.
 
     Resolved before any run-dir materialization so ``ORCHO_PIPELINE``
     overrides + the projected profile name are reflected consistently in
-    events, ``meta.json``, checkpoint config, and dispatch.
+    logging, ``meta.json``, checkpoint config, and dispatch.
     """
     return resolve_run_id_and_setup_logging(
         task=task, project_dir=project_dir, resume_from=resume_from,
@@ -98,6 +100,28 @@ def setup_run_id(
         # regardless (ADR 0046 stop #9).
         presentation=presentation,
         preallocated_output_dir=preallocated_output_dir,
+    )
+
+
+def publish_run_start(
+    *,
+    task: str,
+    project_dir: str,
+    profile_name: str,
+    parent_run_id: str | None,
+    project_alias: str | None,
+    plan_source: str,
+    projected_profile: str | None,
+) -> None:
+    """Publish the run only after mandatory declaration state is durable."""
+    emit_run_start(
+        task=task,
+        project_dir=project_dir,
+        profile_name=profile_name,
+        parent_run_id=parent_run_id,
+        project_alias=project_alias,
+        plan_source=plan_source,
+        projected_profile=projected_profile,
     )
 
 
@@ -292,7 +316,7 @@ def print_pipeline_header(
     ADR 0046 Phase C (site 1): the pipeline header banner + ``success("Run
     dir: …")`` line are a terminal courtesy; skip the whole call under
     SILENT — the run-start structural record is in the ``run.start`` event
-    (emitted by :func:`setup_run_id`) + ``meta.json`` written by
+    (emitted by :func:`publish_run_start`) + ``meta.json`` written by
     :func:`init_run_session`.
 
     Renders the same data the legacy header carried — model names, effort

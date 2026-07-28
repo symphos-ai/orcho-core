@@ -36,7 +36,7 @@ written, what shape they carry, and what changes per terminal status.
 ## Scheduled-gate ledger
 
 Runs with a verification contract persist `scheduled_gate_ledger.json`. It is
-schema version `"1"`, ordered by `(command, hook, phase)`, and contains the
+schema version `"2"`, ordered by `(command, hook, phase)`, and contains the
 declaration/selection/execution axes plus an append-only identity trail. Each
 terminal row is exactly one of `not_selected`, `manual_available`, `suggested`,
 `skipped_fresh`, `executed_pass`, `executed_fail`, `residual_missing`,
@@ -49,7 +49,9 @@ decision.
 
 Resume reuses the snapshot and epoch decisions. Evidence copies the validated
 artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
-project plugin.
+project plugin. Every row has a typed `cost` of `fast`, `moderate`, `slow`, or
+`unknown`; schema v2 rejects v1 artifacts, legacy `kind` row shapes, and any
+other cost value.
 
 An exact operator-triggered gate rerun appends a second `execution` event for
 the same full identity, rather than replacing its original execution.  That
@@ -640,7 +642,7 @@ Relevant decision facts are:
 | `published_commit_sha` | SHA of the commit on an isolated published delivery branch, when that plan was used. |
 | `delivery_branch` and `pr_intent` | The existing dedicated delivery branch and provider-neutral PR intent, when applicable. |
 | `pr_url` | A PR URL returned by the provider; its presence confirms a PR was opened. |
-| `delivery_warnings` and `delivery_notices` | Non-fatal publication diagnostics and truthful operator guidance, including a branch-ready fallback. |
+| `delivery_warnings` and `delivery_notices` | General non-fatal delivery diagnostics and truthful operator guidance, including commit-message generation fallback, branch/provider publication warnings, and a branch-ready fallback. |
 
 With `commit.publish="always"`, a successful `commit_on_branch` delivery can
 ask the existing provider seam to publish that branch after the checkout commit

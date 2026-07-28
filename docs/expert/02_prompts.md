@@ -201,10 +201,8 @@ Variables available in a template:
 |-----------|--------|
 | `$task` | `--task` CLI argument |
 | `$project_name` | `plugin.name` |
-| `$tech_stack` | `plugin.tech_stack` |
 | `$architecture` | `plugin.architecture` |
 | `$plan_prompt_extra` | `plugin.plan_prompt_extra` |
-| `$build_prompt_extra` | `plugin.build_prompt_extra` |
 | `$review_focus_extra` | `plugin.review_focus_extra` |
 
 Unknown `$variables` pass through unchanged (safe_substitute). Do **not**
