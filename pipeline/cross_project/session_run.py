@@ -78,6 +78,7 @@ from pipeline.cross_project.run_setup import (
     setup_cross_run,
 )
 from pipeline.cross_project.task_plan import normalize_cross_task_plan
+from pipeline.cross_project.terminal import finalize_cross_terminal
 from pipeline.cross_project.usage import (
     _capture_invoke_usage,
     _print_cross_checks_usage,
@@ -1043,41 +1044,62 @@ def run_cross_pipeline_session(
 ) -> tuple[dict, Path | None, str]:
     """Coordinator backing the typed cross orchestration boundary; sequences the focused setup + domain modules, returning ``(session, output_dir, run_id)`` for :class:`CrossRunResult`. Never calls ``sys.exit``."""
     ctx = _setup_cross_run(request)
-    _run_cross_hypothesis(request, ctx)
-    _resolve_global_plan_steps(ctx)
-    if (
-        request.resume_from
-        and ctx.cross_ckpt.get("phase_handoff_pending")
-        and ctx.cross_ckpt.get("phase_handoff_kind") == "project"
-    ):
-        # The helper validates and applies the durable decision artifact. Keep
-        # only its exact alias as one-shot continuation routing; the graph
-        # reducer still owns every ordinary readiness decision.
-        alias = ctx.cross_ckpt.get("phase_handoff_project_alias")
-        if resume_project_phase_handoff(
-            cross_ckpt=ctx.cross_ckpt,
-            run_dir=ctx.run_dir,
-            output_dir=request.output_dir,
-            session=ctx.session,
-            success=ctx.r.success,
+    try:
+        _run_cross_hypothesis(request, ctx)
+        _resolve_global_plan_steps(ctx)
+        if (
+            request.resume_from
+            and ctx.cross_ckpt.get("phase_handoff_pending")
+            and ctx.cross_ckpt.get("phase_handoff_kind") == "project"
+        ):
+            # The helper validates and applies the durable decision artifact.
+            # Keep only its exact alias as one-shot continuation routing; the
+            # graph reducer still owns every ordinary readiness decision.
+            alias = ctx.cross_ckpt.get("phase_handoff_project_alias")
+            if resume_project_phase_handoff(
+                cross_ckpt=ctx.cross_ckpt,
+                run_dir=ctx.run_dir,
+                output_dir=request.output_dir,
+                session=ctx.session,
+                success=ctx.r.success,
+            ):
+                return ctx.session, ctx.run_dir, ctx.session_ts
+            if not isinstance(alias, str) or alias not in ctx.aliases:
+                raise RuntimeError("resolved project handoff has invalid alias")
+            ctx.resolved_handoff_alias = alias
+        if _run_planning(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if _run_dispatch_and_contract(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if ctx.graph_gate_blocked:
+            _run_delivery_and_finalize(request, ctx)
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if _run_release_gate(request, ctx):
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if ctx.graph_gate_blocked:
+            _run_delivery_and_finalize(request, ctx)
+            return ctx.session, ctx.run_dir, ctx.session_ts
+        if (
+            not ctx.release_skipped_by_policy
+            and _finalize_release_verdict(request, ctx)
         ):
             return ctx.session, ctx.run_dir, ctx.session_ts
-        if not isinstance(alias, str) or alias not in ctx.aliases:
-            raise RuntimeError("resolved project handoff has invalid alias")
-        ctx.resolved_handoff_alias = alias
-    if _run_planning(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if _run_dispatch_and_contract(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if ctx.graph_gate_blocked:
         _run_delivery_and_finalize(request, ctx)
         return ctx.session, ctx.run_dir, ctx.session_ts
-    if _run_release_gate(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if ctx.graph_gate_blocked:
-        _run_delivery_and_finalize(request, ctx)
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    if not ctx.release_skipped_by_policy and _finalize_release_verdict(request, ctx):
-        return ctx.session, ctx.run_dir, ctx.session_ts
-    _run_delivery_and_finalize(request, ctx)
-    return ctx.session, ctx.run_dir, ctx.session_ts
+    except Exception as exc:
+        failure_reason = f"{type(exc).__name__}: {exc}"
+        try:
+            finalize_cross_terminal(
+                run_dir=ctx.run_dir,
+                session=ctx.session,
+                status="failed",
+                halt_reason="cross_unhandled_exception",
+                failure_reason=failure_reason,
+                cross_ckpt=ctx.cross_ckpt,
+            )
+        except Exception as settlement_exc:
+            exc.add_note(
+                "Cross parent terminal settlement also failed: "
+                f"{type(settlement_exc).__name__}: {settlement_exc}"
+            )
+        raise
