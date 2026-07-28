@@ -88,34 +88,24 @@ class PhaseHandoffHaltedError(RuntimeError):
 
 
 def infer_workspace_from_project(project_path: str | None) -> Path | None:
-    """Walk up from ``project_path`` looking for a ``workspace-orchestrator/``
-    directory; return its absolute path or ``None``.
+    """Return the existing workspace bound to ``project_path``.
 
-    The standard layout for orcho-managed multi-project workspaces is::
+    Shared workspaces keep the standard sibling/group layout::
 
         <root>/
           ├── project_a/                     ← --project
           ├── project_b/
           └── workspace-orchestrator/        ← runs land here
 
-    Walk-up handles both the immediate-sibling case and projects nested
-    one extra level (``<root>/sub/proj``). Symlinks are resolved so a
-    project living under ``~/projects/foo`` symlinked from elsewhere
-    still finds the right workspace.
+    Project-oriented onboarding instead uses the deterministic managed
+    workspace outside the repository. The SDK path resolver owns both
+    identities so CLI and detached launch surfaces cannot drift.
     """
     if not project_path:
         return None
-    try:
-        p = Path(project_path).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return None
-    if not p.exists():
-        return None
-    for ancestor in [p, *p.parents]:
-        candidate = ancestor / "workspace-orchestrator"
-        if candidate.is_dir():
-            return candidate
-    return None
+    from sdk.workspace_paths import infer_workspace_from_project as _infer
+
+    return _infer(project_path)
 
 
 @dataclass(frozen=True)

@@ -3934,6 +3934,18 @@
           "default_factory": null,
           "name": "runtime_override",
           "type": "str | None"
+        },
+        {
+          "default": "'group'",
+          "default_factory": null,
+          "name": "topology",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "primary_project",
+          "type": "DetectedProject | None"
         }
       ],
       "frozen": true,
@@ -4718,6 +4730,12 @@
           "default": null,
           "kind": "POSITIONAL_OR_KEYWORD",
           "name": "project_group_root"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace_dir"
         },
         {
           "annotation": "str | None",

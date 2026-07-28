@@ -763,20 +763,40 @@ def test_refuses_home_directory(monkeypatch, tmp_path: Path) -> None:
         init_workspace(fake_home)
 
 
-def test_refuses_repo_looking_root_without_force(tmp_path: Path) -> None:
+def test_repo_looking_root_creates_external_managed_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     root = tmp_path / "g"
     root.mkdir()
     (root / "pyproject.toml").write_text("# repo", encoding="utf-8")
-    with pytest.raises(WorkspaceInitError, match="individual project repo"):
-        init_workspace(root)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    r = init_workspace(root)
+
+    assert r.topology == "project"
+    assert r.primary_project == DetectedProject(name="g", path=str(root))
+    assert r.detected_projects == (r.primary_project,)
+    assert Path(r.workspace_dir).parent.parent == (
+        tmp_path / "data" / "orcho" / "workspaces"
+    )
+    assert Path(r.workspace_dir).name == "workspace-orchestrator"
+    assert not (root / "workspace-orchestrator").exists()
+    config = json.loads(Path(r.local_config_file).read_text(encoding="utf-8"))
+    assert config["projects"] == {"g": str(root)}
 
 
-def test_force_allows_repo_looking_root(tmp_path: Path) -> None:
+def test_repo_workspace_location_can_be_overridden(tmp_path: Path) -> None:
     root = tmp_path / "g"
     root.mkdir()
     (root / "pyproject.toml").write_text("# repo", encoding="utf-8")
-    r = init_workspace(root, force=True)
-    assert Path(r.workspace_dir).is_dir()
+    explicit = tmp_path / "control" / "workspace-orchestrator"
+
+    r = init_workspace(root, workspace_dir=explicit)
+
+    assert Path(r.workspace_dir) == explicit
+    assert explicit.is_dir()
+    assert not (root / "workspace-orchestrator").exists()
 
 
 # ─── Existing env file ──────────────────────────────────────────────────────

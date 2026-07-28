@@ -368,6 +368,31 @@ or `None`), `files` (tuple of `RunDiffFileRecord(path, added, removed)`),
 `scope` (`"run"` or `"phase"`, echoes which artifact was asked for),
 `phase` (normalized phase name on phase calls, `None` on run calls).
 
+### `sdk.workspace`
+
+```python
+init_workspace(
+    project_group_root,
+    *,
+    workspace_dir=None,
+    workspace_name=None,
+    ...,
+) -> WorkspaceInitResult
+```
+
+Despite the retained parameter name, the primary input may be one existing
+project repository. In that mode the project is registered in place and the
+control workspace is created under the platform data root. `workspace_dir`
+overrides that managed location. A non-project directory keeps the explicit
+group-bootstrap behavior and discovers child repositories.
+
+`WorkspaceInitResult.topology` is `"project"` or `"group"`.
+`primary_project` contains the registered project in project mode and is
+`None` for a group bootstrap. `workspace_dir`, `runs_dir`, and the generated
+MCP snippet always contain the resolved control-workspace identity.
+
+See [ADR 0163](../adr/0163-existing-project-managed-workspace-onboarding.md).
+
 ### `sdk.prompts`
 
 ```python

@@ -182,6 +182,18 @@ Full walkthrough: [docs/demos/demo-1a-single-project-cli.md](docs/demos/demo-1a-
 The full path from zero to the first result: prerequisites → install →
 connect your project → first run.
 
+The primary journey starts inside the repository you already have:
+
+```bash
+cd ~/www/my-existing-project
+orcho workspace init
+orcho run --project . --mock --task "Describe one small change"
+```
+
+Orcho leaves the repository in place and stores its control workspace outside
+the checkout. A shared root is optional and is introduced later as a best
+practice for intentional cross-project work.
+
 ---
 
 ## How it works

@@ -47,6 +47,7 @@ from pipeline.project.correction_followup import (
 from sdk.errors import LaunchError, RunNotFound
 from sdk.run_control.continuation import preflight_continuation
 from sdk.runs import find_runs_dir
+from sdk.workspace_paths import infer_workspace_from_project
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -430,8 +431,13 @@ def launch_run(spec: LaunchSpec, *, run_id: str | None = None) -> LaunchResult:
     """
     project_dir = _resolve_project_dir(spec.project_dir)
     task_file = _resolve_task_file(spec.task_file, project_dir=project_dir)
+    workspace = spec.workspace
+    if workspace is None and spec.runs_dir is None:
+        inferred = infer_workspace_from_project(project_dir)
+        if inferred is not None:
+            workspace = str(inferred)
     runs_dir = find_runs_dir(
-        workspace=spec.workspace, runs_dir=spec.runs_dir, cwd=None
+        workspace=workspace, runs_dir=spec.runs_dir, cwd=None
     )
     output_mode = normalize_output_mode(spec.output_mode)
 
