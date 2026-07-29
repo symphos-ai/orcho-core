@@ -1199,6 +1199,24 @@ class TestWorktreeEvidenceProjection:
         assert "## Worktree" in md
         assert "No worktree context recorded" in md
 
+    def test_render_reclaimed_worktree_marks_historical_and_cross_embedded(self, tmp_path: Path) -> None:
+        ctx = {
+            "isolation": "per_run", "path": "/historical",
+            "reclaimed": {
+                "at": "2026-07-29T00:00:00Z", "disposition": "archive",
+                "archive_path": "/archive/wt", "receipt_path": "/receipts/r.json",
+            },
+        }
+        meta = {
+            "run_id": "CROSS_RECLAIMED", "task": "t", "status": "done",
+            "worktree": ctx, "projects": {"api": {"worktree": ctx}},
+        }
+        run_dir = _write_run_dir(tmp_path / "reclaimed", events=[], meta=meta)
+        md = render_evidence_md(collect_evidence(run_dir))
+        assert "Historical path" in md
+        assert "Reclaimed at" in md
+        assert "historical_path" in md
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ADR 0082 — additive verification-readiness digest

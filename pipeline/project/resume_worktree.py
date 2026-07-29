@@ -42,7 +42,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pipeline.engine.worktree import registered_worktree_exists
+from pipeline.engine.worktree import is_worktree_reclaimed, registered_worktree_exists
 
 _REVIEW_PHASE = "review_changes"
 _DECISIONS_DIRNAME = "phase_handoff_decisions"
@@ -170,6 +170,20 @@ def classify_resume_worktree(
         return None
     if prior_worktree.get("isolation") == "off":
         return None
+    if is_worktree_reclaimed(prior_worktree):
+        return ResumeWorktreeDecision(
+            mode_label="blocked: retained retry subject reclaimed",
+            source="meta.worktree",
+            path=None,
+            retained_subject=None,
+            blocked=True,
+            block_message=(
+                "Cannot resume in place: the retained worktree was reclaimed. "
+                "Its recorded path is historical; restore the archive explicitly "
+                "or begin a new recovery run."
+            ),
+            prior_worktree=dict(prior_worktree),
+        )
 
     path = _string_value(prior_worktree, "path")
     available = path is not None and registered_worktree_exists(

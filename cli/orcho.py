@@ -921,6 +921,19 @@ def cmd_workspace_fine_tune(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workspace_cleanup(args: argparse.Namespace) -> int:
+    """Delegate workspace cleanup selection/execution to its focused adapter."""
+    from cli._workspace_cleanup import format_workspace_cleanup, workspace_cleanup_from_args
+
+    try:
+        result = workspace_cleanup_from_args(args)
+    except (OrchoError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_workspace_cleanup(result))
+    return 1 if result.execution is not None and result.execution.receipt["status"] == "partial" else 0
+
+
 def cmd_verify_overview(args: argparse.Namespace) -> int:
     print(format_verify_overview())
     return 0
@@ -1890,6 +1903,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace directory (reserved; inspection is project-local).",
     )
     p_ws_fine.set_defaults(func=cmd_workspace_fine_tune)
+
+    p_ws_cleanup = p_ws_sub.add_parser(
+        "cleanup",
+        help="Report retained worktrees, or archive/delete expired stopped checkouts",
+        description=(
+            "Default is a read-only report. --reclaim-worktrees and "
+            "--reclaim-both archive by default; --delete is irreversible and "
+            "requires one of those reclaim tiers."
+        ),
+    )
+    cleanup_tier = p_ws_cleanup.add_mutually_exclusive_group()
+    cleanup_tier.add_argument(
+        "--reclaim-worktrees", action="store_true",
+        help="Archive/delete selected checkouts while preserving every run directory.",
+    )
+    cleanup_tier.add_argument(
+        "--reclaim-both", action="store_true",
+        help="After selected checkouts succeed, also archive/delete their eligible run roots.",
+    )
+    p_ws_cleanup.add_argument(
+        "--delete", action="store_true",
+        help="Irreversibly delete selected material; requires a reclaim tier (default is archive).",
+    )
+    p_ws_cleanup.add_argument(
+        "--workspace", "-w", default=None,
+        help="Workspace directory (else $ORCHO_WORKSPACE / cwd walk-up).",
+    )
+    p_ws_cleanup.set_defaults(func=cmd_workspace_cleanup)
 
     # ── web ───────────────────────────────────────────────────────────────────
     # Hidden from help until the interface package ships on PyPI (advertising it

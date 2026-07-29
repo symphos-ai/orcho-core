@@ -84,6 +84,33 @@ When worktree isolation is enabled, the physical git checkout lives outside
 the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.
 `meta.json` records that path in `worktree.path`.
 
+### Retention cleanup artifacts
+
+Workspace cleanup writes receipts outside run roots at
+`<runspace>/cleanup_receipts/<receipt_id>.json`, so they survive partial
+failure and `--reclaim-both`. Receipts list selected/protected objects, reason
+codes, operations, errors, archive paths, and `bytes_selected`,
+`bytes_archived`, and `bytes_reclaimed`. Archive is reversible and therefore
+reports archived bytes rather than reclaimed disk bytes; `--delete` reports
+reclaimed bytes.
+
+After a successful checkout reclaim, every preserved reference may contain:
+
+```json
+"worktree": {
+  "path": "/historical/checkout",
+  "reclaimed": {
+    "at": "2026-07-29T00:00:00Z",
+    "disposition": "archive",
+    "archive_path": "/runspace/cleanup_archive/cleanup-id/worktrees/wt_x",
+    "receipt_path": "/runspace/cleanup_receipts/cleanup-id.json"
+  }
+}
+```
+
+The path is historical evidence, not a retained checkout. Status, evidence,
+resume, and follow-up readers must not treat it as an in-place subject.
+
 Pause-time and terminal write contracts differ — see the per-file
 sections below.
 

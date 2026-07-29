@@ -268,3 +268,14 @@ def test_from_run_plan_is_never_a_retained_change_correction(tmp_path: Path) -> 
 
     assert result.operation == "blocked"
     assert "retained-change" in (result.blocker or "")
+
+
+def test_reclaimed_worktree_is_not_a_continuation_subject(tmp_path: Path) -> None:
+    meta = _meta(tmp_path / "historical-checkout")
+    meta["worktree"]["reclaimed"] = {"at": "2026-07-29T00:00:00Z"}
+    decision = resolve_continuation_decision(
+        run_id="parent", meta=meta, parent_run_dir=tmp_path,
+    )
+    assert decision.blocked is True
+    assert decision.retained_worktree is None
+    assert "historical" in decision.reason
