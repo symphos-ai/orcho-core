@@ -129,6 +129,20 @@ sub-project list (status per alias). `quality_gates` is a best-effort
 projection of finalized gate events from `evidence.json` when that artifact
 exists.
 
+`RunStatus.total_cost_usd_equivalent: float = 0.0` is the accounting-aware
+cost reference already present in the status snapshot's normalized metrics.
+It is `0.0` when metrics are unavailable, malformed, invalid, or accounting is
+disabled; clients do not need to inspect `raw_metrics` or invoke a separate
+metrics reader for this value.
+
+`RunStatus.last_event_seq: int | None = None` and
+`RunStatus.last_event_ts: str | None = None` identify the latest valid durable
+event observed while loading status. Missing, unreadable, empty, or malformed
+event evidence produces `(None, None)` (and a malformed trailing record falls
+back to the preceding valid one). These are position/observation data, not a
+staleness policy: clients choose any age, hung-run, or polling threshold. No
+event-history API call is needed merely to obtain the last-event position.
+
 ### `sdk.cross_parent_state`
 
 ```python

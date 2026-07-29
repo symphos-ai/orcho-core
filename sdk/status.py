@@ -1,6 +1,7 @@
 """Run status — one snapshot of a single run's meta + metrics."""
 from __future__ import annotations
 
+from math import isfinite
 from pathlib import Path
 
 from core.observability.metrics import scrub_accounting_fields
@@ -9,6 +10,7 @@ from pipeline.run_state.setup_failure import merged_status
 from sdk._runspace_context import accounting_enabled_for_context
 from sdk.actions import compute_next_actions
 from sdk.evidence_slices import active_stall_diagnostics, list_sub_runs
+from sdk.run_control.events import _last_valid_event_position
 from sdk.runs import _CWD_DEFAULT, find_run, load_json_optional, load_meta
 from sdk.types import ArtefactRef, GateStatus, PhaseStatus, RunMeta, RunStatus
 
@@ -128,6 +130,15 @@ def _collect_quality_gates(run_dir: Path) -> tuple[GateStatus, ...]:
     return tuple(gates)
 
 
+def _safe_total_cost(raw_metrics: dict[str, object]) -> float:
+    """Project the already-loaded accounting total without re-reading metrics."""
+    try:
+        value = float(raw_metrics.get("total_cost_usd_equivalent", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if isfinite(value) else 0.0
+
+
 def load_status(
     run_id: str | None = None,
     *,
@@ -143,12 +154,19 @@ def load_status(
     """
     ref = find_run(run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     raw_meta = load_meta(ref.run_dir)
-    raw_metrics = load_json_optional(ref.run_dir / "metrics.json")
+    try:
+        loaded_metrics = load_json_optional(ref.run_dir / "metrics.json")
+    except (OSError, UnicodeDecodeError):
+        loaded_metrics = {}
+    raw_metrics = loaded_metrics if isinstance(loaded_metrics, dict) else {}
     if not accounting_enabled_for_context(
         workspace=workspace,
         runs_dir=ref.run_dir.parent,
     ):
         raw_metrics = scrub_accounting_fields(raw_metrics)
+    last_event_seq, last_event_ts = _last_valid_event_position(
+        ref.run_dir / "events.jsonl",
+    )
 
     # ADR 0104: reconcile meta.status with the optional launcher state via the
     # shared merge rule (terminal meta wins; launcher consulted only for an
@@ -236,6 +254,9 @@ def load_status(
         total_duration_s=float(raw_metrics.get("total_duration_s", 0.0) or 0.0),
         total_rounds=int(raw_metrics.get("total_rounds", 0) or 0),
         total_retries=int(raw_metrics.get("total_retries", 0) or 0),
+        total_cost_usd_equivalent=_safe_total_cost(raw_metrics),
+        last_event_seq=last_event_seq,
+        last_event_ts=last_event_ts,
         sub_projects=tuple(sub_projects),
         quality_gates=quality_gates,
         worktree=raw_meta.get("worktree") if raw_meta else None,

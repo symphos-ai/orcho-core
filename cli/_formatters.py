@@ -174,7 +174,7 @@ def _append_status_usage(out: list[str], status: RunStatus) -> None:
         f"{_status_label('  Tokens:')}  "
         f"{_stdout_paint(tokens_text, C.WHITE)}"
     )
-    cost = _float_metric(status.raw_metrics.get("total_cost_usd_equivalent"))
+    cost = status.total_cost_usd_equivalent
     if cost > 0.0:
         estimated = _metrics_cost_estimated(status.raw_metrics)
         out.append(
