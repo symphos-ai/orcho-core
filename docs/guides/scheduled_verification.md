@@ -32,20 +32,39 @@ PLUGIN = {
         "default_env": "project",
         "commands": {
             "lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"},
-            "unit": {"run": ["python", "-m", "pytest", "-q", "tests/unit"], "cost": "slow"},
+            "unit": {"run": ["python", "-m", "pytest", "-q", "tests/unit"], "cost": "fast"},
+            "functional": {
+                "run": ["python", "-m", "pytest", "-q", "tests/functional"],
+                "cost": "slow",
+            },
+            "e2e": {"run": ["python", "-m", "pytest", "-q", "tests/e2e"], "cost": "unknown"},
         },
         "gate_sets": {
-            "hygiene": {"commands": ["lint"], "default_policy": "require"},
-            "tests": {"commands": ["unit"], "default_policy": "warn"},
+            "hygiene": {"commands": ["lint", "unit"], "default_policy": "require"},
+            "broad": {"commands": ["functional"], "default_policy": "require"},
+            "manual-proof": {"commands": ["e2e"]},
         },
-        "selection": [{"always": ["hygiene", "tests"]}],
+        "selection": [{"always": ["hygiene", "broad", "manual-proof"]}],
         "schedule": [
             {"after_phase": "implement", "gate_sets": ["hygiene"], "action": "repair_loop"},
-            {"after_phase": "implement", "gate_sets": ["tests"]},
+            {"after_phase": "implement", "gate_sets": ["broad"], "action": "repair_loop"},
+            {"manual_only": True, "gate_sets": ["manual-proof"], "policy": "suggest"},
         ],
     },
 }
 ```
+
+Note what the costs say here, because the naming tempts the opposite. A unit
+suite is `fast`: it is bounded, hermetic, and its whole purpose is quick
+feedback — do not classify it as `slow` because the word "tests" sounds
+expensive. Reserve `slow` for the broad, service-heavy proof (functional,
+integration, a full cross-layer suite), and `unknown` for anything networked,
+credential-dependent, or otherwise unpredictable — an end-to-end suite usually
+belongs there, and it is normally operator-owned rather than engine-executed.
+
+Cost and ownership are separate axes: `e2e` above is `unknown` **and**
+`manual_only` with a `suggest` policy — "we cannot predict what this costs, and
+a person decides when it runs" — not "it is expensive, therefore optional".
 
 The lifecycle is declaration → selection → scheduled identity → execution →
 immutable receipt → readiness. Use `orcho quality-gates` to inspect the
@@ -65,6 +84,35 @@ Cost has exactly four values:
 Cost describes expected evidence scope. It is independent of selection,
 schedule, executor, policy, action, consequence, and receipt authority. Put a
 cost on each command or use a gate set's `default_cost`.
+
+### Why the classification pays
+
+Cost is not a label for reporting. It is how you decide where a check earns its
+place in the schedule, and the difference is measured in wall-clock and tokens
+on every failing run.
+
+A failing gate with a `required_action` consequence routes the run into repair.
+If the check that catches a defect is cheap and runs early, the run turns
+around in seconds; if the only thing that catches it is the broad proof, the
+run pays for the broad proof first, every time. In one recorded run a `ruff`
+gate failed **one second** after the implementation phase and sent the run
+straight to repair — the broad test suite, which takes minutes on the same
+project, never had to execute for that round.
+
+The engine does not reorder your gates by cost. Selected identities are
+scheduled by hook and phase, so the ladder is something the contract author
+builds:
+
+- declare hygiene-shaped checks (`lint`, format, type) as `fast` and give them
+  a hook that fires as early as a defect can exist — typically right after the
+  implementation phase;
+- keep the broad, service-heavy proof in its own group at its own hook, so a
+  cheap failure does not have to wait behind it;
+- do not put a fast check and a slow one in a group whose schedule makes the
+  fast one meaningless — the early exit is the whole point of declaring it.
+
+An honest `fast` on a check that is actually slow costs you nothing at
+declaration time and everything on the first failing run.
 
 ## 4. Group, select, and schedule gates
 
