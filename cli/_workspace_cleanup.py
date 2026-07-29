@@ -60,19 +60,24 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
 
 
 def format_workspace_cleanup(result: WorkspaceCleanupCliResult) -> str:
-    """Render a deterministic human report; mutation facts come from receipt."""
+    """Render a deterministic human report; mutation facts come from receipt.
+
+    The report summarises by reason instead of enumerating every run: a real
+    workspace holds thousands of references, and per-run detail lives in the
+    plan object and the durable receipt.
+    """
+    plan = result.plan
     lines = [
         f"Workspace: {result.workspace}",
         f"Runs dir: {result.runs_dir}",
         f"Tier: {result.tier}",
         f"Disposition: {result.disposition or 'report (no changes)'}",
-        f"Reclaimable: {len(result.plan.selected)}",
-        f"Protected: {len(result.plan.protected)}",
+        f"Reclaimable: {len(plan.selected)}",
+        f"Protected: {len(plan.protected)}",
+        f"Nothing to reclaim: {len(plan.inert)}",
     ]
-    for verdict in result.plan.selected:
-        lines.append(f"  reclaimable {verdict.snapshot.run_id}: {verdict.reason} — {verdict.detail}")
-    for verdict in result.plan.protected:
-        lines.append(f"  protected {verdict.snapshot.run_id}: {verdict.reason} — {verdict.detail}")
+    lines += _reason_summary("reclaimable", plan.selected)
+    lines += _reason_summary("protected", plan.protected)
     if result.execution is not None:
         receipt = result.execution.receipt
         lines.extend([
@@ -82,17 +87,22 @@ def format_workspace_cleanup(result: WorkspaceCleanupCliResult) -> str:
             f"Bytes reclaimed: {receipt['bytes_reclaimed']}",
             f"Receipt: {result.execution.receipt_path}",
         ])
-        for item in receipt["selected"]:
-            lines.append(
-                f"  selected {item['run_id']}: {item['reason']} — {item['detail']}"
-            )
-        for item in receipt["protected"]:
-            lines.append(
-                f"  protected {item.get('run_id', '?')}: {item['reason']} — {item['detail']}"
-            )
         for row in receipt["results"]:
             if row.get("archive_path"):
                 lines.append(f"Archive: {row['archive_path']}")
         for error in receipt["errors"]:
             lines.append(f"Partial failure: {error}")
     return "\n".join(lines)
+
+
+def _reason_summary(label: str, verdicts: tuple) -> list[str]:
+    counts: dict[str, tuple[int, str]] = {}
+    for verdict in verdicts:
+        count, detail = counts.get(verdict.reason, (0, verdict.detail))
+        counts[verdict.reason] = (count + 1, detail)
+    return [
+        f"  {label} {reason}: {count} — {detail}"
+        for reason, (count, detail) in sorted(
+            counts.items(), key=lambda item: (-item[1][0], item[0]),
+        )
+    ]

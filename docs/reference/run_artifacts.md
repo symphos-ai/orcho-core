@@ -89,8 +89,9 @@ the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.
 Workspace cleanup writes receipts outside run roots at
 `<runspace>/cleanup_receipts/<receipt_id>.json`, so they survive partial
 failure and `--reclaim-both`. Receipts list selected/protected objects, reason
-codes, operations, errors, archive paths, and `bytes_selected`,
-`bytes_archived`, and `bytes_reclaimed`. Archive is reversible and therefore
+codes, operations, errors, archive paths, an `inert` count of references with
+no retained checkout, and `bytes_selected`, `bytes_archived`, and
+`bytes_reclaimed`. Archive is reversible and therefore
 reports archived bytes rather than reclaimed disk bytes; `--delete` reports
 reclaimed bytes.
 
