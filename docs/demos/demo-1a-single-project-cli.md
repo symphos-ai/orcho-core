@@ -148,6 +148,11 @@ The run produced one approved plan, one implementation, a rejected review,
 one repair, a clean second review, and approved final acceptance. That is the
 smallest complete false-ready story Orcho needs to prove.
 
+The same switch is designed for reuse outside this walkthrough. See the
+[deterministic mock harness guide](../guides/deterministic_mock_harness.md)
+for CLI and SDK examples, expected assertions, release-smoke use, and the
+boundary between protocol verification and model-quality evaluation.
+
 ## Inspect the run
 
 `orcho evidence` with `--workspace` and no run id resolves to the
