@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sdk.run_control.events import read_run_events, tail_run_events
+from sdk.run_control.events import _last_valid_event_position, read_run_events, tail_run_events
 from sdk.run_control.types import RunEvent
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -120,3 +120,72 @@ class TestTailRunEvents:
         )
 
         assert collected[0].payload == payload
+
+
+# ── private last-event position probe ───────────────────────────────────────
+
+
+class TestLastValidEventPosition:
+    def test_returns_last_line_of_multiline_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        path.write_text("\n".join(json.dumps(_event(i, "event")) for i in range(1, 4)), encoding="utf-8")
+
+        assert _last_valid_event_position(path) == (3, "2026-06-06T00:00:03.000")
+
+    def test_accepts_trailing_newline_and_falls_back_from_malformed_tail(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        path.write_bytes(
+            f"{json.dumps(_event(1, 'event'))}\n{json.dumps(_event(2, 'event'))}\n".encode()
+            + b'{"seq": "not-an-int", "ts": "2026-06-06"}\n{bad json\n\xff\n'
+        )
+
+        assert _last_valid_event_position(path) == (2, "2026-06-06T00:00:02.000")
+
+    def test_missing_empty_and_unreadable_files_degrade_without_error(self, tmp_path: Path, monkeypatch) -> None:
+        missing = tmp_path / "missing.jsonl"
+        empty = tmp_path / "empty.jsonl"
+        empty.touch()
+
+        assert _last_valid_event_position(missing) == (None, None)
+        assert _last_valid_event_position(empty) == (None, None)
+
+        def fail_open(self: Path, *args: object, **kwargs: object) -> object:
+            raise OSError("denied")
+
+        monkeypatch.setattr(Path, "open", fail_open)
+        assert _last_valid_event_position(tmp_path / "unreadable.jsonl") == (None, None)
+
+    def test_reads_only_tail_blocks_not_full_history(self, tmp_path: Path, monkeypatch) -> None:
+        path = tmp_path / "events.jsonl"
+        path.write_bytes(
+            b"".join(json.dumps(_event(i, "event")).encode() + b"\n" for i in range(1, 10_001))
+        )
+        bytes_read = 0
+        original_open = Path.open
+
+        class CountingStream:
+            def __init__(self, stream: object) -> None:
+                self._stream = stream
+
+            def __enter__(self) -> CountingStream:
+                self._stream.__enter__()  # type: ignore[union-attr]
+                return self
+
+            def __exit__(self, *args: object) -> object:
+                return self._stream.__exit__(*args)  # type: ignore[union-attr]
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._stream, name)
+
+            def read(self, size: int = -1) -> bytes:
+                nonlocal bytes_read
+                data = self._stream.read(size)  # type: ignore[union-attr]
+                bytes_read += len(data)
+                return data
+
+        def counting_open(self: Path, *args: object, **kwargs: object) -> CountingStream:
+            return CountingStream(original_open(self, *args, **kwargs))
+
+        monkeypatch.setattr(Path, "open", counting_open)
+        assert _last_valid_event_position(path) == (10_000, "2026-06-06T00:00:010000.000")
+        assert bytes_read < path.stat().st_size // 100

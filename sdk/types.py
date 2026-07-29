@@ -106,6 +106,9 @@ class RunStatus:
     next_actions: tuple = ()  # tuple[Action, ...] — avoids forward-ref cycle
     continuation_decision: ContinuationDecision | None = None
     artefacts: tuple = ()  # tuple[ArtefactRef, ...] — avoids forward-ref order
+    total_cost_usd_equivalent: float = 0.0
+    last_event_seq: int | None = None
+    last_event_ts: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -112,6 +112,28 @@ class TestPhaseSequencing:
         assert "implement" in session["phases"]
 
     @patch("pipeline.project.session_run.load_plugin", return_value=PluginConfig())
+    def test_mock_run_status_matches_final_event_position(self, _, project_dir: str, tmp_path) -> None:
+        """The public status liveness position matches the durable event writer."""
+        from sdk.run_control import read_run_events
+        from sdk.status import load_status
+
+        output_dir = tmp_path / "runs" / "mock_status_events"
+        session = run_pipeline(
+            task="Mock status event position",
+            project_dir=project_dir,
+            output_dir=output_dir,
+            max_rounds=0,
+            provider=MockAgentProvider(latency=0.0),
+        )
+
+        assert session["status"] == "done"
+        assert (output_dir / "events.jsonl").is_file()
+        status = load_status(output_dir.name, runs_dir=output_dir.parent, cwd=None)
+        events = read_run_events(output_dir.name, runs_dir=output_dir.parent, cwd=None)
+        assert events
+        assert (status.last_event_seq, status.last_event_ts) == (events[-1].seq, events[-1].ts)
+
+    @patch("pipeline.project.session_run.load_plugin", return_value=PluginConfig())
     def test_mock_full_run_has_review_round_and_nonzero_input_metrics(
         self, _, tmp_path
     ) -> None:

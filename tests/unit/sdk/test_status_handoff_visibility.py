@@ -468,6 +468,7 @@ def test_cli_status_renders_cross_projects_subprojects_verbose_and_clips_text(
         total_tokens_out=234,
         total_duration_s=3.5,
         total_rounds=1,
+        total_cost_usd_equivalent=1.5,
         raw_meta={"note": "verbose payload"},
         raw_metrics={
             "total_tokens": 1_234,
@@ -514,8 +515,9 @@ def test_cli_status_renders_cross_projects_subprojects_verbose_and_clips_text(
         meta=None,
         total_tokens=1,
         total_duration_s=1.0,
+        total_cost_usd_equivalent=2.0,
         raw_metrics={
-            "total_cost_usd_equivalent": 2.0,
+            "total_cost_usd_equivalent": 999.0,
             "cost_estimated": "unknown",
             "phases": [],
         },
