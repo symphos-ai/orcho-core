@@ -20,6 +20,7 @@ Start here, in order:
 | [user/03_workspaces.md](user/03_workspaces.md) | Connecting your project, workspaces, multiple repos |
 | [user/04_results.md](user/04_results.md) | What a run produces, how to read artifacts, diff delivery |
 | [guides/scheduled_verification.md](guides/scheduled_verification.md) | Declare, schedule, execute, and read verification receipts |
+| [guides/deterministic_mock_harness.md](guides/deterministic_mock_harness.md) | Reproduce reject → repair → approval without provider credentials or token cost |
 | [user/early_adopter_install.md](user/early_adopter_install.md) | Full source-checkout install: core + MCP + Web |
 
 ---

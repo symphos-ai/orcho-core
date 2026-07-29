@@ -2212,6 +2212,13 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
     )
     if not cross:
         mock.add_argument(
+            "--mock-review-reject", type=int, default=0, metavar="N",
+            help=(
+                "Mock-only: emit N rejected change reviews before approving. "
+                "Useful for exercising the review/repair loop."
+            ),
+        )
+        mock.add_argument(
             "--no-worktree-isolation", action="store_true",
             help=(
                 "Disable orcho-managed worktree isolation for this run; "

@@ -14,6 +14,7 @@ import pytest
 from agents.runtimes._strategy import (
     _mock_implement_incomplete_enabled,
     _mock_subtask_attestation,
+    make_provider,
 )
 
 _ENV = "ORCHO_MOCK_IMPLEMENT_INCOMPLETE"
@@ -87,3 +88,14 @@ def test_no_criteria_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_ENV, "1")
     prompt = "## Current Executable Subtask `implement:t-2`\n\nNo criteria block.\n"
     assert _mock_subtask_attestation(prompt) == ""
+
+
+def test_cli_mock_factory_keeps_demo_verification_green() -> None:
+    """Public ``--mock`` journeys should not invent a failing test receipt."""
+    provider = make_provider(mock=True)
+
+    first = provider.run_tests("/tmp/project", plugin=None)
+    second = provider.run_tests("/tmp/project", plugin=None)
+
+    assert first.passed is True
+    assert second.passed is True

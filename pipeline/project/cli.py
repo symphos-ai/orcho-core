@@ -463,6 +463,12 @@ Examples:
              "Default 0 (always approve). Combined with --mock.",
     )
     parser.add_argument(
+        "--mock-review-reject", type=int, default=0, metavar="N",
+        help="Mock-only: how many initial review_changes calls emit "
+             "REJECTED JSON before flipping to APPROVED JSON. Exercises "
+             "the review/repair loop. Default 0. Combined with --mock.",
+    )
+    parser.add_argument(
         "--hypothesis", action=argparse.BooleanOptionalAction, default=None,
         help="Override the pre-PLAN hypothesis gut-check on/off for fresh "
              "runs. ``--hypothesis`` forces it on, ``--no-hypothesis`` skips "
@@ -1306,6 +1312,7 @@ Examples:
     _provider = make_provider(
         args.mock,
         mock_validate_plan_reject_rounds=int(getattr(args, "mock_validate_plan_reject", 0) or 0),
+        mock_review_reject_rounds=int(getattr(args, "mock_review_reject", 0) or 0),
     )
     _session_mode = SessionMode.STATELESS if args.mock else SessionMode(args.session_mode)
 
@@ -1319,6 +1326,7 @@ Examples:
     if args.mock:
         phase_config = make_mock_phase_config(
             validate_plan_reject_rounds=int(getattr(args, "mock_validate_plan_reject", 0) or 0),
+            review_reject_rounds=int(getattr(args, "mock_review_reject", 0) or 0),
         )
 
     # Phase 4.5: load CLI --attach* paths into Attachment objects.
