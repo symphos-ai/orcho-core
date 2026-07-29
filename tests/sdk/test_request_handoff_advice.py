@@ -118,7 +118,10 @@ def _seed_paused_run(
 
 
 def test_eligible_rejected_handoff_returns_typed_advice(tmp_path: Path) -> None:
-    runs, run_id, run_dir = _seed_paused_run(tmp_path)
+    runs, run_id, run_dir = _seed_paused_run(
+        tmp_path,
+        phase_handoff=_payload(requested_at="2026-07-29T09:31:22+00:00"),
+    )
 
     result = request_handoff_advice(
         run_id,
@@ -160,6 +163,21 @@ def test_eligible_handoff_with_explicit_matching_id(tmp_path: Path) -> None:
     )
     assert result.handoff_id == _HANDOFF_ID
     assert result.recommended_action == "retry_feedback"
+
+
+def test_stamped_payload_reconstructs_known_signal_fields_only() -> None:
+    from sdk.handoff_advice import _reconstruct_signal
+
+    signal = _reconstruct_signal(
+        _payload(requested_at="2026-07-29T09:31:22+00:00"),
+        "20260623_120000_aaaaaa",
+    )
+
+    assert signal.handoff_id == _HANDOFF_ID
+    assert signal.phase == "review_changes"
+    assert signal.round == 2
+    assert signal.last_output == "reviewer rejected the change"
+    assert not hasattr(signal, "requested_at")
 
 
 def test_hygiene_gate_returns_waiver_without_a_decision_or_model(

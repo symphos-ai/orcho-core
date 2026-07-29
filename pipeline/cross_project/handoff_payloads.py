@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 from core.observability.logging import warn
 from pipeline.cross_project.checkpoint import write_cross_checkpoint
 from pipeline.engine import save_session as save_cross_session
+from pipeline.run_state import request_active_handoff
 
 if TYPE_CHECKING:
     from pipeline.cross_project.final_acceptance import (
@@ -294,8 +295,9 @@ def apply_cross_phase_handoff_pause(
 
     Steps (identical for all shapes):
 
-    - Sets ``session["status"]="awaiting_phase_handoff"`` and
-      ``session["phase_handoff"]=payload``.
+    - Delegates the ``session["status"]="awaiting_phase_handoff"`` and
+      ``session["phase_handoff"]=payload`` transition to the shared active
+      handoff writer, including its durable requested-at timestamp.
     - Marks the cross checkpoint with ``phase_handoff_pending`` and
       ``phase_handoff_id`` so resume can find the active artifact.
       Project-proxy callers additionally stamp
@@ -325,8 +327,7 @@ def apply_cross_phase_handoff_pause(
     """
     from core.observability import events as _events
 
-    session["status"] = "awaiting_phase_handoff"
-    session["phase_handoff"] = payload
+    request_active_handoff(session, payload=payload)
     cross_ckpt["phase_handoff_pending"] = True
     cross_ckpt["phase_handoff_id"] = payload["id"]
 

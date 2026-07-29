@@ -331,6 +331,7 @@ def delivery_decision_state(
             reason="no pending delivery gate",
         )
 
+    requested_at = _durable_decided_at(ctx)
     status = str(ctx.get("status"))
     release_verdict = str(ctx.get("release_verdict") or "")
     release_blocked = is_release_blocked(release_verdict, empty_blocks=False)
@@ -355,6 +356,7 @@ def delivery_decision_state(
             blocked_actions=tuple(a for a in all_actions if a != "halt"),
             default_action=None,
             reason=_followup_correction_reason(resolved_run_id, ref.run_dir),
+            requested_at=requested_at,
             scope_disclosure=scope_disclosure,
         )
 
@@ -424,11 +426,24 @@ def delivery_decision_state(
         blocked_actions=tuple(blocked),
         default_action=default_action,
         reason=reason,
+        requested_at=requested_at,
         scope_disclosure=scope_disclosure,
     )
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
+
+def _durable_decided_at(ctx: dict[str, Any]) -> str | None:
+    """Return a valid offset-aware durable delivery timestamp verbatim."""
+    value = ctx.get("decided_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value if parsed.tzinfo is not None else None
 
 
 def _scope_disclosure(ctx: Any) -> tuple[str, ...]:

@@ -1075,6 +1075,12 @@
           "default_factory": null,
           "name": "scope_disclosure",
           "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "requested_at",
+          "type": "str | None"
         }
       ],
       "frozen": true,
