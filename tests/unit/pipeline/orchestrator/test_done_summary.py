@@ -98,6 +98,62 @@ def test_done_summary_counts_resume_skips_as_already_ok() -> None:
     ) == "plan=ok | validate_plan=ok | implement=skip"
 
 
+def test_done_summary_keeps_completed_repair_after_clean_second_review() -> None:
+    """The loop's trailing skip must not erase a repair that already ran."""
+    profile = SimpleNamespace(
+        steps=(
+            PhaseStep(phase="review_changes"),
+            PhaseStep(phase="repair_changes"),
+            PhaseStep(phase="final_acceptance"),
+        ),
+    )
+
+    assert _render_done_summary(
+        profile,
+        {
+            "rounds": [
+                {
+                    "critique": "rejected",
+                    "repair_output": "fixed the blocker",
+                },
+                {
+                    "critique": "",
+                    "repair_output": "fixed the blocker",
+                },
+            ],
+            "review_changes": {"verdict": "APPROVED"},
+            "repair_changes": {"skipped": "review clean"},
+            "final_acceptance": {"verdict": "APPROVED", "ship_ready": True},
+        },
+    ) == "review_changes=ok | repair_changes=ok | final_acceptance=ok"
+
+
+def test_done_summary_recovers_completed_repair_from_rounds_only() -> None:
+    """Durable loop rounds remain authoritative when no phase entry is kept."""
+    profile = SimpleNamespace(
+        steps=(
+            PhaseStep(phase="review_changes"),
+            PhaseStep(phase="repair_changes"),
+            PhaseStep(phase="final_acceptance"),
+        ),
+    )
+
+    assert _render_done_summary(
+        profile,
+        {
+            "rounds": [
+                {
+                    "critique": "rejected",
+                    "repair_output": "fixed the blocker",
+                },
+                {"critique": ""},
+            ],
+            "review_changes": {"verdict": "APPROVED"},
+            "final_acceptance": {"verdict": "APPROVED", "ship_ready": True},
+        },
+    ) == "review_changes=ok | repair_changes=ok | final_acceptance=ok"
+
+
 def test_done_summary_falls_back_to_phase_log_without_profile() -> None:
     assert _render_done_summary(
         None,

@@ -4070,6 +4070,12 @@
           "name": "mock_validate_plan_reject"
         },
         {
+          "annotation": "int",
+          "default": "0",
+          "kind": "KEYWORD_ONLY",
+          "name": "mock_review_reject"
+        },
+        {
           "annotation": "str | None",
           "default": "None",
           "kind": "KEYWORD_ONLY",

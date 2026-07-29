@@ -144,6 +144,13 @@ def test_implement_done_shape():
     assert line == "✓ implement · 3/3 subtasks · 12 files changed"
 
 
+def test_implement_done_accepts_real_phase_label():
+    line = _strip(
+        sl.implement_done(0, 0, 1, label="repair changes", color=False),
+    )
+    assert line == "✓ repair changes · 0/0 subtasks · 1 files changed"
+
+
 # ── gates / handoff / resume / delivery ──────────────────────────────────
 
 

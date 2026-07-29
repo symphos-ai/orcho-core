@@ -17,10 +17,12 @@ it, and prove what is ready to deliver.**
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
-![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
+![Install Orcho, bootstrap the golden fixture, then watch one run implement a change, get rejected as false-ready, repair the blocker, pass review, and close with a green delivery receipt](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
 
-<sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
-with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
+<sub>Three commands to the first result: install, bootstrap, run. The recorded
+pipeline is deterministic mock mode using the real CLI and lifecycle; output is
+trimmed for pace. Interactive version with pause and scrub:
+[docs.orcho.dev](https://docs.orcho.dev/evidence/false-ready-delivery/).</sub>
 
 Use the coding agents you already trust. They remain the workers; Orcho owns
 the delivery protocol around them: plan → implementation → review → repair
@@ -142,8 +144,8 @@ For source-checkout setup, tests, and contribution workflow, see
 ## Try the golden mock demo
 
 The fastest zero-API proof is the single-project CLI demo. It creates a
-disposable git-backed fixture, runs the full mock pipeline, reviews the diff,
-and writes evidence.
+disposable git-backed fixture, runs the full mock pipeline, rejects one
+false-ready implementation, repairs it, and writes the final evidence.
 
 For an installed CLI, use the packaged demo bootstrap:
 
