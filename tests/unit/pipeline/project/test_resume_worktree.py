@@ -352,3 +352,19 @@ def test_classify_unavailable_without_retry_returns_none(tmp_path: Path) -> None
         )
         is None
     )
+
+
+def test_reclaimed_review_retry_is_blocked_before_historical_path_probe(tmp_path: Path) -> None:
+    project = tmp_path / "api"
+    _init_repo(project)
+    decision = classify_resume_worktree(
+        prior_worktree={
+            "isolation": "per_run", "path": str(tmp_path / "historical"),
+            "reclaimed": {"at": "2026-07-29T00:00:00Z"},
+        },
+        review_retry_active=True,
+        project_dir=project,
+    )
+    assert decision is not None and decision.blocked is True
+    assert decision.path is None
+    assert "historical" in (decision.block_message or "")

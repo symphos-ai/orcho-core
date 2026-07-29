@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.io.git_helpers import has_uncommitted
+from pipeline.engine.worktree import is_worktree_reclaimed
 
 
 @dataclasses.dataclass(frozen=True)
@@ -199,6 +200,19 @@ def classify_followup_worktree(
     marker) from a genuine isolated worktree — an off/source-checkout parent's
     dirtiness is never treated as an undelivered diff.
     """
+    if is_worktree_reclaimed(followup_parent_worktree):
+        return FollowupWorktreeDecision(
+            mode_label="blocked: parent worktree reclaimed",
+            blocked=True,
+            block_message=(
+                "follow-up parent worktree was reclaimed; its recorded path is "
+                "historical and cannot be reused in place. Start from a new plan "
+                "or restore the archived material explicitly."
+            ),
+            diff_source="none",
+            effective_parent_worktree=None,
+        )
+
     parent_worktree_path: str | None = None
     if followup_parent_worktree:
         raw_path = followup_parent_worktree.get("path")

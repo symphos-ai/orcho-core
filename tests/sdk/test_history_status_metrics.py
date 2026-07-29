@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from cli._formatters import format_status
 from sdk import NoWorkspace, RunNotFound, get_run_metrics, list_history, list_metrics, load_status
 
 
@@ -45,6 +46,21 @@ def test_load_status_latest(populated_runs: Path):
     assert status.meta.task == "Add feature X"
     assert status.total_tokens == 12000
     assert status.total_duration_s == pytest.approx(60.0)
+
+
+def test_load_status_preserves_reclaimed_worktree_marker(runs_root: Path):
+    run_dir = _write_minimal_run(runs_root, "reclaimed")
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    meta["worktree"] = {
+        "path": "/historical", "isolation": "per_run",
+        "reclaimed": {"at": "2026-07-29T00:00:00Z", "disposition": "archive"},
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    status = load_status("reclaimed", runs_dir=runs_root)
+    assert status.worktree and status.worktree["reclaimed"]["disposition"] == "archive"
+    rendered = format_status(status)
+    assert "Historical worktree:" in rendered
+    assert "Reclaimed:" in rendered
 
 
 def test_load_status_projects_accounting_cost_and_last_event(

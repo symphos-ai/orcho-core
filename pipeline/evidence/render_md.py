@@ -205,6 +205,7 @@ def _render_worktree(
     if worktree is None:
         lines.extend(["_No worktree context recorded._", ""])
         return lines
+    from pipeline.engine.worktree import is_worktree_reclaimed
     # Wire key is ``isolation`` (ADR 0033 to_dict shape).
     isolation = worktree.get("isolation", "off")
     if isolation == "off":
@@ -213,7 +214,8 @@ def _render_worktree(
     else:
         lines.append(f"- **Isolation:** `{isolation}`")
         if worktree.get("path"):
-            lines.append(f"- **Path:** `{worktree['path']}`")
+            label = "Historical path" if is_worktree_reclaimed(worktree) else "Path"
+            lines.append(f"- **{label}:** `{worktree['path']}`")
         if worktree.get("branch_ref"):
             lines.append(f"- **Branch:** `{worktree['branch_ref']}`")
         if worktree.get("base_ref"):
@@ -222,6 +224,15 @@ def _render_worktree(
             lines.append(f"- **Retention until:** {worktree['retention_until']}")
         if worktree.get("degraded_reason"):
             lines.append(f"- **Degraded:** {worktree['degraded_reason']}")
+    reclaimed = worktree.get("reclaimed")
+    if is_worktree_reclaimed(worktree) and isinstance(reclaimed, dict):
+        lines.append(f"- **Reclaimed at:** {reclaimed['at']}")
+        if reclaimed.get("disposition"):
+            lines.append(f"- **Reclaim disposition:** `{reclaimed['disposition']}`")
+        if reclaimed.get("archive_path"):
+            lines.append(f"- **Archive:** `{reclaimed['archive_path']}`")
+        if reclaimed.get("receipt_path"):
+            lines.append(f"- **Cleanup receipt:** `{reclaimed['receipt_path']}`")
     if worktree_projects:
         lines.append("")
         lines.append("**Per-project worktrees:**")
@@ -231,7 +242,8 @@ def _render_worktree(
                 continue
             alias_isolation = ctx.get("isolation", "off")
             alias_path = ctx.get("path", "?")
-            lines.append(f"- `{alias}`: isolation=`{alias_isolation}`, path=`{alias_path}`")
+            alias_label = "historical_path" if is_worktree_reclaimed(ctx) else "path"
+            lines.append(f"- `{alias}`: isolation=`{alias_isolation}`, {alias_label}=`{alias_path}`")
     lines.append("")
     return lines
 
