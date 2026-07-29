@@ -193,9 +193,12 @@ Inspect retention without changing anything:
 orcho workspace cleanup --workspace /path/to/workspace
 ```
 
-The default is a report. It lists reclaimable and protected entries with stable
-reason codes; live/paused runs, unexpired retention, unresolved metadata,
-unregistered worktrees, and paths escaping the runspace are protected.
+The default is a report. It summarises reclaimable and protected entries with
+stable reason codes. A checkout is protected only while it holds work that
+cannot be recovered from anywhere else: uncommitted changes, commits no remote
+has, a run that is still live or paused, an unexpired retention window, or
+metadata and paths that cannot be read safely. Runs with no retained checkout
+are reported separately as having nothing to reclaim.
 
 To reclaim only expired checkout material while keeping every run directory:
 

@@ -1,8 +1,14 @@
-"""Fail-closed discovery and selection for retained workspace worktrees.
+"""Discovery and selection for retained workspace worktrees.
 
-This module does not archive or delete anything.  Both the report surface and
-the future mutation surface consume :func:`select_workspace_cleanup`, which
-makes it impossible for the two to drift in their safety predicate.
+Selection protects value, not bookkeeping.  A checkout is kept when it holds
+work that cannot be recovered from anywhere else — uncommitted changes,
+commits no remote has, or a run that may still resume in place.  Registration
+and manifests prove identity, so they decide *how* a checkout is removed,
+never whether it may be.
+
+Selection itself never archives or deletes anything.  Both the report surface
+and the mutation surface consume :func:`select_workspace_cleanup`, which makes
+it impossible for the two to drift in their safety predicate.
 """
 from __future__ import annotations
 
@@ -51,11 +57,17 @@ class WorkspaceCleanupVerdict:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceCleanupPlan:
-    """Immutable, read-only selection output shared by report and execution."""
+    """Immutable, read-only selection output shared by report and execution.
+
+    ``inert`` references have no retained checkout to act on (none was ever
+    recorded, or it was already reclaimed); they are neither reclaimable nor
+    meaningfully "protected".
+    """
 
     runs_dir: Path
     selected: tuple[WorkspaceCleanupVerdict, ...]
     protected: tuple[WorkspaceCleanupVerdict, ...]
+    inert: tuple[WorkspaceCleanupVerdict, ...]
     root_run_ids_for_both: tuple[str, ...]
 
 
@@ -67,24 +79,27 @@ class WorkspaceCleanupExecution:
     receipt: Mapping[str, Any]
 
 
+_INERT_REASONS = frozenset({
+    "worktree_missing", "worktree_gone", "already_reclaimed", "meta_missing",
+})
+
+
 def select_workspace_cleanup(
     runs_dir: Path | str,
     *,
     now: datetime | None = None,
-    registration_checker: RegistrationChecker | None = None,
 ) -> WorkspaceCleanupPlan:
-    """Discover retained worktrees and return one fail-closed selection plan.
+    """Discover retained worktrees and return one selection plan.
 
     ``runs_dir`` is the already-resolved runs-dir contract (not a workspace
-    search).  Every malformed, incomplete, external, or live observation is a
-    protected verdict.  A physical checkout is selected only once all of its
-    references are individually eligible.
+    search).  A physical checkout is selected only once all of its references
+    are individually eligible.  Registration is never consulted here: it
+    influences how execution removes a checkout, not whether it may.
     """
     root = Path(runs_dir)
     instant = _utc_now(now)
-    checker = registration_checker or _registered
     snapshots = _discover(root)
-    individual = _evaluate_snapshots(snapshots, root, instant, checker)
+    individual = _evaluate_snapshots(snapshots, root, instant)
 
     # A cross root is actionable only after every declared child checkout was
     # selected.  This does not make a root itself a deletion instruction; it is
@@ -106,8 +121,11 @@ def select_workspace_cleanup(
         if verdicts and all(v.selected for v in verdicts)
     ))
     selected = tuple(v for v in individual if v.selected)
-    protected = tuple(v for v in individual if not v.selected)
-    return WorkspaceCleanupPlan(root, selected, protected, both)
+    inert = tuple(v for v in individual if not v.selected and v.reason in _INERT_REASONS)
+    protected = tuple(
+        v for v in individual if not v.selected and v.reason not in _INERT_REASONS
+    )
+    return WorkspaceCleanupPlan(root, selected, protected, inert, both)
 
 
 def execute_workspace_cleanup(
@@ -132,7 +150,7 @@ def execute_workspace_cleanup(
     root = Path(runs_dir)
     instant = _utc_now(now)
     checker = registration_checker or _registered
-    plan = select_workspace_cleanup(root, now=instant, registration_checker=checker)
+    plan = select_workspace_cleanup(root, now=instant)
     receipt_path = root.parent / "cleanup_receipts" / f"cleanup-{uuid.uuid4().hex}.json"
     receipt: dict[str, Any] = {
         "schema_version": 1,
@@ -144,6 +162,7 @@ def execute_workspace_cleanup(
         "status": "running",
         "selected": [_verdict_payload(v) for v in plan.selected],
         "protected": [_verdict_payload(v) for v in plan.protected],
+        "inert": len(plan.inert),
         "results": [],
         "operations": [],
         "errors": [],
@@ -161,7 +180,7 @@ def execute_workspace_cleanup(
         # durable references immediately before mutation.  This applies the
         # same individual/shared/parent predicate without repeatedly scanning
         # every run or invoking git for unrelated checkouts.
-        fresh_verdicts = _reverify_group(verdicts, root, instant, checker)
+        fresh_verdicts = _reverify_group(verdicts, root, instant)
         if fresh_verdicts is None:
             receipt["protected"].append({
                 "path": str(physical), "reason": "changed_before_execution",
@@ -171,7 +190,8 @@ def execute_workspace_cleanup(
             _write_atomic(receipt_path, receipt)
             continue
         result = _reclaim_group(
-            physical, fresh_verdicts, root, disposition, receipt_path, receipt, archive_root,
+            physical, fresh_verdicts, root, disposition, receipt_path, receipt,
+            archive_root, checker,
         )
         receipt["results"].append(result)
         if result["ok"]:
@@ -253,10 +273,9 @@ def _evaluate_snapshots(
     snapshots: list[WorkspaceCleanupSnapshot],
     runs_dir: Path,
     now: datetime,
-    checker: RegistrationChecker,
 ) -> list[WorkspaceCleanupVerdict]:
     """Apply the shared individual, parent, and shared-checkout predicate."""
-    individual = [_individual_verdict(snapshot, runs_dir, now, checker) for snapshot in snapshots]
+    individual = [_individual_verdict(snapshot, runs_dir, now) for snapshot in snapshots]
     parent_guards = {
         snapshot.root_run_id: _cross_parent_protection(snapshot)
         for snapshot in snapshots
@@ -275,14 +294,9 @@ def _evaluate_snapshots(
         if path is not None:
             by_checkout.setdefault(_canonical(path), []).append(index)
     for indexes in by_checkout.values():
-        if not _shared_references_proven(indexes, individual):
-            for index in indexes:
-                old = individual[index]
-                individual[index] = WorkspaceCleanupVerdict(
-                    old.snapshot, False, "shared_reference_unproven",
-                    "manifest attachment cannot be proven to have a readable matching run record",
-                )
-            continue
+        # One physical checkout, one verdict: if any run sharing it is
+        # protected, the checkout stays. Grouping is by canonical path, which
+        # is a fact on disk — it needs no manifest to be true.
         if any(not individual[index].selected for index in indexes):
             for index in indexes:
                 if individual[index].selected:
@@ -315,81 +329,46 @@ def _reverify_group(
     verdicts: list[WorkspaceCleanupVerdict],
     runs_dir: Path,
     now: datetime,
-    checker: RegistrationChecker,
 ) -> list[WorkspaceCleanupVerdict] | None:
-    """Refresh only one planned physical checkout before mutating it."""
-    # Re-discover here instead of refreshing only known meta files.  A
-    # follow-up can attach to this checkout after selection; its run id is
-    # recorded in the manifest and must fail closed until its matching meta is
-    # readable and eligible too.
+    """Re-check one planned physical checkout immediately before mutating it.
+
+    State can change between selection and mutation: a run can resume, an
+    agent can leave new work in the checkout.  Re-read this group's own
+    durable references and re-apply the same predicate — including the git
+    at-risk probe — without rescanning the whole workspace.
+    """
     planned_paths = {
         _canonical(verdict.snapshot.worktree_path)
         for verdict in verdicts
         if verdict.snapshot.worktree_path is not None
     }
-    discovered = _discover(runs_dir)
-    refreshed = [
-        snapshot for snapshot in discovered
-        if snapshot.worktree_path is not None
-        and _canonical(snapshot.worktree_path) in planned_paths
-    ]
-    if not refreshed:
+    if len(planned_paths) != 1:
         return None
+    refreshed = [_refresh_snapshot(verdict.snapshot) for verdict in verdicts]
+    fresh_paths = {
+        _canonical(snapshot.worktree_path)
+        for snapshot in refreshed
+        if snapshot.worktree_path is not None
+    }
+    if fresh_paths != planned_paths:
+        return None  # a reference now points elsewhere; leave this checkout alone
     for root_id in {snapshot.root_run_id for snapshot in refreshed}:
-        root_dir = runs_dir / root_id
-        root_meta = _read_object(root_dir / "meta.json")
-        is_cross_root = any(
+        is_cross_child = any(
             snapshot.root_run_id == root_id and snapshot.run_id != root_id
             for snapshot in refreshed
         )
-        if is_cross_root:
+        if is_cross_child:
+            root_dir = runs_dir / root_id
+            root_meta = _read_object(root_dir / "meta.json")
             if root_meta is None or not _declared_aliases(root_meta):
                 return None
             root_snapshot = _snapshot(root_id, root_dir, root_meta, root_id)
             if _cross_parent_protection(root_snapshot) is not None:
                 return None
-    fresh = _evaluate_snapshots(refreshed, runs_dir, now, checker)
-    paths = {_canonical(verdict.snapshot.worktree_path) for verdict in fresh if verdict.snapshot.worktree_path}
-    if len(paths) != 1 or any(not verdict.selected for verdict in fresh):
+    fresh = _evaluate_snapshots(refreshed, runs_dir, now)
+    if any(not verdict.selected for verdict in fresh):
         return None
     return fresh
-
-
-def _shared_references_proven(
-    indexes: list[int],
-    verdicts: list[WorkspaceCleanupVerdict],
-) -> bool:
-    """Require each manifest attachment to resolve to the same checkout.
-
-    The manifest is the authoritative complete list for a shared checkout.
-    Discovery can observe a torn or unreadable attached run, in which case it
-    must protect the checkout rather than allowing a dangling historical path.
-    """
-    snapshots = [verdict.snapshot for verdict in verdicts]
-    for index in indexes:
-        snapshot = verdicts[index].snapshot
-        worktree = snapshot.meta.get("worktree") if snapshot.meta is not None else None
-        if not isinstance(worktree, Mapping) or snapshot.worktree_path is None:
-            return False
-        manifest = _manifest_for_checkout(snapshot.worktree_path, worktree)
-        if manifest is None:
-            return False
-        attached = manifest.get("attached_run_ids")
-        if not isinstance(attached, list) or not attached or any(
-            not isinstance(run_id, str) or not run_id.strip() for run_id in attached
-        ):
-            return False
-        checkout = _canonical(snapshot.worktree_path)
-        for run_id in attached:
-            if not any(
-                candidate.run_id == run_id
-                and candidate.meta is not None
-                and candidate.worktree_path is not None
-                and _canonical(candidate.worktree_path) == checkout
-                for candidate in snapshots
-            ):
-                return False
-    return True
 
 
 def _refresh_snapshot(snapshot: WorkspaceCleanupSnapshot) -> WorkspaceCleanupSnapshot:
@@ -422,17 +401,27 @@ def _snapshot(
     )
 
 
-def _individual_verdict(snapshot: WorkspaceCleanupSnapshot, runs_dir: Path, now: datetime, checker: RegistrationChecker) -> WorkspaceCleanupVerdict:
+def _individual_verdict(
+    snapshot: WorkspaceCleanupSnapshot, runs_dir: Path, now: datetime,
+) -> WorkspaceCleanupVerdict:
     meta = snapshot.meta
     if meta is None:
-        return _protected(snapshot, "meta_unreadable", "meta.json is missing, unreadable, or malformed")
+        # An absent meta records nothing to reclaim; a present-but-unreadable
+        # one may hide a checkout record, so only the latter fails closed.
+        if not snapshot.meta_path.exists():
+            return _protected(snapshot, "meta_missing", "run directory has no meta.json")
+        return _protected(snapshot, "meta_unreadable", "meta.json is unreadable or malformed")
     worktree = meta.get("worktree")
     if not isinstance(worktree, Mapping):
         return _protected(snapshot, "worktree_missing", "run has no readable retained worktree record")
     if is_worktree_reclaimed(worktree):
         return _protected(snapshot, "already_reclaimed", "checkout was reclaimed; recorded path is historical")
-    if snapshot.worktree_path is None or snapshot.source_repo_path is None:
-        return _protected(snapshot, "worktree_incomplete", "worktree path or source repository proof is absent")
+    if snapshot.worktree_path is None:
+        return _protected(snapshot, "worktree_incomplete", "worktree record has no checkout path")
+    if not snapshot.worktree_path.exists():
+        return _protected(snapshot, "worktree_gone", "recorded checkout no longer exists on disk")
+    if snapshot.source_repo_path is None:
+        return _protected(snapshot, "worktree_incomplete", "worktree record has no source repository path")
     if _active_handoff(meta) or _active_cross_gate(snapshot.run_dir, meta):
         return _protected(snapshot, "active_handoff_or_gate", "an operator handoff or cross gate remains active")
     try:
@@ -448,15 +437,68 @@ def _individual_verdict(snapshot: WorkspaceCleanupSnapshot, runs_dir: Path, now:
         return _protected(snapshot, "retention_active", "retention deadline has not expired")
     if not _safe_checkout_path(snapshot.worktree_path, runs_dir):
         return _protected(snapshot, "worktree_path_unsafe", "checkout escapes the resolved runspace or traverses a symlink")
-    if not _manifest_proves(snapshot.worktree_path, worktree):
-        return _protected(snapshot, "manifest_unproven", "worktree manifest is absent, unreadable, or disagrees with metadata")
-    try:
-        registered = checker(snapshot.source_repo_path, snapshot.worktree_path)
-    except Exception:
-        registered = False
-    if not registered:
-        return _protected(snapshot, "registration_unproven", "git worktree registration could not be proven")
+    at_risk = _work_at_risk(snapshot.worktree_path)
+    if at_risk is not None:
+        return _protected(snapshot, *at_risk)
     return WorkspaceCleanupVerdict(snapshot, True, "retention_expired", "stopped run has an expired retained checkout")
+
+
+def _work_at_risk(path: Path) -> tuple[str, str] | None:
+    """Return why this checkout holds unrecoverable work, or ``None``.
+
+    Protection answers exactly one question: *is there anything here that
+    cannot be recovered from somewhere else?* Only three things qualify — an
+    uncommitted change, a commit no remote has, and (checked by the caller) a
+    run that may still resume in place. Registration, manifests and other
+    bookkeeping prove *identity*, not value: they decide how a checkout is
+    removed, never whether it may be.
+
+    A checkout whose repository is gone (a torn test fixture, a pruned parent)
+    can hold nothing recoverable — git has nowhere to recover it into — so it
+    is reclaimable. A repository that exists but cannot answer is protected:
+    an unanswered question is not a clean answer.
+    """
+    if not (path / ".git").exists():
+        return None
+    status = _git(path, "status", "--porcelain")
+    if status is None:
+        return None if _repo_is_gone(path) else (
+            "git_unreadable", "checkout has a repository that could not be read"
+        )
+    if status.strip():
+        return "uncommitted_changes", "checkout holds changes that were never committed"
+    unpushed = _git(path, "log", "--oneline", "HEAD", "--not", "--remotes")
+    if unpushed is None:
+        return "git_unreadable", "commits could not be compared against the remotes"
+    if unpushed.strip():
+        return "unpushed_commits", "checkout holds commits that no remote has"
+    return None
+
+
+def _git(path: Path, *args: str) -> str | None:
+    """Run one read-only git command in ``path``; ``None`` when git cannot answer."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=path, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _repo_is_gone(path: Path) -> bool:
+    """True when the checkout's ``.git`` points at a repository that no longer exists."""
+    pointer = path / ".git"
+    if pointer.is_dir():
+        return False
+    try:
+        raw = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    if not raw.startswith("gitdir:"):
+        return True
+    return not Path(raw.split(":", 1)[1].strip()).exists()
 
 
 def _registered(project_dir: Path, path: Path) -> bool:
@@ -490,18 +532,18 @@ def _parse_deadline(value: Any) -> datetime | None:
 
 
 def _safe_checkout_path(path: Path, runs_dir: Path) -> bool:
-    runspace = runs_dir.parent
-    expected = runspace / "worktrees"
+    anchor = _checkout_anchor(path, runs_dir)
+    if anchor is None:
+        return False
     try:
-        path.relative_to(expected)
         resolved = path.resolve(strict=True)
-        resolved.relative_to(expected.resolve(strict=True))
+        resolved.relative_to(anchor.resolve(strict=True))
     except (OSError, RuntimeError, ValueError):
         return False
-    # Do not permit a lexical component below worktrees to be a symlink.
-    current = expected
+    # Do not permit a lexical component below the anchor to be a symlink.
+    current = anchor
     try:
-        for part in path.relative_to(expected).parts:
+        for part in path.relative_to(anchor).parts:
             current /= part
             if current.is_symlink():
                 return False
@@ -510,25 +552,27 @@ def _safe_checkout_path(path: Path, runs_dir: Path) -> bool:
     return True
 
 
-def _manifest_proves(path: Path, worktree: Mapping[str, Any]) -> bool:
-    return _manifest_for_checkout(path, worktree) is not None
+def _checkout_anchor(path: Path, runs_dir: Path) -> Path | None:
+    """The sanctioned worktree container this checkout lives in, if any.
 
-
-def _manifest_for_checkout(path: Path, worktree: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    raw = worktree.get("manifest_path")
-    manifest_path = Path(raw) if isinstance(raw, str) and raw else path.parent / "manifest.json"
+    Retained checkouts live under ``<runspace>/worktrees/``; older runs kept
+    them inside their own run directory at ``<runs>/<run>/worktrees/``.  Any
+    path outside both containers is not a checkout cleanup may touch.
+    """
+    modern = runs_dir.parent / "worktrees"
     try:
-        manifest_path.relative_to(path.parent)
-        manifest_path.resolve(strict=True).relative_to(path.parent.resolve(strict=True))
-    except (OSError, RuntimeError, ValueError):
+        path.relative_to(modern)
+    except ValueError:
+        pass
+    else:
+        return modern
+    try:
+        parts = path.relative_to(runs_dir).parts
+    except ValueError:
         return None
-    manifest = _read_object(manifest_path)
-    if manifest is None:
-        return None
-    checkout = manifest.get("checkout_path")
-    if not isinstance(checkout, str) or _canonical(Path(checkout)) != _canonical(path):
-        return None
-    return manifest
+    if len(parts) >= 3 and parts[1] == "worktrees":
+        return runs_dir / parts[0] / "worktrees"
+    return None
 
 
 def _declared_aliases(meta: Mapping[str, Any]) -> tuple[str, ...]:
@@ -594,8 +638,9 @@ def _reclaim_group(
     receipt_path: Path,
     receipt: dict[str, Any],
     archive_root: Path | None,
+    checker: RegistrationChecker,
 ) -> dict[str, Any]:
-    """Archive (when requested), then remove via the engine worktree seam."""
+    """Archive (when requested), then remove by whichever route git allows."""
     source = verdicts[0].snapshot.source_repo_path
     assert source is not None  # guaranteed by the selection predicate
     size = _tree_bytes(path)
@@ -611,10 +656,23 @@ def _reclaim_group(
         except OSError as exc:
             return _result(path, False, size, disposition, archive_path, f"archive failed: {exc}")
         _operation(receipt, receipt_path, "archive_snapshot", path, archive_path, True, None)
+    # Registration decides *how* a checkout is removed, never whether it may
+    # be. A registered checkout must go through git so no stale registration
+    # is left behind; an unregistered directory has no registration to damage,
+    # so a plain removal is both correct and the only thing that can work.
     from pipeline.engine.worktree import reclaim_registered_worktree
-    removal = reclaim_registered_worktree(project_dir=source, path=path)
+    try:
+        registered = checker(source, path)
+    except Exception:
+        registered = False
+    if registered:
+        removal = reclaim_registered_worktree(project_dir=source, path=path)
+        operation = "registered_worktree_remove"
+    else:
+        removal = _remove_unregistered_checkout(path)
+        operation = "unregistered_checkout_remove"
     _operation(
-        receipt, receipt_path, "registered_worktree_remove", path, None,
+        receipt, receipt_path, operation, path, None,
         removal.ok, removal.error,
     )
     if not removal.ok:
@@ -635,6 +693,18 @@ def _reclaim_group(
         # partial receipt rather than attempting a dependent root operation.
         return _result(path, False, size, disposition, archive_path, f"reclaimed marker failed: {exc}")
     return _result(path, True, size, disposition, archive_path, None)
+
+
+def _remove_unregistered_checkout(path: Path):  # noqa: ANN201 — mirrors GitOpResult
+    """Remove a checkout git does not track, reporting the same result shape."""
+    import shutil
+
+    from pipeline.engine.worktree import GitOpResult
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        return GitOpResult(ok=False, error=f"checkout removal failed: {exc}", path=path)
+    return GitOpResult(ok=True, error=None, path=path)
 
 
 def _reclaim_run_root(

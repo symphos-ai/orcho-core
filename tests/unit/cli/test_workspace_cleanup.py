@@ -29,7 +29,7 @@ def test_delete_without_tier_is_rejected_by_validation(tmp_path, monkeypatch):
 
 def test_default_is_report_noop(tmp_path, monkeypatch):
     runs = tmp_path / "runspace" / "runs"
-    plan = WorkspaceCleanupPlan(runs, (), (), ())
+    plan = WorkspaceCleanupPlan(runs, (), (), (), ())
     monkeypatch.setattr("cli._workspace_cleanup.find_runs_dir", lambda **_: runs)
     monkeypatch.setattr("cli._workspace_cleanup.select_workspace_cleanup", lambda _runs: plan)
     monkeypatch.setattr("cli._workspace_cleanup.execute_workspace_cleanup", lambda *_a, **_k: pytest.fail("report must not execute"))
@@ -47,7 +47,7 @@ def test_default_is_report_noop(tmp_path, monkeypatch):
 def test_reclaim_tiers_forward_archive_delete_scope(tmp_path, monkeypatch, both, delete, tier, disposition):
     runs = tmp_path / "runspace" / "runs"
     calls: list[dict] = []
-    plan = WorkspaceCleanupPlan(runs, (), (), ())
+    plan = WorkspaceCleanupPlan(runs, (), (), (), ())
     monkeypatch.setattr("cli._workspace_cleanup.find_runs_dir", lambda **_: runs)
     monkeypatch.setattr("cli._workspace_cleanup.select_workspace_cleanup", lambda _runs: plan)
 
