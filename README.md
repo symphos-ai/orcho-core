@@ -174,6 +174,8 @@ orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
 
 Full walkthrough: [docs/demos/demo-1a-single-project-cli.md](docs/demos/demo-1a-single-project-cli.md).
+For QA, release smokes, SDK checks, and repeatable recordings, see the
+[deterministic mock harness guide](docs/guides/deterministic_mock_harness.md).
 
 ---
 

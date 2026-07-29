@@ -76,6 +76,7 @@ orcho run --task "Task description" --project /path/to/project
 --project /path       # project directory
 --profile feature     # feature | complex_feature | small_task | planning | research | delivery_audit | code_review | refactor | migration | task
 --mock                # simulation without API calls; can create a mock artifact for the review loop
+--mock-review-reject 1 # mock-only: reject one review, then repair and approve
 --dry-run             # print what would happen, change nothing
 --max-rounds 2        # how many implement/review/repair rounds (default: 1)
 --workspace /path     # explicit workspace (default: $ORCHO_WORKSPACE / cwd discovery)
@@ -83,6 +84,13 @@ orcho run --task "Task description" --project /path/to/project
 --stream-output       # alias for --output live
 --verbose / -v        # alias for --output debug
 ```
+
+Use `--mock-review-reject N` with `--mock` when you need a deterministic
+review/repair harness for CLI or SDK regression tests, release-candidate
+smokes, observability debugging, or recordings. It exercises real Orcho
+lifecycle and artifact surfaces with synthetic worker output; it does not
+measure model quality. See the
+[deterministic mock harness guide](../guides/deterministic_mock_harness.md).
 
 Profiles decide which phases run. `orcho profiles list` shows a compact
 catalogue with each profile's default mode, recipe, worktree posture, and
