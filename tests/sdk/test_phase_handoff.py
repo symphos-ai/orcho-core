@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.run_state import request_active_handoff
 from pipeline.runtime import (
     HumanReview,
     PhaseHandoffPolicy,
@@ -320,13 +321,30 @@ class TestLoaders:
     def test_load_active_returns_payload(self, tmp_path: Path) -> None:
         runs = tmp_path / "runs"
         runs.mkdir()
-        _seed_run(runs, "20260520_150000_dddddd")
+        run_dir = _seed_run(runs, "20260520_150000_dddddd")
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        payload = meta["phase_handoff"]
+        request_active_handoff(meta, payload=payload)
+        (run_dir / "meta.json").write_text(
+            json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+        )
         active = load_active_phase_handoff(
             "20260520_150000_dddddd", runs_dir=runs, cwd=None,
         )
         assert isinstance(active, dict)
         assert active["id"] == "validate_plan:plan_round:2"
         assert active["phase"] == "validate_plan"
+        assert active["requested_at"] == payload["requested_at"]
+
+    def test_load_active_legacy_payload_has_no_requested_at(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _seed_run(runs, "20260520_150001_legacy")
+        active = load_active_phase_handoff(
+            "20260520_150001_legacy", runs_dir=runs, cwd=None,
+        )
+        assert isinstance(active, dict)
+        assert active.get("requested_at") is None
 
     def test_load_active_returns_none_when_absent(self, tmp_path: Path) -> None:
         runs = tmp_path / "runs"

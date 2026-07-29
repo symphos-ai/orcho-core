@@ -228,6 +228,15 @@ an emission record, not state; decision artifacts are audit log.
 After `halt`, `meta.phase_handoff` is cleared even though the
 artifact remains.
 
+An open payload additionally carries additive
+`meta.phase_handoff.requested_at`: an offset-aware UTC ISO-8601 timestamp.
+`request_active_handoff` is its sole writer. Reopening the same handoff id
+preserves the original non-empty value; a new handoff id receives a new value.
+Legacy payloads without it remain valid and read as `None`. This is a durable
+timestamp, not an elapsed-time/SLA policy: clients own elapsed-time formatting
+and no new artifact or action semantics are introduced. See [ADR
+0164](../adr/0164-open-operator-pause-requested-at.md).
+
 ### Interactive advisory actions
 
 When the interactive TTY prompt resolves a rejected/incomplete pause,

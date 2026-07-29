@@ -115,6 +115,7 @@ def _park(
         decision_mode="defer",
     )
     ctx = decision.to_dict()
+    ctx["decided_at"] = "2026-07-29T09:31:22+00:00"
     if verification:
         ctx.update(verification)
     meta = {
@@ -380,6 +381,7 @@ def test_state_delivery_gate(tmp_path: Path) -> None:
     assert set(state.available_actions) == {"approve", "apply", "skip", "halt"}
     assert state.blocked_actions == ()
     assert state.default_action == "approve"
+    assert state.requested_at == "2026-07-29T09:31:22+00:00"
 
 
 def test_state_correction_gate_blocks_shipping(tmp_path: Path) -> None:
@@ -401,6 +403,7 @@ def test_state_correction_gate_blocks_shipping(tmp_path: Path) -> None:
     assert "RB1" in state.reason
     assert "Data loss on apply" in state.reason
     assert "Preserve existing rows" in state.reason
+    assert state.requested_at == "2026-07-29T09:31:22+00:00"
 
 
 def test_state_none_when_no_gate(tmp_path: Path) -> None:
@@ -412,6 +415,27 @@ def test_state_none_when_no_gate(tmp_path: Path) -> None:
 
     assert state.decidable is False
     assert state.kind == "none"
+    assert state.requested_at is None
+
+
+@pytest.mark.parametrize("decided_at", [None, "not-an-iso-timestamp"])
+def test_state_legacy_or_malformed_decided_at_is_none(
+    tmp_path: Path, decided_at: str | None,
+) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    meta = _meta(runs_dir)
+    if decided_at is None:
+        meta["commit_delivery"].pop("decided_at", None)
+    else:
+        meta["commit_delivery"]["decided_at"] = decided_at
+    (runs_dir / "r1" / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.decidable is True
+    assert state.requested_at is None
 
 
 def test_state_verification_block_removes_shipping(tmp_path: Path) -> None:
@@ -1061,6 +1085,7 @@ def test_state_approved_pending_serialization_is_byte_identical(
         "blocked_actions": [],
         "default_action": "approve",
         "reason": None,
+        "requested_at": "2026-07-29T09:31:22+00:00",
         "scope_disclosure": [],
     }
 

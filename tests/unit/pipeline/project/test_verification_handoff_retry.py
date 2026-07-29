@@ -27,6 +27,7 @@ def _run() -> SimpleNamespace:
     active = {
         "id": "gate:pytest-unit:1", "round": 1,
         "phase": "final_acceptance", "trigger": "verification_gate_failed",
+        "requested_at": "2026-07-29T09:31:22+00:00",
     }
     state = SimpleNamespace(
         extras={}, human_feedback="", halt=False, halt_reason="",
@@ -411,6 +412,7 @@ def test_control_failure_restores_subject_on_disk(
     persisted = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
     assert persisted["status"] == "awaiting_phase_handoff"
     assert persisted["phase_handoff"]["id"] == "gate:pytest-unit:1"
+    assert persisted["phase_handoff"]["requested_at"] == "2026-07-29T09:31:22+00:00"
 
 
 def test_dispatch_exposes_explicit_human_retry_round_to_lifecycle() -> None:
