@@ -141,7 +141,7 @@ def _run_golden(project: Path) -> tuple[Path, subprocess.CompletedProcess[str]]:
             "--project", str(project),
             "--task", "Fix validation bug in sample API",
             "--mock", "--profile", "feature",
-            "--mock-validate-plan-reject", "1",
+            "--mock-review-reject", "1",
             "--max-rounds", "2",
             "--run-id", run_id,
         ],
@@ -154,7 +154,7 @@ def _run_golden(project: Path) -> tuple[Path, subprocess.CompletedProcess[str]]:
 def test_golden_scenario_full_loop(
     golden_project: Path, golden_workspace: Path,
 ) -> None:
-    """REA-0 acceptance baseline: feature profile + mock plan-QA reject.
+    """REA-0 acceptance baseline: feature profile + false-ready review reject.
 
     Asserts the canonical timeline (every feature-profile phase fires),
     terminal status is ``done``, and the REA-0 evidence placeholder is
@@ -185,17 +185,14 @@ def test_golden_scenario_full_loop(
         f"observed: {sorted(fired_phase_kinds)}"
     )
 
-    # 4. validate_plan reject + replan loop landed (mock-validate-plan-reject=1 forces
-    #    one rejected attempt followed by an approval).
-    validate_plan_verdicts = [
-        e for e in events if e.get("kind") == "validate_plan.verdict"
-    ]
-    assert len(validate_plan_verdicts) == 2, (
-        f"expected 2 validate_plan verdicts (reject + approve), got "
-        f"{len(validate_plan_verdicts)}"
-    )
-    assert validate_plan_verdicts[0]["payload"]["approved"] is False
-    assert validate_plan_verdicts[1]["payload"]["approved"] is True
+    # 4. review reject + repair + re-review landed. The first round carries
+    #    the blocker and a repair receipt; round 2 is the clean approval.
+    rounds = meta["phases"]["rounds"]
+    assert len(rounds) == 2
+    assert "Verdict:** REJECTED" in rounds[0]["critique"]
+    assert "Missing negative-path regression test" in rounds[0]["critique"]
+    assert rounds[0]["repair_output"]
+    assert rounds[1]["critique"] == ""
 
     # 5. Event seq is strictly monotonic (event spine integrity).
     seqs = [e.get("seq") for e in events if e.get("seq") is not None]
