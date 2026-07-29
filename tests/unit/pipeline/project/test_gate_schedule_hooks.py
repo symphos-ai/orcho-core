@@ -220,6 +220,172 @@ def test_repair_loop_after_phase_implement_repairs(monkeypatch) -> None:
     assert "gate_repair_notes" not in run.state.extras
 
 
+def test_repair_phase_reruns_only_selected_fast_implement_gates(monkeypatch) -> None:
+    contract = _contract(
+        [{
+            "after_phase": "implement",
+            "action": "continue_warn",
+            "commands": ["lint", "broad"],
+        }],
+        required=("lint", "broad"),
+        commands={
+            "lint": {"run": "ruff check .", "cost": "fast"},
+            "broad": {"run": "pytest", "cost": "slow"},
+        },
+    )
+    run = _run(contract)
+    run._gate_profile = object()
+    run._gate_ctx = object()
+    run._in_gate_hook = False
+    commands: list[str] = []
+    recorded: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        gate_repair,
+        "_run_gate_command",
+        lambda _run, _contract, entry: (
+            commands.append(entry.command) or _receipt(0)
+        ),
+    )
+    monkeypatch.setattr(
+        gate_repair,
+        "_record_executed_gate_event",
+        lambda _run, entry, _receipt, _classification, **kwargs: recorded.append(
+            (entry.command, bool(kwargs.get("rerun"))),
+        ),
+    )
+
+    gate_repair.evaluate_post_phase_gates(run, "implement")
+    gate_repair.evaluate_post_phase_gates(run, "repair_changes")
+
+    assert commands == ["lint", "broad", "lint"]
+    assert recorded == [
+        ("lint", False),
+        ("broad", False),
+        ("lint", True),
+    ]
+
+
+def test_skipped_repair_phase_does_not_rerun_fast_implement_gates(
+    monkeypatch,
+) -> None:
+    contract = _contract(
+        [{
+            "after_phase": "implement",
+            "action": "continue_warn",
+            "commands": ["lint"],
+        }],
+        required=("lint",),
+        commands={"lint": {"run": "ruff check .", "cost": "fast"}},
+    )
+    run = _run(contract)
+    run._gate_profile = object()
+    run._gate_ctx = object()
+    run._in_gate_hook = False
+    run.state.phase_log = {}
+    run.state.phase_log["repair_changes"] = {"skipped": "review clean"}
+    commands: list[str] = []
+    monkeypatch.setattr(
+        gate_repair,
+        "_run_gate_command",
+        lambda _run, _contract, entry: (
+            commands.append(entry.command) or _receipt(0)
+        ),
+    )
+
+    gate_repair.evaluate_post_phase_gates(run, "implement")
+    gate_repair.evaluate_post_phase_gates(run, "repair_changes")
+
+    assert commands == ["lint"]
+
+
+def test_repair_phase_fast_failure_uses_existing_bounded_repair(
+    monkeypatch,
+) -> None:
+    contract = _contract(
+        [{
+            "after_phase": "implement",
+            "action": "repair_loop",
+            "commands": ["lint"],
+        }],
+        required=("lint",),
+        commands={"lint": {"run": "ruff check .", "cost": "fast"}},
+    )
+    run = _run(contract)
+    run._gate_profile = object()
+    run._gate_ctx = object()
+    run._in_gate_hook = False
+    calls = _patch_gate(
+        monkeypatch,
+        [_receipt(0), _receipt(1), _receipt(0)],
+    )
+    _patch_repair(monkeypatch, calls)
+
+    gate_repair.evaluate_post_phase_gates(run, "implement")
+    gate_repair.evaluate_post_phase_gates(run, "repair_changes")
+
+    assert calls == {"gate": 3, "repair": 1}
+    assert run.state.phase_handoff_request is None
+
+
+def test_repair_phase_fast_rerun_is_durable_and_identity_scoped(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from pipeline.verification_ledger_store import load_ledger
+
+    contract = _contract(
+        [{
+            "after_phase": "implement",
+            "action": "repair_loop",
+            "commands": ["lint"],
+        }],
+        required=("lint",),
+        commands={"lint": {"run": "ruff check .", "cost": "fast"}},
+    )
+    run = _run(contract)
+    run.state.output_dir = tmp_path
+    run._gate_profile = object()
+    run._gate_ctx = object()
+    run._in_gate_hook = False
+    monkeypatch.setattr(
+        "pipeline.verification_command.run_command",
+        lambda *_args, **_kwargs: {
+            **_receipt(0),
+            "command": "lint",
+            "duration_s": 0.01,
+        },
+    )
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(
+            receipt,
+            current_subject=subject_identity(receipt.get("subject")),
+        ),
+    )
+
+    gate_repair.evaluate_post_phase_gates(run, "implement")
+    gate_repair.evaluate_post_phase_gates(run, "repair_changes")
+
+    executions = [
+        event
+        for event in load_ledger(tmp_path).trail
+        if event.kind == "execution"
+    ]
+    assert [
+        (event.identity, event.outcome, event.rerun)
+        for event in executions
+    ] == [
+        (("lint", "after_phase", "implement"), "pass", False),
+        (("lint", "after_phase", "implement"), "pass", True),
+    ]
+    assert executions[0].receipt_evidence != executions[1].receipt_evidence
+    assert all(
+        (tmp_path / event.receipt_evidence).is_file()
+        for event in executions
+    )
+
+
 def test_repair_loop_before_phase_degrades_to_handoff(monkeypatch) -> None:
     contract = _contract(
         [{"before_phase": "implement", "action": "repair_loop", "commands": ["test"]}],
@@ -925,8 +1091,9 @@ class TestRealDispatchWiring:
             ctx,
             {},
         )
-        # gate fails once, passes on the re-check after one repair round.
-        receipts = iter([_receipt(1), _receipt(0)])
+        # Gate fails once, passes after its repair, then the ordinary review-loop
+        # repair eagerly rechecks the selected fast identity once more.
+        receipts = iter([_receipt(1), _receipt(0), _receipt(0)])
         monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *a, **k: next(receipts))
         monkeypatch.setattr(
             gate_repair,
