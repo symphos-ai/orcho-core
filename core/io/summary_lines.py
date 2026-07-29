@@ -276,14 +276,15 @@ def implement_done(
     subtasks_total: int,
     files_changed: int,
     *,
+    label: str = "implement",
     color: bool | None = None,
     stream: TextIO | None = None,
 ) -> str:
-    """``✓ implement · {done}/{total} subtasks · {n} files changed`` rollup."""
+    """Render an implementation-style phase rollup with its real phase label."""
     glyph = _glyph(GLYPH_OK, C.GREEN, color=color, stream=stream)
     return _join(
         [
-            f"{glyph} implement",
+            f"{glyph} {label}",
             f"{subtasks_done}/{subtasks_total} subtasks",
             f"{files_changed} files changed",
         ],

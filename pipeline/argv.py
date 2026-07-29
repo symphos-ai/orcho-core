@@ -52,6 +52,7 @@ def build_orch_argv(
     run_id: str | None = None,
     max_rounds: int | None = None,
     mock_validate_plan_reject: int = 0,
+    mock_review_reject: int = 0,
     model: str | None = None,
     output_dir: str | None = None,
     dry_run: bool = False,
@@ -97,6 +98,8 @@ def build_orch_argv(
             from the active profile's ``LoopStep.max_rounds``).
         mock_validate_plan_reject: integer count of synthetic
             validate_plan rejections for testing the phase handoff trigger.
+        mock_review_reject: integer count of synthetic review_changes
+            rejections for testing the review/repair loop.
         model: default model when per-phase overrides aren't set.
         output_dir: explicit run output directory.
         dry_run / mock: standard flags.
@@ -149,6 +152,8 @@ def build_orch_argv(
         argv += ["--max-rounds", str(max_rounds)]
     if int(mock_validate_plan_reject or 0) > 0:
         argv += ["--mock-validate-plan-reject", str(int(mock_validate_plan_reject))]
+    if int(mock_review_reject or 0) > 0:
+        argv += ["--mock-review-reject", str(int(mock_review_reject))]
     if model:
         argv += ["--model", model]
     if output_dir:

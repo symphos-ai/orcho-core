@@ -34,6 +34,7 @@ finalization paths.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from pipeline.run_state.types import (
@@ -153,9 +154,21 @@ def request_active_handoff(state: dict[str, Any], *, payload: dict[str, Any]) ->
     """Mark ``state`` awaiting a handoff and stamp the active payload.
 
     Sets ``status='awaiting_phase_handoff'`` and ``state['phase_handoff']``
-    to ``payload`` — the only two top-level fields the pause owns. Event
-    emission, checkpoint status, and persistence stay with the caller.
+    to ``payload`` — the only two top-level fields the pause owns. The
+    transition also records when this active pause was first requested. A
+    repeat open for the same handoff id retains its non-empty original stamp;
+    a different handoff id receives a new UTC stamp. Event emission,
+    checkpoint status, and persistence stay with the caller.
     """
+    active = state.get("phase_handoff")
+    requested_at = None
+    if (
+        isinstance(active, dict)
+        and active.get("id") == payload.get("id")
+        and active.get("requested_at")
+    ):
+        requested_at = active["requested_at"]
+    payload["requested_at"] = requested_at or datetime.now(UTC).isoformat()
     state["status"] = "awaiting_phase_handoff"
     state["phase_handoff"] = payload
 

@@ -83,13 +83,15 @@ def run_gate_hook(
     *,
     hook: str,
     phase: str = "",
+    costs: frozenset[str] | None = None,
+    rerun: bool = False,
 ) -> GateRepairOutcome:
     """Evaluate the required gates scheduled for ``hook`` (+ ``phase``) and route.
 
     Returns a no-op (``active=False``) when no contract is declared, the hook is
     ``manual_only`` (never auto-planned), or no required gate is scheduled for
-    this hook. Otherwise runs each required gate command and, on the first
-    failure that yields a blocking disposition, returns it.
+    this hook. ``costs`` limits execution without changing identity; ``rerun``
+    marks ledger events. Otherwise returns the first blocking disposition.
     """
     contract = _contract(run)
     if contract is None or hook == "manual_only":
@@ -105,15 +107,11 @@ def run_gate_hook(
         return GateRepairOutcome(active=False)
 
     plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
-    gates = _gates_for_hook(plan, hook=hook, phase=phase)
+    gates = _gates_for_hook(plan, hook=hook, phase=phase, costs=costs)
 
-    # Surface the gate before its (possibly multi-minute) checks run, so the
-    # terminal never looks hung after a phase. TERMINAL-only; header once.
-    if gates and _gate_progress_on(run):
-        _render_gate_section_header(len(gates), hook=hook, phase=phase)
+    _render_gate_hook_start(run, gates, hook=hook, phase=phase)
 
-    # ``executed`` accumulates the commands routing actually ran this hook so the
-    # reconciliation pass can tell apart "ran" from "planned but not run".
+    # Track commands routing ran so reconciliation can distinguish planned skips.
     executed: set[tuple[str, str, str]] = set()
     existing_receipts = (
         _delivery_receipt_statuses(run, contract) if hook == "before_delivery" else {}
@@ -191,6 +189,7 @@ def run_gate_hook(
             classification,
             hook=hook,
             phase=phase,
+            rerun=rerun,
         )
         if classification.status == "present":
             continue
@@ -442,6 +441,31 @@ def evaluate_post_phase_gates(run: Any, phase: str) -> None:
             hook="after_phase",
             phase=phase,
         )
+        if (
+            phase == "repair_changes"
+            and not (
+                (getattr(run.state, "phase_log", {}).get(phase, {}) or {})
+                .get("skipped")
+            )
+            and not getattr(run.state, "halt", False)
+            and run.state.phase_handoff_request is None
+        ):
+            # ``after_phase(implement)`` is the selected post-mutation
+            # verification identity. A later repair mutates that verified
+            # subject, so eagerly rerun every fast engine-owned identity from
+            # the same epoch. Moderate and slow gates remain on their declared
+            # cadence; pre-final receipt materialization will reuse these fresh
+            # fast results instead of discovering a one-second lint failure
+            # after the repair loop has closed.
+            run_gate_hook(
+                run,
+                run._gate_profile,
+                run._gate_ctx,
+                hook="after_phase",
+                phase="implement",
+                costs=frozenset({"fast"}),
+                rerun=True,
+            )
     finally:
         run._in_gate_hook = False
     if phase == "implement":
@@ -691,13 +715,21 @@ def _resolve_entry(entry: Any):
     )
 
 
-def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
+def _gates_for_hook(
+    plan: Any,
+    *,
+    hook: str,
+    phase: str,
+    costs: frozenset[str] | None = None,
+) -> list[Any]:
     """Engine-owned selected entries scheduled for ``hook`` (+ ``phase``)."""
     gates: list[Any] = []
     for entry in plan.entries:
         if entry.hook != hook:
             continue
         if hook in ("before_phase", "after_phase") and entry.phase != phase:
+            continue
+        if costs is not None and entry.cost not in costs:
             continue
         if _resolve_entry(entry).executor == "engine":
             gates.append(entry)
@@ -715,6 +747,18 @@ def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
 # is gated on TERMINAL presentation — sub-pipelines / SILENT stay silent.
 
 _GATE_BANNER_WIDTH = 68
+
+
+def _render_gate_hook_start(
+    run: Any,
+    gates: list[Any],
+    *,
+    hook: str,
+    phase: str,
+) -> None:
+    """Surface a possibly long gate batch before its first command executes."""
+    if gates and _gate_progress_on(run):
+        _render_gate_section_header(len(gates), hook=hook, phase=phase)
 
 
 def _gate_progress_on(run: Any) -> bool:

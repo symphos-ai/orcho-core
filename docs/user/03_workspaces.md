@@ -268,3 +268,37 @@ Override:
 ```bash
 export ORCHO_RUNSPACE=/custom/path/to/output
 ```
+
+## Reclaiming expired retained worktrees
+
+Inspect retention without changing anything:
+
+```bash
+orcho workspace cleanup --workspace /path/to/workspace
+```
+
+The default is a report. It summarises reclaimable and protected entries with
+stable reason codes. A checkout is protected only while it holds work that
+cannot be recovered from anywhere else: uncommitted changes, commits no remote
+has, a run that is still live or paused, an unexpired retention window, or
+metadata and paths that cannot be read safely. Runs with no retained checkout
+are reported separately as having nothing to reclaim.
+
+To reclaim only expired checkout material while keeping every run directory:
+
+```bash
+orcho workspace cleanup --reclaim-worktrees
+```
+
+To reclaim eligible checkouts and then their fully eligible run roots:
+
+```bash
+orcho workspace cleanup --reclaim-both
+```
+
+Both commands archive by default under
+`runspace/cleanup_archive/<receipt_id>/`. Use `--delete` only with a reclaim
+tier for irreversible removal. Every execution writes a durable receipt under
+`runspace/cleanup_receipts/`. Reclaimed `meta.json` records preserve the old
+`worktree.path` as historical evidence and add `worktree.reclaimed`; that path
+cannot be resumed or followed up in place.

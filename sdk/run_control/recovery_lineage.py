@@ -319,6 +319,14 @@ def _worktree_continuity(
     wt = meta.get("worktree") if isinstance(meta, dict) else None
     if not isinstance(wt, dict) or not wt:
         return (False, False, None, None)
+    from pipeline.engine.worktree import is_worktree_reclaimed
+    if is_worktree_reclaimed(wt):
+        return (
+            False,
+            True,
+            "retained worktree was reclaimed; recorded path is historical",
+            None,
+        )
     fc = wt.get("followup_continuity")
     if not isinstance(fc, dict):
         return (True, False, None, None)

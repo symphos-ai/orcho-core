@@ -154,13 +154,19 @@ class MockAgentProvider:
                         treated as plan-validation; ``hypothesis_*.md``
                         and other files are always approved so the
                         upstream hypothesis loop isn't starved.
+        review_reject_rounds: number of review_changes calls that return
+                        REJECTED JSON before flipping to APPROVED JSON.
+                        Default 0 — always approve. Used by the packaged
+                        false-ready demo to exercise the review/repair loop.
     """
 
     def __init__(self, latency: float = 0.0, test_pass_rate: float = 0.6,
-                 validate_plan_reject_rounds: int = 0) -> None:
+                 validate_plan_reject_rounds: int = 0,
+                 review_reject_rounds: int = 0) -> None:
         self._latency = latency
         self._test_pass_rate = test_pass_rate
         self._validate_plan_reject_rounds = max(0, int(validate_plan_reject_rounds))
+        self._review_reject_rounds = max(0, int(review_reject_rounds))
         # Single shared codex instance per provider so the reject counter
         # spans every validate_plan round in the same pipeline run.
         self._codex_singleton: _MockCodex | None = None
@@ -214,6 +220,7 @@ class MockAgentProvider:
             self._codex_singleton = _MockCodex(
                 latency=self._latency,
                 validate_plan_reject_rounds=self._validate_plan_reject_rounds,
+                review_reject_rounds=self._review_reject_rounds,
             )
         return self._codex_singleton
 
@@ -230,7 +237,13 @@ class MockAgentProvider:
         """
         from agents.entities import TestResult  # agents.entities, not pipeline.tests
         self._test_call_n += 1
-        passed = (self._test_call_n % round(1 / max(self._test_pass_rate, 0.01))) == 1
+        if self._test_pass_rate >= 1.0:
+            passed = True
+        elif self._test_pass_rate <= 0.0:
+            passed = False
+        else:
+            period = max(2, round(1 / self._test_pass_rate))
+            passed = (self._test_call_n % period) == 1
         suite_name = _guess_suite(cwd)
         duration = round(0.05 + self._test_call_n * 0.03, 2)
         if passed:
@@ -273,8 +286,9 @@ class _MockClaude:
 
     runtime: str = "claude"
 
-    def __init__(self, latency: float = 0.0) -> None:
+    def __init__(self, latency: float = 0.0, *, repair_mode: bool = False) -> None:
         self._latency = latency
+        self._repair_mode = repair_mode
         self.model = "mock"
         self.session_id: str | None = None  # bridge handle parity with ClaudeAgent
         self._followup_resume_pending: bool = False
@@ -439,7 +453,12 @@ class _MockClaude:
         if self._latency:
             time.sleep(self._latency)
         content = _claude_content(prompt, cwd)
-        materialized = _materialize_mock_build_files(prompt, cwd, content)
+        materialized = _materialize_mock_build_files(
+            prompt,
+            cwd,
+            content,
+            repair_mode=self._repair_mode,
+        )
         self._record_call(prompt, content, duration_s=_mock_duration("claude", prompt, content))
         _write_to_agent_log("CLAUDE (mock)", content, duration_s=self.last_duration_s)
         if materialized:
@@ -530,7 +549,8 @@ class _MockCodex:
     runtime: str = "codex"
 
     def __init__(self, latency: float = 0.0,
-                 validate_plan_reject_rounds: int = 0) -> None:
+                 validate_plan_reject_rounds: int = 0,
+                 review_reject_rounds: int = 0) -> None:
         self._latency = latency
         self.model = "mock"
         self.session_id: str | None = None  # Codex has no resumable session
@@ -541,6 +561,8 @@ class _MockCodex:
         self._session_counter = 0
         self._validate_plan_reject_budget = max(0, int(validate_plan_reject_rounds))
         self._validate_plan_calls = 0   # only counts review_file on plan_*.md
+        self._review_reject_budget = max(0, int(review_reject_rounds))
+        self._review_calls = 0
         self.last_prompt: str = ""
         self.last_duration_s: float = 0.0
 
@@ -657,6 +679,13 @@ class _MockCodex:
         # counter logic intact.
         if "task:review_uncommitted" in prompt or "contract:change_handoff" in prompt:
             return self.review_uncommitted(cwd, focus="")
+        # A review_changes prompt can carry the plan's ``## Tasks`` as a
+        # current-only handoff while its static review markers are prefix
+        # cached away. A mock configured with a review reject budget is the
+        # dedicated review_changes slot, so preserve that phase identity
+        # before applying the generic plan marker below.
+        if self._review_reject_budget > 0:
+            return self.review_uncommitted(cwd, focus="")
         if "## Tasks" in prompt:
             return self.review_file(
                 "plan_synthetic.md", focus="", cwd=cwd,
@@ -679,7 +708,34 @@ class _MockCodex:
     def review_uncommitted(self, cwd: str, focus: str = "") -> str:
         if self._latency:
             time.sleep(self._latency)
-        content = _codex_content()
+        self._review_calls += 1
+        if self._review_calls <= self._review_reject_budget:
+            content = _rejected_review_json(
+                "Implementation reported done, but the negative path is still unverified.",
+                findings=[
+                    {
+                        "id": "F1",
+                        "severity": "P1",
+                        "title": "Missing negative-path regression test",
+                        "body": (
+                            "The implementation covers the happy path but does not "
+                            "prove invalid input is rejected without changing state."
+                        ),
+                        "required_fix": (
+                            "Add a regression test for invalid input and make the "
+                            "implementation satisfy it before delivery."
+                        ),
+                    },
+                ],
+            )
+        else:
+            content = _approved_review_json(
+                "Repair verified: the negative path is covered and no blockers remain.",
+                checks=[
+                    "Reviewed repaired working tree",
+                    "Confirmed negative-path regression coverage",
+                ],
+            )
         prompt = _mock_review_prompt(cwd, focus)
         self._record_call(prompt, content, duration_s=_mock_duration("codex", prompt, content))
         _write_to_agent_log("CODEX review (mock)", content, duration_s=self.last_duration_s)
@@ -857,6 +913,11 @@ def _is_build_prompt(prompt: str) -> bool:
     )
 
 
+def _is_repair_prompt(prompt: str) -> bool:
+    """Return True for the typed review-repair authoring surface."""
+    return 'id="task:repair_changes@' in prompt.lower()
+
+
 def _is_plan_prompt(prompt: str) -> bool:
     p = prompt.lower()
     # Anchored on stable PLAN signals: the user-editable planner task
@@ -905,7 +966,13 @@ def _extract_modified_paths(content: str) -> list[str]:
     return paths
 
 
-def _materialize_mock_build_files(prompt: str, cwd: str, content: str) -> list[str]:
+def _materialize_mock_build_files(
+    prompt: str,
+    cwd: str,
+    content: str,
+    *,
+    repair_mode: bool = False,
+) -> list[str]:
     """Create deterministic mock build artefacts for claimed file changes.
 
     The mock build output already says it modified files. Materialising
@@ -916,7 +983,9 @@ def _materialize_mock_build_files(prompt: str, cwd: str, content: str) -> list[s
     ``.orcho/mock_changes`` makes the git tree dirty without clobbering
     project code.
     """
-    if not cwd or not _is_build_prompt(prompt):
+    if not cwd or not (
+        _is_build_prompt(prompt) or _is_repair_prompt(prompt) or repair_mode
+    ):
         return []
 
     try:
@@ -1127,7 +1196,7 @@ def _claude_content(prompt: str, cwd: str = "") -> str:
         return content + _mock_subtask_attestation(prompt)
 
     # Fix: acknowledge critique with concrete steps.
-    if "fix" in p or "address" in p or "critique" in p:
+    if _is_repair_prompt(prompt) or "fix" in p or "address" in p or "critique" in p:
         return _mock_fix_content(plugin_name or project)
 
     return _mock_build_content(project, cwd, plugin_name, file_hints, language)
@@ -1419,6 +1488,9 @@ def _mock_fix_content(scope: str) -> str:
     hint = f" in {scope}" if scope else ""
     return textwrap.dedent(f"""\
         Applied review feedback{hint}:
+
+        ### Modified files
+        - `.orcho/mock_changes/last_repair.md`
 
         Changes made:
         - Addressed all critique points from Codex review
@@ -1727,8 +1799,12 @@ def _rejected_review_json(
 
 # ── Factory ───────────────────────────────────────────────────────────────────
 
-def make_provider(mock: bool = False, latency: float = 0.0,
-                  mock_validate_plan_reject_rounds: int = 0) -> AgentProvider:
+def make_provider(
+    mock: bool = False,
+    latency: float = 0.0,
+    mock_validate_plan_reject_rounds: int = 0,
+    mock_review_reject_rounds: int = 0,
+) -> AgentProvider:
     """Return the provider for the current run mode.
 
     Args:
@@ -1739,11 +1815,16 @@ def make_provider(mock: bool = False, latency: float = 0.0,
                  APPROVED. Lets you exercise the Stage 5 gate UI from
                  the dashboard without a real LLM. 0 = legacy behaviour
                  (always approve). Has no effect when mock=False.
+        mock_review_reject_rounds: when mock=True, how many initial
+                 change reviews return REJECTED before flipping to APPROVED.
+                 Exercises the review/repair loop. 0 = always approve.
     """
     if mock:
         return MockAgentProvider(
             latency=latency,
+            test_pass_rate=1.0,
             validate_plan_reject_rounds=mock_validate_plan_reject_rounds,
+            review_reject_rounds=mock_review_reject_rounds,
         )
     return RealAgentProvider()
 
@@ -1752,6 +1833,7 @@ def make_mock_phase_config(
     *,
     latency: float = 0.0,
     validate_plan_reject_rounds: int = 0,
+    review_reject_rounds: int = 0,
 ):
     """Return a fully-mocked ``PhaseAgentConfig`` — every slot is an inline stub.
 
@@ -1772,8 +1854,8 @@ def make_mock_phase_config(
 
     Separate slots matter for follow-up seeding: each phase owns an
     independent parent session id and pending-resume flag. The validate
-    reject counter lives only on the validate_plan mock, which is the
-    only slot that consumes it.
+    reject counters live only on their corresponding validate_plan and
+    review_changes mocks.
     """
     from agents.registry import PhaseAgentConfig
     return PhaseAgentConfig(
@@ -1783,8 +1865,11 @@ def make_mock_phase_config(
             validate_plan_reject_rounds=validate_plan_reject_rounds,
         ),
         implement_agent=_MockClaude(latency=latency),
-        review_changes_agent=_MockCodex(latency=latency),
-        repair_changes_agent=_MockClaude(latency=latency),
+        review_changes_agent=_MockCodex(
+            latency=latency,
+            review_reject_rounds=review_reject_rounds,
+        ),
+        repair_changes_agent=_MockClaude(latency=latency, repair_mode=True),
         repair_escalation_agent=_MockClaude(latency=latency),
         final_acceptance_agent=_MockCodex(latency=latency),
     )

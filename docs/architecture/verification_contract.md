@@ -716,10 +716,16 @@ resolved_cost          = command.cost when declared; otherwise the most
 ```
 
 `cost` / `default_cost` accept only `fast`, `moderate`, `slow`, or `unknown`.
-Cost is display and scheduling metadata only: it does not enter selection,
-policy/action derivation, execution eligibility, consequence, disposition, or
-receipt freshness. The resolver is order-independent, so swapping contributing
-gate-set declarations cannot change a conflict result.
+Cost does not enter selection, policy/action derivation, execution eligibility,
+consequence, disposition, or receipt freshness. It has one execution-cadence
+effect: after a later `repair_changes` mutation, the engine eagerly reruns the
+selected engine-owned `after_phase(implement)` identities resolved as `fast`.
+The original identity and action remain authoritative, and the execution is
+recorded as a rerun. Moderate, slow, and unknown-cost identities stay on their
+declared schedule. See
+[ADR 0165](../adr/0165-eager-fast-verification-after-repair.md).
+The resolver is order-independent, so swapping contributing gate-set
+declarations cannot change a conflict result.
 
 A schedule entry's optional `gate_sets` narrows the merge **source** only — it
 does not change `contributing_gate_sets` / `primary_gate_set` attribution. The
@@ -754,6 +760,12 @@ A failed required `after_phase(implement)` gate whose effective action is
 4. repeats up to the repair budget (`--max-rounds` / the profile's
    `repair_round` loop); a passing re-check closes the flow, budget exhaustion
    escalates to a handoff.
+
+When an ordinary reviewer-requested `repair_changes` phase mutates the subject
+after this flow, the engine eagerly reruns every selected fast identity from
+the same `after_phase(implement)` epoch. This catches cheap repair-introduced
+regressions before pre-final acceptance. It does not rerun moderate or slow
+gates and does not create a new scheduled identity.
 
 `continue_warn` warns without blocking; `handoff` pauses; `abort` stops the run.
 The ADR 0132 foundation does not change executor routing; `manual` and `suggest`

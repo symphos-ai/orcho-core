@@ -129,6 +129,20 @@ sub-project list (status per alias). `quality_gates` is a best-effort
 projection of finalized gate events from `evidence.json` when that artifact
 exists.
 
+`RunStatus.total_cost_usd_equivalent: float = 0.0` is the accounting-aware
+cost reference already present in the status snapshot's normalized metrics.
+It is `0.0` when metrics are unavailable, malformed, invalid, or accounting is
+disabled; clients do not need to inspect `raw_metrics` or invoke a separate
+metrics reader for this value.
+
+`RunStatus.last_event_seq: int | None = None` and
+`RunStatus.last_event_ts: str | None = None` identify the latest valid durable
+event observed while loading status. Missing, unreadable, empty, or malformed
+event evidence produces `(None, None)` (and a malformed trailing record falls
+back to the preceding valid one). These are position/observation data, not a
+staleness policy: clients choose any age, hung-run, or polling threshold. No
+event-history API call is needed merely to obtain the last-event position.
+
 ### `sdk.cross_parent_state`
 
 ```python
@@ -508,6 +522,23 @@ tail_run_events(run_id, *, since_seq=0, poll=0.3, stop_predicate=None,
 build_decision_command(pending: PendingOperatorAction, action, *,
                        feedback=None, note=None) -> PhaseHandoffDecisionCommand
 ```
+
+### Open-pause and delivery timestamps
+
+`load_active_phase_handoff(...)` returns the durable active payload verbatim.
+Newly opened payloads add `requested_at`, an offset-aware UTC ISO-8601 string;
+legacy payloads remain readable and `payload.get("requested_at")` is `None`.
+The field belongs to the durable open transition, not to
+`PhaseHandoffRequested`, so advice reconstruction continues to use only the
+known runtime-signal fields.
+
+`DeliveryDecisionState.requested_at: str | None` is additive. For a decidable
+delivery or correction state it mirrors a valid durable
+`meta.commit_delivery.decided_at`; for non-decidable, absent, or malformed
+legacy contexts it is `None`. Neither reader computes elapsed time or consults
+the current clock/filesystem mtime. Clients own any elapsed-time formatting,
+SLA policy, and presentation. See [ADR
+0164](../adr/0164-open-operator-pause-requested-at.md).
 
 **`load_run_snapshot`** composes the existing read-only helpers
 (`find_run` / `load_meta` / `load_active_phase_handoff` /

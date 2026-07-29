@@ -96,7 +96,7 @@ Run the pipeline:
     --workspace {workspace_arg} \\
     --profile feature \\
     --mock \\
-    --mock-validate-plan-reject 1 \\
+    --mock-review-reject 1 \\
     --max-rounds 2 \\
     --stream-output
 

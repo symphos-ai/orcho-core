@@ -90,6 +90,12 @@ def test_build_argv_truthy_mock_validate_is_emitted() -> None:
     assert argv[argv.index("--mock-validate-plan-reject") + 1] == "3"
 
 
+def test_build_argv_truthy_mock_review_is_emitted() -> None:
+    """A positive review reject count reaches the mono orchestrator."""
+    argv = runner.build_orch_argv_from_args(_run_ns(mock_review_reject=2))
+    assert argv[argv.index("--mock-review-reject") + 1] == "2"
+
+
 # ── run_pipeline_from_args: success / SystemExit / OrchoError ────────────────
 
 

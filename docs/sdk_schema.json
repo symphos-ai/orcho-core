@@ -1075,6 +1075,12 @@
           "default_factory": null,
           "name": "scope_disclosure",
           "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "requested_at",
+          "type": "str | None"
         }
       ],
       "frozen": true,
@@ -3235,6 +3241,24 @@
           "default_factory": null,
           "name": "artefacts",
           "type": "tuple"
+        },
+        {
+          "default": "0.0",
+          "default_factory": null,
+          "name": "total_cost_usd_equivalent",
+          "type": "float"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "last_event_seq",
+          "type": "int | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "last_event_ts",
+          "type": "str | None"
         }
       ],
       "frozen": true,
@@ -4044,6 +4068,12 @@
           "default": "0",
           "kind": "KEYWORD_ONLY",
           "name": "mock_validate_plan_reject"
+        },
+        {
+          "annotation": "int",
+          "default": "0",
+          "kind": "KEYWORD_ONLY",
+          "name": "mock_review_reject"
         },
         {
           "annotation": "str | None",

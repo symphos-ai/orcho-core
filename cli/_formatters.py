@@ -24,6 +24,7 @@ from core.observability.accounting_display import (
     format_estimated_entries_footer,
     runtime_accounting_hint,
 )
+from pipeline.engine.worktree import is_worktree_reclaimed
 from sdk import (
     CostReport,
     DetectedRuntime,
@@ -174,7 +175,7 @@ def _append_status_usage(out: list[str], status: RunStatus) -> None:
         f"{_status_label('  Tokens:')}  "
         f"{_stdout_paint(tokens_text, C.WHITE)}"
     )
-    cost = _float_metric(status.raw_metrics.get("total_cost_usd_equivalent"))
+    cost = status.total_cost_usd_equivalent
     if cost > 0.0:
         estimated = _metrics_cost_estimated(status.raw_metrics)
         out.append(
@@ -378,9 +379,16 @@ def _append_status_paths(
         )
     worktree = raw_meta.get("worktree")
     if isinstance(worktree, dict) and worktree.get("path"):
+        reclaimed = is_worktree_reclaimed(worktree)
         out.append(
-            f"{_status_label('    Worktree:')} {_status_muted(str(worktree['path']))}"
+            f"{_status_label('    Historical worktree:' if reclaimed else '    Worktree:')} {_status_muted(str(worktree['path']))}"
         )
+        marker = worktree.get("reclaimed")
+        if reclaimed and isinstance(marker, dict):
+            out.append(f"{_status_label('    Reclaimed:')} {_status_warning(str(marker['at']))}")
+            for label, key in (("Disposition", "disposition"), ("Archive", "archive_path"), ("Receipt", "receipt_path")):
+                if marker.get(key):
+                    out.append(f"{_status_label(f'    {label}:')} {_status_muted(str(marker[key]))}")
     parent_run_id = raw_meta.get("parent_run_id")
     if parent_run_id:
         out.append(

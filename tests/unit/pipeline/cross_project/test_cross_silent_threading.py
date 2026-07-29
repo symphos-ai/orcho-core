@@ -27,6 +27,7 @@ lock the three threading seams in isolation.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -242,6 +243,7 @@ def test_apply_cross_phase_handoff_pause_silent_suppresses_warn(
     # ✓ structural mutations + event still fired
     assert session["status"] == "awaiting_phase_handoff"
     assert session["phase_handoff"] == payload
+    assert datetime.fromisoformat(payload["requested_at"]).tzinfo is UTC
     assert cross_ckpt.get("phase_handoff_pending") is True
     assert cross_ckpt.get("phase_handoff_id") == payload["id"]
 

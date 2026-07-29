@@ -95,6 +95,7 @@ class LaunchSpec:
     mock: bool = False
     max_rounds: int | None = None
     mock_validate_plan_reject: int = 0
+    mock_review_reject: int = 0
     output_mode: str = "summary"
     session_mode: str = "auto"
     attach: list[str] | None = None
@@ -455,6 +456,7 @@ def launch_run(spec: LaunchSpec, *, run_id: str | None = None) -> LaunchResult:
         mock=spec.mock,
         max_rounds=spec.max_rounds,
         mock_validate_plan_reject=spec.mock_validate_plan_reject,
+        mock_review_reject=spec.mock_review_reject,
         output_mode=output_mode,
         session_mode=spec.session_mode,
         profile=spec.profile,

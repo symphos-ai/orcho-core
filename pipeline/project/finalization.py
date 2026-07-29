@@ -204,10 +204,28 @@ def _render_done_summary(
     names = _profile_phase_names_in_order(profile)
     if not names:
         names = list(phase_log.keys()) if isinstance(phase_log, Mapping) else []
+
+    def _record_for(name: str) -> Any:
+        record = phase_log.get(name)
+        if name == "repair_changes":
+            rounds = phase_log.get("rounds")
+            repair_ran = isinstance(rounds, list) and any(
+                isinstance(item, Mapping) and item.get("repair_output")
+                for item in rounds
+            )
+            if repair_ran:
+                prior = record if isinstance(record, Mapping) else {}
+                record = {
+                    **prior,
+                    "skipped": None,
+                    "output": "repair completed",
+                }
+        return record
+
     return " | ".join(
         f"{name}="
         f"{_done_phase_outcome(
-            phase_log.get(name), phase=name, halted=name == halted_phase,
+            _record_for(name), phase=name, halted=name == halted_phase,
         )}"
         for name in names
     )
@@ -2183,9 +2201,17 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
     # ``_resolve_terminal_status``); delivery/no-diff halts never set it,
     # so they leave every chip on its genuine outcome.
     halted_phase = run.session.get("halt", {}).get("phase") or None
+    durable_phases = run.session.get("phases")
+    summary_phase_log = (
+        dict(durable_phases)
+        if isinstance(durable_phases, Mapping)
+        else {}
+    )
+    if isinstance(run.state.phase_log, Mapping):
+        summary_phase_log.update(run.state.phase_log)
     summary_text = _render_done_summary(
         run._done_summary_profile,
-        run.state.phase_log,
+        summary_phase_log,
         halted_phase=halted_phase,
     )
     log_phase("DONE", summary_text, "DONE")

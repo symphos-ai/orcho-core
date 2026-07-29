@@ -14,16 +14,19 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from agents.protocols import SessionMode
 from core.io.ansi import strip_ansi
 from core.observability import events as _events
 from pipeline.control import render_round_label
 from pipeline.plugins import PluginConfig
 from pipeline.presentation import PresentationPolicy
+from pipeline.project.bootstrap import init_session_with_atexit
 from pipeline.project.handoff import (
     apply_phase_handoff_pause,
     last_validate_plan_critique as _last_validate_plan_critique,
@@ -797,6 +800,25 @@ def _pause_run(signal: PhaseHandoffRequested):
     return run
 
 
+def _stamped_handoff_payload(*, requested_at: str) -> dict[str, object]:
+    signal = _signal(handoff_id="validate_plan:plan_round:2", round_n=2)
+    return {
+        "id": signal.handoff_id,
+        "phase": signal.phase,
+        "type": signal.type.value,
+        "trigger": signal.trigger,
+        "verdict": signal.verdict,
+        "approved": signal.approved,
+        "round_extras_key": signal.round_extras_key,
+        "round": signal.round,
+        "loop_max_rounds": signal.loop_max_rounds,
+        "available_actions": list(signal.available_actions),
+        "artifacts": dict(signal.artifacts),
+        "last_output": signal.last_output,
+        "requested_at": requested_at,
+    }
+
+
 class TestPhaseHandoffPauseSnapshot:
     """The refactored ``apply_phase_handoff_pause`` (now routed through the
     run_state helper) writes a byte-equivalent active payload + status."""
@@ -808,8 +830,9 @@ class TestPhaseHandoffPauseSnapshot:
         apply_phase_handoff_pause(run)
 
         assert run.session["status"] == "awaiting_phase_handoff"
-        # Exact legacy shape AND key order (load-bearing for meta.json).
-        assert list(run.session["phase_handoff"].items()) == [
+        # Existing shape and key order remain load-bearing; the transition
+        # owner appends its durable timestamp after the historical keys.
+        assert list(run.session["phase_handoff"].items())[:-1] == [
             ("id", "validate_plan:plan_round:2"),
             ("phase", "validate_plan"),
             ("type", signal.type.value),
@@ -823,6 +846,8 @@ class TestPhaseHandoffPauseSnapshot:
             ("artifacts", {"findings": [{"id": "F1"}]}),
             ("last_output", "round critique"),
         ]
+        requested_at = run.session["phase_handoff"]["requested_at"]
+        assert datetime.fromisoformat(requested_at).tzinfo is UTC
         # available_actions / artifacts are copies, not aliases of the signal.
         assert run.session["phase_handoff"]["available_actions"] is not (
             signal.available_actions
@@ -871,6 +896,54 @@ class TestPhaseHandoffPauseSnapshot:
         assert "Separate blocker remains" in output
         assert "Functional route test passes." in output
         assert "PostgreSQL port 5433 is already allocated." in output
+
+
+@pytest.mark.parametrize("unattended_rearm", [False, True])
+def test_bootstrap_rehydrate_preserves_persisted_requested_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unattended_rearm: bool,
+) -> None:
+    """Both bootstrap resume paths carry the durable pause clock verbatim."""
+    monkeypatch.setattr(
+        "pipeline.project.bootstrap.atexit.register", lambda _fn: None,
+    )
+    requested_at = "2026-07-29T08:15:00+00:00"
+    payload = _stamped_handoff_payload(requested_at=requested_at)
+    run_dir = tmp_path / ("unattended" if unattended_rearm else "prior")
+    run_dir.mkdir()
+    prior_meta: dict[str, object] = {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": payload,
+    }
+    if unattended_rearm:
+        prior_meta = {
+            "status": "halted",
+            "halt_reason": "phase_handoff_unattended_halt",
+            "phase_handoff_unattended": {
+                "reason": "policy",
+                "note": "operator unavailable",
+                "phase_handoff": payload,
+            },
+        }
+    (run_dir / "meta.json").write_text(json.dumps(prior_meta), encoding="utf-8")
+
+    session = init_session_with_atexit(
+        task="resume",
+        project_path=tmp_path,
+        plugin=PluginConfig(),
+        model="model",
+        profile_name="small_task",
+        session_mode=SessionMode.AUTO,
+        change_handoff="uncommitted",
+        output_dir=run_dir,
+    )
+
+    assert session["phase_handoff"]["requested_at"] == requested_at
+    persisted = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert persisted["phase_handoff"]["requested_at"] == requested_at
+    if unattended_rearm:
+        assert session["_resume_unattended_handoff_rearm"] is True
 
 
 class TestRepeatRejectCoherence:

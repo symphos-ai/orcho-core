@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from cli._formatters import format_status
 from sdk import NoWorkspace, RunNotFound, get_run_metrics, list_history, list_metrics, load_status
 
 
@@ -45,6 +46,120 @@ def test_load_status_latest(populated_runs: Path):
     assert status.meta.task == "Add feature X"
     assert status.total_tokens == 12000
     assert status.total_duration_s == pytest.approx(60.0)
+
+
+def test_load_status_preserves_reclaimed_worktree_marker(runs_root: Path):
+    run_dir = _write_minimal_run(runs_root, "reclaimed")
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    meta["worktree"] = {
+        "path": "/historical", "isolation": "per_run",
+        "reclaimed": {"at": "2026-07-29T00:00:00Z", "disposition": "archive"},
+    }
+    (run_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    status = load_status("reclaimed", runs_dir=runs_root)
+    assert status.worktree and status.worktree["reclaimed"]["disposition"] == "archive"
+    rendered = format_status(status)
+    assert "Historical worktree:" in rendered
+    assert "Reclaimed:" in rendered
+
+
+def test_load_status_projects_accounting_cost_and_last_event(
+    runs_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "1")
+    config._reset_config()
+    run_dir = _write_minimal_run(runs_root, "20260620_status_projection")
+    (run_dir / "metrics.json").write_text(
+        json.dumps({
+            "total_tokens": 12,
+            "total_duration_s": 3.5,
+            "total_rounds": 2,
+            "total_retries": 1,
+            "total_cost_usd_equivalent": 0.42,
+        }),
+        encoding="utf-8",
+    )
+    (run_dir / "events.jsonl").write_text(
+        "{\"seq\": 1, \"ts\": \"2026-06-20T00:00:01Z\"}\n"
+        "{\"seq\": 2, \"ts\": \"2026-06-20T00:00:02Z\"}\n",
+        encoding="utf-8",
+    )
+
+    try:
+        status = load_status("20260620_status_projection", runs_dir=runs_root)
+    finally:
+        config._reset_config()
+
+    assert status.total_cost_usd_equivalent == pytest.approx(0.42)
+    assert (status.last_event_seq, status.last_event_ts) == (2, "2026-06-20T00:00:02Z")
+    assert (status.total_tokens, status.total_duration_s, status.total_rounds, status.total_retries) == (12, 3.5, 2, 1)
+    assert status.raw_metrics["total_cost_usd_equivalent"] == 0.42
+
+
+def test_load_status_degrades_for_missing_or_corrupt_metrics_and_events(runs_root: Path) -> None:
+    _write_minimal_run(runs_root, "20260620_missing_status_inputs")
+    missing = load_status("20260620_missing_status_inputs", runs_dir=runs_root)
+    assert missing.total_cost_usd_equivalent == 0.0
+    assert (missing.last_event_seq, missing.last_event_ts) == (None, None)
+
+    corrupt_dir = _write_minimal_run(runs_root, "20260620_corrupt_status_inputs")
+    (corrupt_dir / "metrics.json").write_bytes(b"\xffnot-json")
+    (corrupt_dir / "events.jsonl").write_bytes(b"{bad json\n\xff\n")
+    corrupt = load_status("20260620_corrupt_status_inputs", runs_dir=runs_root)
+    assert corrupt.total_cost_usd_equivalent == 0.0
+    assert (corrupt.last_event_seq, corrupt.last_event_ts) == (None, None)
+
+
+def test_load_status_invalid_or_unreadable_cost_degrades_to_zero(
+    runs_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid_dir = _write_minimal_run(runs_root, "20260620_invalid_status_cost")
+    (invalid_dir / "metrics.json").write_text(
+        json.dumps({"total_cost_usd_equivalent": "not-a-number"}), encoding="utf-8",
+    )
+    invalid = load_status("20260620_invalid_status_cost", runs_dir=runs_root)
+    assert invalid.total_cost_usd_equivalent == 0.0
+
+    import sdk.status as status_module
+
+    _write_minimal_run(runs_root, "20260620_unreadable_status_metrics")
+    original_load_json_optional = status_module.load_json_optional
+
+    def unreadable_metrics(path: Path) -> dict:
+        if path.name == "metrics.json":
+            raise OSError("denied")
+        return original_load_json_optional(path)
+
+    monkeypatch.setattr(
+        status_module,
+        "load_json_optional",
+        unreadable_metrics,
+    )
+    unreadable = load_status("20260620_unreadable_status_metrics", runs_dir=runs_root)
+    assert unreadable.total_cost_usd_equivalent == 0.0
+    assert unreadable.raw_metrics == {}
+
+
+def test_load_status_scrubs_cost_when_accounting_is_disabled(
+    runs_root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.setenv("ORCHO_ACCOUNTING", "0")
+    config._reset_config()
+    run_dir = _write_minimal_run(runs_root, "20260620_scrubbed_status_cost")
+    (run_dir / "metrics.json").write_text(
+        json.dumps({"total_cost_usd_equivalent": 0.42}), encoding="utf-8",
+    )
+    try:
+        status = load_status("20260620_scrubbed_status_cost", runs_dir=runs_root)
+    finally:
+        config._reset_config()
+
+    assert status.total_cost_usd_equivalent == 0.0
+    assert "total_cost_usd_equivalent" not in status.raw_metrics
 
 
 def test_load_status_unknown(populated_runs: Path):

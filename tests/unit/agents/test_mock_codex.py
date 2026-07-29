@@ -77,3 +77,23 @@ def test_uncommitted_review_marker_wins_over_embedded_plan_tasks() -> None:
 
     assert payload["verdict"] == "APPROVED"
     assert "Plan approved" not in payload["short_summary"]
+
+
+def test_uncommitted_review_rejects_then_approves_after_budget() -> None:
+    """The false-ready demo deterministically exercises review then repair."""
+    mock = _MockCodex(review_reject_rounds=1)
+    prompt = (
+        "Current-only review handoff with static markers prefix-cached.\n\n"
+        "## Tasks\n\n"
+        "- inspect\n"
+        "- apply\n"
+        "- verify\n"
+    )
+
+    rejected = json.loads(mock.invoke(prompt, cwd="/tmp"))
+    approved = json.loads(mock.invoke(prompt, cwd="/tmp"))
+
+    assert rejected["verdict"] == "REJECTED"
+    assert rejected["findings"][0]["title"] == "Missing negative-path regression test"
+    assert approved["verdict"] == "APPROVED"
+    assert "Repair verified" in approved["short_summary"]
