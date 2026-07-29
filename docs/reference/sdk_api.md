@@ -509,6 +509,23 @@ build_decision_command(pending: PendingOperatorAction, action, *,
                        feedback=None, note=None) -> PhaseHandoffDecisionCommand
 ```
 
+### Open-pause and delivery timestamps
+
+`load_active_phase_handoff(...)` returns the durable active payload verbatim.
+Newly opened payloads add `requested_at`, an offset-aware UTC ISO-8601 string;
+legacy payloads remain readable and `payload.get("requested_at")` is `None`.
+The field belongs to the durable open transition, not to
+`PhaseHandoffRequested`, so advice reconstruction continues to use only the
+known runtime-signal fields.
+
+`DeliveryDecisionState.requested_at: str | None` is additive. For a decidable
+delivery or correction state it mirrors a valid durable
+`meta.commit_delivery.decided_at`; for non-decidable, absent, or malformed
+legacy contexts it is `None`. Neither reader computes elapsed time or consults
+the current clock/filesystem mtime. Clients own any elapsed-time formatting,
+SLA policy, and presentation. See [ADR
+0164](../adr/0164-open-operator-pause-requested-at.md).
+
 **`load_run_snapshot`** composes the existing read-only helpers
 (`find_run` / `load_meta` / `load_active_phase_handoff` /
 `read_cross_checkpoint`) into a focused control projection. It never

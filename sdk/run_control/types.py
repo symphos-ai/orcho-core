@@ -325,6 +325,7 @@ class DeliveryDecisionState:
     # strings, so the MCP-visible shape (``list[str]``) is unchanged. Empty for
     # every non-companion gate.
     scope_disclosure: tuple[str, ...] = ()
+    requested_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
