@@ -104,9 +104,29 @@ eligible/protected root reason summaries. Operations retain checkout kinds
 can therefore be `partial` while retaining completed checkout/root operations
 and errors for other roots.
 
+The checkout `selected` and `protected` entries use the same stable `reason`
+and `detail` summary fields. `pause_retention_expired` means an otherwise
+eligible paused run with an open canonical handoff or gate passed its retention
+deadline; `retention_expired` is the ordinary stopped-run expiry. Thus an open
+handoff/gate is protective only during the retention window, not a permanent
+cleanup hold. The corresponding reason appears in both checkout and root
+summaries when both tiers are eligible. Dirty or unpushed work, live/unknown
+status, checkpoint-only handoffs, unsafe paths, unreadable state, and protected
+shared checkouts still prevent selection.
+
+The durable `worktree.retention_until` deadline takes precedence. Only an
+absent deadline uses the legacy timestamp prefix in the root run id plus the
+configured `--older-than` duration; malformed present data fails closed and
+directory mtime is never a fallback. Before any mutation the engine rereads
+the candidate and reapplies this predicate. A changed candidate is retained
+and reported as `changed_before_execution` where applicable, rather than using
+the earlier report as permission to remove it.
+
 Cleanup does not edit pending-decision or `decide` projections. If a selected
 root disappears, any projected queue entry disappears only because its run
 directory was removed; cleanup does not rewrite a pending decision artifact.
+In particular, expiry records a cleanup verdict in a new receipt; it never
+auto-decides, waives, continues, or alters the existing handoff/gate artifact.
 
 After a successful checkout reclaim, every preserved reference may contain:
 

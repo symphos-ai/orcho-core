@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.engine.workspace_run_retention import (
+    RETENTION_UNSET,
     RunRootFacts,
     evaluate_run_root,
     resolve_retention_deadline,
@@ -37,12 +38,12 @@ def _facts(**changes: object) -> RunRootFacts:
 def test_deadline_uses_stamp_then_legacy_prefix_without_mtime():
     deadline, error = resolve_retention_deadline(
         "20260601_000000_suffix",
-        None,
+        RETENTION_UNSET,
         older_than=timedelta(days=30),
     )
     assert (deadline, error) == (datetime(2026, 7, 1, tzinfo=UTC), None)
     assert (
-        resolve_retention_deadline("bad", None, older_than=timedelta(days=30))[1]
+        resolve_retention_deadline("bad", RETENTION_UNSET, older_than=timedelta(days=30))[1]
         == "root_id_timestamp_invalid"
     )
     assert (
@@ -71,8 +72,8 @@ def test_deadline_boundary_is_absolute(stamp: str, reason: str):
 @pytest.mark.parametrize(
     ("changes", "selected", "reason"),
     [
-        ({"meta": None, "meta_exists": False, "retention_until": None}, True, "retention_expired"),
-        ({"retention_until": None}, True, "retention_expired"),
+        ({"meta": None, "meta_exists": False, "retention_until": RETENTION_UNSET}, True, "retention_expired"),
+        ({"retention_until": RETENTION_UNSET}, True, "retention_expired"),
         ({"dependency_paths": ()}, True, "retention_expired"),  # checkout-gone is inert
         ({"dependency_paths": ()}, True, "retention_expired"),  # already-reclaimed is inert
         (
@@ -97,15 +98,53 @@ def test_checkpoint_only_and_real_gate_remain_blocking():
         ).reason
         == "checkpoint_handoff_active"
     )
-    assert (
-        evaluate_run_root(_facts(active_gate=True), now=NOW, older_than=timedelta(days=30)).reason
-        == "active_handoff_or_gate"
+    assert evaluate_run_root(
+        _facts(active_gate=True, retention_until="2026-08-01T00:00:00Z"),
+        now=NOW,
+        older_than=timedelta(days=30),
+    ).reason == "active_handoff_or_gate"
+
+
+def test_expired_real_gate_stays_fail_closed_but_stale_handoff_expires():
+    # A real active gate is a live coordination point: it stays protected even
+    # after its retention deadline has passed. Age-gating is only for a stale
+    # open pause/handoff.
+    gated = evaluate_run_root(
+        _facts(active_gate=True, retention_until="2026-07-28T00:00:00Z"),
+        now=NOW,
+        older_than=timedelta(days=30),
     )
+    assert (gated.selected, gated.reason) == (False, "active_handoff_or_gate")
+
+    # Same age, a stale open pause with an active handoff and no real gate: the
+    # dead pause no longer holds its run root once the deadline has passed.
+    stale = evaluate_run_root(
+        _facts(
+            status="awaiting_phase_handoff",
+            active_handoff=True,
+            retention_until="2026-07-28T00:00:00Z",
+        ),
+        now=NOW,
+        older_than=timedelta(days=30),
+    )
+    assert (stale.selected, stale.reason) == (True, "pause_retention_expired")
+
+    # A young pause (deadline not yet reached) still protects, exactly as before.
+    young = evaluate_run_root(
+        _facts(
+            status="awaiting_phase_handoff",
+            active_handoff=True,
+            retention_until="2026-08-15T00:00:00Z",
+        ),
+        now=NOW,
+        older_than=timedelta(days=30),
+    )
+    assert (young.selected, young.reason) == (False, "active_handoff_or_gate")
 
 
 def test_absent_meta_still_fails_closed_for_a_checkpoint_gate():
     verdict = evaluate_run_root(
-        _facts(meta=None, meta_exists=False, active_gate=True, retention_until=None),
+        _facts(meta=None, meta_exists=False, active_gate=True, retention_until=RETENTION_UNSET),
         now=NOW,
         older_than=timedelta(days=30),
     )
