@@ -174,6 +174,30 @@ def test_run_status_continuation_decision_is_typed() -> None:
     assert field["type"] == "ContinuationDecision | None"
 
 
+def test_timestamp_fields_describe_offset_aware_contract() -> None:
+    """Pin timestamp guarantees without changing their additive wire shape."""
+    dumper = _load_dumper()
+    schema = dumper.build_schema()
+
+    run_status = next(e for e in schema["exports"] if e["name"] == "RunStatus")
+    last_event_ts = next(f for f in run_status["fields"] if f["name"] == "last_event_ts")
+    assert last_event_ts["type"] == "str | None"
+    assert last_event_ts["default"] == "None"
+    assert last_event_ts["description"] == (
+        "Offset-aware ISO-8601 timestamp for the latest event; legacy naive "
+        "event stamps use the machine-local offset and malformed values are None."
+    )
+
+    delivery_state = next(e for e in schema["exports"] if e["name"] == "DeliveryDecisionState")
+    requested_at = next(f for f in delivery_state["fields"] if f["name"] == "requested_at")
+    assert requested_at["type"] == "str | None"
+    assert requested_at["default"] == "None"
+    assert requested_at["description"] == (
+        "Offset-aware ISO-8601 durable delivery-decision timestamp; published "
+        "verbatim only when the durable value is aware."
+    )
+
+
 def test_check_mode_matches_committed_in_process() -> None:
     """``--check`` against the committed snapshot passes in-process (exit 0)."""
     dumper = _load_dumper()

@@ -12,6 +12,7 @@ Strategy:
 """
 
 import json
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -131,7 +132,15 @@ class TestPhaseSequencing:
         status = load_status(output_dir.name, runs_dir=output_dir.parent, cwd=None)
         events = read_run_events(output_dir.name, runs_dir=output_dir.parent, cwd=None)
         assert events
-        assert (status.last_event_seq, status.last_event_ts) == (events[-1].seq, events[-1].ts)
+        assert status.last_event_seq == events[-1].seq
+        assert status.last_event_ts is not None
+        published_timestamp = datetime.fromisoformat(status.last_event_ts)
+        durable_timestamp = datetime.fromisoformat(events[-1].ts)
+        assert published_timestamp.utcoffset() is not None
+        if durable_timestamp.utcoffset() is None:
+            assert published_timestamp.replace(tzinfo=None) == durable_timestamp
+        else:
+            assert status.last_event_ts == events[-1].ts
 
     @patch("pipeline.project.session_run.load_plugin", return_value=PluginConfig())
     def test_mock_full_run_has_review_round_and_nonzero_input_metrics(

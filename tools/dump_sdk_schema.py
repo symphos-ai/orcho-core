@@ -109,20 +109,24 @@ def _describe_callable(name: str, fn: Any) -> dict[str, Any]:
 def _describe_dataclass(name: str, cls: type) -> dict[str, Any]:
     fields = []
     for f in dataclasses.fields(cls):
-        fields.append(
-            {
-                "name": f.name,
-                "type": _annotation_str(f.type),
-                "default": _default_str(f.default)
-                if f.default is not dataclasses.MISSING
-                else None,
-                "default_factory": (
-                    f.default_factory.__qualname__
-                    if f.default_factory is not dataclasses.MISSING
-                    else None
-                ),
-            }
-        )
+        description = f.metadata.get("description")
+        field = {
+            "name": f.name,
+            "type": _annotation_str(f.type),
+            "default": _default_str(f.default)
+            if f.default is not dataclasses.MISSING
+            else None,
+            "default_factory": (
+                f.default_factory.__qualname__
+                if f.default_factory is not dataclasses.MISSING
+                else None
+            ),
+        }
+        # Metadata is deliberately opt-in: emitting absent descriptions as
+        # ``null`` would create irrelevant snapshot churn for every field.
+        if isinstance(description, str):
+            field["description"] = description
+        fields.append(field)
     return {
         "kind": "dataclass",
         "name": name,
