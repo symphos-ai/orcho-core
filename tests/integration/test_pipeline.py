@@ -12,6 +12,7 @@ Strategy:
 """
 
 import json
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -131,7 +132,15 @@ class TestPhaseSequencing:
         status = load_status(output_dir.name, runs_dir=output_dir.parent, cwd=None)
         events = read_run_events(output_dir.name, runs_dir=output_dir.parent, cwd=None)
         assert events
-        assert (status.last_event_seq, status.last_event_ts) == (events[-1].seq, events[-1].ts)
+        assert status.last_event_seq == events[-1].seq
+        assert status.last_event_ts is not None
+        published_timestamp = datetime.fromisoformat(status.last_event_ts)
+        durable_timestamp = datetime.fromisoformat(events[-1].ts)
+        assert published_timestamp.utcoffset() is not None
+        if durable_timestamp.utcoffset() is None:
+            assert published_timestamp.replace(tzinfo=None) == durable_timestamp
+        else:
+            assert status.last_event_ts == events[-1].ts
 
     @patch("pipeline.project.session_run.load_plugin", return_value=PluginConfig())
     def test_mock_full_run_has_review_round_and_nonzero_input_metrics(
@@ -555,3 +564,45 @@ class TestCostCommand:
         assert "By runtime/provider" in out, out
         assert "claude" in out, out
         assert "230 tok" in out or "230" in out, out
+
+
+def test_sdk_cleanup_reclaim_matches_durable_receipt(tmp_path):
+    """The public receipt is a faithful immutable projection of durable JSON."""
+    import json
+    from pathlib import Path
+
+    from sdk.cleanup import reclaim_workspace_cleanup
+
+    runs = tmp_path / "workspace" / "runspace" / "runs"
+    run_dir = runs / "old"
+    checkout = tmp_path / "workspace" / "runspace" / "worktrees" / "old" / "checkout"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /missing/.git/worktrees/old\\n")
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({
+        "status": "done",
+        "worktree": {
+            "path": str(checkout),
+            "source_repo_path": str(tmp_path / "repo"),
+            "retention_until": "2020-01-01T00:00:00Z",
+        },
+    }))
+
+    result = reclaim_workspace_cleanup(
+        runs_dir=runs, cwd=None, tier="worktrees", disposition="archive"
+    )
+    durable = json.loads(result.receipt_path.read_text())
+    assert result.receipt_path.exists()
+    assert result.tier == durable["tier"]
+    assert result.disposition == durable["disposition"]
+    assert result.status == durable["status"]
+    assert result.bytes_selected == durable["bytes_selected"]
+    assert result.bytes_archived == durable["bytes_archived"]
+    assert result.bytes_reclaimed == durable["bytes_reclaimed"]
+    assert result.error_count == len(durable["errors"])
+    assert result.errors == tuple(str(error) for error in durable["errors"])
+    assert result.archive_paths == tuple(
+        Path(row["archive_path"])
+        for row in durable["results"]
+        if row.get("archive_path")
+    )

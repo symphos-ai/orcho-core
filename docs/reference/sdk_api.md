@@ -72,6 +72,27 @@ call time.
 
 ## Modules
 
+### `sdk.cleanup`
+
+```python
+report_workspace_cleanup(*, workspace=None, runs_dir=None, cwd=_CWD_DEFAULT,
+                         older_than=None) -> WorkspaceCleanupReport
+reclaim_workspace_cleanup(*, tier, disposition, workspace=None, runs_dir=None,
+                          cwd=_CWD_DEFAULT, older_than=None) -> WorkspaceCleanupReceipt
+```
+
+`report_workspace_cleanup` is read-only: it resolves the standard reader
+context, projects the engine selection into immutable counts and deterministic
+reason summaries, and creates no receipt, archive, metadata update, or checkout
+mutation. `reclaim_workspace_cleanup` is explicitly side-effecting: callers
+must choose `tier="worktrees" | "both"` and `disposition="archive" | "delete"`.
+It delegates selection and execution to the engine immediately before mutation,
+then copies only durable receipt facts into `WorkspaceCleanupReceipt`. `None`
+for `older_than` deliberately leaves the engine-owned default intact.
+
+This is an SDK-only contract. MCP is explicitly outside this decision and gains
+no cleanup tool or wire payload from it.
+
 ### `sdk.run_control.continuation` and `sdk.run_control.launch`
 
 `ContinuationRequest` is the explicit operator intent (`resume`, `followup`,
@@ -136,11 +157,16 @@ disabled; clients do not need to inspect `raw_metrics` or invoke a separate
 metrics reader for this value.
 
 `RunStatus.last_event_seq: int | None = None` and
-`RunStatus.last_event_ts: str | None = None` identify the latest valid durable
-event observed while loading status. Missing, unreadable, empty, or malformed
-event evidence produces `(None, None)` (and a malformed trailing record falls
-back to the preceding valid one). These are position/observation data, not a
-staleness policy: clients choose any age, hung-run, or polling threshold. No
+`RunStatus.last_event_ts: str | None = None` identify the latest durable event
+position observed while loading status. `last_event_ts` is always an
+offset-aware ISO-8601 timestamp or `None`: an aware durable value is returned
+verbatim (including `Z`), while a legacy naive value is interpreted as this
+machine's local wall clock and returned with its numeric offset. A JSON-valid
+event with a valid `seq` but an unparseable `ts` returns that `seq` with
+`last_event_ts=None`; missing, unreadable, empty, or wholly malformed evidence
+produces `(None, None)`, and malformed JSON/shape at the tail falls back to the
+preceding valid event. These are position/observation data, not a staleness
+policy: clients choose any age, hung-run, or polling threshold. No
 event-history API call is needed merely to obtain the last-event position.
 
 ### `sdk.cross_parent_state`
@@ -533,12 +559,13 @@ The field belongs to the durable open transition, not to
 known runtime-signal fields.
 
 `DeliveryDecisionState.requested_at: str | None` is additive. For a decidable
-delivery or correction state it mirrors a valid durable
-`meta.commit_delivery.decided_at`; for non-decidable, absent, or malformed
-legacy contexts it is `None`. Neither reader computes elapsed time or consults
-the current clock/filesystem mtime. Clients own any elapsed-time formatting,
-SLA policy, and presentation. See [ADR
-0164](../adr/0164-open-operator-pause-requested-at.md).
+delivery or correction state it mirrors a valid, offset-aware durable
+`meta.commit_delivery.decided_at` verbatim; naive, absent, or malformed legacy
+values and non-decidable contexts publish `None`. Neither reader computes
+elapsed time or consults the current clock/filesystem mtime. Clients own any
+elapsed-time formatting, SLA policy, and presentation. See [ADR
+0164](../adr/0164-open-operator-pause-requested-at.md) and [ADR
+0168](../adr/0168-public-sdk-timestamps-unambiguous.md).
 
 **`load_run_snapshot`** composes the existing read-only helpers
 (`find_run` / `load_meta` / `load_active_phase_handoff` /
