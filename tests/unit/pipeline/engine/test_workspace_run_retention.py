@@ -149,3 +149,74 @@ def test_absent_meta_still_fails_closed_for_a_checkpoint_gate():
         older_than=timedelta(days=30),
     )
     assert (verdict.selected, verdict.reason) == (False, "active_handoff_or_gate")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "uncommitted_changes",
+        "unpushed_commits",
+        "active_handoff_or_gate",
+        "checkpoint_handoff_active",
+    ],
+)
+def test_force_reclaims_only_old_allowlisted_protections(reason: str):
+    verdict = evaluate_run_root(
+        _facts(checkout_blocker=reason),
+        now=NOW,
+        older_than=timedelta(days=30),
+        force=True,
+    )
+    assert (verdict.selected, verdict.reason) == (True, f"forced_reclaim_{reason}")
+
+
+@pytest.mark.parametrize(
+    ("root_id", "reason"),
+    [
+        ("20260629_000000_boundary", "uncommitted_changes"),
+        ("20260701_000000_young", "uncommitted_changes"),
+        ("invalid_old", "uncommitted_changes"),
+        ("20260601_000000_old", "meta_unreadable"),
+        ("20260601_000000_old", "status_not_stopped"),
+        ("20260601_000000_old", "run_root_path_unsafe"),
+    ],
+)
+def test_force_keeps_boundary_young_and_structural_protections(root_id: str, reason: str):
+    changes: dict[str, object] = {"root_id": root_id}
+    if reason == "uncommitted_changes":
+        changes["checkout_blocker"] = reason
+    elif reason == "meta_unreadable":
+        changes.update(meta=None, meta_exists=True)
+    elif reason == "status_not_stopped":
+        changes["status"] = "running"
+    else:
+        changes["path_safe"] = False
+    verdict = evaluate_run_root(
+        _facts(**changes), now=NOW, older_than=timedelta(days=30), force=True
+    )
+    assert (verdict.selected, verdict.reason) == (False, reason)
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"active_gate": True}, "active_handoff_or_gate"),
+        ({"checkpoint_handoff": True}, "checkpoint_handoff_active"),
+    ],
+)
+def test_force_never_reclaims_unreadable_meta_with_checkpoint_reason(
+    changes: dict, reason: str
+):
+    """A checkpoint can surface an allowlisted reason while meta is unreadable.
+
+    Force reclaims known-abandoned work, never unknown state: with unreadable
+    metadata the gate/handoff protection must stand even though its reason
+    string is on the force allowlist.
+    """
+    verdict = evaluate_run_root(
+        _facts(root_id="20260601_000000_old", meta=None, meta_exists=True, **changes),
+        now=NOW,
+        older_than=timedelta(days=30),
+        force=True,
+    )
+    assert (verdict.selected, verdict.reason) == (False, reason)

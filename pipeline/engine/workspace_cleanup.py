@@ -30,6 +30,7 @@ from pipeline.engine.workspace_run_retention import (
     RunRootFacts,
     RunRootVerdict,
     evaluate_run_root,
+    forced_reclaim_reason,
     resolve_retention_deadline,
 )
 from pipeline.engine.worktree import is_worktree_reclaimed
@@ -108,7 +109,8 @@ def select_workspace_cleanup(
     runs_dir: Path | str,
     *,
     now: datetime | None = None,
-    older_than: timedelta = timedelta(days=30),
+    older_than: timedelta | None = None,
+    force: bool = False,
 ) -> WorkspaceCleanupPlan:
     """Discover retained worktrees and return one selection plan.
 
@@ -117,15 +119,16 @@ def select_workspace_cleanup(
     are individually eligible.  Registration is never consulted here: it
     influences how execution removes a checkout, not whether it may.
     """
+    retention = _normalize_older_than(older_than, force=force)
     root = Path(runs_dir)
     instant = _utc_now(now)
     snapshots = _discover(root)
-    individual = _evaluate_snapshots(snapshots, root, instant, older_than)
+    individual = _evaluate_snapshots(snapshots, root, instant, retention, force)
 
     selected = tuple(v for v in individual if v.selected)
     inert = tuple(v for v in individual if not v.selected and v.reason in _INERT_REASONS)
     protected = tuple(v for v in individual if not v.selected and v.reason not in _INERT_REASONS)
-    roots = _evaluate_roots(root, snapshots, individual, instant, older_than)
+    roots = _evaluate_roots(root, snapshots, individual, instant, retention, force)
     root_selected = tuple(v for v in roots if v.selected)
     root_protected = tuple(v for v in roots if not v.selected)
     return WorkspaceCleanupPlan(
@@ -145,7 +148,8 @@ def execute_workspace_cleanup(
     tier: CleanupTier = "worktrees",
     disposition: CleanupDisposition = "archive",
     now: datetime | None = None,
-    older_than: timedelta = timedelta(days=30),
+    older_than: timedelta | None = None,
+    force: bool = False,
     registration_checker: RegistrationChecker | None = None,
     archive_root: Path | None = None,
 ) -> WorkspaceCleanupExecution:
@@ -159,10 +163,11 @@ def execute_workspace_cleanup(
         raise ValueError("tier must be 'worktrees' or 'both'")
     if disposition not in {"archive", "delete"}:
         raise ValueError("disposition must be 'archive' or 'delete'")
+    retention = _normalize_older_than(older_than, force=force)
     root = Path(runs_dir)
     instant = _utc_now(now)
     checker = registration_checker or _registered
-    plan = select_workspace_cleanup(root, now=instant, older_than=older_than)
+    plan = select_workspace_cleanup(root, now=instant, older_than=retention, force=force)
     receipt_path = root.parent / "cleanup_receipts" / f"cleanup-{uuid.uuid4().hex}.json"
     receipt: dict[str, Any] = {
         "schema_version": 1,
@@ -171,6 +176,8 @@ def execute_workspace_cleanup(
         "runs_dir": str(root),
         "tier": tier,
         "disposition": disposition,
+        "force": force,
+        "force_cutoff": (instant - retention).isoformat().replace("+00:00", "Z"),
         "status": "running",
         "selected": [_verdict_payload(v) for v in plan.selected],
         "protected": [_verdict_payload(v) for v in plan.protected],
@@ -194,7 +201,7 @@ def execute_workspace_cleanup(
         # durable references immediately before mutation.  This applies the
         # same individual/shared/parent predicate without repeatedly scanning
         # every run or invoking git for unrelated checkouts.
-        fresh_verdicts = _reverify_group(verdicts, root, instant, older_than)
+        fresh_verdicts = _reverify_group(verdicts, root, instant, retention, force)
         if fresh_verdicts is None:
             receipt["protected"].append(
                 {
@@ -242,7 +249,7 @@ def execute_workspace_cleanup(
                 )
                 _write_atomic(receipt_path, receipt)
                 continue
-            current = _reverify_root(planned_root, root, instant, older_than)
+            current = _reverify_root(planned_root, root, instant, retention, force)
             # A successfully reclaimed group is now represented as inert
             # (``already_reclaimed``), so the refreshed dependency set may
             # shrink. New selected dependencies, however, prove the root's
@@ -360,13 +367,14 @@ def _evaluate_snapshots(
     runs_dir: Path,
     now: datetime,
     older_than: timedelta,
+    force: bool,
 ) -> list[WorkspaceCleanupVerdict]:
     """Apply the shared individual, parent, and shared-checkout predicate."""
     individual = [
         _individual_verdict(snapshot, runs_dir, now, older_than) for snapshot in snapshots
     ]
     parent_guards = {
-        snapshot.root_run_id: _cross_parent_protection(snapshot, now, older_than)
+        snapshot.root_run_id: _cross_parent_protection(snapshot, now, older_than, force)
         for snapshot in snapshots
         if snapshot.run_id == snapshot.root_run_id
         and snapshot.meta is not None
@@ -380,6 +388,8 @@ def _evaluate_snapshots(
             and verdict.reason not in _INERT_REASONS
         ):
             individual[index] = _protected(verdict.snapshot, *parent_guard)
+
+    individual = [_force_verdict(verdict, now, older_than, force) for verdict in individual]
 
     by_checkout: dict[Path, list[int]] = {}
     for index, verdict in enumerate(individual):
@@ -409,6 +419,7 @@ def _evaluate_roots(
     individual: list[WorkspaceCleanupVerdict],
     now: datetime,
     older_than: timedelta,
+    force: bool,
 ) -> list[RunRootVerdict]:
     """Project checkout facts into the independent run-root predicate."""
     root_snapshots = {
@@ -485,7 +496,7 @@ def _evaluate_roots(
             checkout_blocker=blocker,
             dependency_paths=dependencies,
         )
-        verdicts.append(evaluate_run_root(facts, now=now, older_than=older_than))
+        verdicts.append(evaluate_run_root(facts, now=now, older_than=older_than, force=force))
     return verdicts
 
 
@@ -553,6 +564,7 @@ def _cross_parent_protection(
     snapshot: WorkspaceCleanupSnapshot,
     now: datetime,
     older_than: timedelta,
+    force: bool,
 ) -> tuple[str, str] | None:
     """Return the fail-closed protection inherited by every cross child."""
     meta = snapshot.meta
@@ -563,6 +575,8 @@ def _cross_parent_protection(
         return "parent_status_unknown", "cross parent lifecycle status could not be determined"
     if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES | {PAUSE_STATUS}:
         return "parent_not_stopped", "cross parent is live or has an unknown lifecycle status"
+    if force and status == PAUSE_STATUS:
+        return "parent_not_stopped", "paused cross parent remains a structural protection"
     worktree = meta.get("worktree")
     retention_until = (
         worktree.get("retention_until", RETENTION_UNSET)
@@ -585,6 +599,7 @@ def _reverify_group(
     runs_dir: Path,
     now: datetime,
     older_than: timedelta = timedelta(days=30),
+    force: bool = False,
 ) -> list[WorkspaceCleanupVerdict] | None:
     """Re-check one planned physical checkout immediately before mutating it.
 
@@ -618,9 +633,9 @@ def _reverify_group(
             if root_meta is None or not _declared_aliases(root_meta):
                 return None
             root_snapshot = _snapshot(root_id, root_dir, root_meta, root_id)
-            if _cross_parent_protection(root_snapshot, now, older_than) is not None:
+            if _cross_parent_protection(root_snapshot, now, older_than, force) is not None:
                 return None
-    fresh = _evaluate_snapshots(refreshed, runs_dir, now, older_than)
+    fresh = _evaluate_snapshots(refreshed, runs_dir, now, older_than, force)
     if any(not verdict.selected for verdict in fresh):
         return None
     return fresh
@@ -631,12 +646,13 @@ def _reverify_root(
     runs_dir: Path,
     now: datetime,
     older_than: timedelta,
+    force: bool = False,
 ) -> RunRootVerdict | None:
     """Re-read one root and its declared children without rescanning the workspace."""
     root_id = planned.facts.root_id
     snapshots = _discover_root(runs_dir / root_id, root_id)
-    individual = _evaluate_snapshots(snapshots, runs_dir, now, older_than)
-    roots = _evaluate_roots(runs_dir, snapshots, individual, now, older_than)
+    individual = _evaluate_snapshots(snapshots, runs_dir, now, older_than, force)
+    roots = _evaluate_roots(runs_dir, snapshots, individual, now, older_than, force)
     return next((verdict for verdict in roots if verdict.selected and verdict.facts.root_id == root_id), None)
 
 
@@ -916,6 +932,37 @@ def _utc_now(now: datetime | None) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _normalize_older_than(older_than: timedelta | None, *, force: bool) -> timedelta:
+    """Keep the historic default while requiring an explicit force cutoff."""
+    if force and older_than is None:
+        raise ValueError("force cleanup requires an explicit older_than cutoff")
+    return timedelta(days=30) if older_than is None else older_than
+
+
+def _force_verdict(
+    verdict: WorkspaceCleanupVerdict,
+    now: datetime,
+    older_than: timedelta,
+    force: bool,
+) -> WorkspaceCleanupVerdict:
+    if verdict.snapshot.meta is None:
+        # Unknown state is never force-reclaimed (symmetric with the
+        # run-root rule; unreadable meta must stay exactly as protected).
+        return verdict
+    forced_reason = forced_reclaim_reason(
+        verdict.snapshot.root_run_id,
+        verdict.reason,
+        now=now,
+        older_than=older_than,
+        force=force,
+    )
+    if forced_reason is None:
+        return verdict
+    return WorkspaceCleanupVerdict(
+        verdict.snapshot, True, forced_reason, f"force reclaimed: {verdict.detail}"
+    )
 
 
 def _canonical(path: Path) -> Path:

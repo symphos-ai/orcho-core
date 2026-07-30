@@ -91,6 +91,101 @@ def test_uncommitted_changes_protect_a_checkout(tmp_path):
     assert [verdict.reason for verdict in plan.protected] == ["uncommitted_changes"]
 
 
+def test_force_selects_old_dirty_checkout_and_records_audit_fields(tmp_path):
+    root_id = "20260501_000000_dirty"
+    runs, checkout = _run(tmp_path, root_id)
+    _init_repo(checkout)
+
+    report = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=30), force=True)
+    assert [verdict.reason for verdict in report.selected] == ["forced_reclaim_uncommitted_changes"]
+
+    execution = execute_workspace_cleanup(
+        runs,
+        now=NOW,
+        older_than=timedelta(days=30),
+        force=True,
+        registration_checker=lambda *_: True,
+    )
+    assert [row["reason"] for row in execution.receipt["selected"]] == [
+        verdict.reason for verdict in report.selected
+    ]
+    assert execution.receipt["force"] is True
+    assert execution.receipt["force_cutoff"] == "2026-06-29T00:00:00Z"
+
+
+def test_force_selects_old_unpushed_and_paused_handoff_checkouts(tmp_path):
+    unpushed_id = "20260501_000000_unpushed"
+    runs, checkout = _run(tmp_path, unpushed_id)
+    _init_repo(checkout)
+    _commit_all(checkout, "local only")
+    unpushed = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=30), force=True)
+    assert [verdict.reason for verdict in unpushed.selected] == [
+        "forced_reclaim_unpushed_commits"
+    ]
+
+    paused_id = "20260501_000000_paused"
+    runs, _ = _run(
+        tmp_path,
+        paused_id,
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2026-08-30T00:00:00Z",
+    )
+    paused = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=30), force=True)
+    assert "forced_reclaim_active_handoff_or_gate" in {
+        verdict.reason for verdict in paused.selected
+    }
+
+
+def test_force_requires_explicit_cutoff(tmp_path):
+    runs, _ = _run(tmp_path, "20260501_000000_old")
+    with pytest.raises(ValueError, match="explicit older_than"):
+        select_workspace_cleanup(runs, now=NOW, force=True)
+    with pytest.raises(ValueError, match="explicit older_than"):
+        execute_workspace_cleanup(runs, now=NOW, force=True)
+
+
+def test_force_keeps_unreadable_meta_root_even_with_checkpoint_gate(tmp_path):
+    """Review F1 of run 20260730_152727_ce9dd1: unknown state is never forced.
+
+    An old root whose meta.json is unreadable can still surface an allowlisted
+    ``active_handoff_or_gate`` reason from its cross checkpoint. Force must
+    leave it protected — it overrides abandoned value, not unknown state.
+    """
+    runs = tmp_path / "runspace" / "runs"
+    root = runs / "20260501_000000"
+    root.mkdir(parents=True)
+    (root / "meta.json").write_text("{")
+    (root / "cross_checkpoint.json").write_text(json.dumps({"pending_gate": {"id": "g1"}}))
+
+    plan = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=7), force=True)
+
+    root_verdicts = [v for v in plan.root_protected if v.facts.root_id == "20260501_000000"]
+    assert [v.reason for v in root_verdicts] == ["active_handoff_or_gate"]
+    assert not plan.root_selected
+
+
+def test_force_revalidation_rejects_checkout_that_went_live(tmp_path):
+    import pipeline.engine.workspace_cleanup as cleanup
+
+    root_id = "20260501_000000_dirty"
+    runs, checkout = _run(tmp_path, root_id)
+    _init_repo(checkout)
+    plan = cleanup.select_workspace_cleanup(
+        runs, now=NOW, older_than=timedelta(days=30), force=True
+    )
+    meta_path = runs / root_id / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["status"] = "running"
+    meta_path.write_text(json.dumps(meta))
+    assert (
+        cleanup._reverify_group(
+            list(plan.selected), runs, NOW, timedelta(days=30), force=True
+        )
+        is None
+    )
+
+
 def test_unpushed_commits_protect_and_pushed_clean_checkout_is_reclaimable(tmp_path):
     runs, checkout = _run(tmp_path, "one")
     _init_repo(checkout)

@@ -65,10 +65,13 @@ def report_workspace_cleanup(
     runs_dir: Path | str | None = None,
     cwd: Path | str | None | object = _CWD_DEFAULT,
     older_than: timedelta | None = None,
+    force: bool = False,
 ) -> WorkspaceCleanupReport:
     """Return a read-only cleanup selection report without writing anything."""
     resolved_runs_dir = find_runs_dir(workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     kwargs = {} if older_than is None else {"older_than": older_than}
+    if force:
+        kwargs["force"] = True
     plan = select_workspace_cleanup(resolved_runs_dir, **kwargs)
     return WorkspaceCleanupReport(
         runs_dir=resolved_runs_dir,
@@ -93,10 +96,13 @@ def reclaim_workspace_cleanup(
     runs_dir: Path | str | None = None,
     cwd: Path | str | None | object = _CWD_DEFAULT,
     older_than: timedelta | None = None,
+    force: bool = False,
 ) -> WorkspaceCleanupReceipt:
     """Perform explicit cleanup and return facts copied from its durable receipt."""
     resolved_runs_dir = find_runs_dir(workspace=workspace, runs_dir=runs_dir, cwd=cwd)
     kwargs = {} if older_than is None else {"older_than": older_than}
+    if force:
+        kwargs["force"] = True
     execution = execute_workspace_cleanup(
         resolved_runs_dir, tier=tier, disposition=disposition, **kwargs
     )

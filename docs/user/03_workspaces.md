@@ -312,12 +312,40 @@ To reclaim eligible checkouts and then their fully eligible run roots:
 orcho workspace cleanup --reclaim-both --older-than 30
 ```
 
-Both commands archive by default under
-`runspace/cleanup_archive/<receipt_id>/`. Use `--delete` only with a reclaim
-tier for irreversible removal:
+### Force reclaim abandoned old work
+
+`--force` is an explicit, narrower override for an abandoned workspace. It is
+not a report mode: the CLI rejects `--force` unless both `--older-than DAYS`
+and one reclaim tier are present. It may override exactly these value and
+coordination protections: `uncommitted_changes`, `unpushed_commits`,
+`active_handoff_or_gate`, and `checkpoint_handoff_active`. The report and
+receipt show an override as the corresponding `forced_reclaim_*` reason.
+
+Force age is deliberately stricter than ordinary retention. Orcho parses the
+root id's `YYYYMMDD_HHMMSS` UTC prefix, adds `--older-than`, and requires the
+result to be strictly before the current time; equality does not qualify.
+Unknown or malformed root age remains protected. A durable
+`worktree.retention_until`, directory mtime, and handoff timestamps do not
+prove force age.
+
+For example, archive old dirty or unpushed checkout material while preserving
+the run directory:
 
 ```bash
-orcho workspace cleanup --reclaim-both --older-than 7 --delete
+orcho workspace cleanup --reclaim-worktrees --force --older-than 90
+```
+
+Force never bypasses structural safety: live or unknown runs, unreadable
+metadata or Git state, unsafe/symlink paths, shared checkouts with a protected
+reference, and live or paused cross parents remain protected.
+
+Both commands archive by default under
+`runspace/cleanup_archive/<receipt_id>/`. Use `--delete` only with a reclaim
+tier for irreversible removal. In particular, `--force --delete` is
+irreversible; omit `--delete` to keep the default archive:
+
+```bash
+orcho workspace cleanup --reclaim-both --force --older-than 90 --delete
 ```
 
 `--reclaim-worktrees` never removes a

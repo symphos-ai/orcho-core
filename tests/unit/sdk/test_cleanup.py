@@ -83,6 +83,24 @@ def test_report_omits_none_cutoff_and_summaries_are_deterministic(tmp_path: Path
     assert report.reclaimable_reasons == tuple(sorted(report.reclaimable_reasons, key=lambda row: (-row.count, row.reason)))
 
 
+def test_force_report_forwards_force_and_cutoff_without_writing(tmp_path: Path, monkeypatch) -> None:
+    runs = _run(tmp_path, "20200101_000000_old", status="awaiting_phase_handoff", handoff=True)
+    calls: list[dict] = []
+    select = cleanup.select_workspace_cleanup
+
+    def recorded(*args, **kwargs):
+        calls.append(kwargs)
+        return select(*args, **kwargs)
+
+    monkeypatch.setattr(cleanup, "select_workspace_cleanup", recorded)
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+    cleanup.report_workspace_cleanup(
+        runs_dir=runs, cwd=None, older_than=timedelta(days=7), force=True
+    )
+    assert calls == [{"older_than": timedelta(days=7), "force": True}]
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
 def test_report_projects_expired_pause_as_eligible_and_young_pause_as_protected(tmp_path: Path) -> None:
     runs = _run(tmp_path, "stale", status="awaiting_phase_handoff", handoff=True)
     _run(
@@ -144,3 +162,34 @@ def test_reclaim_omits_none_cutoff_and_copies_only_receipt_facts(tmp_path: Path,
     assert receipt.error_count == 1
     assert receipt.errors == ("{'message': 'copy failed'}",)
     assert receipt.archive_paths == (Path("/archive/one"),)
+
+
+def test_reclaim_forwards_force_and_cutoff(tmp_path: Path, monkeypatch) -> None:
+    runs = _run(tmp_path, "one")
+    calls: list[dict] = []
+
+    class Execution:
+        receipt_path = Path("/receipt.json")
+        receipt = {
+            "tier": "worktrees", "disposition": "archive", "status": "complete",
+            "bytes_selected": 0, "bytes_archived": 0, "bytes_reclaimed": 0,
+            "errors": [], "results": [],
+        }
+
+    def execute(*_args, **kwargs):
+        calls.append(kwargs)
+        return Execution()
+
+    monkeypatch.setattr(cleanup, "execute_workspace_cleanup", execute)
+    cleanup.reclaim_workspace_cleanup(
+        runs_dir=runs,
+        cwd=None,
+        tier="worktrees",
+        disposition="archive",
+        older_than=timedelta(days=7),
+        force=True,
+    )
+    assert calls == [{
+        "tier": "worktrees", "disposition": "archive",
+        "older_than": timedelta(days=7), "force": True,
+    }]

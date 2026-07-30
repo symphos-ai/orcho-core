@@ -20,6 +20,14 @@ from pipeline.run_state.status_vocab import (
 )
 
 RETENTION_UNSET = object()
+_FORCE_RECLAIM_REASONS = frozenset(
+    {
+        "uncommitted_changes",
+        "unpushed_commits",
+        "active_handoff_or_gate",
+        "checkpoint_handoff_active",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +78,49 @@ def resolve_retention_deadline(
 
 
 def evaluate_run_root(
+    facts: RunRootFacts, *, now: datetime, older_than: timedelta, force: bool = False
+) -> RunRootVerdict:
+    """Evaluate a root, applying the narrow force override after all guards."""
+    verdict = _evaluate_run_root(facts, now=now, older_than=older_than)
+    if facts.meta is None:
+        # Force reclaims known-abandoned work, never unknown state. With
+        # unreadable metadata a checkpoint can still surface a gate/handoff
+        # reason from the allowlist — that protection must stand.
+        return verdict
+    forced_reason = forced_reclaim_reason(
+        facts.root_id, verdict.reason, now=now, older_than=older_than, force=force
+    )
+    if forced_reason is None:
+        return verdict
+    return RunRootVerdict(facts, True, forced_reason, f"force reclaimed: {verdict.detail}")
+
+
+def forced_reclaim_reason(
+    root_id: str,
+    reason: str,
+    *,
+    now: datetime,
+    older_than: timedelta,
+    force: bool,
+) -> str | None:
+    """Map only allowlisted protections for roots strictly older than cutoff.
+
+    Unlike normal retention, force deliberately derives age only from the
+    timestamp prefix of the root id.  A retention stamp can be extended and is
+    not evidence that the underlying workspace itself is old.
+    """
+    if not force or reason not in _FORCE_RECLAIM_REASONS:
+        return None
+    try:
+        created = datetime.strptime(root_id[:15], "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    if created + older_than >= now:
+        return None
+    return f"forced_reclaim_{reason}"
+
+
+def _evaluate_run_root(
     facts: RunRootFacts, *, now: datetime, older_than: timedelta
 ) -> RunRootVerdict:
     if not facts.path_safe:

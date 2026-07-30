@@ -1927,8 +1927,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Irreversibly delete selected material; requires a reclaim tier (default is archive).",
     )
     p_ws_cleanup.add_argument(
-        "--older-than", type=_positive_int, default=30, metavar="DAYS",
+        "--older-than", type=_positive_int, default=None, metavar="DAYS",
         help="Run-root fallback retention age in days (default: 30).",
+    )
+    p_ws_cleanup.add_argument(
+        "--force", action="store_true",
+        help="Reclaim only explicitly old protected work; requires --older-than and a reclaim tier.",
     )
     p_ws_cleanup.add_argument(
         "--workspace", "-w", default=None,

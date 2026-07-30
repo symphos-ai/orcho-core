@@ -24,6 +24,7 @@ class WorkspaceCleanupCliResult:
     older_than_days: int
     report: WorkspaceCleanupReport
     receipt: WorkspaceCleanupReceipt | None
+    force: bool = False
 
 
 def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
@@ -31,7 +32,9 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
     worktrees = bool(getattr(args, "reclaim_worktrees", False))
     both = bool(getattr(args, "reclaim_both", False))
     delete = bool(getattr(args, "delete", False))
-    older_than_days = int(getattr(args, "older_than", 30))
+    force = bool(getattr(args, "force", False))
+    explicit_cutoff = getattr(args, "older_than", None)
+    older_than_days = 30 if explicit_cutoff is None else int(explicit_cutoff)
     if older_than_days <= 0:
         raise ValueError("--older-than must be a positive integer")
     older_than = timedelta(days=older_than_days)
@@ -40,25 +43,37 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
     tier: Literal["report", "worktrees", "both"] = (
         "both" if both else "worktrees" if worktrees else "report"
     )
+    if force and explicit_cutoff is None:
+        raise ValueError("--force requires an explicit --older-than DAYS cutoff")
+    if force and tier == "report":
+        raise ValueError("--force requires --reclaim-worktrees or --reclaim-both")
     if tier == "report":
         report = report_workspace_cleanup(
-            workspace=getattr(args, "workspace", None), older_than=older_than
+            workspace=getattr(args, "workspace", None), older_than=older_than, force=force
         )
         return WorkspaceCleanupCliResult(
-            report.runs_dir.parent.parent, report.runs_dir, tier, None, older_than_days, report, None,
+            report.runs_dir.parent.parent,
+            report.runs_dir,
+            tier,
+            None,
+            older_than_days,
+            report,
+            None,
+            force,
         )
     disposition: Literal["archive", "delete"] = "delete" if delete else "archive"
     # Keep the selection that the operator requested visible beside the
     # execution receipt.  Re-selecting after mutation would turn reclaimed
     # historical paths into a misleading post-cleanup protection report.
     report = report_workspace_cleanup(
-        workspace=getattr(args, "workspace", None), older_than=older_than
+        workspace=getattr(args, "workspace", None), older_than=older_than, force=force
     )
     receipt = reclaim_workspace_cleanup(
         tier="both" if tier == "both" else "worktrees",
         disposition=disposition,
         workspace=getattr(args, "workspace", None),
         older_than=older_than,
+        force=force,
     )
     return WorkspaceCleanupCliResult(
         report.runs_dir.parent.parent,
@@ -68,6 +83,7 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
         older_than_days,
         report,
         receipt,
+        force,
     )
 
 
@@ -85,6 +101,7 @@ def format_workspace_cleanup(result: WorkspaceCleanupCliResult) -> str:
         f"Tier: {result.tier}",
         f"Disposition: {result.disposition or 'report (no changes)'}",
         f"Run-root cutoff: {result.older_than_days} days",
+        f"Force: {'enabled' if result.force else 'disabled'}",
         f"Reclaimable: {report.reclaimable_count}",
         f"Protected: {report.protected_count}",
         f"Nothing to reclaim: {report.inert_count}",
