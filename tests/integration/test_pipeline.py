@@ -564,3 +564,45 @@ class TestCostCommand:
         assert "By runtime/provider" in out, out
         assert "claude" in out, out
         assert "230 tok" in out or "230" in out, out
+
+
+def test_sdk_cleanup_reclaim_matches_durable_receipt(tmp_path):
+    """The public receipt is a faithful immutable projection of durable JSON."""
+    import json
+    from pathlib import Path
+
+    from sdk.cleanup import reclaim_workspace_cleanup
+
+    runs = tmp_path / "workspace" / "runspace" / "runs"
+    run_dir = runs / "old"
+    checkout = tmp_path / "workspace" / "runspace" / "worktrees" / "old" / "checkout"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /missing/.git/worktrees/old\\n")
+    run_dir.mkdir(parents=True)
+    (run_dir / "meta.json").write_text(json.dumps({
+        "status": "done",
+        "worktree": {
+            "path": str(checkout),
+            "source_repo_path": str(tmp_path / "repo"),
+            "retention_until": "2020-01-01T00:00:00Z",
+        },
+    }))
+
+    result = reclaim_workspace_cleanup(
+        runs_dir=runs, cwd=None, tier="worktrees", disposition="archive"
+    )
+    durable = json.loads(result.receipt_path.read_text())
+    assert result.receipt_path.exists()
+    assert result.tier == durable["tier"]
+    assert result.disposition == durable["disposition"]
+    assert result.status == durable["status"]
+    assert result.bytes_selected == durable["bytes_selected"]
+    assert result.bytes_archived == durable["bytes_archived"]
+    assert result.bytes_reclaimed == durable["bytes_reclaimed"]
+    assert result.error_count == len(durable["errors"])
+    assert result.errors == tuple(str(error) for error in durable["errors"])
+    assert result.archive_paths == tuple(
+        Path(row["archive_path"])
+        for row in durable["results"]
+        if row.get("archive_path")
+    )

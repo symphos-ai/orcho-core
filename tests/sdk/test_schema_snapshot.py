@@ -101,6 +101,8 @@ def test_runs_dir_resolution_kwargs_uniform() -> None:
         "collect_evidence",
         "find_run",
         "find_runs_dir",
+        "report_workspace_cleanup",
+        "reclaim_workspace_cleanup",
     }
     for entry in schema["exports"]:
         if entry["name"] not in READERS:

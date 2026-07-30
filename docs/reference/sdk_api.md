@@ -72,6 +72,27 @@ call time.
 
 ## Modules
 
+### `sdk.cleanup`
+
+```python
+report_workspace_cleanup(*, workspace=None, runs_dir=None, cwd=_CWD_DEFAULT,
+                         older_than=None) -> WorkspaceCleanupReport
+reclaim_workspace_cleanup(*, tier, disposition, workspace=None, runs_dir=None,
+                          cwd=_CWD_DEFAULT, older_than=None) -> WorkspaceCleanupReceipt
+```
+
+`report_workspace_cleanup` is read-only: it resolves the standard reader
+context, projects the engine selection into immutable counts and deterministic
+reason summaries, and creates no receipt, archive, metadata update, or checkout
+mutation. `reclaim_workspace_cleanup` is explicitly side-effecting: callers
+must choose `tier="worktrees" | "both"` and `disposition="archive" | "delete"`.
+It delegates selection and execution to the engine immediately before mutation,
+then copies only durable receipt facts into `WorkspaceCleanupReceipt`. `None`
+for `older_than` deliberately leaves the engine-owned default intact.
+
+This is an SDK-only contract. MCP is explicitly outside this decision and gains
+no cleanup tool or wire payload from it.
+
 ### `sdk.run_control.continuation` and `sdk.run_control.launch`
 
 `ContinuationRequest` is the explicit operator intent (`resume`, `followup`,
