@@ -8,7 +8,15 @@ import sdk.cleanup as cleanup
 from sdk import to_jsonable
 
 
-def _run(tmp_path: Path, run_id: str, *, status: str = "done", checkout: bool = True) -> Path:
+def _run(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    status: str = "done",
+    deadline: str = "2020-01-01T00:00:00Z",
+    handoff: bool = False,
+    checkout: bool = True,
+) -> Path:
     runs = tmp_path / "runspace" / "runs"
     run_dir = runs / run_id
     run_dir.mkdir(parents=True)
@@ -16,14 +24,17 @@ def _run(tmp_path: Path, run_id: str, *, status: str = "done", checkout: bool = 
     if checkout:
         worktree.mkdir(parents=True)
         (worktree / ".git").write_text("gitdir: /missing/.git/worktrees/test\\n")
-    (run_dir / "meta.json").write_text(json.dumps({
+    meta = {
         "status": status,
         "worktree": {
             "path": str(worktree),
             "source_repo_path": str(tmp_path / "repo"),
-            "retention_until": "2020-01-01T00:00:00Z",
+            "retention_until": deadline,
         },
-    }))
+    }
+    if handoff:
+        meta["phase_handoff"] = {"id": "pending"}
+    (run_dir / "meta.json").write_text(json.dumps(meta))
     return runs
 
 
@@ -70,6 +81,42 @@ def test_report_omits_none_cutoff_and_summaries_are_deterministic(tmp_path: Path
     assert calls == [{}]
     assert cleanup.report_workspace_cleanup(runs_dir=runs, cwd=None, older_than=timedelta(days=2)).runs_dir == runs
     assert report.reclaimable_reasons == tuple(sorted(report.reclaimable_reasons, key=lambda row: (-row.count, row.reason)))
+
+
+def test_report_projects_expired_pause_as_eligible_and_young_pause_as_protected(tmp_path: Path) -> None:
+    runs = _run(tmp_path, "stale", status="awaiting_phase_handoff", handoff=True)
+    _run(
+        tmp_path,
+        "young",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2999-01-01T00:00:00Z",
+    )
+
+    report = cleanup.report_workspace_cleanup(runs_dir=runs, cwd=None)
+
+    assert report.reclaimable_reasons == (
+        cleanup.WorkspaceCleanupReasonSummary(
+            "pause_retention_expired", 1, "stopped run has an expired retained checkout"
+        ),
+    )
+    assert report.protected_reasons == (
+        cleanup.WorkspaceCleanupReasonSummary(
+            "active_handoff_or_gate", 1, "an operator handoff or cross gate remains active"
+        ),
+    )
+    assert report.reclaimable_run_root_reasons == (
+        cleanup.WorkspaceCleanupReasonSummary(
+            "pause_retention_expired",
+            1,
+            "stopped root and all checkout dependencies are inert or selected",
+        ),
+    )
+    assert report.protected_run_root_reasons == (
+        cleanup.WorkspaceCleanupReasonSummary(
+            "active_handoff_or_gate", 1, "an active handoff or gate remains"
+        ),
+    )
 
 
 def test_reclaim_omits_none_cutoff_and_copies_only_receipt_facts(tmp_path: Path, monkeypatch) -> None:

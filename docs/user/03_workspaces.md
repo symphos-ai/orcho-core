@@ -279,16 +279,22 @@ orcho workspace cleanup --workspace /path/to/workspace
 ```
 
 The report separately summarises checkout and run-root eligible/protected
-reason codes. A checkout is protected only while it holds work that
-cannot be recovered from anywhere else: uncommitted changes, commits no remote
-has, a run that is still live or paused, an unexpired retention window, or
-metadata and paths that cannot be read safely. Runs with no retained checkout
-are reported separately as having nothing to reclaim.
+reason codes. A checkout is protected while it holds work that cannot be
+recovered from anywhere else: uncommitted changes, commits no remote has, a
+live or unknown run, an unexpired retention window, or metadata and paths that
+cannot be read safely. An open canonical handoff or gate protects a stopped or
+paused checkout only inside its retention window; after expiry, an otherwise
+eligible paused checkout reports `pause_retention_expired`. Expiry never
+overrides dirty, unpushed, live, unsafe, unreadable, checkpoint-only, or shared
+checkout protections. Runs with no retained checkout are reported separately
+as having nothing to reclaim.
 
-`--older-than DAYS` changes only the legacy run-root-id fallback cutoff; it
-does not reinterpret a readable `worktree.retention_until` and does not change
-the worktree-tier retention predicate. For example, inspect roots with a
-seven-day fallback cutoff:
+`--older-than DAYS` changes only the legacy root-id fallback cutoff when
+`worktree.retention_until` is absent; it does not reinterpret a readable
+durable deadline or change the worktree-tier safety protections. A present
+malformed deadline protects the checkout rather than falling back, and cleanup
+never uses directory mtime. For example, inspect roots with a seven-day
+fallback cutoff:
 
 ```bash
 orcho workspace cleanup --older-than 7 --workspace /path/to/workspace
@@ -321,4 +327,6 @@ or an already reclaimed checkout) can be removed when its own stopped/deadline
 predicate is eligible. Every execution writes a durable receipt under
 `runspace/cleanup_receipts/`. Reclaimed `meta.json` records preserve the old
 `worktree.path` as historical evidence and add `worktree.reclaimed`; that path
-cannot be resumed or followed up in place.
+cannot be resumed or followed up in place. The receipt exposes expiry reasons
+in both checkout and root summaries; cleanup re-verifies before mutation and
+never resolves or rewrites a pending handoff/gate decision artifact.

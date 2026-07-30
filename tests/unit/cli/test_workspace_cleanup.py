@@ -168,6 +168,36 @@ def test_cli_report_equals_direct_sdk_report(tmp_path: Path) -> None:
     assert cli.report.protected_run_root_reasons == direct.protected_run_root_reasons
 
 
+def test_cli_report_renders_expired_pause_eligible_and_young_pause_protected(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    runs = workspace / "runspace" / "runs"
+    for run_id, deadline in (("stale", "2020-01-01T00:00:00Z"), ("young", "2999-01-01T00:00:00Z")):
+        checkout = workspace / "runspace" / "worktrees" / run_id / "checkout"
+        checkout.mkdir(parents=True)
+        (checkout / ".git").write_text("gitdir: /missing/.git/worktrees/test\n")
+        run_dir = runs / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "meta.json").write_text(json.dumps({
+            "status": "awaiting_phase_handoff",
+            "phase_handoff": {"id": "pending"},
+            "worktree": {
+                "path": str(checkout),
+                "source_repo_path": str(tmp_path / "repo"),
+                "retention_until": deadline,
+            },
+        }))
+
+    result = workspace_cleanup_from_args(argparse.Namespace(
+        workspace=workspace, reclaim_worktrees=False, reclaim_both=False, delete=False, older_than=30,
+    ))
+    rendered = format_workspace_cleanup(result)
+
+    assert "reclaimable pause_retention_expired: 1" in rendered
+    assert "protected active_handoff_or_gate: 1" in rendered
+    assert "eligible run root pause_retention_expired: 1" in rendered
+    assert "protected run root active_handoff_or_gate: 1" in rendered
+
+
 def test_partial_receipt_returns_exit_code_one(monkeypatch):
     partial = type("Result", (), {"receipt": WorkspaceCleanupReceipt(
         Path("/receipt.json"), "worktrees", "archive", "partial", 0, 0, 0, 1, ("failed",), ()

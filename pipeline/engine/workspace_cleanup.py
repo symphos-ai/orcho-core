@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pipeline.engine.workspace_run_retention import (
+    RETENTION_UNSET,
     RunRootFacts,
     RunRootVerdict,
     evaluate_run_root,
+    resolve_retention_deadline,
 )
 from pipeline.engine.worktree import is_worktree_reclaimed
 from pipeline.run_state.setup_failure import merged_status
@@ -118,7 +120,7 @@ def select_workspace_cleanup(
     root = Path(runs_dir)
     instant = _utc_now(now)
     snapshots = _discover(root)
-    individual = _evaluate_snapshots(snapshots, root, instant)
+    individual = _evaluate_snapshots(snapshots, root, instant, older_than)
 
     selected = tuple(v for v in individual if v.selected)
     inert = tuple(v for v in individual if not v.selected and v.reason in _INERT_REASONS)
@@ -192,7 +194,7 @@ def execute_workspace_cleanup(
         # durable references immediately before mutation.  This applies the
         # same individual/shared/parent predicate without repeatedly scanning
         # every run or invoking git for unrelated checkouts.
-        fresh_verdicts = _reverify_group(verdicts, root, instant)
+        fresh_verdicts = _reverify_group(verdicts, root, instant, older_than)
         if fresh_verdicts is None:
             receipt["protected"].append(
                 {
@@ -357,11 +359,14 @@ def _evaluate_snapshots(
     snapshots: list[WorkspaceCleanupSnapshot],
     runs_dir: Path,
     now: datetime,
+    older_than: timedelta,
 ) -> list[WorkspaceCleanupVerdict]:
     """Apply the shared individual, parent, and shared-checkout predicate."""
-    individual = [_individual_verdict(snapshot, runs_dir, now) for snapshot in snapshots]
+    individual = [
+        _individual_verdict(snapshot, runs_dir, now, older_than) for snapshot in snapshots
+    ]
     parent_guards = {
-        snapshot.root_run_id: _cross_parent_protection(snapshot)
+        snapshot.root_run_id: _cross_parent_protection(snapshot, now, older_than)
         for snapshot in snapshots
         if snapshot.run_id == snapshot.root_run_id
         and snapshot.meta is not None
@@ -420,7 +425,11 @@ def _evaluate_roots(
             continue
         meta = snapshot.meta
         worktree = meta.get("worktree") if isinstance(meta, Mapping) else None
-        retention = worktree.get("retention_until") if isinstance(worktree, Mapping) else None
+        retention = (
+            worktree.get("retention_until", RETENTION_UNSET)
+            if isinstance(worktree, Mapping)
+            else RETENTION_UNSET
+        )
         try:
             status = merged_status(dict(meta), snapshot.run_dir) if meta is not None else None
         except Exception:
@@ -542,18 +551,32 @@ def _safe_run_root(run_dir: Path, runs_dir: Path) -> bool:
 
 def _cross_parent_protection(
     snapshot: WorkspaceCleanupSnapshot,
+    now: datetime,
+    older_than: timedelta,
 ) -> tuple[str, str] | None:
     """Return the fail-closed protection inherited by every cross child."""
     meta = snapshot.meta
     assert meta is not None
-    if _active_handoff(meta) or _active_cross_gate(snapshot.run_dir, meta):
-        return "parent_active_handoff_or_gate", "cross parent has an active handoff or gate"
     try:
         status = merged_status(dict(meta), snapshot.run_dir)
     except Exception:
         return "parent_status_unknown", "cross parent lifecycle status could not be determined"
-    if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES:
+    if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES | {PAUSE_STATUS}:
         return "parent_not_stopped", "cross parent is live or has an unknown lifecycle status"
+    worktree = meta.get("worktree")
+    retention_until = (
+        worktree.get("retention_until", RETENTION_UNSET)
+        if isinstance(worktree, Mapping)
+        else RETENTION_UNSET
+    )
+    deadline, error = resolve_retention_deadline(
+        snapshot.root_run_id, retention_until, older_than=older_than
+    )
+    if error:
+        return "parent_retention_invalid", "cross parent retention deadline is malformed or unavailable"
+    assert deadline is not None
+    if (_active_handoff(meta) or _active_cross_gate(snapshot.run_dir, meta)) and deadline > now:
+        return "parent_active_handoff_or_gate", "cross parent has an active handoff or gate"
     return None
 
 
@@ -561,6 +584,7 @@ def _reverify_group(
     verdicts: list[WorkspaceCleanupVerdict],
     runs_dir: Path,
     now: datetime,
+    older_than: timedelta = timedelta(days=30),
 ) -> list[WorkspaceCleanupVerdict] | None:
     """Re-check one planned physical checkout immediately before mutating it.
 
@@ -594,9 +618,9 @@ def _reverify_group(
             if root_meta is None or not _declared_aliases(root_meta):
                 return None
             root_snapshot = _snapshot(root_id, root_dir, root_meta, root_id)
-            if _cross_parent_protection(root_snapshot) is not None:
+            if _cross_parent_protection(root_snapshot, now, older_than) is not None:
                 return None
-    fresh = _evaluate_snapshots(refreshed, runs_dir, now)
+    fresh = _evaluate_snapshots(refreshed, runs_dir, now, older_than)
     if any(not verdict.selected for verdict in fresh):
         return None
     return fresh
@@ -611,7 +635,7 @@ def _reverify_root(
     """Re-read one root and its declared children without rescanning the workspace."""
     root_id = planned.facts.root_id
     snapshots = _discover_root(runs_dir / root_id, root_id)
-    individual = _evaluate_snapshots(snapshots, runs_dir, now)
+    individual = _evaluate_snapshots(snapshots, runs_dir, now, older_than)
     roots = _evaluate_roots(runs_dir, snapshots, individual, now, older_than)
     return next((verdict for verdict in roots if verdict.selected and verdict.facts.root_id == root_id), None)
 
@@ -657,6 +681,7 @@ def _individual_verdict(
     snapshot: WorkspaceCleanupSnapshot,
     runs_dir: Path,
     now: datetime,
+    older_than: timedelta,
 ) -> WorkspaceCleanupVerdict:
     meta = snapshot.meta
     if meta is None:
@@ -682,9 +707,11 @@ def _individual_verdict(
         return _protected(
             snapshot, "worktree_incomplete", "worktree record has no source repository path"
         )
-    if _active_handoff(meta) or _active_cross_gate(snapshot.run_dir, meta):
+    if not _safe_checkout_path(snapshot.worktree_path, runs_dir):
         return _protected(
-            snapshot, "active_handoff_or_gate", "an operator handoff or cross gate remains active"
+            snapshot,
+            "worktree_path_unsafe",
+            "checkout escapes the resolved runspace or traverses a symlink",
         )
     try:
         status = merged_status(dict(meta), snapshot.run_dir)
@@ -692,31 +719,38 @@ def _individual_verdict(
         return _protected(
             snapshot, "status_unknown", "merged lifecycle status could not be determined"
         )
-    if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES:
+    if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES | {PAUSE_STATUS}:
         return _protected(
             snapshot, "status_not_stopped", "run is live or has an unknown lifecycle status"
         )
-    deadline = _parse_deadline(worktree.get("retention_until"))
-    if deadline is None:
+    deadline, error = resolve_retention_deadline(
+        snapshot.root_run_id,
+        worktree.get("retention_until", RETENTION_UNSET),
+        older_than=older_than,
+    )
+    if error:
         return _protected(
             snapshot,
             "retention_invalid",
-            "retention_until is absent or is not an ISO-8601 UTC timestamp",
+            "retention deadline is malformed or unavailable",
+        )
+    assert deadline is not None
+    handoff = _active_handoff(meta)
+    cross_gate = _active_cross_gate(snapshot.run_dir, meta)
+    # A real cross gate is a live coordination point — fail-closed regardless of
+    # age. A stale open handoff protects only within the retention window, so a
+    # dead pause past its deadline no longer holds its checkout forever.
+    if cross_gate or (handoff and deadline > now):
+        return _protected(
+            snapshot, "active_handoff_or_gate", "an operator handoff or cross gate remains active"
         )
     if deadline > now:
         return _protected(snapshot, "retention_active", "retention deadline has not expired")
-    if not _safe_checkout_path(snapshot.worktree_path, runs_dir):
-        return _protected(
-            snapshot,
-            "worktree_path_unsafe",
-            "checkout escapes the resolved runspace or traverses a symlink",
-        )
     at_risk = _work_at_risk(snapshot.worktree_path)
     if at_risk is not None:
         return _protected(snapshot, *at_risk)
-    return WorkspaceCleanupVerdict(
-        snapshot, True, "retention_expired", "stopped run has an expired retained checkout"
-    )
+    reason = "pause_retention_expired" if status == PAUSE_STATUS and handoff else "retention_expired"
+    return WorkspaceCleanupVerdict(snapshot, True, reason, "stopped run has an expired retained checkout")
 
 
 def _work_at_risk(path: Path) -> tuple[str, str] | None:
@@ -803,18 +837,6 @@ def _active_cross_gate(run_dir: Path, meta: Mapping[str, Any]) -> bool:
     return bool(
         checkpoint and (checkpoint.get("phase_handoff_pending") or checkpoint.get("pending_gate"))
     )
-
-
-def _parse_deadline(value: Any) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
-        return None
-    return parsed.astimezone(UTC)
 
 
 def _safe_checkout_path(path: Path, runs_dir: Path) -> bool:

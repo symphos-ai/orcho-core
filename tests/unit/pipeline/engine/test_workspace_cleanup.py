@@ -70,7 +70,9 @@ def _commit_all(checkout: Path, message: str) -> None:
         ("done", False, "2026-07-28T00:00:00Z", True, "retention_expired"),
         ("halted", False, "2026-07-30T00:00:00Z", False, "retention_active"),
         ("running", False, "2026-07-28T00:00:00Z", False, "status_not_stopped"),
-        ("done", True, "2026-07-28T00:00:00Z", False, "active_handoff_or_gate"),
+        ("done", True, "2026-07-28T00:00:00Z", True, "retention_expired"),
+        ("awaiting_phase_handoff", True, "2026-07-29T00:00:00Z", True, "pause_retention_expired"),
+        ("awaiting_phase_handoff", True, "2026-07-29T00:00:01Z", False, "active_handoff_or_gate"),
     ],
 )
 def test_status_pause_and_deadline_matrix(tmp_path, status, handoff, deadline, selected, reason):
@@ -106,6 +108,129 @@ def test_unpushed_commits_protect_and_pushed_clean_checkout_is_reclaimable(tmp_p
     plan = select_workspace_cleanup(runs, now=NOW)
     assert not plan.selected
     assert [verdict.reason for verdict in plan.protected] == ["unpushed_commits"]
+
+
+def test_reclaim_both_reclaims_clean_pushed_expired_pause_and_records_both_reasons(tmp_path):
+    runs, checkout = _run(
+        tmp_path,
+        "paused",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2026-07-28T00:00:00Z",
+    )
+    _init_repo(checkout)
+    _commit_all(checkout, "published")
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    _git(checkout, "remote", "add", "origin", str(remote))
+    _git(checkout, "push", "-q", "origin", "main")
+
+    plan = select_workspace_cleanup(runs, now=NOW)
+    assert [verdict.reason for verdict in plan.selected] == ["pause_retention_expired"]
+    assert [verdict.reason for verdict in plan.root_selected] == ["pause_retention_expired"]
+    assert not plan.root_protected
+
+    execution = execute_workspace_cleanup(
+        runs,
+        tier="both",
+        disposition="delete",
+        now=NOW,
+        registration_checker=lambda *_: False,
+    )
+    assert not (runs / "paused").exists()
+    assert [row["reason"] for row in execution.receipt["selected"]] == [
+        "pause_retention_expired"
+    ]
+    assert [row["reason"] for row in execution.receipt["root_selected"]] == [
+        "pause_retention_expired"
+    ]
+    assert not execution.receipt["root_protected"]
+
+
+def test_expired_pause_with_a_real_cross_gate_stays_protected(tmp_path):
+    # A real cross gate is a live coordination point, not a stale pause: it
+    # protects the checkout even past the retention deadline. Only a bare open
+    # handoff expires with retention (covered above).
+    runs, _ = _run(
+        tmp_path,
+        "gated",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2026-07-28T00:00:00Z",
+    )
+    meta_path = runs / "gated" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["pending_gate"] = {"id": "cross-gate-1"}
+    meta_path.write_text(json.dumps(meta))
+
+    plan = select_workspace_cleanup(runs, now=NOW)
+    assert not plan.selected
+    assert [verdict.reason for verdict in plan.protected] == ["active_handoff_or_gate"]
+    assert not plan.root_selected
+
+
+@pytest.mark.parametrize(("kind", "reason"), [("dirty", "uncommitted_changes"), ("unpushed", "unpushed_commits")])
+def test_expired_pause_still_preserves_checkout_value(tmp_path, kind, reason):
+    runs, checkout = _run(
+        tmp_path,
+        "pause",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2026-07-28T00:00:00Z",
+    )
+    _init_repo(checkout)
+    if kind == "unpushed":
+        _commit_all(checkout, "local only")
+    plan = select_workspace_cleanup(runs, now=NOW)
+    assert [verdict.reason for verdict in plan.protected] == [reason]
+
+
+def test_absent_stamp_uses_root_timestamp_cutoff_but_present_malformed_stamp_protects(tmp_path):
+    runs, _ = _run(
+        tmp_path, "20260530_000000_old", status="awaiting_phase_handoff", handoff=True
+    )
+    _, _ = _run(
+        tmp_path, "20260725_000000_young", status="awaiting_phase_handoff", handoff=True
+    )
+    for run_id in ("20260530_000000_old", "20260725_000000_young"):
+        meta_path = runs / run_id / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["worktree"].pop("retention_until")
+        meta_path.write_text(json.dumps(meta))
+    malformed_path = runs / "20260530_000000_old" / "meta.json"
+    malformed = json.loads(malformed_path.read_text())
+    malformed["worktree"]["retention_until"] = None
+    malformed_path.write_text(json.dumps(malformed))
+
+    plan = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=7))
+    assert {verdict.snapshot.run_id: verdict.reason for verdict in plan.protected} == {
+        "20260530_000000_old": "retention_invalid",
+        "20260725_000000_young": "active_handoff_or_gate",
+    }
+
+    malformed["worktree"].pop("retention_until")
+    malformed_path.write_text(json.dumps(malformed))
+    plan = select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=7))
+    assert [verdict.reason for verdict in plan.selected] == ["pause_retention_expired"]
+
+
+def test_reverification_preserves_expired_pause_predicate_and_rejects_young_pause(tmp_path):
+    runs, _ = _run(
+        tmp_path,
+        "20260530_000000_old",
+        status="awaiting_phase_handoff",
+        handoff=True,
+    )
+    import pipeline.engine.workspace_cleanup as cleanup
+
+    plan = cleanup.select_workspace_cleanup(runs, now=NOW, older_than=timedelta(days=7))
+    assert cleanup._reverify_group(list(plan.selected), runs, NOW, timedelta(days=7)) is not None
+
+    meta_path = runs / "20260530_000000_old" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["worktree"]["retention_until"] = "2026-08-01T00:00:00Z"
+    meta_path.write_text(json.dumps(meta))
+    assert cleanup._reverify_group(list(plan.selected), runs, NOW, timedelta(days=7)) is None
 
 
 def test_checkout_whose_repository_is_gone_is_reclaimable(tmp_path):
@@ -206,15 +331,36 @@ def test_cross_root_requires_every_declared_child(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("status", "handoff", "reason"),
+    ("status", "handoff", "deadline", "reason", "root_selected"),
     [
-        ("running", False, "parent_not_stopped"),
-        ("done", True, "parent_active_handoff_or_gate"),
+        ("running", False, "2026-07-28T00:00:00Z", "parent_not_stopped", False),
+        ("done", True, "2026-07-28T00:00:00Z", "retention_expired", True),
+        (
+            "awaiting_phase_handoff",
+            True,
+            "2026-07-28T00:00:00Z",
+            "retention_expired",
+            True,
+        ),
+        (
+            "awaiting_phase_handoff",
+            True,
+            "2026-08-01T00:00:00Z",
+            "parent_active_handoff_or_gate",
+            False,
+        ),
     ],
 )
-def test_live_or_paused_cross_parent_protects_all_children(tmp_path, status, handoff, reason):
+def test_cross_parent_retention_applies_to_all_children(
+    tmp_path, status, handoff, deadline, reason, root_selected
+):
     runs, _ = _run(
-        tmp_path, "cross", status=status, handoff=handoff, projects={"a": "/a", "b": "/b"}
+        tmp_path,
+        "cross",
+        status=status,
+        handoff=handoff,
+        deadline=deadline,
+        projects={"a": "/a", "b": "/b"},
     )
     parent = runs / "cross"
     for alias in ("a", "b"):
@@ -235,10 +381,12 @@ def test_live_or_paused_cross_parent_protects_all_children(tmp_path, status, han
         )
     plan = select_workspace_cleanup(runs, now=NOW)
     child_verdicts = [
-        verdict for verdict in plan.protected if verdict.snapshot.run_id in {"a", "b"}
+        verdict
+        for verdict in (*plan.selected, *plan.protected)
+        if verdict.snapshot.run_id in {"a", "b"}
     ]
     assert child_verdicts and {verdict.reason for verdict in child_verdicts} == {reason}
-    assert "cross" not in plan.root_run_ids_for_both
+    assert ("cross" in plan.root_run_ids_for_both) is root_selected
 
 
 def test_symlink_escape_and_unreadable_meta_are_protected(tmp_path):
@@ -575,7 +723,7 @@ def test_root_matrix_projects_real_workspace_facts_and_expires_cross_pause(tmp_p
     assert {
         verdict.facts.root_id: verdict.reason for verdict in plan.root_protected
     } == {
-        "20260601_000005_young_pause": "retention_active",
+        "20260601_000005_young_pause": "active_handoff_or_gate",
         "20260601_000006_dirty": "uncommitted_changes",
         "20260601_000007_unpushed": "unpushed_commits",
     }

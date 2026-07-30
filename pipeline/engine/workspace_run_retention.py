@@ -19,6 +19,8 @@ from pipeline.run_state.status_vocab import (
     STOPPED_RETENTION_STATUSES,
 )
 
+RETENTION_UNSET = object()
+
 
 @dataclass(frozen=True, slots=True)
 class RunRootFacts:
@@ -57,7 +59,7 @@ def resolve_retention_deadline(
     stamp permits the legacy root-id timestamp fallback; filesystem mtime is
     intentionally never consulted.
     """
-    if retention_until is not None:
+    if retention_until is not RETENTION_UNSET:
         deadline = _parse_utc_deadline(retention_until)
         return (deadline, None) if deadline is not None else (None, "retention_invalid")
     try:
@@ -74,12 +76,6 @@ def evaluate_run_root(
         return _protected(
             facts, "run_root_path_unsafe", "run root is not a direct safe child of runs"
         )
-    if facts.active_gate:
-        return _protected(facts, "active_handoff_or_gate", "a real active gate remains")
-    if facts.checkpoint_handoff:
-        return _protected(
-            facts, "checkpoint_handoff_active", "checkpoint-only handoff remains unresolved"
-        )
     if facts.nested_checkout_unidentified:
         return _protected(
             facts,
@@ -87,9 +83,17 @@ def evaluate_run_root(
             "run root contains a checkout not represented by a safe cleanup fact",
         )
     if facts.meta is None:
+        if facts.active_gate:
+            return _protected(facts, "active_handoff_or_gate", "a real active gate remains")
+        if facts.checkpoint_handoff:
+            return _protected(
+                facts, "checkpoint_handoff_active", "checkpoint-only handoff remains unresolved"
+            )
         if facts.meta_exists:
             return _protected(facts, "meta_unreadable", "meta.json is unreadable or malformed")
-        deadline, error = resolve_retention_deadline(facts.root_id, None, older_than=older_than)
+        deadline, error = resolve_retention_deadline(
+            facts.root_id, RETENTION_UNSET, older_than=older_than
+        )
         if error:
             return _protected(facts, error, "root has no metadata and no valid legacy timestamp")
         assert deadline is not None
@@ -110,13 +114,21 @@ def evaluate_run_root(
     if error:
         return _protected(facts, error, "retention deadline is malformed or unavailable")
     assert deadline is not None
+    if facts.checkpoint_handoff:
+        return _protected(
+            facts, "checkpoint_handoff_active", "checkpoint-only handoff remains unresolved"
+        )
+    # A real active gate is a live coordination point, not a stale pause: it
+    # stays fail-closed regardless of the retention deadline (ADR 0169). Only a
+    # stale open handoff expires with retention, and only once its deadline has
+    # passed.
+    if facts.active_gate or (facts.active_handoff and deadline > now):
+        return _protected(facts, "active_handoff_or_gate", "an active handoff or gate remains")
     if deadline > now:
         return _protected(facts, "retention_active", "retention deadline has not expired")
     pause = facts.status == PAUSE_STATUS or (
         facts.status == INTERRUPTED_STATUS and facts.active_handoff
     )
-    if facts.active_handoff and not pause:
-        return _protected(facts, "active_handoff_or_gate", "an operator handoff remains active")
     return _checkout_verdict(facts, "pause_retention_expired" if pause else "retention_expired")
 
 
