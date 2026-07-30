@@ -42,6 +42,10 @@ def test_parser_accepts_only_one_reclaim_tier():
     parser = build_parser()
     args = parser.parse_args(["workspace", "cleanup", "--reclaim-worktrees"])
     assert args.reclaim_worktrees is True
+    forced = parser.parse_args([
+        "workspace", "cleanup", "--reclaim-worktrees", "--force", "--older-than", "7",
+    ])
+    assert (forced.force, forced.older_than) == (True, 7)
     with pytest.raises(SystemExit):
         parser.parse_args([
             "workspace", "cleanup", "--reclaim-worktrees", "--reclaim-both",
@@ -50,7 +54,7 @@ def test_parser_accepts_only_one_reclaim_tier():
 
 def test_older_than_parser_defaults_customizes_and_rejects_non_positive():
     parser = build_parser()
-    assert parser.parse_args(["workspace", "cleanup"]).older_than == 30
+    assert parser.parse_args(["workspace", "cleanup"]).older_than is None
     assert parser.parse_args(["workspace", "cleanup", "--older-than", "7"]).older_than == 7
     with pytest.raises(SystemExit):
         parser.parse_args(["workspace", "cleanup", "--older-than", "0"])
@@ -59,6 +63,27 @@ def test_older_than_parser_defaults_customizes_and_rejects_non_positive():
 def test_delete_without_tier_is_rejected_by_validation():
     args = argparse.Namespace(workspace=None, reclaim_worktrees=False, reclaim_both=False, delete=True)
     with pytest.raises(ValueError, match="requires"):
+        workspace_cleanup_from_args(args)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        argparse.Namespace(
+            workspace=None, reclaim_worktrees=True, reclaim_both=False, delete=False, force=True
+        ),
+        argparse.Namespace(
+            workspace=None,
+            reclaim_worktrees=False,
+            reclaim_both=False,
+            delete=False,
+            force=True,
+            older_than=7,
+        ),
+    ],
+)
+def test_force_requires_explicit_cutoff_and_reclaim_tier(args):
+    with pytest.raises(ValueError, match="--force requires"):
         workspace_cleanup_from_args(args)
 
 
@@ -80,7 +105,7 @@ def test_default_is_report_noop(tmp_path, monkeypatch):
     )
     assert result.tier == "report"
     assert result.receipt is None
-    assert calls == [{"workspace": None, "older_than": timedelta(days=30)}]
+    assert calls == [{"workspace": None, "older_than": timedelta(days=30), "force": False}]
 
 
 @pytest.mark.parametrize(("both", "delete", "tier", "disposition"), [
@@ -106,11 +131,40 @@ def test_reclaim_tiers_forward_archive_delete_scope(tmp_path, monkeypatch, both,
         workspace=None, reclaim_worktrees=not both, reclaim_both=both, delete=delete, older_than=7,
     ))
     assert result.tier == tier
-    assert report_calls == [{"workspace": None, "older_than": timedelta(days=7)}]
+    assert report_calls == [{"workspace": None, "older_than": timedelta(days=7), "force": False}]
     assert reclaim_calls == [{
         "tier": tier, "disposition": disposition, "workspace": None,
-        "older_than": timedelta(days=7),
+        "older_than": timedelta(days=7), "force": False,
     }]
+
+
+def test_force_reclaim_forwards_matching_report_and_reclaim_kwargs(tmp_path, monkeypatch):
+    runs = tmp_path / "runspace" / "runs"
+    report_calls: list[dict] = []
+    reclaim_calls: list[dict] = []
+    monkeypatch.setattr(
+        "cli._workspace_cleanup.report_workspace_cleanup",
+        lambda **kwargs: report_calls.append(kwargs) or _report(runs),
+    )
+    receipt = WorkspaceCleanupReceipt(
+        Path("/receipt.json"), "worktrees", "archive", "complete", 0, 0, 0, 0, (), ()
+    )
+    monkeypatch.setattr(
+        "cli._workspace_cleanup.reclaim_workspace_cleanup",
+        lambda **kwargs: reclaim_calls.append(kwargs) or receipt,
+    )
+    result = workspace_cleanup_from_args(argparse.Namespace(
+        workspace=None,
+        reclaim_worktrees=True,
+        reclaim_both=False,
+        delete=False,
+        force=True,
+        older_than=7,
+    ))
+    expected = {"workspace": None, "older_than": timedelta(days=7), "force": True}
+    assert report_calls == [expected]
+    assert reclaim_calls == [{"tier": "worktrees", "disposition": "archive", **expected}]
+    assert "Force: enabled" in format_workspace_cleanup(result)
 
 
 def test_report_renders_separate_root_summaries(tmp_path, monkeypatch):

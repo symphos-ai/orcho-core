@@ -5841,6 +5841,12 @@
           "default": "None",
           "kind": "KEYWORD_ONLY",
           "name": "older_than"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
         }
       ],
       "return": "WorkspaceCleanupReceipt"
@@ -5957,6 +5963,12 @@
           "default": "None",
           "kind": "KEYWORD_ONLY",
           "name": "older_than"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
         }
       ],
       "return": "WorkspaceCleanupReport"

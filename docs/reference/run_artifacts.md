@@ -92,7 +92,8 @@ failure and `--reclaim-both`. Checkout receipt fields remain `selected`,
 `protected`, `inert`, `results`, `operations`, `errors`, archive paths, and
 `bytes_selected`, `bytes_archived`, and `bytes_reclaimed`. Archive is reversible and therefore
 reports archived bytes rather than reclaimed disk bytes; `--delete` reports
-reclaimed bytes.
+reclaimed bytes. Every receipt also records boolean `force` and normalized UTC
+`force_cutoff`, including when `force` is false.
 
 Run-root retention adds `root_selected` and `root_protected` arrays. Their
 entries carry `root_run_id`, root `path`, stable `reason` and `detail`, plus
@@ -113,6 +114,17 @@ cleanup hold. The corresponding reason appears in both checkout and root
 summaries when both tiers are eligible. Dirty or unpushed work, live/unknown
 status, checkpoint-only handoffs, unsafe paths, unreadable state, and protected
 shared checkouts still prevent selection.
+
+When `force` is true and strict root-id age is proven, the only forced selected
+reason codes are `forced_reclaim_uncommitted_changes`,
+`forced_reclaim_unpushed_commits`, `forced_reclaim_active_handoff_or_gate`, and
+`forced_reclaim_checkpoint_handoff_active`. They may occur in `selected` and
+`root_selected`; their unprefixed forms remain the normal protection reasons.
+Structural reasons are unchanged and cannot be forced: `status_not_stopped`,
+`status_unknown`, `meta_unreadable`, `worktree_path_unsafe`,
+`run_root_path_unsafe`, `shared_checkout_protected`, cross-parent protections,
+unknown age, and unreadable Git state. Group/root revalidation can still add
+`changed_before_execution` after the original selection.
 
 The durable `worktree.retention_until` deadline takes precedence. Only an
 absent deadline uses the legacy timestamp prefix in the root run id plus the

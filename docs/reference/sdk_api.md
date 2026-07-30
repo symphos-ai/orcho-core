@@ -76,9 +76,10 @@ call time.
 
 ```python
 report_workspace_cleanup(*, workspace=None, runs_dir=None, cwd=_CWD_DEFAULT,
-                         older_than=None) -> WorkspaceCleanupReport
+                         older_than=None, force=False) -> WorkspaceCleanupReport
 reclaim_workspace_cleanup(*, tier, disposition, workspace=None, runs_dir=None,
-                          cwd=_CWD_DEFAULT, older_than=None) -> WorkspaceCleanupReceipt
+                          cwd=_CWD_DEFAULT, older_than=None,
+                          force=False) -> WorkspaceCleanupReceipt
 ```
 
 `report_workspace_cleanup` is read-only: it resolves the standard reader
@@ -89,6 +90,15 @@ must choose `tier="worktrees" | "both"` and `disposition="archive" | "delete"`.
 It delegates selection and execution to the engine immediately before mutation,
 then copies only durable receipt facts into `WorkspaceCleanupReceipt`. `None`
 for `older_than` deliberately leaves the engine-owned default intact.
+
+`force=True` forwards the same narrow predicate to either call. A program can
+therefore use `report_workspace_cleanup(force=True, older_than=timedelta(...))`
+as a read-only forced-selection preview: it creates no receipt, archive,
+metadata update, or checkout mutation. The engine is the deep validation
+boundary and rejects force without an explicit `older_than`; the CLI adds the
+separate reclaim-tier usage requirement. Force selects only old root ids and
+only reports the documented `forced_reclaim_*` reasons; it does not weaken
+structural protections.
 
 This is an SDK-only contract. MCP is explicitly outside this decision and gains
 no cleanup tool or wire payload from it.
