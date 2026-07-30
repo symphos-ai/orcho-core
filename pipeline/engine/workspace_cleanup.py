@@ -10,10 +10,12 @@ Selection itself never archives or deletes anything.  Both the report surface
 and the mutation surface consume :func:`select_workspace_cleanup`, which makes
 it impossible for the two to drift in their safety predicate.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import uuid
 from collections.abc import Callable, Mapping
@@ -23,9 +25,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from pipeline.engine.workspace_run_retention import (
+    RunRootFacts,
+    RunRootVerdict,
+    evaluate_run_root,
+)
 from pipeline.engine.worktree import is_worktree_reclaimed
 from pipeline.run_state.setup_failure import merged_status
-from pipeline.run_state.status_vocab import STOPPED_RETENTION_STATUSES
+from pipeline.run_state.status_vocab import (
+    INTERRUPTED_STATUS,
+    PAUSE_STATUS,
+    STOPPED_RETENTION_STATUSES,
+)
 
 RegistrationChecker = Callable[[Path, Path], bool]
 CleanupTier = Literal["worktrees", "both"]
@@ -69,6 +80,8 @@ class WorkspaceCleanupPlan:
     protected: tuple[WorkspaceCleanupVerdict, ...]
     inert: tuple[WorkspaceCleanupVerdict, ...]
     root_run_ids_for_both: tuple[str, ...]
+    root_selected: tuple[RunRootVerdict, ...] = ()
+    root_protected: tuple[RunRootVerdict, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,15 +92,21 @@ class WorkspaceCleanupExecution:
     receipt: Mapping[str, Any]
 
 
-_INERT_REASONS = frozenset({
-    "worktree_missing", "worktree_gone", "already_reclaimed", "meta_missing",
-})
+_INERT_REASONS = frozenset(
+    {
+        "worktree_missing",
+        "worktree_gone",
+        "already_reclaimed",
+        "meta_missing",
+    }
+)
 
 
 def select_workspace_cleanup(
     runs_dir: Path | str,
     *,
     now: datetime | None = None,
+    older_than: timedelta = timedelta(days=30),
 ) -> WorkspaceCleanupPlan:
     """Discover retained worktrees and return one selection plan.
 
@@ -101,31 +120,21 @@ def select_workspace_cleanup(
     snapshots = _discover(root)
     individual = _evaluate_snapshots(snapshots, root, instant)
 
-    # A cross root is actionable only after every declared child checkout was
-    # selected.  This does not make a root itself a deletion instruction; it is
-    # merely the guarded eligibility signal consumed by the later both tier.
-    by_root: dict[str, list[WorkspaceCleanupVerdict]] = {}
-    for verdict in individual:
-        # A cross parent normally owns no checkout itself.  Its ``both``
-        # eligibility is derived from the explicitly declared child records,
-        # while a mono root remains its own physical-worktree record.
-        if (
-            verdict.snapshot.run_id == verdict.snapshot.root_run_id
-            and verdict.snapshot.meta is not None
-            and _declared_aliases(verdict.snapshot.meta)
-        ):
-            continue
-        by_root.setdefault(verdict.snapshot.root_run_id, []).append(verdict)
-    both = tuple(sorted(
-        root_id for root_id, verdicts in by_root.items()
-        if verdicts and all(v.selected for v in verdicts)
-    ))
     selected = tuple(v for v in individual if v.selected)
     inert = tuple(v for v in individual if not v.selected and v.reason in _INERT_REASONS)
-    protected = tuple(
-        v for v in individual if not v.selected and v.reason not in _INERT_REASONS
+    protected = tuple(v for v in individual if not v.selected and v.reason not in _INERT_REASONS)
+    roots = _evaluate_roots(root, snapshots, individual, instant, older_than)
+    root_selected = tuple(v for v in roots if v.selected)
+    root_protected = tuple(v for v in roots if not v.selected)
+    return WorkspaceCleanupPlan(
+        root,
+        selected,
+        protected,
+        inert,
+        tuple(v.facts.root_id for v in root_selected),
+        root_selected,
+        root_protected,
     )
-    return WorkspaceCleanupPlan(root, selected, protected, inert, both)
 
 
 def execute_workspace_cleanup(
@@ -134,6 +143,7 @@ def execute_workspace_cleanup(
     tier: CleanupTier = "worktrees",
     disposition: CleanupDisposition = "archive",
     now: datetime | None = None,
+    older_than: timedelta = timedelta(days=30),
     registration_checker: RegistrationChecker | None = None,
     archive_root: Path | None = None,
 ) -> WorkspaceCleanupExecution:
@@ -150,7 +160,7 @@ def execute_workspace_cleanup(
     root = Path(runs_dir)
     instant = _utc_now(now)
     checker = registration_checker or _registered
-    plan = select_workspace_cleanup(root, now=instant)
+    plan = select_workspace_cleanup(root, now=instant, older_than=older_than)
     receipt_path = root.parent / "cleanup_receipts" / f"cleanup-{uuid.uuid4().hex}.json"
     receipt: dict[str, Any] = {
         "schema_version": 1,
@@ -162,6 +172,8 @@ def execute_workspace_cleanup(
         "status": "running",
         "selected": [_verdict_payload(v) for v in plan.selected],
         "protected": [_verdict_payload(v) for v in plan.protected],
+        "root_selected": [_root_verdict_payload(v) for v in plan.root_selected],
+        "root_protected": [_root_verdict_payload(v) for v in plan.root_protected],
         "inert": len(plan.inert),
         "results": [],
         "operations": [],
@@ -173,7 +185,7 @@ def execute_workspace_cleanup(
     _write_atomic(receipt_path, receipt)  # durable boundary before mutation
 
     groups = _selected_groups(plan.selected)
-    succeeded_roots: set[str] = set()
+    succeeded_groups: set[Path] = set()
     failed_roots: set[str] = set()
     for physical, verdicts in groups.items():
         # State can change after reporting. Re-evaluate this physical group's
@@ -182,20 +194,29 @@ def execute_workspace_cleanup(
         # every run or invoking git for unrelated checkouts.
         fresh_verdicts = _reverify_group(verdicts, root, instant)
         if fresh_verdicts is None:
-            receipt["protected"].append({
-                "path": str(physical), "reason": "changed_before_execution",
-                "detail": "selection predicate no longer permits reclamation",
-            })
+            receipt["protected"].append(
+                {
+                    "path": str(physical),
+                    "reason": "changed_before_execution",
+                    "detail": "selection predicate no longer permits reclamation",
+                }
+            )
             failed_roots.update(v.snapshot.root_run_id for v in verdicts)
             _write_atomic(receipt_path, receipt)
             continue
         result = _reclaim_group(
-            physical, fresh_verdicts, root, disposition, receipt_path, receipt,
-            archive_root, checker,
+            physical,
+            fresh_verdicts,
+            root,
+            disposition,
+            receipt_path,
+            receipt,
+            archive_root,
+            checker,
         )
         receipt["results"].append(result)
         if result["ok"]:
-            succeeded_roots.update(v.snapshot.root_run_id for v in verdicts)
+            succeeded_groups.add(physical)
             if disposition == "archive":
                 receipt["bytes_archived"] += result["bytes"]
             else:
@@ -206,11 +227,43 @@ def execute_workspace_cleanup(
         _write_atomic(receipt_path, receipt)
 
     if tier == "both":
-        for root_id in plan.root_run_ids_for_both:
-            if root_id in failed_roots or root_id not in succeeded_roots:
+        for planned_root in plan.root_selected:
+            root_id = planned_root.facts.root_id
+            dependencies = {_canonical(path) for path in planned_root.facts.dependency_paths}
+            if root_id in failed_roots or not dependencies.issubset(succeeded_groups):
+                receipt["root_protected"].append(
+                    {
+                        "root_run_id": root_id,
+                        "reason": "checkout_group_failed",
+                        "detail": "a required checkout group was not reclaimed successfully",
+                    }
+                )
+                _write_atomic(receipt_path, receipt)
+                continue
+            current = _reverify_root(planned_root, root, instant, older_than)
+            # A successfully reclaimed group is now represented as inert
+            # (``already_reclaimed``), so the refreshed dependency set may
+            # shrink. New selected dependencies, however, prove the root's
+            # checkout references changed and must stop root removal.
+            if current is None or not {
+                _canonical(path) for path in current.facts.dependency_paths
+            }.issubset(dependencies):
+                receipt["root_protected"].append(
+                    {
+                        "root_run_id": root_id,
+                        "reason": "changed_before_execution",
+                        "detail": "root predicate or checkout dependencies changed before removal",
+                    }
+                )
+                _write_atomic(receipt_path, receipt)
                 continue
             root_result = _reclaim_run_root(
-                root / root_id, root.parent, disposition, receipt_path, receipt, archive_root,
+                root / root_id,
+                root.parent,
+                disposition,
+                receipt_path,
+                receipt,
+                archive_root,
             )
             receipt["results"].append(root_result)
             if root_result["ok"]:
@@ -231,41 +284,72 @@ def _discover(runs_dir: Path) -> list[WorkspaceCleanupSnapshot]:
     try:
         roots = sorted(path for path in runs_dir.iterdir() if path.is_dir())
     except OSError:
-        return [WorkspaceCleanupSnapshot(
-            "<runs-dir>", runs_dir, runs_dir / "meta.json", None, None,
-            "<runs-dir>", None,
-        )]
+        return [
+            WorkspaceCleanupSnapshot(
+                "<runs-dir>",
+                runs_dir,
+                runs_dir / "meta.json",
+                None,
+                None,
+                "<runs-dir>",
+                None,
+            )
+        ]
     snapshots: list[WorkspaceCleanupSnapshot] = []
     for run_dir in roots:
-        meta = _read_object(run_dir / "meta.json")
-        root_id = run_dir.name
-        snapshots.append(_snapshot(root_id, run_dir, meta, root_id))
-        if meta is None:
-            continue
-        for alias in _declared_aliases(meta):
-            child_dir = run_dir / alias
-            # Direct child ownership forbids aliases such as ../other-run.
-            if child_dir.parent != run_dir or not child_dir.is_dir():
-                snapshots.append(WorkspaceCleanupSnapshot(
-                    alias, child_dir, child_dir / "meta.json", None, None,
-                    root_id, None,
-                ))
-                embedded = _embedded_child(meta, alias)
-                if embedded is not None:
-                    snapshots.append(_snapshot(
-                        alias, child_dir, embedded, root_id, meta_path=run_dir / "meta.json",
-                    ))
-                continue
-            child_meta = _read_object(child_dir / "meta.json")
-            snapshots.append(_snapshot(alias, child_dir, child_meta, root_id))
+        snapshots.extend(_discover_root(run_dir, run_dir.name))
+    return snapshots
+
+
+def _discover_root(run_dir: Path, root_id: str) -> list[WorkspaceCleanupSnapshot]:
+    """Read one root and its declared children for narrow root revalidation."""
+    meta = _read_object(run_dir / "meta.json")
+    snapshots = [_snapshot(root_id, run_dir, meta, root_id)]
+    if meta is None:
+        return snapshots
+    for alias in _declared_aliases(meta):
+        child_dir = run_dir / alias
+        # Direct child ownership forbids aliases such as ../other-run.
+        if child_dir.parent != run_dir or not child_dir.is_dir():
+            snapshots.append(
+                WorkspaceCleanupSnapshot(
+                    alias,
+                    child_dir,
+                    child_dir / "meta.json",
+                    None,
+                    None,
+                    root_id,
+                    None,
+                )
+            )
             embedded = _embedded_child(meta, alias)
             if embedded is not None:
-                # The embedded session is a separate durable reference.  It
-                # cannot overwrite the child file: disagreement protects the
-                # physical checkout through the normal shared-path grouping.
-                snapshots.append(_snapshot(
-                    alias, child_dir, embedded, root_id, meta_path=run_dir / "meta.json",
-                ))
+                snapshots.append(
+                    _snapshot(
+                        alias,
+                        child_dir,
+                        embedded,
+                        root_id,
+                        meta_path=run_dir / "meta.json",
+                    )
+                )
+            continue
+        child_meta = _read_object(child_dir / "meta.json")
+        snapshots.append(_snapshot(alias, child_dir, child_meta, root_id))
+        embedded = _embedded_child(meta, alias)
+        if embedded is not None:
+            # The embedded session is a separate durable reference.  It
+            # cannot overwrite the child file: disagreement protects the
+            # physical checkout through the normal shared-path grouping.
+            snapshots.append(
+                _snapshot(
+                    alias,
+                    child_dir,
+                    embedded,
+                    root_id,
+                    meta_path=run_dir / "meta.json",
+                )
+            )
     return snapshots
 
 
@@ -285,7 +369,11 @@ def _evaluate_snapshots(
     }
     for index, verdict in enumerate(individual):
         parent_guard = parent_guards.get(verdict.snapshot.root_run_id)
-        if parent_guard is not None and verdict.snapshot.run_id != verdict.snapshot.root_run_id:
+        if (
+            parent_guard is not None
+            and verdict.snapshot.run_id != verdict.snapshot.root_run_id
+            and verdict.reason not in _INERT_REASONS
+        ):
             individual[index] = _protected(verdict.snapshot, *parent_guard)
 
     by_checkout: dict[Path, list[int]] = {}
@@ -302,10 +390,154 @@ def _evaluate_snapshots(
                 if individual[index].selected:
                     old = individual[index]
                     individual[index] = WorkspaceCleanupVerdict(
-                        old.snapshot, False, "shared_checkout_protected",
+                        old.snapshot,
+                        False,
+                        "shared_checkout_protected",
                         "another run still protects this shared physical checkout",
                     )
     return individual
+
+
+def _evaluate_roots(
+    runs_dir: Path,
+    snapshots: list[WorkspaceCleanupSnapshot],
+    individual: list[WorkspaceCleanupVerdict],
+    now: datetime,
+    older_than: timedelta,
+) -> list[RunRootVerdict]:
+    """Project checkout facts into the independent run-root predicate."""
+    root_snapshots = {
+        snapshot.root_run_id: snapshot
+        for snapshot in snapshots
+        if snapshot.run_id == snapshot.root_run_id
+    }
+    by_root: dict[str, list[WorkspaceCleanupVerdict]] = {}
+    for verdict in individual:
+        by_root.setdefault(verdict.snapshot.root_run_id, []).append(verdict)
+    verdicts: list[RunRootVerdict] = []
+    for root_id, snapshot in sorted(root_snapshots.items()):
+        if snapshot.run_dir.parent != runs_dir:
+            continue
+        meta = snapshot.meta
+        worktree = meta.get("worktree") if isinstance(meta, Mapping) else None
+        retention = worktree.get("retention_until") if isinstance(worktree, Mapping) else None
+        try:
+            status = merged_status(dict(meta), snapshot.run_dir) if meta is not None else None
+        except Exception:
+            status = None
+        checkpoint = _read_object(snapshot.run_dir / "cross_checkpoint.json")
+        active_handoff = _active_handoff(meta) if isinstance(meta, Mapping) else False
+        checkpoint_handoff = _checkpoint_only_handoff(checkpoint, status, active_handoff)
+        active_gate = bool(
+            (
+                isinstance(meta, Mapping)
+                and isinstance(meta.get("pending_gate"), Mapping)
+                and meta["pending_gate"]
+            )
+            or (checkpoint and checkpoint.get("pending_gate"))
+        )
+        entries = by_root.get(root_id, [])
+        if isinstance(meta, Mapping) and _declared_aliases(meta):
+            # A cross parent supplies lifecycle state; its declared children
+            # own the physical checkout dependencies.
+            entries = [entry for entry in entries if entry.snapshot.run_id != root_id]
+        blocker = next(
+            (
+                entry.reason
+                for entry in entries
+                if not entry.selected and entry.reason not in _INERT_REASONS
+            ),
+            None,
+        )
+        dependencies = tuple(
+            sorted(
+                {
+                    _canonical(entry.snapshot.worktree_path)
+                    for entry in entries
+                    if entry.selected and entry.snapshot.worktree_path is not None
+                },
+                key=str,
+            )
+        )
+        facts = RunRootFacts(
+            root_id=root_id,
+            run_dir=snapshot.run_dir,
+            meta=meta,
+            meta_exists=snapshot.meta_path.exists(),
+            status=status,
+            retention_until=retention,
+            active_handoff=active_handoff,
+            checkpoint_handoff=checkpoint_handoff,
+            active_gate=active_gate,
+            path_safe=_safe_run_root(snapshot.run_dir, runs_dir),
+            nested_checkout_unidentified=_has_unidentified_nested_checkout(
+                snapshot.run_dir, entries
+            ),
+            checkout_blocker=blocker,
+            dependency_paths=dependencies,
+        )
+        verdicts.append(evaluate_run_root(facts, now=now, older_than=older_than))
+    return verdicts
+
+
+def _checkpoint_only_handoff(
+    checkpoint: Mapping[str, Any] | None, status: str | None, active_handoff: bool
+) -> bool:
+    """Keep only checkpoint-only handoffs blocking; canonical pauses expire."""
+    if not checkpoint or not checkpoint.get("phase_handoff_pending"):
+        return False
+    return not (status == PAUSE_STATUS or (status == INTERRUPTED_STATUS and active_handoff))
+
+
+def _has_unidentified_nested_checkout(
+    run_dir: Path, entries: list[WorkspaceCleanupVerdict]
+) -> bool:
+    """Fail closed if a root contains a checkout outside its known safe facts."""
+    known = {
+        _canonical(entry.snapshot.worktree_path)
+        for entry in entries
+        if entry.snapshot.worktree_path is not None
+        and (entry.selected or entry.reason in _INERT_REASONS)
+    }
+    legacy_container = run_dir / "worktrees"
+    try:
+        children = tuple(legacy_container.iterdir()) if legacy_container.is_dir() else ()
+        if children and not all(_contains_known_checkout(child, known) for child in children):
+            return True
+        for directory, dirnames, filenames in os.walk(run_dir, followlinks=False):
+            if ".git" not in dirnames and ".git" not in filenames:
+                continue
+            checkout = _canonical(Path(directory))
+            if not any(_is_within(checkout, path) for path in known):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def _contains_known_checkout(path: Path, known: set[Path]) -> bool:
+    candidate = _canonical(path)
+    return any(_is_within(checkout, candidate) for checkout in known)
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _safe_run_root(run_dir: Path, runs_dir: Path) -> bool:
+    """A root must be an ordinary direct child, never a symlink or traversal."""
+    try:
+        return (
+            not run_dir.is_symlink()
+            and run_dir.parent.resolve(strict=True) == runs_dir.resolve(strict=True)
+            and run_dir.resolve(strict=True).parent == runs_dir.resolve(strict=True)
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _cross_parent_protection(
@@ -354,8 +586,7 @@ def _reverify_group(
         return None  # a reference now points elsewhere; leave this checkout alone
     for root_id in {snapshot.root_run_id for snapshot in refreshed}:
         is_cross_child = any(
-            snapshot.root_run_id == root_id and snapshot.run_id != root_id
-            for snapshot in refreshed
+            snapshot.root_run_id == root_id and snapshot.run_id != root_id for snapshot in refreshed
         )
         if is_cross_child:
             root_dir = runs_dir / root_id
@@ -371,6 +602,20 @@ def _reverify_group(
     return fresh
 
 
+def _reverify_root(
+    planned: RunRootVerdict,
+    runs_dir: Path,
+    now: datetime,
+    older_than: timedelta,
+) -> RunRootVerdict | None:
+    """Re-read one root and its declared children without rescanning the workspace."""
+    root_id = planned.facts.root_id
+    snapshots = _discover_root(runs_dir / root_id, root_id)
+    individual = _evaluate_snapshots(snapshots, runs_dir, now)
+    roots = _evaluate_roots(runs_dir, snapshots, individual, now, older_than)
+    return next((verdict for verdict in roots if verdict.selected and verdict.facts.root_id == root_id), None)
+
+
 def _refresh_snapshot(snapshot: WorkspaceCleanupSnapshot) -> WorkspaceCleanupSnapshot:
     """Re-read a snapshot from its durable location without scanning siblings."""
     durable_meta = _read_object(snapshot.meta_path)
@@ -378,7 +623,10 @@ def _refresh_snapshot(snapshot: WorkspaceCleanupSnapshot) -> WorkspaceCleanupSna
     if snapshot.meta_path != snapshot.run_dir / "meta.json":
         meta = _embedded_child(durable_meta, snapshot.run_id) if durable_meta is not None else None
     return _snapshot(
-        snapshot.run_id, snapshot.run_dir, meta, snapshot.root_run_id,
+        snapshot.run_id,
+        snapshot.run_dir,
+        meta,
+        snapshot.root_run_id,
         meta_path=snapshot.meta_path,
     )
 
@@ -395,14 +643,20 @@ def _snapshot(
     path = worktree.get("path") if isinstance(worktree, Mapping) else None
     source = worktree.get("source_repo_path") if isinstance(worktree, Mapping) else None
     return WorkspaceCleanupSnapshot(
-        run_id, run_dir, meta_path or run_dir / "meta.json",
+        run_id,
+        run_dir,
+        meta_path or run_dir / "meta.json",
         Path(path) if isinstance(path, str) and path else None,
-        meta, root_id, Path(source) if isinstance(source, str) and source else None,
+        meta,
+        root_id,
+        Path(source) if isinstance(source, str) and source else None,
     )
 
 
 def _individual_verdict(
-    snapshot: WorkspaceCleanupSnapshot, runs_dir: Path, now: datetime,
+    snapshot: WorkspaceCleanupSnapshot,
+    runs_dir: Path,
+    now: datetime,
 ) -> WorkspaceCleanupVerdict:
     meta = snapshot.meta
     if meta is None:
@@ -413,34 +667,56 @@ def _individual_verdict(
         return _protected(snapshot, "meta_unreadable", "meta.json is unreadable or malformed")
     worktree = meta.get("worktree")
     if not isinstance(worktree, Mapping):
-        return _protected(snapshot, "worktree_missing", "run has no readable retained worktree record")
+        return _protected(
+            snapshot, "worktree_missing", "run has no readable retained worktree record"
+        )
     if is_worktree_reclaimed(worktree):
-        return _protected(snapshot, "already_reclaimed", "checkout was reclaimed; recorded path is historical")
+        return _protected(
+            snapshot, "already_reclaimed", "checkout was reclaimed; recorded path is historical"
+        )
     if snapshot.worktree_path is None:
         return _protected(snapshot, "worktree_incomplete", "worktree record has no checkout path")
     if not snapshot.worktree_path.exists():
         return _protected(snapshot, "worktree_gone", "recorded checkout no longer exists on disk")
     if snapshot.source_repo_path is None:
-        return _protected(snapshot, "worktree_incomplete", "worktree record has no source repository path")
+        return _protected(
+            snapshot, "worktree_incomplete", "worktree record has no source repository path"
+        )
     if _active_handoff(meta) or _active_cross_gate(snapshot.run_dir, meta):
-        return _protected(snapshot, "active_handoff_or_gate", "an operator handoff or cross gate remains active")
+        return _protected(
+            snapshot, "active_handoff_or_gate", "an operator handoff or cross gate remains active"
+        )
     try:
         status = merged_status(dict(meta), snapshot.run_dir)
     except Exception:
-        return _protected(snapshot, "status_unknown", "merged lifecycle status could not be determined")
+        return _protected(
+            snapshot, "status_unknown", "merged lifecycle status could not be determined"
+        )
     if not isinstance(status, str) or status not in STOPPED_RETENTION_STATUSES:
-        return _protected(snapshot, "status_not_stopped", "run is live or has an unknown lifecycle status")
+        return _protected(
+            snapshot, "status_not_stopped", "run is live or has an unknown lifecycle status"
+        )
     deadline = _parse_deadline(worktree.get("retention_until"))
     if deadline is None:
-        return _protected(snapshot, "retention_invalid", "retention_until is absent or is not an ISO-8601 UTC timestamp")
+        return _protected(
+            snapshot,
+            "retention_invalid",
+            "retention_until is absent or is not an ISO-8601 UTC timestamp",
+        )
     if deadline > now:
         return _protected(snapshot, "retention_active", "retention deadline has not expired")
     if not _safe_checkout_path(snapshot.worktree_path, runs_dir):
-        return _protected(snapshot, "worktree_path_unsafe", "checkout escapes the resolved runspace or traverses a symlink")
+        return _protected(
+            snapshot,
+            "worktree_path_unsafe",
+            "checkout escapes the resolved runspace or traverses a symlink",
+        )
     at_risk = _work_at_risk(snapshot.worktree_path)
     if at_risk is not None:
         return _protected(snapshot, *at_risk)
-    return WorkspaceCleanupVerdict(snapshot, True, "retention_expired", "stopped run has an expired retained checkout")
+    return WorkspaceCleanupVerdict(
+        snapshot, True, "retention_expired", "stopped run has an expired retained checkout"
+    )
 
 
 def _work_at_risk(path: Path) -> tuple[str, str] | None:
@@ -462,8 +738,10 @@ def _work_at_risk(path: Path) -> tuple[str, str] | None:
         return None
     status = _git(path, "status", "--porcelain")
     if status is None:
-        return None if _repo_is_gone(path) else (
-            "git_unreadable", "checkout has a repository that could not be read"
+        return (
+            None
+            if _repo_is_gone(path)
+            else ("git_unreadable", "checkout has a repository that could not be read")
         )
     if status.strip():
         return "uncommitted_changes", "checkout holds changes that were never committed"
@@ -478,9 +756,14 @@ def _work_at_risk(path: Path) -> tuple[str, str] | None:
 def _git(path: Path, *args: str) -> str | None:
     """Run one read-only git command in ``path``; ``None`` when git cannot answer."""
     import subprocess
+
     try:
         result = subprocess.run(
-            ["git", *args], cwd=path, capture_output=True, text=True, timeout=30,
+            ["git", *args],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -503,6 +786,7 @@ def _repo_is_gone(path: Path) -> bool:
 
 def _registered(project_dir: Path, path: Path) -> bool:
     from pipeline.engine.worktree import registered_worktree_exists
+
     return registered_worktree_exists(project_dir=project_dir, path=path)
 
 
@@ -516,7 +800,9 @@ def _active_cross_gate(run_dir: Path, meta: Mapping[str, Any]) -> bool:
     if isinstance(pending, Mapping) and pending:
         return True
     checkpoint = _read_object(run_dir / "cross_checkpoint.json")
-    return bool(checkpoint and (checkpoint.get("phase_handoff_pending") or checkpoint.get("pending_gate")))
+    return bool(
+        checkpoint and (checkpoint.get("phase_handoff_pending") or checkpoint.get("pending_gate"))
+    )
 
 
 def _parse_deadline(value: Any) -> datetime | None:
@@ -582,7 +868,9 @@ def _declared_aliases(meta: Mapping[str, Any]) -> tuple[str, ...]:
         meta.get("phases", {}).get("projects") if isinstance(meta.get("phases"), Mapping) else None,
     ):
         if isinstance(projects, Mapping):
-            names.extend(key for key in projects if isinstance(key, str) and key and Path(key).name == key)
+            names.extend(
+                key for key in projects if isinstance(key, str) and key and Path(key).name == key
+            )
     return tuple(dict.fromkeys(names))
 
 
@@ -615,7 +903,9 @@ def _canonical(path: Path) -> Path:
         return path.absolute()
 
 
-def _protected(snapshot: WorkspaceCleanupSnapshot, reason: str, detail: str) -> WorkspaceCleanupVerdict:
+def _protected(
+    snapshot: WorkspaceCleanupSnapshot, reason: str, detail: str
+) -> WorkspaceCleanupVerdict:
     return WorkspaceCleanupVerdict(snapshot, False, reason, detail)
 
 
@@ -649,7 +939,11 @@ def _reclaim_group(
         archive_path = (
             archive_root / receipt_path.stem / "worktrees" / path.parent.name
             if archive_root is not None
-            else runs_dir.parent / "cleanup_archive" / receipt_path.stem / "worktrees" / path.parent.name
+            else runs_dir.parent
+            / "cleanup_archive"
+            / receipt_path.stem
+            / "worktrees"
+            / path.parent.name
         )
         try:
             _archive_snapshot(path, archive_path)
@@ -661,6 +955,7 @@ def _reclaim_group(
     # is left behind; an unregistered directory has no registration to damage,
     # so a plain removal is both correct and the only thing that can work.
     from pipeline.engine.worktree import reclaim_registered_worktree
+
     try:
         registered = checker(source, path)
     except Exception:
@@ -672,12 +967,21 @@ def _reclaim_group(
         removal = _remove_unregistered_checkout(path)
         operation = "unregistered_checkout_remove"
     _operation(
-        receipt, receipt_path, operation, path, None,
-        removal.ok, removal.error,
+        receipt,
+        receipt_path,
+        operation,
+        path,
+        None,
+        removal.ok,
+        removal.error,
     )
     if not removal.ok:
         return _result(
-            path, False, size, disposition, archive_path,
+            path,
+            False,
+            size,
+            disposition,
+            archive_path,
             removal.error or "git worktree removal failed",
         )
     marker = {
@@ -691,7 +995,9 @@ def _reclaim_group(
     except OSError as exc:
         # The checkout is already safely deregistered.  Leave an explicit
         # partial receipt rather than attempting a dependent root operation.
-        return _result(path, False, size, disposition, archive_path, f"reclaimed marker failed: {exc}")
+        return _result(
+            path, False, size, disposition, archive_path, f"reclaimed marker failed: {exc}"
+        )
     return _result(path, True, size, disposition, archive_path, None)
 
 
@@ -700,6 +1006,7 @@ def _remove_unregistered_checkout(path: Path):  # noqa: ANN201 — mirrors GitOp
     import shutil
 
     from pipeline.engine.worktree import GitOpResult
+
     try:
         shutil.rmtree(path)
     except OSError as exc:
@@ -708,8 +1015,12 @@ def _remove_unregistered_checkout(path: Path):  # noqa: ANN201 — mirrors GitOp
 
 
 def _reclaim_run_root(
-    run_dir: Path, runspace: Path, disposition: CleanupDisposition, receipt_path: Path,
-    receipt: dict[str, Any], archive_root: Path | None,
+    run_dir: Path,
+    runspace: Path,
+    disposition: CleanupDisposition,
+    receipt_path: Path,
+    receipt: dict[str, Any],
+    archive_root: Path | None,
 ) -> dict[str, Any]:
     """Archive/delete a root only after its worktree groups have succeeded."""
     if not run_dir.is_dir():
@@ -725,7 +1036,9 @@ def _reclaim_run_root(
         try:
             _archive_snapshot(run_dir, archive_path)
         except OSError as exc:
-            return _result(run_dir, False, size, disposition, archive_path, f"run archive failed: {exc}")
+            return _result(
+                run_dir, False, size, disposition, archive_path, f"run archive failed: {exc}"
+            )
         _operation(receipt, receipt_path, "run_archive_snapshot", run_dir, archive_path, True, None)
     # This is deliberately a run-root operation, never a worktree-path
     # operation.  Registered checkouts above only go through worktree.py.
@@ -733,7 +1046,9 @@ def _reclaim_run_root(
         shutil.rmtree(run_dir)
     except OSError as exc:
         _operation(receipt, receipt_path, "run_root_remove", run_dir, None, False, str(exc))
-        return _result(run_dir, False, size, disposition, archive_path, f"run root removal failed: {exc}")
+        return _result(
+            run_dir, False, size, disposition, archive_path, f"run root removal failed: {exc}"
+        )
     _operation(receipt, receipt_path, "run_root_remove", run_dir, None, True, None)
     return _result(run_dir, True, size, disposition, archive_path, None)
 
@@ -750,7 +1065,9 @@ def _archive_snapshot(source: Path, destination: Path) -> None:
 
 
 def _mark_reclaimed(
-    verdicts: list[WorkspaceCleanupVerdict], path: Path, marker: Mapping[str, Any],
+    verdicts: list[WorkspaceCleanupVerdict],
+    path: Path,
+    marker: Mapping[str, Any],
 ) -> None:
     """Atomically stamp every retained meta file that references ``path``."""
     for meta_path in sorted({v.snapshot.meta_path for v in verdicts}):
@@ -834,13 +1151,27 @@ def _verdict_payload(verdict: WorkspaceCleanupVerdict) -> dict[str, Any]:
     }
 
 
+def _root_verdict_payload(verdict: RunRootVerdict) -> dict[str, Any]:
+    return {
+        "root_run_id": verdict.facts.root_id,
+        "path": str(verdict.facts.run_dir),
+        "reason": verdict.reason,
+        "detail": verdict.detail,
+        "dependency_paths": [str(path) for path in verdict.facts.dependency_paths],
+    }
+
+
 def _selected_bytes(selected: tuple[WorkspaceCleanupVerdict, ...]) -> int:
     return sum(_tree_bytes(path) for path in _selected_groups(selected))
 
 
 def _result(
-    path: Path, ok: bool, size: int, disposition: CleanupDisposition,
-    archive_path: Path | None, error: str | None,
+    path: Path,
+    ok: bool,
+    size: int,
+    disposition: CleanupDisposition,
+    archive_path: Path | None,
+    error: str | None,
 ) -> dict[str, Any]:
     return {
         "kind": "worktree" if path.name == "checkout" else "run_root",
@@ -854,14 +1185,21 @@ def _result(
 
 
 def _operation(
-    receipt: dict[str, Any], receipt_path: Path, kind: str, path: Path,
-    archive_path: Path | None, ok: bool, error: str | None,
+    receipt: dict[str, Any],
+    receipt_path: Path,
+    kind: str,
+    path: Path,
+    archive_path: Path | None,
+    ok: bool,
+    error: str | None,
 ) -> None:
-    receipt["operations"].append({
-        "kind": kind,
-        "path": str(path),
-        "archive_path": str(archive_path) if archive_path else None,
-        "ok": ok,
-        "error": error,
-    })
+    receipt["operations"].append(
+        {
+            "kind": kind,
+            "path": str(path),
+            "archive_path": str(archive_path) if archive_path else None,
+            "ok": ok,
+            "error": error,
+        }
+    )
     _write_atomic(receipt_path, receipt)

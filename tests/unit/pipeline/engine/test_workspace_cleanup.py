@@ -18,8 +18,14 @@ NOW = datetime(2026, 7, 29, tzinfo=UTC)
 
 
 def _run(
-    tmp_path: Path, run_id: str, *, status: str = "done", deadline: str = "2026-07-28T00:00:00Z",
-    handoff: bool = False, path: Path | None = None, projects: dict | None = None,
+    tmp_path: Path,
+    run_id: str,
+    *,
+    status: str = "done",
+    deadline: str = "2026-07-28T00:00:00Z",
+    handoff: bool = False,
+    path: Path | None = None,
+    projects: dict | None = None,
 ) -> tuple[Path, Path]:
     runs = tmp_path / "runspace" / "runs"
     run_dir = runs / run_id
@@ -29,7 +35,8 @@ def _run(
     meta = {
         "status": status,
         "worktree": {
-            "path": str(checkout), "source_repo_path": str(tmp_path / "repo"),
+            "path": str(checkout),
+            "source_repo_path": str(tmp_path / "repo"),
             "retention_until": deadline,
         },
     }
@@ -57,12 +64,15 @@ def _commit_all(checkout: Path, message: str) -> None:
     _git(checkout, "commit", "-q", "-m", message)
 
 
-@pytest.mark.parametrize(("status", "handoff", "deadline", "selected", "reason"), [
-    ("done", False, "2026-07-28T00:00:00Z", True, "retention_expired"),
-    ("halted", False, "2026-07-30T00:00:00Z", False, "retention_active"),
-    ("running", False, "2026-07-28T00:00:00Z", False, "status_not_stopped"),
-    ("done", True, "2026-07-28T00:00:00Z", False, "active_handoff_or_gate"),
-])
+@pytest.mark.parametrize(
+    ("status", "handoff", "deadline", "selected", "reason"),
+    [
+        ("done", False, "2026-07-28T00:00:00Z", True, "retention_expired"),
+        ("halted", False, "2026-07-30T00:00:00Z", False, "retention_active"),
+        ("running", False, "2026-07-28T00:00:00Z", False, "status_not_stopped"),
+        ("done", True, "2026-07-28T00:00:00Z", False, "active_handoff_or_gate"),
+    ],
+)
 def test_status_pause_and_deadline_matrix(tmp_path, status, handoff, deadline, selected, reason):
     runs, _ = _run(tmp_path, "one", status=status, handoff=handoff, deadline=deadline)
     plan = select_workspace_cleanup(runs, now=NOW)
@@ -179,29 +189,50 @@ def test_cross_root_requires_every_declared_child(tmp_path):
         checkout = tmp_path / "runspace" / "worktrees" / f"wt_{alias}" / "checkout"
         checkout.mkdir(parents=True)
         (parent / alias).mkdir()
-        (parent / alias / "meta.json").write_text(json.dumps({"status": status, "worktree": {
-            "path": str(checkout), "source_repo_path": str(tmp_path / "repo"),
-            "retention_until": "2026-07-28T00:00:00Z",
-        }}))
+        (parent / alias / "meta.json").write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "worktree": {
+                        "path": str(checkout),
+                        "source_repo_path": str(tmp_path / "repo"),
+                        "retention_until": "2026-07-28T00:00:00Z",
+                    },
+                }
+            )
+        )
     plan = select_workspace_cleanup(runs, now=NOW)
     assert "cross" not in plan.root_run_ids_for_both
 
 
-@pytest.mark.parametrize(("status", "handoff", "reason"), [
-    ("running", False, "parent_not_stopped"),
-    ("done", True, "parent_active_handoff_or_gate"),
-])
+@pytest.mark.parametrize(
+    ("status", "handoff", "reason"),
+    [
+        ("running", False, "parent_not_stopped"),
+        ("done", True, "parent_active_handoff_or_gate"),
+    ],
+)
 def test_live_or_paused_cross_parent_protects_all_children(tmp_path, status, handoff, reason):
-    runs, _ = _run(tmp_path, "cross", status=status, handoff=handoff, projects={"a": "/a", "b": "/b"})
+    runs, _ = _run(
+        tmp_path, "cross", status=status, handoff=handoff, projects={"a": "/a", "b": "/b"}
+    )
     parent = runs / "cross"
     for alias in ("a", "b"):
         checkout = tmp_path / "runspace" / "worktrees" / f"wt_{alias}" / "checkout"
         checkout.mkdir(parents=True)
         (parent / alias).mkdir()
-        (parent / alias / "meta.json").write_text(json.dumps({"status": "done", "worktree": {
-            "path": str(checkout), "source_repo_path": str(tmp_path / "repo"),
-            "retention_until": "2026-07-28T00:00:00Z",
-        }}))
+        (parent / alias / "meta.json").write_text(
+            json.dumps(
+                {
+                    "status": "done",
+                    "worktree": {
+                        "path": str(checkout),
+                        "source_repo_path": str(tmp_path / "repo"),
+                        "retention_until": "2026-07-28T00:00:00Z",
+                    },
+                }
+            )
+        )
     plan = select_workspace_cleanup(runs, now=NOW)
     child_verdicts = [
         verdict for verdict in plan.protected if verdict.snapshot.run_id in {"a", "b"}
@@ -271,7 +302,10 @@ def test_archive_failure_does_not_start_worktree_removal(tmp_path, monkeypatch):
         return GitOpResult(ok=True)
 
     monkeypatch.setattr("pipeline.engine.worktree.reclaim_registered_worktree", removal)
-    monkeypatch.setattr("pipeline.engine.workspace_cleanup.shutil.copytree", lambda *_a, **_k: (_ for _ in ()).throw(OSError("no space")))
+    monkeypatch.setattr(
+        "pipeline.engine.workspace_cleanup.shutil.copytree",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("no space")),
+    )
     execution = execute_workspace_cleanup(runs, now=NOW, registration_checker=lambda *_: True)
     assert not called
     assert checkout.exists()
@@ -308,7 +342,8 @@ def test_unregistered_checkout_is_removed_without_touching_git(tmp_path, monkeyp
     assert not checkout.exists()
     assert execution.receipt["errors"] == []
     assert [op["kind"] for op in execution.receipt["operations"]] == [
-        "archive_snapshot", "unregistered_checkout_remove",
+        "archive_snapshot",
+        "unregistered_checkout_remove",
     ]
 
 
@@ -330,11 +365,14 @@ def test_archive_worktree_tier_marks_embedded_cross_meta(tmp_path, monkeypatch):
     checkout = tmp_path / "runspace" / "worktrees" / "wt_a" / "checkout"
     checkout.mkdir(parents=True)
     child_worktree = {
-        "path": str(checkout), "source_repo_path": str(tmp_path / "repo"),
+        "path": str(checkout),
+        "source_repo_path": str(tmp_path / "repo"),
         "retention_until": "2026-07-28T00:00:00Z",
     }
     (parent / "a").mkdir()
-    (parent / "a" / "meta.json").write_text(json.dumps({"status": "done", "worktree": child_worktree}))
+    (parent / "a" / "meta.json").write_text(
+        json.dumps({"status": "done", "worktree": child_worktree})
+    )
     parent_meta = json.loads((parent / "meta.json").read_text())
     parent_meta["phases"] = {"projects": {"a": {"status": "done", "worktree": child_worktree}}}
     (parent / "meta.json").write_text(json.dumps(parent_meta))
@@ -370,8 +408,11 @@ def test_execution_reverifies_groups_without_rescanning_workspace(tmp_path, monk
 
 
 @pytest.mark.parametrize("disposition", ["archive", "delete"])
-def test_both_tier_receipt_has_counters_and_removes_root_after_worktree(tmp_path, monkeypatch, disposition):
+def test_both_tier_receipt_has_counters_and_removes_root_after_worktree(
+    tmp_path, monkeypatch, disposition
+):
     runs, checkout = _run(tmp_path, "one")
+    report = select_workspace_cleanup(runs, now=NOW)
     order: list[str] = []
 
     def removal(*, project_dir, path):
@@ -380,14 +421,220 @@ def test_both_tier_receipt_has_counters_and_removes_root_after_worktree(tmp_path
 
     monkeypatch.setattr("pipeline.engine.worktree.reclaim_registered_worktree", removal)
     execution = execute_workspace_cleanup(
-        runs, tier="both", disposition=disposition, now=NOW,
+        runs,
+        tier="both",
+        disposition=disposition,
+        now=NOW,
         registration_checker=lambda *_: True,
     )
     assert order == ["worktree"]
     assert not (runs / "one").exists()
     assert execution.receipt_path.exists()
-    assert {"selected", "protected", "inert", "results", "errors", "bytes_selected", "bytes_archived", "bytes_reclaimed"} <= execution.receipt.keys()
-    assert execution.receipt["bytes_archived" if disposition == "archive" else "bytes_reclaimed"] > 0
+    assert {
+        "selected",
+        "protected",
+        "inert",
+        "results",
+        "errors",
+        "bytes_selected",
+        "bytes_archived",
+        "bytes_reclaimed",
+    } <= execution.receipt.keys()
+    assert execution.receipt["root_selected"][0]["root_run_id"] == "one"
+    assert [
+        result["path"] for result in execution.receipt["results"] if result["kind"] == "run_root"
+    ] == [str(runs / root_id) for root_id in report.root_run_ids_for_both]
+    operations = [op["kind"] for op in execution.receipt["operations"]]
+    if disposition == "archive":
+        assert operations[-2:] == ["run_archive_snapshot", "run_root_remove"]
+    else:
+        assert operations[-1:] == ["run_root_remove"]
+    assert (
+        execution.receipt["bytes_archived" if disposition == "archive" else "bytes_reclaimed"] > 0
+    )
+
+
+def test_both_tier_removes_an_aged_inert_root_with_no_checkout(tmp_path):
+    runs = tmp_path / "runspace" / "runs"
+    root = runs / "20260601_000000_no_checkout"
+    root.mkdir(parents=True)
+    (root / "meta.json").write_text(json.dumps({"status": "done"}))
+
+    execution = execute_workspace_cleanup(runs, tier="both", disposition="delete", now=NOW)
+
+    assert not root.exists()
+    assert execution.receipt["root_selected"][0]["dependency_paths"] == []
+    assert [result["kind"] for result in execution.receipt["results"]] == ["run_root"]
+
+
+def test_both_tier_does_not_remove_root_after_a_failed_checkout_group(tmp_path, monkeypatch):
+    runs, _ = _run(tmp_path, "one")
+    monkeypatch.setattr(
+        "pipeline.engine.worktree.reclaim_registered_worktree",
+        lambda **kwargs: GitOpResult(ok=False, error="still registered", path=kwargs["path"]),
+    )
+    execution = execute_workspace_cleanup(
+        runs,
+        tier="both",
+        now=NOW,
+        registration_checker=lambda *_: True,
+    )
+    assert (runs / "one").exists()
+    assert not [result for result in execution.receipt["results"] if result["kind"] == "run_root"]
+
+
+def test_both_tier_revalidates_root_after_checkout_reclamation(tmp_path, monkeypatch):
+    runs, checkout = _run(tmp_path, "one")
+
+    def removal(*, project_dir, path):
+        meta_path = runs / "one" / "meta.json"
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = "running"
+        meta_path.write_text(json.dumps(meta))
+        return GitOpResult(ok=True, path=path)
+
+    monkeypatch.setattr("pipeline.engine.worktree.reclaim_registered_worktree", removal)
+    execution = execute_workspace_cleanup(
+        runs,
+        tier="both",
+        now=NOW,
+        registration_checker=lambda *_: True,
+    )
+
+    assert (runs / "one").exists()
+    assert execution.receipt["root_protected"][-1]["reason"] == "changed_before_execution"
+
+
+def test_root_matrix_projects_real_workspace_facts_and_expires_cross_pause(tmp_path):
+    runs = tmp_path / "runspace" / "runs"
+    no_meta = runs / "20260601_000000_no_meta"
+    no_meta.mkdir(parents=True)
+    no_worktree = runs / "20260601_000001_no_worktree"
+    no_worktree.mkdir()
+    (no_worktree / "meta.json").write_text(json.dumps({"status": "done"}))
+
+    _, gone = _run(tmp_path, "20260601_000002_gone")
+    shutil.rmtree(gone)
+    _, reclaimed = _run(tmp_path, "20260601_000003_reclaimed")
+    reclaimed_meta = json.loads((runs / "20260601_000003_reclaimed" / "meta.json").read_text())
+    reclaimed_meta["worktree"]["reclaimed"] = {"disposition": "archive"}
+    (runs / "20260601_000003_reclaimed" / "meta.json").write_text(json.dumps(reclaimed_meta))
+
+    _, _ = _run(
+        tmp_path,
+        "20260601_000004_cross_pause",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        projects={"a": "/a"},
+    )
+    (runs / "20260601_000004_cross_pause" / "cross_checkpoint.json").write_text(
+        json.dumps({"phase_handoff_pending": True})
+    )
+    cross_pause_meta = json.loads(
+        (runs / "20260601_000004_cross_pause" / "meta.json").read_text()
+    )
+    cross_pause_meta.pop("worktree")
+    (runs / "20260601_000004_cross_pause" / "meta.json").write_text(json.dumps(cross_pause_meta))
+    child = runs / "20260601_000004_cross_pause" / "a"
+    child.mkdir()
+    (child / "meta.json").write_text(
+        json.dumps(
+            {
+                "status": "done",
+                "worktree": {
+                    "path": str(tmp_path / "runspace" / "worktrees" / "old_a" / "checkout"),
+                    "source_repo_path": str(tmp_path / "repo"),
+                    "retention_until": "2026-07-28T00:00:00Z",
+                    "reclaimed": {"disposition": "archive"},
+                },
+            }
+        )
+    )
+    _run(
+        tmp_path,
+        "20260601_000005_young_pause",
+        status="awaiting_phase_handoff",
+        handoff=True,
+        deadline="2026-08-01T00:00:00Z",
+    )
+    _, dirty = _run(tmp_path, "20260601_000006_dirty")
+    _init_repo(dirty)
+    _, unpushed = _run(tmp_path, "20260601_000007_unpushed")
+    _init_repo(unpushed)
+    _commit_all(unpushed, "local only")
+
+    plan = select_workspace_cleanup(runs, now=NOW)
+
+    assert {verdict.facts.root_id for verdict in plan.root_selected} == {
+        "20260601_000000_no_meta",
+        "20260601_000001_no_worktree",
+        "20260601_000002_gone",
+        "20260601_000003_reclaimed",
+        "20260601_000004_cross_pause",
+    }
+    assert {
+        verdict.facts.root_id: verdict.reason for verdict in plan.root_protected
+    } == {
+        "20260601_000005_young_pause": "retention_active",
+        "20260601_000006_dirty": "uncommitted_changes",
+        "20260601_000007_unpushed": "unpushed_commits",
+    }
+    assert next(
+        verdict.reason
+        for verdict in plan.root_selected
+        if verdict.facts.root_id == "20260601_000004_cross_pause"
+    ) == "pause_retention_expired"
+
+
+def test_absent_meta_checkpoint_gate_blocks_legacy_root(tmp_path):
+    runs = tmp_path / "runspace" / "runs"
+    root = runs / "20260601_000000_checkpoint"
+    root.mkdir(parents=True)
+    (root / "cross_checkpoint.json").write_text(json.dumps({"pending_gate": {"id": "gate"}}))
+
+    plan = select_workspace_cleanup(runs, now=NOW)
+
+    assert [(verdict.facts.root_id, verdict.reason) for verdict in plan.root_protected] == [
+        (root.name, "active_handoff_or_gate")
+    ]
+
+
+def test_unidentified_legacy_checkout_blocks_no_meta_root(tmp_path):
+    runs = tmp_path / "runspace" / "runs"
+    root = runs / "20260601_000000_legacy"
+    checkout = root / "worktrees" / "wt_x" / "checkout"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /still-live/worktree\n")
+
+    plan = select_workspace_cleanup(runs, now=NOW)
+
+    assert [(verdict.facts.root_id, verdict.reason) for verdict in plan.root_protected] == [
+        (root.name, "nested_checkout_unidentified")
+    ]
+
+
+def test_both_tier_root_revalidation_does_not_rescan_unrelated_roots(tmp_path, monkeypatch):
+    runs, _ = _run(tmp_path, "one")
+    _run(tmp_path, "two")
+    import pipeline.engine.workspace_cleanup as cleanup
+
+    select = cleanup.select_workspace_cleanup
+    calls = 0
+
+    def counted_select(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return select(*args, **kwargs)
+
+    monkeypatch.setattr(cleanup, "select_workspace_cleanup", counted_select)
+    monkeypatch.setattr(
+        "pipeline.engine.worktree.reclaim_registered_worktree",
+        lambda **kwargs: GitOpResult(ok=True, path=kwargs["path"]),
+    )
+    execute_workspace_cleanup(
+        runs, tier="both", now=NOW, registration_checker=lambda *_: True
+    )
+    assert calls == 1
 
 
 def test_only_the_unregistered_removal_helper_may_delete_a_checkout_tree():
@@ -407,7 +654,8 @@ def test_only_the_unregistered_removal_helper_may_delete_a_checkout_tree():
         if not isinstance(func, ast.FunctionDef) or func.name == allowed:
             continue
         offenders += [
-            node for node in ast.walk(func)
+            node
+            for node in ast.walk(func)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "rmtree"

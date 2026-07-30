@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +21,7 @@ class WorkspaceCleanupCliResult:
     runs_dir: Path
     tier: Literal["report", "worktrees", "both"]
     disposition: Literal["archive", "delete"] | None
+    older_than_days: int
     plan: WorkspaceCleanupPlan
     execution: WorkspaceCleanupExecution | None
 
@@ -30,23 +32,30 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
     worktrees = bool(getattr(args, "reclaim_worktrees", False))
     both = bool(getattr(args, "reclaim_both", False))
     delete = bool(getattr(args, "delete", False))
+    older_than_days = int(getattr(args, "older_than", 30))
+    if older_than_days <= 0:
+        raise ValueError("--older-than must be a positive integer")
+    older_than = timedelta(days=older_than_days)
     if delete and not (worktrees or both):
         raise ValueError("--delete requires --reclaim-worktrees or --reclaim-both")
     tier: Literal["report", "worktrees", "both"] = (
         "both" if both else "worktrees" if worktrees else "report"
     )
     if tier == "report":
-        plan = select_workspace_cleanup(runs_dir)
-        return WorkspaceCleanupCliResult(runs_dir.parent.parent, runs_dir, tier, None, plan, None)
+        plan = select_workspace_cleanup(runs_dir, older_than=older_than)
+        return WorkspaceCleanupCliResult(
+            runs_dir.parent.parent, runs_dir, tier, None, older_than_days, plan, None,
+        )
     disposition: Literal["archive", "delete"] = "delete" if delete else "archive"
     # Keep the selection that the operator requested visible beside the
     # execution receipt.  Re-selecting after mutation would turn reclaimed
     # historical paths into a misleading post-cleanup protection report.
-    plan = select_workspace_cleanup(runs_dir)
+    plan = select_workspace_cleanup(runs_dir, older_than=older_than)
     execution = execute_workspace_cleanup(
         runs_dir,
         tier="both" if tier == "both" else "worktrees",
         disposition=disposition,
+        older_than=older_than,
         archive_root=runs_dir.parent / "cleanup_archive",
     )
     return WorkspaceCleanupCliResult(
@@ -54,6 +63,7 @@ def workspace_cleanup_from_args(args: object) -> WorkspaceCleanupCliResult:
         runs_dir,
         tier,
         disposition,
+        older_than_days,
         plan,
         execution,
     )
@@ -72,12 +82,17 @@ def format_workspace_cleanup(result: WorkspaceCleanupCliResult) -> str:
         f"Runs dir: {result.runs_dir}",
         f"Tier: {result.tier}",
         f"Disposition: {result.disposition or 'report (no changes)'}",
+        f"Run-root cutoff: {result.older_than_days} days",
         f"Reclaimable: {len(plan.selected)}",
         f"Protected: {len(plan.protected)}",
         f"Nothing to reclaim: {len(plan.inert)}",
+        f"Eligible run roots: {len(plan.root_selected)}",
+        f"Protected run roots: {len(plan.root_protected)}",
     ]
     lines += _reason_summary("reclaimable", plan.selected)
     lines += _reason_summary("protected", plan.protected)
+    lines += _reason_summary("eligible run root", plan.root_selected)
+    lines += _reason_summary("protected run root", plan.root_protected)
     if result.execution is not None:
         receipt = result.execution.receipt
         lines.extend([
