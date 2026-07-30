@@ -1079,6 +1079,7 @@
         {
           "default": "None",
           "default_factory": null,
+          "description": "Offset-aware ISO-8601 durable delivery-decision timestamp; published verbatim only when the durable value is aware.",
           "name": "requested_at",
           "type": "str | None"
         }
@@ -3257,6 +3258,7 @@
         {
           "default": "None",
           "default_factory": null,
+          "description": "Offset-aware ISO-8601 timestamp for the latest event; legacy naive event stamps use the machine-local offset and malformed values are None.",
           "name": "last_event_ts",
           "type": "str | None"
         }

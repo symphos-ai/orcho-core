@@ -108,7 +108,16 @@ class RunStatus:
     artefacts: tuple = ()  # tuple[ArtefactRef, ...] — avoids forward-ref order
     total_cost_usd_equivalent: float = 0.0
     last_event_seq: int | None = None
-    last_event_ts: str | None = None
+    last_event_ts: str | None = field(
+        default=None,
+        metadata={
+            "description": (
+                "Offset-aware ISO-8601 timestamp for the latest event; "
+                "legacy naive event stamps use the machine-local offset and "
+                "malformed values are None."
+            ),
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
