@@ -931,7 +931,7 @@ def cmd_workspace_cleanup(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     print(format_workspace_cleanup(result))
-    return 1 if result.execution is not None and result.execution.receipt["status"] == "partial" else 0
+    return 1 if result.receipt is not None and result.receipt.status == "partial" else 0
 
 
 def cmd_verify_overview(args: argparse.Namespace) -> int:
@@ -1925,6 +1925,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_cleanup.add_argument(
         "--delete", action="store_true",
         help="Irreversibly delete selected material; requires a reclaim tier (default is archive).",
+    )
+    p_ws_cleanup.add_argument(
+        "--older-than", type=_positive_int, default=30, metavar="DAYS",
+        help="Run-root fallback retention age in days (default: 30).",
     )
     p_ws_cleanup.add_argument(
         "--workspace", "-w", default=None,

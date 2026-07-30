@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from cli._formatters import format_status
+from core.observability.events import append_event
 from sdk import NoWorkspace, RunNotFound, get_run_metrics, list_history, list_metrics, load_status
 
 
@@ -110,6 +112,21 @@ def test_load_status_degrades_for_missing_or_corrupt_metrics_and_events(runs_roo
     corrupt = load_status("20260620_corrupt_status_inputs", runs_dir=runs_root)
     assert corrupt.total_cost_usd_equivalent == 0.0
     assert (corrupt.last_event_seq, corrupt.last_event_ts) == (None, None)
+
+
+def test_load_status_normalises_timestamp_written_by_event_store(runs_root: Path) -> None:
+    run_id = "20260620_writer_timestamp"
+    run_dir = _write_minimal_run(runs_root, run_id)
+
+    assert append_event(run_dir, "run.start") == 1
+
+    status = load_status(run_id, runs_dir=runs_root)
+    assert status.last_event_seq == 1
+    assert status.last_event_ts is not None
+    event_time = datetime.fromisoformat(status.last_event_ts)
+    age = (datetime.now(UTC) - event_time).total_seconds()
+    assert event_time.utcoffset() is not None
+    assert 0 <= age < 5
 
 
 def test_load_status_invalid_or_unreadable_cost_degrades_to_zero(

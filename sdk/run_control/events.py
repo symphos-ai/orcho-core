@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 
 from core.observability.events import Event as _CoreEvent, tail as _tail
@@ -28,8 +29,26 @@ from sdk.runs import _CWD_DEFAULT, find_run
 __all__ = ["read_run_events", "tail_run_events"]
 
 
+def _normalise_event_timestamp(timestamp: str) -> str | None:
+    """Return a public unambiguous timestamp, or ``None`` when malformed.
+
+    Historical event writers emitted naive local wall-clock timestamps.  Keep
+    their wall-clock components and attach this machine's local UTC offset at
+    read time.  Already-aware values are deliberately returned byte-for-byte:
+    their spelling (including ``Z`` and fractional precision) is durable
+    evidence that must not be rewritten.
+    """
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed.utcoffset() is not None:
+        return timestamp
+    return parsed.astimezone().isoformat()
+
+
 def _last_valid_event_position(events_path: Path, *, block_size: int = 8192) -> tuple[int | None, str | None]:
-    """Return ``(seq, ts)`` from the last well-formed event in a JSONL file.
+    """Return ``(seq, normalised_ts)`` from the last well-formed event.
 
     This deliberately reads backwards in small binary blocks rather than using
     the public event reader: status/liveness callers only need one position and
@@ -62,7 +81,10 @@ def _last_valid_event_position(events_path: Path, *, block_size: int = 8192) -> 
                         continue
                     seq, ts = record.get("seq"), record.get("ts")
                     if isinstance(seq, int) and not isinstance(seq, bool) and isinstance(ts, str) and ts:
-                        return seq, ts
+                        # A valid event position is defined by its sequence.
+                        # Preserve it even when the timestamp cannot become a
+                        # public, unambiguous timestamp.
+                        return seq, _normalise_event_timestamp(ts)
 
                 suffix = parts[0]
                 offset = start

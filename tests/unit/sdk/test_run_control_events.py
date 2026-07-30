@@ -10,6 +10,7 @@ Hermetic: each test writes its own ``events.jsonl`` under a tmp
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from sdk.run_control.events import _last_valid_event_position, read_run_events, tail_run_events
@@ -130,7 +131,32 @@ class TestLastValidEventPosition:
         path = tmp_path / "events.jsonl"
         path.write_text("\n".join(json.dumps(_event(i, "event")) for i in range(1, 4)), encoding="utf-8")
 
-        assert _last_valid_event_position(path) == (3, "2026-06-06T00:00:03.000")
+        seq, timestamp = _last_valid_event_position(path)
+
+        assert seq == 3
+        assert timestamp is not None
+        normalised = datetime.fromisoformat(timestamp)
+        assert normalised.utcoffset() is not None
+        assert normalised.replace(tzinfo=None) == datetime(2026, 6, 6, 0, 0, 3)
+
+    def test_preserves_aware_timestamp_byte_identically(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        timestamp = "2026-06-06T00:00:03.123Z"
+        path.write_text(json.dumps({"seq": 3, "ts": timestamp}), encoding="utf-8")
+
+        assert _last_valid_event_position(path) == (3, timestamp)
+
+    def test_keeps_latest_sequence_when_timestamp_is_malformed(self, tmp_path: Path) -> None:
+        path = tmp_path / "events.jsonl"
+        path.write_text(
+            "\n".join((
+                json.dumps({"seq": 2, "ts": "2026-06-06T00:00:02Z"}),
+                json.dumps({"seq": 3, "ts": "not-a-timestamp"}),
+            )),
+            encoding="utf-8",
+        )
+
+        assert _last_valid_event_position(path) == (3, None)
 
     def test_accepts_trailing_newline_and_falls_back_from_malformed_tail(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -139,7 +165,10 @@ class TestLastValidEventPosition:
             + b'{"seq": "not-an-int", "ts": "2026-06-06"}\n{bad json\n\xff\n'
         )
 
-        assert _last_valid_event_position(path) == (2, "2026-06-06T00:00:02.000")
+        seq, timestamp = _last_valid_event_position(path)
+        assert seq == 2
+        assert timestamp is not None
+        assert datetime.fromisoformat(timestamp).utcoffset() is not None
 
     def test_missing_empty_and_unreadable_files_degrade_without_error(self, tmp_path: Path, monkeypatch) -> None:
         missing = tmp_path / "missing.jsonl"
@@ -157,9 +186,14 @@ class TestLastValidEventPosition:
 
     def test_reads_only_tail_blocks_not_full_history(self, tmp_path: Path, monkeypatch) -> None:
         path = tmp_path / "events.jsonl"
-        path.write_bytes(
-            b"".join(json.dumps(_event(i, "event")).encode() + b"\n" for i in range(1, 10_001))
-        )
+        path.write_bytes(b"".join(
+            json.dumps({
+                "seq": i,
+                "ts": "2026-06-06T00:00:00.000",
+                "payload": "x" * 100,
+            }).encode() + b"\n"
+            for i in range(1, 10_001)
+        ))
         bytes_read = 0
         original_open = Path.open
 
@@ -187,5 +221,8 @@ class TestLastValidEventPosition:
             return CountingStream(original_open(self, *args, **kwargs))
 
         monkeypatch.setattr(Path, "open", counting_open)
-        assert _last_valid_event_position(path) == (10_000, "2026-06-06T00:00:010000.000")
+        seq, timestamp = _last_valid_event_position(path)
+        assert seq == 10_000
+        assert timestamp is not None
+        assert datetime.fromisoformat(timestamp).utcoffset() is not None
         assert bytes_read < path.stat().st_size // 100

@@ -325,7 +325,15 @@ class DeliveryDecisionState:
     # strings, so the MCP-visible shape (``list[str]``) is unchanged. Empty for
     # every non-companion gate.
     scope_disclosure: tuple[str, ...] = ()
-    requested_at: str | None = None
+    requested_at: str | None = field(
+        default=None,
+        metadata={
+            "description": (
+                "Offset-aware ISO-8601 durable delivery-decision timestamp; "
+                "published verbatim only when the durable value is aware."
+            ),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

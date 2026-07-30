@@ -1,4 +1,10 @@
-"""Installed-style journey for connecting one existing repository in place."""
+"""Installed-style journey for connecting one existing repository in place.
+
+The journey runs ``python -m cli.orcho`` with ``cwd`` at a temp project, so
+``PYTHONPATH`` is pinned to this checkout — otherwise the ``-m`` import
+resolves ``cli`` from a stale installed copy (the known PYTHONPATH-leak trap)
+and the subprocess exercises foreign code instead of the tree under test.
+"""
 from __future__ import annotations
 
 import json
@@ -11,11 +17,15 @@ import pytest
 
 from sdk.workspace_paths import managed_workspace_dir
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _env(data_home: Path) -> dict[str, str]:
+    existing = os.environ.get("PYTHONPATH", "")
     env = {
         **os.environ,
         "XDG_DATA_HOME": str(data_home),
+        "PYTHONPATH": str(_REPO_ROOT) + (os.pathsep + existing if existing else ""),
     }
     env.pop("ORCHO_WORKSPACE", None)
     env.pop("ORCHO_RUNSPACE", None)
