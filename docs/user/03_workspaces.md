@@ -187,34 +187,54 @@ export ORCHO_RUNSPACE=/custom/path/to/output
 
 ## Reclaiming expired retained worktrees
 
-Inspect retention without changing anything:
+Inspect retention without changing anything. The report is read-only and uses
+the conservative 30-day root fallback cutoff by default:
 
 ```bash
 orcho workspace cleanup --workspace /path/to/workspace
 ```
 
-The default is a report. It summarises reclaimable and protected entries with
-stable reason codes. A checkout is protected only while it holds work that
+The report separately summarises checkout and run-root eligible/protected
+reason codes. A checkout is protected only while it holds work that
 cannot be recovered from anywhere else: uncommitted changes, commits no remote
 has, a run that is still live or paused, an unexpired retention window, or
 metadata and paths that cannot be read safely. Runs with no retained checkout
 are reported separately as having nothing to reclaim.
 
+`--older-than DAYS` changes only the legacy run-root-id fallback cutoff; it
+does not reinterpret a readable `worktree.retention_until` and does not change
+the worktree-tier retention predicate. For example, inspect roots with a
+seven-day fallback cutoff:
+
+```bash
+orcho workspace cleanup --older-than 7 --workspace /path/to/workspace
+```
+
 To reclaim only expired checkout material while keeping every run directory:
 
 ```bash
-orcho workspace cleanup --reclaim-worktrees
+orcho workspace cleanup --reclaim-worktrees --older-than 30
 ```
 
 To reclaim eligible checkouts and then their fully eligible run roots:
 
 ```bash
-orcho workspace cleanup --reclaim-both
+orcho workspace cleanup --reclaim-both --older-than 30
 ```
 
 Both commands archive by default under
 `runspace/cleanup_archive/<receipt_id>/`. Use `--delete` only with a reclaim
-tier for irreversible removal. Every execution writes a durable receipt under
+tier for irreversible removal:
+
+```bash
+orcho workspace cleanup --reclaim-both --older-than 7 --delete
+```
+
+`--reclaim-worktrees` never removes a
+run root; only `--reclaim-both` authorizes root archive/delete after dependent
+checkout groups succeed. An inert root (no checkout record, a missing checkout,
+or an already reclaimed checkout) can be removed when its own stopped/deadline
+predicate is eligible. Every execution writes a durable receipt under
 `runspace/cleanup_receipts/`. Reclaimed `meta.json` records preserve the old
 `worktree.path` as historical evidence and add `worktree.reclaimed`; that path
 cannot be resumed or followed up in place.

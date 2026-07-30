@@ -88,12 +88,25 @@ the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.
 
 Workspace cleanup writes receipts outside run roots at
 `<runspace>/cleanup_receipts/<receipt_id>.json`, so they survive partial
-failure and `--reclaim-both`. Receipts list selected/protected objects, reason
-codes, operations, errors, archive paths, an `inert` count of references with
-no retained checkout, and `bytes_selected`, `bytes_archived`, and
-`bytes_reclaimed`. Archive is reversible and therefore
+failure and `--reclaim-both`. Checkout receipt fields remain `selected`,
+`protected`, `inert`, `results`, `operations`, `errors`, archive paths, and
+`bytes_selected`, `bytes_archived`, and `bytes_reclaimed`. Archive is reversible and therefore
 reports archived bytes rather than reclaimed disk bytes; `--delete` reports
 reclaimed bytes.
+
+Run-root retention adds `root_selected` and `root_protected` arrays. Their
+entries carry `root_run_id`, root `path`, stable `reason` and `detail`, plus
+the selected physical `dependency_paths`. These support the CLI's separate
+eligible/protected root reason summaries. Operations retain checkout kinds
+(`archive_snapshot`, registered/unregistered checkout removal) and add
+`run_archive_snapshot` followed by `run_root_remove` for each successful root;
+`results` records the corresponding `run_root` success or failure. A receipt
+can therefore be `partial` while retaining completed checkout/root operations
+and errors for other roots.
+
+Cleanup does not edit pending-decision or `decide` projections. If a selected
+root disappears, any projected queue entry disappears only because its run
+directory was removed; cleanup does not rewrite a pending decision artifact.
 
 After a successful checkout reclaim, every preserved reference may contain:
 
