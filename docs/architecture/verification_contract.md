@@ -184,12 +184,14 @@ continuity is R2 work, and terminal/DONE projection is R3 work.
 
 ADR 0130 retains the receipt status vocabulary (`present`, `missing`, `failed`,
 `stale`) while adding `failure_kind`: no receipt is `missing`; a nonzero exit is
-`test_failure`; no exit code/execution detail is `env_failure`; and an exit-0
+`test_failure`; a receipt whose typed `outcome` is `timeout` (schema v4,
+[ADR 0174](../adr/0174-typed-timeout-failure-kind.md)) is `timeout`; any other
+missing exit code/execution detail is `env_failure`; and an exit-0
 failed assertion is `provenance_failure` for `import_path_*` or `env_failure`
 otherwise. Fingerprint, checkout HEAD, and depended-on dependency movement are
 `stale` after execution/assertion classification.
 
-| Effective declared policy | `test_failure` / `missing` / `stale` | `provenance_failure` / `env_failure` |
+| Effective declared policy | `test_failure` / `timeout` / `missing` / `stale` | `provenance_failure` / `env_failure` |
 | --- | --- | --- |
 | `require` | blocking readiness, release gap, and delivery | visible `warn`, not an engine gap or delivery blocker |
 | `warn` / `suggest` | visible warning | visible warning |
@@ -199,6 +201,14 @@ A hygiene failure is not a source-code repair request. Its phase handoff uses
 existing `artifacts.findings`, `artifacts.short_summary`, and `last_output`, and
 offers only `continue_with_waiver` or `halt`. A waiver remains an explicit
 operator action; test failures retain repair-loop and `retry_feedback` behavior.
+
+`timeout` deliberately sits between the two columns' behaviours: it *blocks*
+like a test failure (a command that never finished proved nothing, so a
+required gate stays a required gap — the left column above), but it *routes*
+like hygiene (no repair rounds; the pause offers `continue_with_waiver` /
+`halt`, because an agent cannot raise the declared budget and a genuine hang is
+a diagnosis, not a code edit). Its finding is P1, and its `required_fix` names
+the per-command `timeout` declaration as the lever.
 
 No top-level handoff wire field is added. Core consumers use existing artifacts;
 an exact MCP `findings_summary` or

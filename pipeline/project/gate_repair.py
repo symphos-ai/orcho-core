@@ -961,16 +961,57 @@ def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
     )
 
 
+# Failure kinds no repair agent can resolve from inside the run: the fix lives
+# in the environment, the declared contract, or the operator's judgment. They
+# route straight to the operator handoff instead of burning repair rounds.
+_AGENT_UNFIXABLE_KINDS = frozenset({
+    "provenance_failure",
+    "env_failure",
+    # A repair agent cannot establish a missing or unavailable Git subject
+    # identity.  Keep this fail-closed, but route it to the same operator
+    # handoff path as other execution-environment failures rather than
+    # spending repair-loop rounds on an external precondition.
+    "unverifiable",
+    # A command that ran out of wall-clock is not a failing test to repair: the
+    # budget is declared in the plugin contract, and a genuine hang is a
+    # diagnosis, not a code edit. Routed to the operator, but NOT as hygiene —
+    # see _finding_severity.
+    "timeout",
+})
+
+
 def _is_hygiene_failure(classification: Any) -> bool:
-    return getattr(classification, "failure_kind", None) in {
-        "provenance_failure",
-        "env_failure",
-        # A repair agent cannot establish a missing or unavailable Git subject
-        # identity.  Keep this fail-closed, but route it to the same operator
-        # handoff path as other execution-environment failures rather than
-        # spending repair-loop rounds on an external precondition.
-        "unverifiable",
-    }
+    return getattr(classification, "failure_kind", None) in _AGENT_UNFIXABLE_KINDS
+
+
+# Hygiene, in the severity sense, means "the proof machinery is broken, not the
+# change". A timeout is agent-unfixable too, but it leaves the required gate
+# with NO verdict at all — that is a P1 blocker, not a P3 note.
+_HYGIENE_SEVERITY_KINDS = _AGENT_UNFIXABLE_KINDS - {"timeout"}
+
+
+def _finding_severity(failure_kind: str) -> str:
+    return "P3" if failure_kind in _HYGIENE_SEVERITY_KINDS else "P1"
+
+
+def _required_fix(failure_kind: str, command: str) -> str:
+    """The one action that resolves this failure, addressed to whoever can act."""
+    if failure_kind == "timeout":
+        return (
+            f"The {command!r} gate produced no result: it did not finish within "
+            "its wall-clock budget. Either raise "
+            f"verification.commands[{command!r}].timeout in the project plugin "
+            "if the command is honestly that long, or diagnose the hang — an "
+            "empty output tail with the duration pinned to the budget means it "
+            "never started producing work. Then rerun the gate, or choose an "
+            "explicit waiver."
+        )
+    if failure_kind in _HYGIENE_SEVERITY_KINDS:
+        return (
+            "Fix the verification environment outside the agent or choose an "
+            "explicit waiver."
+        )
+    return "Fix the failing verification command and rerun it."
 
 
 def _passed(receipt: dict) -> bool:
@@ -1304,14 +1345,10 @@ def _request_handoff(
     failure_kind = getattr(classification, "failure_kind", "test_failure") or "test_failure"
     finding = {
         "id": f"verification_gate_{failure_kind}",
-        "severity": "P3" if hygiene else "P1",
+        "severity": _finding_severity(failure_kind),
         "title": f"Verification gate {failure_kind}",
         "body": evidence,
-        "required_fix": (
-            "Fix the verification environment outside the agent or choose an explicit waiver."
-            if hygiene
-            else "Fix the failing verification command and rerun it."
-        ),
+        "required_fix": _required_fix(failure_kind, entry.command),
         "failure_kind": failure_kind,
     }
     last_output = getattr(run.state, "last_critique", "") or evidence
@@ -1378,11 +1415,16 @@ def repark_verification_handoff_retry_blocked(
 
     artifacts = dict(active.get("artifacts") or {})
     findings = artifacts.get("findings")
+    # Which actions to offer follows from what the failure IS, so read the
+    # persisted ``failure_kind`` rather than inferring it from severity: a
+    # timeout is agent-unfixable (waiver / halt only) yet carries P1, so the
+    # severity proxy would silently offer it a repair retry.
+    first = findings[0] if isinstance(findings, list) and findings else None
+    first = first if isinstance(first, dict) else {}
     hygiene = (
-        isinstance(findings, list)
-        and bool(findings)
-        and isinstance(findings[0], dict)
-        and findings[0].get("severity") == "P3"
+        str(first.get("failure_kind") or "") in _AGENT_UNFIXABLE_KINDS
+        if first.get("failure_kind")
+        else first.get("severity") == "P3"
     )
     prior_id = str(active.get("id") or "gate:verification")
     prior_summary = artifacts.get("short_summary")

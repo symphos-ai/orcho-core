@@ -725,7 +725,7 @@ class TestCommandReceiptWriter:
         path = write_command_receipt(output_dir=run_dir, result=result)
         data = json.loads(path.read_text(encoding="utf-8"))
 
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
         assert data["dependencies"] == [{
             "name": "shared", "path": "/abs/shared", "head": "depsha111",
             "dirty": True, "depends_on": True,

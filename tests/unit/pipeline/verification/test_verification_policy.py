@@ -270,6 +270,25 @@ def test_hygiene_failure_softens_consequence_without_rewriting_require_policy() 
     assert partition.warning_commands == ("provenance", "environment")
 
 
+def test_timeout_failure_is_not_softened_to_a_warning() -> None:
+    """ADR 0174: a gate that never finished proved nothing — a required gate
+    stays blocking, unlike the hygiene (provenance/env) downgrade. This is the
+    consequence the delivery gate already applies; the readiness projection
+    must not say the opposite about the same receipt."""
+    policies = {"vitest": "require"}
+    statuses = {
+        "vitest": ReceiptClassification(
+            "failed", "timeout", "command timed out after 900s",
+        ),
+    }
+
+    consequences = consequence_by_command(statuses, policies)
+
+    assert consequences == {"vitest": "required_action"}
+    partition = partition_gaps(statuses, policies, consequences)
+    assert partition.blocking_commands == ("vitest",)
+
+
 def test_delivery_selection_keeps_identities_but_dedupes_receipt_commands() -> None:
     contract = _contract(required=["test"])
     plan = _plan(

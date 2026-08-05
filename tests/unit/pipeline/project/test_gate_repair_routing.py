@@ -131,6 +131,39 @@ def test_exit0_failed_assertion_gate_handoffs_without_repair(monkeypatch) -> Non
     # execution-trail coverage lives in test_verification_autorun.
 
 
+def test_timeout_gate_handoffs_to_operator_as_p1_without_repair(monkeypatch) -> None:
+    """ADR 0174: a timed-out gate is agent-unfixable (waiver/halt actions, no
+    repair round burned) but NOT hygiene-severity — the required gate has no
+    verdict, so the finding stays P1 and the required_fix names the declared
+    budget rather than 'fix the environment'."""
+    contract = _contract()
+    run = _run(contract)
+    calls = _patch_gate_results(
+        monkeypatch,
+        [
+            _receipt(None, detail="command timed out after 900s")
+            | {"outcome": "timeout", "stdout_tail": "", "stderr_tail": ""},
+            _receipt(0),
+        ],
+    )
+    _patch_repair(monkeypatch, calls)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.active and outcome.paused
+    assert calls["repair"] == 0
+    signal = run.state.phase_handoff_request
+    assert signal is not None
+    assert signal.available_actions == ("continue_with_waiver", "halt")
+    finding = signal.artifacts["findings"][0]
+    assert finding["failure_kind"] == "timeout"
+    assert finding["severity"] == "P1"
+    assert "class=timeout" in finding["body"]
+    assert "command timed out after 900s" in finding["body"]
+    assert ".timeout" in finding["required_fix"]  # names the contract field
+    assert "waiver" in finding["required_fix"]
+
+
 def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
     """Feed a queue of receipts; track how many gate runs happened."""
     calls = {"gate": 0, "repair": 0}
