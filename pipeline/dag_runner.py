@@ -490,6 +490,7 @@ def run_dag_sequential(
     invoke_subtask: SubtaskInvoke | None = None,
     prior_results: dict[str, SubTaskResult | PriorSubtaskContext] | None = None,
     verification_part: PromptPart | None = None,
+    operator_feedback: str = "",
 ) -> DagRunResult:
     """Walk ``parsed_plan.subtasks`` in topological order and execute each.
 
@@ -521,6 +522,12 @@ def run_dag_sequential(
         verification_part: run-scoped verification and long-command execution
             policy composed by the phase handler and carried into every
             executable subtask prompt.
+        operator_feedback: the operator's ``retry_feedback`` text on a retry
+            redispatch, carried into every subtask prompt this pass executes.
+            Every scheduled subtask gets it: the retry set is the work the
+            operator was speaking about, and each one is a separate invocation
+            (often a fresh session), so sending it once would leave the rest
+            of the retry blind to the instruction. Empty on an ordinary pass.
 
     Returns a :class:`DagRunResult` so the caller can route to the right
     post-step (final_acceptance on success, replan or repair_changes on failure) and
@@ -623,6 +630,7 @@ def run_dag_sequential(
                     dry_run=dry_run,
                     invoke_subtask=invoke,
                     verification_part=verification_part,
+                    operator_feedback=operator_feedback,
                 )
             except Exception as e:  # noqa: BLE001 - preserve receipt completeness
                 binding = None
@@ -908,6 +916,7 @@ def _run_single_subtask(
     dry_run: bool,
     invoke_subtask: SubtaskInvoke,
     verification_part: PromptPart | None = None,
+    operator_feedback: str = "",
 ) -> tuple[SubTaskResult, SkillBinding | None]:
     """Resolve agent, build the turn, invoke via the injected strategy.
 
@@ -943,6 +952,7 @@ def _run_single_subtask(
         upstream_receipts=upstream_receipts,
         change_handoff=change_handoff,
         verification_part=verification_part,
+        operator_feedback=operator_feedback,
     )
     prompt_chars = len(turn.text)
 
