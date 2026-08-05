@@ -180,6 +180,12 @@ def consequence_by_command(
     delivery, even when its declared policy is ``require``.  This is deliberately
     separate from execution policy: callers retain the canonical policy map for
     rendering and audit, then use this result only for consequence routing.
+
+    ``timeout`` is deliberately NOT in that set (ADR 0174). A command that never
+    finished proved nothing about the change, so a required gate stays
+    ``required_action``; downgrading it would let a run whose only red gate
+    merely ran out of budget read as verified, while the delivery gate keeps
+    blocking on the same receipt — one receipt, two opposite meanings.
     """
     consequences: dict[str, str] = {}
     for command, policy in declared_policy_by_command.items():

@@ -16,6 +16,7 @@ from pipeline.verification_subject import (
 
 FailureKind = Literal[
     "test_failure",
+    "timeout",
     "provenance_failure",
     "env_failure",
     "stale",
@@ -118,8 +119,23 @@ def classify_receipt(
     if receipt is None:
         return ReceiptClassification("missing", "missing", **evidence)
     if exit_code is None:
+        # No exit code means the command produced no verdict at all. The typed
+        # ``outcome`` says why: a budget that ran out is the operator's to
+        # resize (or a genuine hang to diagnose), which is a different problem
+        # from an execution environment that could not run the command. Both
+        # keep ``failed`` — an absent verdict is never proof — but they must not
+        # be reported, routed, or acted on as the same thing.
+        detail = str(receipt.get("detail") or "").strip()
+        if str(receipt.get("outcome") or "") == "timeout":
+            return ReceiptClassification(
+                "failed", "timeout",
+                detail or "command did not complete within its wall-clock budget",
+                **evidence,
+            )
         return ReceiptClassification(
-            "failed", "env_failure", "command execution did not report an exit code", **evidence
+            "failed", "env_failure",
+            detail or "command execution did not report an exit code",
+            **evidence,
         )
     if exit_code != 0:
         return ReceiptClassification(
@@ -208,6 +224,11 @@ def format_receipt_failure(
         "assertions="
         + f"{classification.assertions_passed}/{classification.assertions_total} passed",
     ]
+    if classification.failure_kind == "timeout" and classification.reason:
+        # A timed-out command has no output to quote — its receipt tails are
+        # empty by construction. Without the reason this evidence line would
+        # carry nothing an operator can act on.
+        parts.append(f"reason={classification.reason}")
     if classification.failed_assertions:
         assertion = classification.failed_assertions[0]
         parts.append(

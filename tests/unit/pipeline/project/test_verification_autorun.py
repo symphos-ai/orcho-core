@@ -708,7 +708,7 @@ def test_failed_current_receipt_refreshes_once_after_typed_subject_drift(
     assert result.ran_commands == ("lint",)
     assert len(rec.run_calls) == 1
     written = json.loads(Path(receipt_file_path(run_dir, "lint")).read_text())
-    assert written["schema_version"] == 3
+    assert written["schema_version"] == 4
     assert written["subject"]["identity"]["tree_oid"] == subject_b.tree_oid
     assert classify_required_receipts(
         contract, run_dir, ctx, checkout=str(checkout),

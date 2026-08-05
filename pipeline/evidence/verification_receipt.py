@@ -92,10 +92,13 @@ COMMAND_RECEIPT_EXECUTIONS_DIRNAME = "executions"
 VERIFICATION_COMMAND_KIND = "verification_command"
 # v2 adds the top-level ``dependencies`` block (per-declared-dependency
 # cross-repo provenance — name/path/head/dirty/changed_files_count/
-# changed_files_fingerprint/depends_on). This is a run-local durable artifact
-# only; it does NOT enter the evidence v1 bundle / MCP wire (the digest in
+# changed_files_fingerprint/depends_on). v4 adds the top-level ``outcome``
+# (how the execution ended: completed / timeout / error / empty — ADR 0174),
+# which classification reads to tell a command that never finished from one
+# that finished badly. This is a run-local durable artifact only; it does NOT
+# enter the evidence v1 bundle / MCP wire (the digest in
 # summarize_command_receipts deliberately omits it).
-COMMAND_RECEIPT_SCHEMA_VERSION = 3
+COMMAND_RECEIPT_SCHEMA_VERSION = 4
 
 
 def _python_identity() -> str:
@@ -777,6 +780,12 @@ def write_command_receipt(
         "log_path": str(log_path) if log_path is not None else None,
         "parity": str(result.get("parity", "absolute")),
         "detail": str(result.get("detail", "")),
+        # How the execution ended, independent of the command's own verdict. A
+        # result produced outside the executor (older receipt, hand-built
+        # fixture) has no outcome; ``completed`` is the only safe default there,
+        # since an exit code either exists or classification falls back to the
+        # untyped no-exit-code path.
+        "outcome": str(result.get("outcome") or "completed"),
         "git": git,
         "subject": _normalize_subject(result.get("subject")),
         "dependencies": _normalize_dependencies(result.get("dependencies")),
