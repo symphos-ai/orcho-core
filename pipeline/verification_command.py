@@ -43,9 +43,12 @@ from pipeline.verification_subject import (
     capture_verification_subject,
 )
 
-# Command wall-clock budget. A hung command degrades to a failed receipt
-# (exit_code=None) rather than blocking the run indefinitely.
-_TIMEOUT_S = 600
+# Command wall-clock budget used when the contract declares none. A hung
+# command degrades to a failed receipt (exit_code=None) rather than blocking the
+# run indefinitely. A command whose honest runtime approaches this ceiling
+# declares its own ``timeout`` (validated positive int) — the default is a
+# backstop against hangs, not a statement about any project's suite.
+_DEFAULT_TIMEOUT_S = 600
 
 
 def run_command(
@@ -84,7 +87,10 @@ def run_command(
 
     argv = _resolve_argv(cmd_spec.get("run", ""), ctx, python=python)
 
-    exit_code, stdout, stderr, duration_s, detail = _execute(argv, eff_cwd, sub_env)
+    timeout_s = int(cmd_spec.get("timeout") or _DEFAULT_TIMEOUT_S)
+    exit_code, stdout, stderr, duration_s, detail = _execute(
+        argv, eff_cwd, sub_env, timeout_s=timeout_s,
+    )
 
     log_path = _write_log(log_dir, command_name, stdout, stderr)
 
@@ -161,6 +167,7 @@ def _resolve_argv(
 
 def _execute(
     argv: list[str], eff_cwd: str, sub_env: dict[str, str],
+    *, timeout_s: int = _DEFAULT_TIMEOUT_S,
 ) -> tuple[int | None, str, str, float, str]:
     """Run ``argv`` without a shell; degrade failures to ``exit_code=None``."""
     if not argv:
@@ -173,12 +180,12 @@ def _execute(
             env=sub_env,
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_S,
+            timeout=timeout_s,
             check=False,
         )
     except subprocess.TimeoutExpired:
         return None, "", "", time.monotonic() - start, (
-            f"command timed out after {_TIMEOUT_S}s"
+            f"command timed out after {timeout_s}s"
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, "", "", time.monotonic() - start, f"subprocess error: {exc}"

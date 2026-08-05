@@ -453,6 +453,35 @@ host.
 > enum; default `absolute`). Commands are still **not** scheduled or blocking;
 > `verify run` is operator-invoked.
 
+#### Command wall-clock budget (`timeout`)
+
+A command may declare `timeout: <positive int seconds>` — the wall-clock budget
+the executor gives that subprocess. Absent a declaration the engine applies its
+default backstop (600s). The declaration moves the ceiling only; the failure
+semantics are unchanged, so exceeding it still degrades to a failed receipt
+(`exit_code: null`) with a `detail` naming the effective budget.
+
+Declare one when the command's honest runtime is within the same order of
+magnitude as the default — a suite that legitimately runs for minutes under
+worktree contention or a cold build cache is otherwise indistinguishable from a
+hang, and the truncated receipt reads as a red gate. The pathology to keep
+catchable is the real hang: an empty `stdout_tail` with `duration_s` pinned to
+the ceiling. Sizing the budget generously (well above observed runtime) keeps
+that signal while removing the false red; disabling the ceiling is not offered.
+
+```python
+"vitest": {
+    "env": "ix-local",
+    "run": ["npx", "vitest", "run"],
+    "timeout": 900,          # observed ~35s; budget covers contention, still catches hangs
+},
+```
+
+> Implemented ([ADR 0173](../adr/0173-verification-command-timeout.md)). Validated
+> as a positive `int` (a `bool` is rejected explicitly); non-integer, zero, and
+> negative values are `VerificationContractError`s at contract load, i.e. before
+> the run dispatches a phase.
+
 #### verification.required
 
 `verification.required` is a list (tuple) of declared command **names** — the
@@ -1617,6 +1646,7 @@ receipt is written, or any transition is blocked.
 | `verification.commands` | **Implemented (execution, Stage 3)** — projected in Stage 1, executed via `orcho verify run`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `verification.required` (list of command names) | **Implemented (Stage 3)** — validated list of declared names; drives `verify run --required`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `parity` (absolute/differential) | **Implemented (Stage 3)** — validated enum per command; differential lens on the receipt; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
+| `timeout` (per-command seconds) | **Implemented (execution)** — validated positive int; overrides the engine's 600s backstop for that command only; [ADR 0173](../adr/0173-verification-command-timeout.md) |
 | `verification.schedule` (+ optional `policy`/`action`/`gate_sets`) | **Implemented (ADR 0132 foundation)** — validated normalized identities; executor adoption remains scheduled-gates task 2. |
 | `verification.gate_sets` / `verification.selection` | **Implemented (ADR 0132 foundation)** — deterministic selection and defaults merge feed `ScheduledGatePlan`; durable disposition migration remains task 3. |
 | `work_mode` (fast/pro/governed) | **Implemented (ADR 0132 foundation)** — exact policy projection; action/executor adoption is not part of this foundation. |

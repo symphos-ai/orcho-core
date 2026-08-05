@@ -95,6 +95,23 @@ class ProjectNotFound(OrchoError):
     exit_code = 2
 
 
+class InvalidVerificationContract(OrchoError):
+    """The project's plugin declares a structurally invalid verification contract.
+
+    Raised by the run coordinator's validation seam
+    (``pipeline.project.run_setup.project_verification_contract``) when
+    ``VerificationContract.from_plugin`` rejects a *declared* contract. The
+    underlying :class:`pipeline.verification_contract.VerificationContractError`
+    is a plain ``ValueError`` and used to escape the CLI as a traceback; this
+    typed wrapper carries the plugin path plus the remediation line so every
+    boundary that already maps :class:`OrchoError` (CLI adapter, MCP,
+    embedders) reports an operator-fixable declaration error instead of a
+    crash. No phase has been dispatched when it is raised.
+    """
+
+    exit_code = 2
+
+
 class InvalidPhaseHandoffState(OrchoError):
     """Generic phase-handoff decision rejected by state or contract.
 

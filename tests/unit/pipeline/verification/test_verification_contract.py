@@ -479,6 +479,57 @@ class TestCommandCost:
             VerificationContract.from_plugin(_contract_plugin(verification=verification))
 
 
+class TestCommandTimeout:
+    """A command may declare its own wall-clock budget (positive int seconds).
+
+    Without it the executor applies its default backstop; the declaration only
+    moves the ceiling, never the failure semantics.
+    """
+
+    def test_declared_timeout_preserved(self) -> None:
+        contract = VerificationContract.from_plugin(_contract_plugin(
+            verification={
+                "commands": {"vitest": {"run": "npx vitest run", "timeout": 900}},
+            },
+        ))
+        assert contract is not None
+        assert contract.commands["vitest"]["timeout"] == 900
+
+    def test_absent_timeout_stays_absent(self) -> None:
+        contract = VerificationContract.from_plugin(_contract_plugin(
+            verification={"commands": {"lint": {"run": "ruff check ."}}},
+        ))
+        assert contract is not None
+        assert "timeout" not in contract.commands["lint"]
+
+    @pytest.mark.parametrize("timeout", ("900", 90.5, None, True))
+    def test_timeout_must_be_an_integer(self, timeout: object) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"lint": {"run": "ruff check .", "timeout": timeout}},
+        })
+        with pytest.raises(VerificationContractError, match="positive integer"):
+            VerificationContract.from_plugin(plugin)
+
+    @pytest.mark.parametrize("timeout", (0, -1))
+    def test_timeout_must_be_positive(self, timeout: int) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"lint": {"run": "ruff check .", "timeout": timeout}},
+        })
+        with pytest.raises(VerificationContractError, match="must be positive"):
+            VerificationContract.from_plugin(plugin)
+
+    def test_unknown_field_message_lists_known_fields(self) -> None:
+        plugin = _contract_plugin(verification={
+            "commands": {"lint": {"run": "ruff check .", "timeout_sec": 900}},
+        })
+        with pytest.raises(
+            VerificationContractError,
+            match=r"unknown field 'timeout_sec' \(known fields: "
+                  r"cost, env, parity, run, timeout\)",
+        ):
+            VerificationContract.from_plugin(plugin)
+
+
 class TestSelection:
     def test_always_rule_includes_gate_sets(self) -> None:
         plugin = _contract_plugin(
