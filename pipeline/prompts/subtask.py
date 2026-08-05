@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from agents.entities import SubTask
 from pipeline.plugins import PluginConfig
-from pipeline.prompts.builders import _plan_contract_part
+from pipeline.prompts.builders import _human_feedback_part, _plan_contract_part
 from pipeline.prompts.contracts import (
     SystemPromptBlock,
     change_handoff_strategy,
@@ -65,6 +65,15 @@ _PLAN_CONTRACT_REFERENCE_NOTICE = (
     "infer additional work from that contract. Use the compact Execution Plan "
     "Context, Upstream Completed, and Current Executable Subtask below; the "
     "Current Executable Subtask remains the only executable scope."
+)
+
+
+_OPERATOR_FEEDBACK_NOTICE = (
+    "This subtask is being re-run because the operator asked for it. Their "
+    "instruction follows and is authoritative: it overrides your earlier "
+    "approach to this subtask and any conflicting reviewer critique. It does "
+    "NOT widen your scope — the Current Executable Subtask below is still the "
+    "only work you may do."
 )
 
 
@@ -133,6 +142,7 @@ def build_subtask_prompt(
     upstream_receipts: str = "",
     change_handoff: str = "uncommitted",
     verification_part: PromptPart | None = None,
+    operator_feedback: str = "",
 ) -> tuple[PromptTurn, SkillBinding | None]:
     """Render the prompt the executing developer agent will receive.
 
@@ -188,6 +198,12 @@ def build_subtask_prompt(
             hints, not instructions/proof; empty (omitted) when no deps.
         verification_part: phase-composed run policy for scheduled gates and
             managed long commands. Omitted when the phase has no such policy.
+        operator_feedback: the operator's ``retry_feedback`` text for a retry
+            redispatch. Authoritative guidance for redoing this subtask, so it
+            is rendered as the canonical ``human_feedback:operator_feedback``
+            part (byte-identical to the plan / repair surfaces) immediately
+            before the executable block. Empty on an ordinary first pass, which
+            emits no part at all.
 
     Returns:
         ``(PromptTurn, SkillBinding | None)``. The binding mirrors the
@@ -233,6 +249,20 @@ def build_subtask_prompt(
         parts.append(_subtask_part(
             "skill", skill.name, f"subtask_skill:{skill.name}",
             render_skill_block(skill, subtask_id=subtask.id)))
+    # Operator retry guidance, immediately before the executable block so the
+    # agent reads WHY this subtask is being redone before WHAT it must do.
+    # Authoritative instruction, not reviewer advice — hence the canonical
+    # operator-sourced factory rather than a local part.
+    feedback_part = _human_feedback_part(operator_feedback)
+    if feedback_part is not None:
+        # Framing is a separate notice part so the operator's own words stay
+        # byte-identical to the plan / repair surfaces (same part id → same
+        # bytes) — the same split already used for the plan contract above.
+        parts.append(_subtask_part(
+            "execution_scope_notice", "operator_feedback_notice",
+            "execution_scope_notice:operator_feedback_notice",
+            _OPERATOR_FEEDBACK_NOTICE))
+        parts.append(feedback_part)
     # The one executable block — decision-bearing TURN input.
     parts.append(_subtask_part(
         "current_subtask", "current_subtask", f"current_subtask:{subtask.id}",
