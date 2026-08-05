@@ -692,15 +692,16 @@ delivery context (`source_path`, `project_path`, `baseline_ref`,
 `changed_paths`, `untracked_paths`, `release_verdict`, and any
 `verification_*` blockers) rides on the persisted gate so it can be replayed.
 
-An operator resolves the parked gate out of band through
+An operator first resumes this stopped checkpoint. Once lifecycle has re-parked
+the unchanged gate in a live status, it resolves the gate out of band through
 `sdk.decide_delivery(run_id, action)` (mirror:
 `RunService.decide_delivery`). The executor re-checks the hard guards from the
 persisted evidence, recomputes the patch against the held worktree (it never
 reads the non-serialised `patch_text`), applies the chosen action, and
 finalizes the run: `approve` / `apply` / `skip` settle it `done`; `halt` / `fix`
 keep it `halted` (`commit_decision_halt` / `commit_decision_fix`). The read-only
-companion `sdk.delivery_decision_state(run_id)` projects which actions are
-currently safe to offer.
+companion `sdk.delivery_decision_state(run_id)` preserves a stopped gate's kind
+and reason but offers no direct decision until the live re-park.
 
 ### Delivery publication facts
 

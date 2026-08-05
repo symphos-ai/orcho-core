@@ -530,8 +530,9 @@ def test_rejected_release_gate_is_decidable_correction(runs_root: Path) -> None:
         {
             "project": "/p",
             "task": "t",
-            "status": "halted",
-            "halt_reason": "final_acceptance_rejected",
+            # The rejected-gate semantics below are the live parked contract.
+            # A stopped run must resume before it can expose this gate again.
+            "status": "awaiting_commit_decision",
             "commit_delivery": _rejected_commit_delivery(run_id),
         },
     )
@@ -572,8 +573,7 @@ def test_rejected_release_gate_decide_refuses_shipping_actionably(
         {
             "project": "/p",
             "task": "t",
-            "status": "halted",
-            "halt_reason": "final_acceptance_rejected",
+            "status": "awaiting_commit_decision",
             "commit_delivery": _rejected_commit_delivery(run_id),
         },
     )
@@ -606,8 +606,7 @@ def test_rejected_release_gate_decide_refuses_skip_not_clean_done(
         {
             "project": "/p",
             "task": "t",
-            "status": "halted",
-            "halt_reason": "final_acceptance_rejected",
+            "status": "awaiting_commit_decision",
             "commit_delivery": _rejected_commit_delivery(run_id),
         },
     )
@@ -620,11 +619,11 @@ def test_rejected_release_gate_decide_refuses_skip_not_clean_done(
     assert result.terminal_outcome == "halted"
     assert result.status != "skipped"
 
-    # The durable terminal stays the actionable rejected halt: not flipped to a
-    # clean ``done``, halt_reason preserved, no override marker fabricated.
+    # The live parked rejected gate stays parked: it is not flipped to a clean
+    # ``done`` and no override marker is fabricated.
     meta_after = json.loads((run_dir / "meta.json").read_text())
-    assert meta_after["status"] == "halted"
-    assert meta_after["halt_reason"] == "final_acceptance_rejected"
+    assert meta_after["status"] == "awaiting_commit_decision"
+    assert "halt_reason" not in meta_after
     assert "delivery_override" not in meta_after
     assert meta_after["commit_delivery"]["status"] == "not_applicable"
 

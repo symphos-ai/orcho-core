@@ -577,6 +577,19 @@ elapsed-time formatting, SLA policy, and presentation. See [ADR
 0164](../adr/0164-open-operator-pause-requested-at.md) and [ADR
 0168](../adr/0168-public-sdk-timestamps-unambiguous.md).
 
+### Delivery-gate eligibility
+
+`DeliveryDecisionState.decidable` means the gate is actionable **now**. A
+durable delivery or correction gate on `done`, `halted`, `failed`,
+`interrupted`, or `cancelled` remains observable with its kind and reason, but
+has `decidable=False` and no decision actions. Call `resume` first; after the
+lifecycle re-parks the unchanged gate in a live status such as
+`awaiting_commit_decision`, its existing actions are available again.
+
+`decide_delivery(...)` uses the same eligibility rule. For a stopped gate it
+returns `accepted=False` with a typed resume-required blocker and the same
+reason as `delivery_decision_state`; it does not modify `meta.json`.
+
 **`load_run_snapshot`** composes the existing read-only helpers
 (`find_run` / `load_meta` / `load_active_phase_handoff` /
 `read_cross_checkpoint`) into a focused control projection. It never
