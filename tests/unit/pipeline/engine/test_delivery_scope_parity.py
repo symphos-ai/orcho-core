@@ -304,8 +304,9 @@ def _park_scope_blocked_gate(tmp_path: Path, *, run_id: str = "r1") -> Path:
         "scope_disclosure": list(_EXPECTED_DISCLOSURE),
     }
     meta = {
-        "status": "halted",
-        "halt_reason": "commit_delivery_scope_blocked",
+        # The scope guard remains a reversible decision only after the halted
+        # gate has resumed into its live parked lifecycle state.
+        "status": "awaiting_commit_decision",
         "project": str(tmp_path / "project"),
         "commit_delivery": ctx,
     }

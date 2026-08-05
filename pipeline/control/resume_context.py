@@ -634,9 +634,9 @@ def is_terminal_commit_decision_fix(meta: Mapping[str, Any]) -> bool:
 def is_terminal_commit_delivery_pending(meta: Mapping[str, Any]) -> bool:
     """True when the parent parked its delivery decision (ADR 0100 defer mode).
 
-    A parked run awaits an out-of-band ``decide_delivery`` call, not a
-    checkpoint continuation — so checkpoint-resume must not auto-select it,
-    exactly like the other commit-decision terminals.
+    The predicate remains a durable diagnosis fact.  A stopped gate is no
+    longer decision-ready, however: checkpoint resume re-parks it into a live
+    state before an operator can decide delivery.
     """
     return (
         meta.get("status") == "halted"
@@ -647,9 +647,9 @@ def is_terminal_commit_delivery_pending(meta: Mapping[str, Any]) -> bool:
 def is_terminal_commit_delivery_scope_blocked(meta: Mapping[str, Any]) -> bool:
     """True when the parent parked a strict-mono delivery-scope gate (T4).
 
-    Like :func:`is_terminal_commit_delivery_pending`, this run awaits an
-    out-of-band ``decide_delivery`` call (skip / halt / expanded re-run), not a
-    checkpoint continuation — so checkpoint-resume must not auto-select it.
+    Like :func:`is_terminal_commit_delivery_pending`, this remains a durable
+    classification predicate while checkpoint resume restores a live gate
+    before an operator can decide it.
     """
     return (
         meta.get("status") == "halted"
@@ -683,8 +683,6 @@ def is_terminal_resume_parent(meta: Mapping[str, Any]) -> bool:
         )
         or is_terminal_commit_decision_halt(meta)
         or is_terminal_commit_decision_fix(meta)
-        or is_terminal_commit_delivery_pending(meta)
-        or is_terminal_commit_delivery_scope_blocked(meta)
         or is_terminal_final_acceptance_rejected(meta)
     )
 

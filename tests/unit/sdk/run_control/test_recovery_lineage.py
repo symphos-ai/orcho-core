@@ -100,7 +100,7 @@ def test_active_child(tmp_path: Path) -> None:
 def test_gate_pending(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     _mk(runs, "r", {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",
@@ -321,7 +321,7 @@ def test_inspected_meta_seam_drives_delivery_gate(tmp_path: Path) -> None:
 
     # With the provider-merged meta carrying a pending gate → delivery_gate.
     merged = {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",

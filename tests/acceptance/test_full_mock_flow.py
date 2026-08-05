@@ -715,12 +715,27 @@ class TestA9_RejectedReleaseTerminal:
         runs_dir = run_dir.parent
         run_id = run_dir.name
 
-        # Delivery gate (ADR 0111 + ADR 0133): an auto-refused rejected release
-        # is a decidable correction whose only forward motion is an ordinary
+        # Delivery gate (ADR 0111 + ADR 0133 + ADR 0175): the rejected release
+        # halts the run, so its auto-refused correction gate is durable context
+        # first — explanatory kind preserved, no actions, resume-first reason
+        # (NOT 'no pending delivery gate').
+        meta_path = run_dir / "meta.json"
+        stopped = delivery_decision_state(run_id, runs_dir=runs_dir, cwd=None)
+        assert stopped.decidable is False
+        assert stopped.kind == "correction"
+        assert stopped.available_actions == ()
+        assert stopped.blocked_actions == ()
+        assert stopped.reason == (
+            "run status 'halted' is stopped; resume first before deciding delivery"
+        )
+
+        # Resume re-parks the same gate live: only forward motion is an ordinary
         # follow-up through resume with an operator comment. Shipping, ``skip``
         # (ADR 0106) AND the now-inert ``fix`` repeat are all blocked — only
-        # ``halt`` remains — and the reason routes the client to the follow-up
-        # (NOT 'no pending delivery gate').
+        # ``halt`` remains — and the reason routes the client to the follow-up.
+        live_meta = json.loads(meta_path.read_text())
+        live_meta["status"] = "awaiting_commit_decision"
+        meta_path.write_text(json.dumps(live_meta))
         state = delivery_decision_state(run_id, runs_dir=runs_dir, cwd=None)
         assert state.decidable is True
         assert state.kind == "correction"
@@ -737,6 +752,11 @@ class TestA9_RejectedReleaseTerminal:
         assert "operator comment" in state.reason
         assert "from_run_plan" not in state.reason
         assert "inert" in state.reason
+
+        # Restore the durable halted terminal for the assertions below.
+        meta_path.write_text(json.dumps(json.loads(meta_path.read_text()) | {
+            "status": "halted",
+        }))
 
         # The durable rejected blockers stay on the persisted gate context (the
         # follow-up reason intentionally points forward rather than re-listing

@@ -1010,6 +1010,12 @@
         {
           "default": "None",
           "default_factory": null,
+          "name": "reason",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
           "name": "followup_run_id",
           "type": "str | None"
         },
