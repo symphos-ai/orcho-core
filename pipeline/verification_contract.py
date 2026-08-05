@@ -290,7 +290,7 @@ def _normalize_commands(
             f"verification.commands must be a dict, got {type(value).__name__}",
         )
     out: dict[str, dict[str, Any]] = {}
-    allowed_keys = {"run", "env", "parity", "cost"}
+    allowed_keys = {"run", "env", "parity", "cost", "timeout"}
     for name, spec in value.items():
         if isinstance(spec, str):
             cmd = {"run": spec}
@@ -303,9 +303,14 @@ def _normalize_commands(
             )
         unknown = set(cmd) - allowed_keys
         if unknown:
+            # Name the legal fields: the whole point of the rejection is that
+            # the author expected a field the contract does not have (e.g. a
+            # per-command ``timeout``), so the fix is only obvious when the
+            # actual vocabulary is in the message.
             raise VerificationContractError(
                 f"verification.commands[{name!r}] has unknown field "
-                f"{sorted(unknown)[0]!r}",
+                f"{sorted(unknown)[0]!r} (known fields: "
+                f"{', '.join(sorted(allowed_keys))})",
             )
         env_ref = cmd.get("env")
         if env_ref is not None and env_ref not in envs:
@@ -327,8 +332,31 @@ def _normalize_commands(
                 f"verification.commands[{name!r}].cost must be one of "
                 f"{VERIFICATION_COSTS!r}, got {cmd['cost']!r}",
             )
+        if "timeout" in cmd:
+            cmd["timeout"] = _normalize_timeout(cmd["timeout"], name)
         out[str(name)] = cmd
     return out
+
+
+def _normalize_timeout(value: Any, name: Any) -> int:
+    """Normalise a declared per-command wall-clock budget to a positive int.
+
+    The declaration is a *budget*, not a policy: exceeding it degrades the
+    command to a failed receipt (``exit_code=null``) exactly as the engine
+    default does — only the ceiling moves. ``bool`` is rejected explicitly
+    (``True`` is an ``int`` in Python and would silently mean one second).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise VerificationContractError(
+            f"verification.commands[{name!r}].timeout must be a positive "
+            f"integer number of seconds, got {value!r}",
+        )
+    if value <= 0:
+        raise VerificationContractError(
+            f"verification.commands[{name!r}].timeout must be positive, "
+            f"got {value!r}",
+        )
+    return value
 
 
 def _normalize_required(

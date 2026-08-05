@@ -66,6 +66,24 @@ Cost and ownership are separate axes: `e2e` above is `unknown` **and**
 `manual_only` with a `suggest` policy — "we cannot predict what this costs, and
 a person decides when it runs" — not "it is expensive, therefore optional".
 
+Cost is descriptive, not a budget: labelling a command `slow` gives it no extra
+wall-clock. Every command runs under a ceiling (600s by default) and a command
+that exceeds it degrades to a failed receipt — `exit_code: null`, empty output,
+`duration_s` pinned to the ceiling. If a suite's honest runtime is anywhere near
+that, declare its own budget so a long-but-healthy run is not recorded as a red
+gate:
+
+```python
+"functional": {
+    "run": ["python", "-m", "pytest", "-q", "tests/functional"],
+    "cost": "slow",
+    "timeout": 1800,   # positive int seconds; raises the ceiling for this command only
+},
+```
+
+Size it generously above observed runtime rather than removing the ceiling — the
+empty-output-at-the-ceiling receipt is what makes a genuine hang legible.
+
 The lifecycle is declaration → selection → scheduled identity → execution →
 immutable receipt → readiness. Use `orcho quality-gates` to inspect the
 resolved identities without executing commands.
