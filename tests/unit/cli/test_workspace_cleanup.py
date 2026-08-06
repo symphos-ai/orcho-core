@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import subprocess
 from datetime import timedelta
 from pathlib import Path
 
@@ -20,6 +21,27 @@ from sdk.cleanup import (
     WorkspaceCleanupReport,
     report_workspace_cleanup,
 )
+
+
+def _tracked_python_files(root: Path) -> list[str]:
+    """Repo-relative ``*.py`` paths that are actually part of this repository.
+
+    A repo-wide boundary guard must scan the repo's own source, and git is the
+    only authority on what that is. An ``rglob`` + hand-maintained denylist of
+    noise directories cannot be: it silently grows a new false positive every
+    time a tool drops a directory in the working tree — a build/vendor copy of
+    ``sdk/cleanup.py``, a coverage report, an agent worktree under
+    ``.claude/worktrees/`` — and each one reads as a boundary violation that no
+    commit introduced and no CI run can reproduce.
+
+    ``git ls-files`` covers those cases by construction, since every one of
+    them is untracked or ignored.
+    """
+    out = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.py"],
+        cwd=root, capture_output=True, text=True, check=True,
+    )
+    return [rel for rel in out.stdout.split("\0") if rel]
 
 
 def _report(runs: Path) -> WorkspaceCleanupReport:
@@ -263,14 +285,9 @@ def test_partial_receipt_returns_exit_code_one(monkeypatch):
 
 def test_direct_engine_cleanup_imports_are_confined_to_sdk_and_engine_tests():
     root = Path(__file__).resolve().parents[3]
-    # Scan source only. Build/vendor trees carry copies of the source (e.g.
-    # ``build/lib/sdk/cleanup.py`` from a packaging test) that would otherwise
-    # register as phantom boundary violations.
-    ignored = {"build", "dist", ".git", ".venv", "venv", "node_modules", "__pycache__", ".eggs"}
     found: list[str] = []
-    for path in root.rglob("*.py"):
-        if ignored.intersection(path.relative_to(root).parts):
-            continue
+    for rel in _tracked_python_files(root):
+        path = root / rel
         tree = ast.parse(path.read_text(encoding="utf-8"))
         if any(
             # `from pipeline.engine.workspace_cleanup import ...`
@@ -286,7 +303,7 @@ def test_direct_engine_cleanup_imports_are_confined_to_sdk_and_engine_tests():
             for node in ast.walk(tree)
             if isinstance(node, (ast.Import, ast.ImportFrom))
         ):
-            found.append(str(path.relative_to(root)))
+            found.append(rel)
     assert sorted(found) == [
         "sdk/cleanup.py",
         "tests/unit/pipeline/engine/test_workspace_cleanup.py",
