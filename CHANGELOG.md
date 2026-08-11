@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-08-11
+
+This release adds a safe, report-first workspace cleanup surface, makes
+verification timeouts declarable and typed, and tightens run-control honesty:
+a gate is only advertised as decidable when it can actually be decided, and
+operator retry feedback reaches the agent that redoes the work.
+
+### Added
+
+- Workspace cleanup: a report-first `workspace cleanup` command previews what
+  would be reclaimed — separating reclaimable checkouts from work that is
+  protected as unrecoverable (uncommitted changes, unpushed commits, runs that
+  may still resume) and from inert references — then archives or deletes only
+  on explicit reclaim. Run roots have their own retention model, and
+  `--force` (valid only with an explicit `--older-than` cutoff) can reclaim
+  abandoned old runs past value protections while structural invariants (live
+  runs, shared checkouts, unreadable state) are never overridden.
+- `sdk.cleanup`: a typed public report and reclaim surface over workspace
+  cleanup; the bundled CLI consumes the same projection so both render one
+  shape.
+- Verification commands accept a declarable per-command `timeout` (seconds);
+  an invalid verification contract now fails as a typed configuration error
+  naming the plugin file and the legal vocabulary instead of a traceback.
+- Command receipts record a typed execution outcome (`completed`, `timeout`,
+  `error`, `empty`), and timeout is a first-class failure kind: a required
+  gate that ran out of budget stays blocking, burns no repair rounds, and
+  pauses for the operator with the actual lever named.
+- Phase handoffs carry a durable UTC timestamp, and `RunStatus` exposes run
+  spend and the last-event position so status clients avoid separate metrics
+  or event-history reads.
+- Onboarding can connect an existing project in place, and a deterministic
+  mock review loop supports reproducible false-ready harness scenarios.
+
+### Changed
+
+- A deferred delivery or correction gate on a stopped run is published as
+  durable context, not a decision surface: `delivery_decision_state` and
+  `decide_delivery` share one lifecycle predicate, so a client is never told
+  "decidable" by one surface and refused by the other.
+- Public SDK timestamps are normalized at the projection boundary and
+  published offset-aware; malformed stamps degrade to `None` instead of
+  guessing.
+- Documentation: existing-project quick start, shared product workspace
+  activation, plugin setup as core onboarding, and quality-gate strategy
+  guidance.
+
+### Fixed
+
+- Operator retry feedback at a phase handoff reaches the agent that redoes
+  the work instead of being dropped on the floor.
+- Fast gates rerun after repair, so a repaired run cannot ship on stale fast
+  proof.
+
 ## 0.6.0 - 2026-07-28
 
 This release strengthens cross-project recovery, makes verification cost a
