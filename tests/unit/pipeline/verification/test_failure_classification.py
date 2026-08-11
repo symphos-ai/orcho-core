@@ -59,6 +59,8 @@ def test_failed_receipt_refresh_requires_failed_execution_and_proven_stale_subje
         (None, "missing", "missing"),
         (_receipt(exit_code=2), "failed", "test_failure"),
         (_receipt(exit_code=None), "failed", "env_failure"),
+        (_receipt(exit_code=None, outcome="timeout", detail="command timed out after 900s"), "failed", "timeout"),
+        (_receipt(exit_code=None, outcome="error", detail="subprocess error: boom"), "failed", "env_failure"),
         (_receipt(detail="subprocess could not start"), "failed", "env_failure"),
         (_receipt(assertions=[{"name": "pipeline", "kind": "import_path_equals", "passed": False}]), "failed", "provenance_failure"),
     ],
@@ -73,3 +75,34 @@ def test_classifies_all_receipt_outcomes(
     assert result.status == status
     assert result.failure_kind == failure_kind
     assert command_receipt_passed(receipt) is (status == "present")
+
+
+def test_timeout_reason_carries_the_executor_detail() -> None:
+    """The budget line is the only actionable fact a timed-out receipt has —
+    it must survive into the classification reason and the formatted evidence
+    (the receipt's output tails are empty by construction)."""
+    from pipeline.verification_failure import format_receipt_failure
+
+    receipt = _receipt(
+        exit_code=None, outcome="timeout",
+        detail="command timed out after 900s",
+        stdout_tail="", stderr_tail="",
+    )
+    result = classify_receipt(receipt, current_subject=None)
+
+    assert result.failure_kind == "timeout"
+    assert result.reason == "command timed out after 900s"
+    evidence = format_receipt_failure(result, receipt)
+    assert "class=timeout" in evidence
+    assert "command timed out after 900s" in evidence
+
+
+def test_pre_outcome_receipt_without_exit_code_stays_env_failure() -> None:
+    """A receipt written before the ``outcome`` field existed still classifies:
+    no outcome + no exit code keeps the untyped env_failure path."""
+    receipt = _receipt(exit_code=None, detail="command timed out after 600s")
+    result = classify_receipt(receipt, current_subject=None)
+
+    assert result.failure_kind == "env_failure"
+    # but the detail is no longer discarded in favour of boilerplate
+    assert result.reason == "command timed out after 600s"

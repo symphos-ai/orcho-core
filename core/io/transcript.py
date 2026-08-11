@@ -1036,7 +1036,13 @@ def render_implement_summary(
     """
     from core.observability.logging import get_output_mode
     if get_output_mode() == "summary":
-        return _render_implement_summary_line(files_touched, progress)
+        normalized_title = title.strip().lower()
+        label = "implement" if normalized_title == "implementation" else normalized_title
+        return _render_implement_summary_line(
+            files_touched,
+            progress,
+            label=label,
+        )
     files_list = list(files_touched)
 
     parts: list[str] = [_line(C.CYAN + C.BOLD, f"  {title}")]
@@ -1097,6 +1103,8 @@ def render_implement_summary(
 def _render_implement_summary_line(
     files_touched: Iterable[str],
     progress: Mapping[str, int] | None,
+    *,
+    label: str = "implement",
 ) -> str:
     """Render the one-line implement rollup via the presenter.
 
@@ -1107,7 +1115,7 @@ def _render_implement_summary_line(
     completed = int(prog.get("completed", 0) or 0)
     total = int(prog.get("total", 0) or 0)
     files = len(list(files_touched))
-    return summary_lines.implement_done(completed, total, files)
+    return summary_lines.implement_done(completed, total, files, label=label)
 
 
 # ── Parse failure ──────────────────────────────────────────────────────

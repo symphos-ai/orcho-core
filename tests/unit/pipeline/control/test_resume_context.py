@@ -21,6 +21,8 @@ from pipeline.control.resume_context import (
     is_resumable_unattended_handoff_halt,
     is_terminal_commit_decision_fix,
     is_terminal_commit_decision_halt,
+    is_terminal_commit_delivery_pending,
+    is_terminal_commit_delivery_scope_blocked,
     is_terminal_final_acceptance_rejected,
     is_terminal_phase_handoff_halt,
     is_terminal_resume_parent,
@@ -612,6 +614,20 @@ class TestIsTerminalResumeParentRejected:
         assert not is_terminal_resume_parent({
             "task": "T", "project": "/p", "status": "interrupted",
         })
+
+    @pytest.mark.parametrize(
+        "halt_reason,predicate",
+        [
+            ("commit_delivery_pending", is_terminal_commit_delivery_pending),
+            ("commit_delivery_scope_blocked", is_terminal_commit_delivery_scope_blocked),
+        ],
+    )
+    def test_stopped_delivery_gates_keep_durable_predicate_but_allow_checkpoint(
+        self, halt_reason, predicate,
+    ) -> None:
+        meta = {"task": "T", "project": "/p", "status": "halted", "halt_reason": halt_reason}
+        assert predicate(meta)
+        assert not is_terminal_resume_parent(meta)
 
 
 class TestGetResumeIntentOptions:

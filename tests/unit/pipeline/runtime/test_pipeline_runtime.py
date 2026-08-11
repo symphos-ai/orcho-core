@@ -1642,6 +1642,40 @@ class TestMockProviderSymmetry:
         assert output.startswith("## Build output")
         assert (project / "src" / "proj" / "implementation.txt").exists()
 
+    def test_mock_repair_prompt_materializes_repair_receipt(self, tmp_path):
+        """False-ready demos leave a visible repair delta before re-review."""
+        from agents.runtimes._strategy import MockAgentProvider
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        agent = MockAgentProvider(latency=0.0).claude("mock")
+
+        output = agent.run(
+            '<orcho:part id="task:repair_changes@0">\n'
+            "Address the review findings.\n"
+            "</orcho:part>\n",
+            str(project),
+        )
+
+        assert "Applied review feedback" in output
+        assert (project / ".orcho" / "mock_changes" / "last_repair.md").exists()
+
+    def test_dedicated_mock_repair_slot_survives_delta_prompt(self, tmp_path):
+        """Repair materialization cannot depend on static markers in round 2."""
+        from agents.runtimes._strategy import _MockClaude
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        agent = _MockClaude(latency=0.0, repair_mode=True)
+
+        output = agent.run(
+            "Address the critique and verify the fix.",
+            str(project),
+        )
+
+        assert "Applied review feedback" in output
+        assert (project / ".orcho" / "mock_changes" / "last_repair.md").exists()
+
     def test_mock_developer_touches_existing_claimed_file(self, tmp_path):
         """Golden demos need a tracked diff, not only an untracked marker."""
         from agents.runtimes._strategy import MockAgentProvider

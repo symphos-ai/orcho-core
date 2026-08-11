@@ -95,7 +95,7 @@ Run the pipeline:
     --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
     --profile feature \
     --mock \
-    --mock-validate-plan-reject 1 \
+    --mock-review-reject 1 \
     --max-rounds 2 \
     --stream-output
 
@@ -114,10 +114,10 @@ rather than `rm -rf`. Override the location with
 
 ## Run the pipeline
 
-The pinned command forces one validate_plan reject so the reviewer output
-is non-empty. Without that flag the mock approves on the first
-attempt — a fine outcome, but it doesn't exercise the rejection loop
-this demo is here to surface.
+The pinned command forces one change-review rejection after implementation.
+Without that flag the mock approves on the first attempt — a fine outcome,
+but it does not exercise the false-ready and repair loop this demo is here
+to surface.
 
 ```bash
 orcho run \
@@ -126,30 +126,32 @@ orcho run \
   --workspace /tmp/orcho_demo_1a/workspace-orchestrator \
   --profile feature \
   --mock \
-  --mock-validate-plan-reject 1 \
+  --mock-review-reject 1 \
   --max-rounds 2 \
   --stream-output
 ```
 
-(The plan-loop budget is declared in the active profile — ``feature``'s
-``LoopStep.max_rounds=2`` — so there is no CLI ``--max-plan-rounds``
-flag to pass. With ``mock-validate-plan-reject=1`` the mock reviewer
-rejects once, the architect revises, and round 2 approves cleanly
-within the profile's budget.)
+With `--mock-review-reject 1`, implementation completes and reports ready,
+the first `review_changes` round rejects a missing negative-path regression
+test, repair runs, and the second review approves within the two-round budget.
 
 Final lines of the streamed output:
 
 ```
 [DONE] Pipeline complete
-  ✓ plan=ok | validate_plan=ok | implement=ok | review_changes=ok | repair_changes=skip | final_acceptance=ok
+  ✓ plan=ok | validate_plan=ok | implement=ok | review_changes=ok | repair_changes=ok | final_acceptance=ok
   ✓ Session: /tmp/orcho_demo_1a/workspace-orchestrator/runspace/runs/<RUN_ID>/meta.json
-  ✓ Usage:   Tokens: 9,317 (in=7,970 out=1,347) | Time: 1.8s
+  ✓ Usage:   Tokens: <TOTAL> | Time: <SECONDS> | Rounds: 2
 ```
 
-The run produced two plan attempts (one rejected, one approved), one
-build round, an LGTM review, and a clean Final-QA — exactly what the
-typed contract calls for when validate_plan blocks once and the architect
-revises.
+The run produced one approved plan, one implementation, a rejected review,
+one repair, a clean second review, and approved final acceptance. That is the
+smallest complete false-ready story Orcho needs to prove.
+
+The same switch is designed for reuse outside this walkthrough. See the
+[deterministic mock harness guide](../guides/deterministic_mock_harness.md)
+for CLI and SDK examples, expected assertions, release-smoke use, and the
+boundary between protocol verification and model-quality evaluation.
 
 ## Inspect the run
 
@@ -178,29 +180,15 @@ commands (the section ordering is stable):
 
 ## Findings
 
-### `P2` Missing test coverage for edge case A
+### `P1` Missing negative-path regression test
 
-**ID:** `F1` · **Phase:** `validate_plan` · **Attempt:** 1
+**ID:** `F1` · **Phase:** `review_changes` · **Attempt:** 1
 
-The plan does not specify how edge case A will be covered.
+The implementation covers the happy path but does not prove invalid input is
+rejected without changing state.
 
-**Required fix:** Add a concrete test case for edge case A with acceptance criteria.
-
-### `P3` Module boundary unclear in section 3
-
-**ID:** `F2` · **Phase:** `validate_plan` · **Attempt:** 1
-
-Section 3 does not state which module owns the new behavior.
-
-**Required fix:** Name the owning module and list the files it touches.
-
-### `P2` Verification step lacks rollback plan
-
-**ID:** `F3` · **Phase:** `validate_plan` · **Attempt:** 1
-
-Verification mentions running tests but does not describe rollback if they fail.
-
-**Required fix:** Document the rollback path and how to revert the change safely.
+**Required fix:** Add a regression test for invalid input and make the
+implementation satisfy it before delivery.
 
 ## Commands
 ```
@@ -216,13 +204,10 @@ Findings render in causal order — the chain that produced them
 finding is the first thing the reviewer flagged, which is usually
 what blocked the gate.
 
-In this forced-reject run the findings come from `validate_plan`. That is
-the single gate the demo command exercises with non-empty output;
-`final_qa` and `review` are also finding-bearing phases, but on this
-fixture the mock review approves and the BUILD/REVIEW/FIX loop
-collapses into a single LGTM round. DEMO-1A's claim is that the
-gate-evidence surface is visible to a CLI user, not that every
-phase-bearing review fails.
+In this forced-reject run the finding comes from `review_changes`. The demo
+does not claim the mock found a real defect: it deterministically exercises
+the same rejection, repair, re-review, final-acceptance, and evidence contracts
+used by real-provider runs.
 
 For machine consumers the same normal evidence view is available as compact
 JSON:

@@ -98,6 +98,13 @@ def _retained_worktree_is_isolated(meta: Mapping[str, Any]) -> bool:
     )
 
 
+def _worktree_is_reclaimed(meta: Mapping[str, Any]) -> bool:
+    from pipeline.engine.worktree import is_worktree_reclaimed
+
+    worktree = meta.get("worktree")
+    return is_worktree_reclaimed(worktree if isinstance(worktree, Mapping) else None)
+
+
 def _artifact_diff(parent_run_dir: Path | None) -> bool:
     if parent_run_dir is None:
         return False
@@ -150,6 +157,13 @@ def resolve_continuation_decision(
     """
     if not isinstance(meta, Mapping):
         return ContinuationDecision(run_id, "none", "none", (), False, False, None, None, True, "missing or unreadable parent meta")
+
+    if _worktree_is_reclaimed(meta):
+        return ContinuationDecision(
+            run_id, "retained_change", "none", (), False, False, None, None,
+            True,
+            "retained worktree was reclaimed; its recorded path is historical and cannot be resumed or followed up in place",
+        )
 
     if _is_correction_candidate(meta):
         retained = _worktree_path(meta)

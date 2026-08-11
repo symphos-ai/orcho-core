@@ -1,27 +1,65 @@
 # Connecting your project
 
-## The minimum to start
+## Start inside the repository you already have
 
-Orcho works with **any** project without any setup:
+Do not move or re-parent a repository to adopt Orcho. Enter it and initialise
+the control workspace:
 
 ```bash
-orcho run --task "Add tests for auth module" --project /path/to/any/project
+cd /path/to/any/project
+orcho workspace init
+orcho run --task "Add tests for auth module" --mock
 ```
 
-The agent figures out the project structure on its own.
+Orcho stores its run state outside the checkout in a deterministic managed
+workspace. The repository remains the canonical edit and delivery target.
+Later CLI calls use the current directory as the project and resolve its
+managed workspace automatically, while the MCP snippet printed by init carries
+the workspace path explicitly.
 
 ---
 
-## Better results with plugin.py
+## Configure the generated plugin scaffold
 
-To give the agent your project's specifics, add a `plugin.py`:
+`workspace init` creates a language-neutral plugin scaffold in the control
+workspace and prints its exact path. It is intentionally inert because init
+does not guess project commands or policy. Generic mode can run immediately,
+but effective recurring use depends on adapting that scaffold to the project.
+
+Copy it into the project and configure it from repository evidence:
 
 ```
 your-project/
 └── .orcho/
     └── multiagent/
-        └── plugin.py    ← create this file
+        └── plugin.py    ← configured project copy of the generated scaffold
 ```
+
+### Why configure it when the project already has CI?
+
+A mature CI setup is the best source for plugin configuration. The plugin
+should reference the same project-native lint, test, build, and analysis
+commands; it should not create a parallel quality system or replace CI.
+
+CI and Orcho answer different lifecycle questions:
+
+- CI independently protects the repository after code is pushed.
+- The Orcho contract says which existing proof applies to this task, when it
+  runs during the task lifecycle, and whether failure means repair, operator
+  handoff, warning, or blocked delivery.
+- Immutable receipts bind each official execution to the run's readiness
+  evidence instead of relying on an agent's statement that a command passed.
+- Selection and schedule rules avoid running every broad check for every
+  change. Cost records the expected burden for humans and agents; it does not
+  change selection, policy, or consequences.
+- Engine ownership keeps recurring broad commands out of task acceptance, so
+  planning and implementation agents do not launch duplicate suites.
+
+This can shorten the feedback loop: a fixable lint or test failure can return
+to repair before final delivery, while an environment or credential failure can
+be handed to the operator instead of being misclassified as a code defect.
+Keep CI as the independent repository gate; use the plugin to make its
+authoritative checks available earlier and more deliberately inside Orcho.
 
 **Minimal plugin.py:**
 ```python
@@ -32,24 +70,73 @@ PLUGIN = {
     "verification": {
         "default_env": "project",
         "commands": {"lint": {"run": ["python", "-m", "ruff", "check", "."], "cost": "fast"}},
-        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "warn"}},
+        "gate_sets": {"hygiene": {"commands": ["lint"], "default_policy": "require"}},
         "selection": [{"always": ["hygiene"]}],
-        "schedule": [{"after_phase": "implement", "gate_sets": ["hygiene"]}],
+        "schedule": [
+            {"after_phase": "implement", "gate_sets": ["hygiene"], "action": "repair_loop"},
+        ],
     },
 }
 ```
 
-With a plugin the agent knows the project language, how to run tests,
-and which files matter. Declare scheduled readiness with the
+With a configured plugin the agent knows the project language, how to run
+tests, and which files matter. More importantly, recurring readiness commands
+become engine-owned scheduled gates instead of prose repeated across tasks.
+Declare scheduled readiness with the
 [scheduled verification guide](../guides/scheduled_verification.md); the full
 field reference is in [../expert/01_plugin.md](../expert/01_plugin.md).
 
+### Accelerate setup without delegating the decision
+
+Start with a read-only candidate:
+
+```bash
+cd /path/to/project
+orcho workspace fine-tune --dry-run
+```
+
+Fine-tune uses repository markers to propose environments and commands. It
+does not write `plugin.py`, infer a complete gate lifecycle, or approve the
+proposal.
+
+For deeper setup, adopt the generated agent-rule template alongside the
+plugin: merge its rules into the project's existing root `AGENTS.md`, preserve
+the existing instructions, and keep the generated root `CLAUDE.md` shim. Then
+ask the coding agent to configure Orcho for the repository. The generated rules
+require it to inspect manifests, package scripts, CI workflows, developer
+documentation, services, credentials, and worktree constraints instead of
+guessing from the language.
+
+A useful request is:
+
+```text
+Inspect this repository and configure the generated Orcho plugin from
+repository evidence. Reuse project-native commands, classify their cost,
+propose selection, schedule, policy, and failure routing, and report every
+unresolved assumption. Do not invent commands or silently weaken failures.
+```
+
+The agent may prepare the plugin diff and run bounded candidate checks to
+accelerate setup. The engineer remains the authority: review the discovered
+commands and environments, decide which checks are load-bearing, approve their
+selection, schedule, policy, and failure consequences, then inspect the
+resolved contract:
+
+```bash
+orcho quality-gates
+```
+
+Do not rely on the configured gates until that review is complete. Automation
+shortens repository discovery and drafting; it does not replace the engineering
+decision about what is authoritative or release-blocking.
+
 ---
 
-## Several projects (workspace)
+## Best practice for several related projects
 
-If you work with several related repositories, create a parent folder
-and let Orcho lay the rails:
+After the single-project journey is working, related repositories benefit from
+one intentional shared root. This is recommended for cross-project operation,
+not required for ordinary Orcho use:
 
 ```bash
 orcho workspace init ~/www/my-workspace
@@ -75,7 +162,8 @@ The command creates:
 └── mobile/                    ← your project 3
 ```
 
-To make the shell see the new workspace:
+Run from `~/www/my-workspace` to use cwd discovery. To make a Unix shell use
+this workspace from any directory instead:
 
 ```bash
 source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
@@ -115,23 +203,28 @@ a setup playbook for discovering project-native commands and environments,
 choosing selection and scheduling, validating the contract, and reporting
 unresolved assumptions.
 
-From there — the usual commands:
+From there, register/use the intended repositories explicitly:
 
 ```bash
 # Cross-project run
 orcho cross \
   --task "Add OAuth2 support" \
-  --projects api:~/www/my-workspace/api frontend:~/www/my-workspace/frontend
+  --projects api frontend
 ```
+
+These are registered project aliases. Use `alias:/absolute/path` only when a
+project is not registered in the active workspace.
 
 Useful `orcho workspace init` flags:
 
 - `--dry-run` — show what would be created, touching nothing.
+- `--workspace-dir PATH` — override the managed control-workspace location
+  when initialising a single existing repository.
 - `--mcp-config ~/www/my-workspace/.mcp.json` — also write the MCP
   client snippet into `.mcp.json`. Existing entries for other servers
   are preserved.
-- `--force` — allow initialising a directory that itself looks like a
-  repo (by default the command refuses, to keep you out of trouble).
+- `--force` — continue scaffolding without an installed agent runtime or
+  replace a conflicting MCP entry.
 - `--no-interactive` — skip interactive questions about unmarked
   folders (CI / non-TTY).
 - `--no-scaffold` — skip extension-point templates, including the shared
@@ -175,3 +268,93 @@ Override:
 ```bash
 export ORCHO_RUNSPACE=/custom/path/to/output
 ```
+
+## Reclaiming expired retained worktrees
+
+Inspect retention without changing anything. The report is read-only and uses
+the conservative 30-day root fallback cutoff by default:
+
+```bash
+orcho workspace cleanup --workspace /path/to/workspace
+```
+
+The report separately summarises checkout and run-root eligible/protected
+reason codes. A checkout is protected while it holds work that cannot be
+recovered from anywhere else: uncommitted changes, commits no remote has, a
+live or unknown run, an unexpired retention window, or metadata and paths that
+cannot be read safely. An open canonical handoff or gate protects a stopped or
+paused checkout only inside its retention window; after expiry, an otherwise
+eligible paused checkout reports `pause_retention_expired`. Expiry never
+overrides dirty, unpushed, live, unsafe, unreadable, checkpoint-only, or shared
+checkout protections. Runs with no retained checkout are reported separately
+as having nothing to reclaim.
+
+`--older-than DAYS` changes only the legacy root-id fallback cutoff when
+`worktree.retention_until` is absent; it does not reinterpret a readable
+durable deadline or change the worktree-tier safety protections. A present
+malformed deadline protects the checkout rather than falling back, and cleanup
+never uses directory mtime. For example, inspect roots with a seven-day
+fallback cutoff:
+
+```bash
+orcho workspace cleanup --older-than 7 --workspace /path/to/workspace
+```
+
+To reclaim only expired checkout material while keeping every run directory:
+
+```bash
+orcho workspace cleanup --reclaim-worktrees --older-than 30
+```
+
+To reclaim eligible checkouts and then their fully eligible run roots:
+
+```bash
+orcho workspace cleanup --reclaim-both --older-than 30
+```
+
+### Force reclaim abandoned old work
+
+`--force` is an explicit, narrower override for an abandoned workspace. It is
+not a report mode: the CLI rejects `--force` unless both `--older-than DAYS`
+and one reclaim tier are present. It may override exactly these value and
+coordination protections: `uncommitted_changes`, `unpushed_commits`,
+`active_handoff_or_gate`, and `checkpoint_handoff_active`. The report and
+receipt show an override as the corresponding `forced_reclaim_*` reason.
+
+Force age is deliberately stricter than ordinary retention. Orcho parses the
+root id's `YYYYMMDD_HHMMSS` UTC prefix, adds `--older-than`, and requires the
+result to be strictly before the current time; equality does not qualify.
+Unknown or malformed root age remains protected. A durable
+`worktree.retention_until`, directory mtime, and handoff timestamps do not
+prove force age.
+
+For example, archive old dirty or unpushed checkout material while preserving
+the run directory:
+
+```bash
+orcho workspace cleanup --reclaim-worktrees --force --older-than 90
+```
+
+Force never bypasses structural safety: live or unknown runs, unreadable
+metadata or Git state, unsafe/symlink paths, shared checkouts with a protected
+reference, and live or paused cross parents remain protected.
+
+Both commands archive by default under
+`runspace/cleanup_archive/<receipt_id>/`. Use `--delete` only with a reclaim
+tier for irreversible removal. In particular, `--force --delete` is
+irreversible; omit `--delete` to keep the default archive:
+
+```bash
+orcho workspace cleanup --reclaim-both --force --older-than 90 --delete
+```
+
+`--reclaim-worktrees` never removes a
+run root; only `--reclaim-both` authorizes root archive/delete after dependent
+checkout groups succeed. An inert root (no checkout record, a missing checkout,
+or an already reclaimed checkout) can be removed when its own stopped/deadline
+predicate is eligible. Every execution writes a durable receipt under
+`runspace/cleanup_receipts/`. Reclaimed `meta.json` records preserve the old
+`worktree.path` as historical evidence and add `worktree.reclaimed`; that path
+cannot be resumed or followed up in place. The receipt exposes expiry reasons
+in both checkout and root summaries; cleanup re-verifies before mutation and
+never resolves or rewrites a pending handoff/gate decision artifact.

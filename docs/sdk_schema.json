@@ -1010,6 +1010,12 @@
         {
           "default": "None",
           "default_factory": null,
+          "name": "reason",
+          "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
           "name": "followup_run_id",
           "type": "str | None"
         },
@@ -1075,6 +1081,13 @@
           "default_factory": null,
           "name": "scope_disclosure",
           "type": "tuple[str, ...]"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "description": "Offset-aware ISO-8601 durable delivery-decision timestamp; published verbatim only when the durable value is aware.",
+          "name": "requested_at",
+          "type": "str | None"
         }
       ],
       "frozen": true,
@@ -3235,6 +3248,25 @@
           "default_factory": null,
           "name": "artefacts",
           "type": "tuple"
+        },
+        {
+          "default": "0.0",
+          "default_factory": null,
+          "name": "total_cost_usd_equivalent",
+          "type": "float"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "last_event_seq",
+          "type": "int | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "description": "Offset-aware ISO-8601 timestamp for the latest event; legacy naive event stamps use the machine-local offset and malformed values are None.",
+          "name": "last_event_ts",
+          "type": "str | None"
         }
       ],
       "frozen": true,
@@ -3799,6 +3831,177 @@
       "slots": true
     },
     {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reason",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "detail",
+          "type": "str"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.cleanup",
+      "name": "WorkspaceCleanupReasonSummary",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "receipt_path",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "tier",
+          "type": "Literal['worktrees', 'both']"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "disposition",
+          "type": "Literal['archive', 'delete']"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "status",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "bytes_selected",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "bytes_archived",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "bytes_reclaimed",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "error_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "errors",
+          "type": "tuple[str, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "archive_paths",
+          "type": "tuple[Path, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.cleanup",
+      "name": "WorkspaceCleanupReceipt",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "runs_dir",
+          "type": "Path"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reclaimable_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "protected_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "inert_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reclaimable_reasons",
+          "type": "tuple[WorkspaceCleanupReasonSummary, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "protected_reasons",
+          "type": "tuple[WorkspaceCleanupReasonSummary, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "inert_reasons",
+          "type": "tuple[WorkspaceCleanupReasonSummary, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reclaimable_run_root_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "protected_run_root_count",
+          "type": "int"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "reclaimable_run_root_reasons",
+          "type": "tuple[WorkspaceCleanupReasonSummary, ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "protected_run_root_reasons",
+          "type": "tuple[WorkspaceCleanupReasonSummary, ...]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.cleanup",
+      "name": "WorkspaceCleanupReport",
+      "slots": true
+    },
+    {
       "bases": [
         "OrchoError"
       ],
@@ -3934,6 +4137,18 @@
           "default_factory": null,
           "name": "runtime_override",
           "type": "str | None"
+        },
+        {
+          "default": "'group'",
+          "default_factory": null,
+          "name": "topology",
+          "type": "str"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "name": "primary_project",
+          "type": "DetectedProject | None"
         }
       ],
       "frozen": true,
@@ -4032,6 +4247,12 @@
           "default": "0",
           "kind": "KEYWORD_ONLY",
           "name": "mock_validate_plan_reject"
+        },
+        {
+          "annotation": "int",
+          "default": "0",
+          "kind": "KEYWORD_ONLY",
+          "name": "mock_review_reject"
         },
         {
           "annotation": "str | None",
@@ -4718,6 +4939,12 @@
           "default": null,
           "kind": "POSITIONAL_OR_KEYWORD",
           "name": "project_group_root"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace_dir"
         },
         {
           "annotation": "str | None",
@@ -5582,6 +5809,56 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.cleanup",
+      "name": "reclaim_workspace_cleanup",
+      "params": [
+        {
+          "annotation": "Literal['worktrees', 'both']",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "tier"
+        },
+        {
+          "annotation": "Literal['archive', 'delete']",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "disposition"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "timedelta | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "older_than"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
+        }
+      ],
+      "return": "WorkspaceCleanupReceipt"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.run_control.recovery_lineage",
       "name": "recovery_lineage",
       "params": [
@@ -5663,6 +5940,44 @@
         }
       ],
       "return": "str"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.cleanup",
+      "name": "report_workspace_cleanup",
+      "params": [
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        },
+        {
+          "annotation": "timedelta | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "older_than"
+        },
+        {
+          "annotation": "bool",
+          "default": "False",
+          "kind": "KEYWORD_ONLY",
+          "name": "force"
+        }
+      ],
+      "return": "WorkspaceCleanupReport"
     },
     {
       "kind": "callable",

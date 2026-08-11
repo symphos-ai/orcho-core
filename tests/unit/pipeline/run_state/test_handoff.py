@@ -17,7 +17,9 @@ Pins the load-bearing contract for :mod:`pipeline.run_state.handoff`:
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -48,13 +50,47 @@ def _state_with_handoff() -> dict:
 # ── request / clear (in-place mapping mutation) ────────────────────────
 
 
-def test_request_active_handoff_sets_status_and_payload() -> None:
+def test_request_active_handoff_sets_status_payload_and_utc_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamp = "2026-07-29T09:31:22+00:00"
+    monkeypatch.setattr(
+        handoff_mod,
+        "datetime",
+        SimpleNamespace(now=lambda _tz: datetime.fromisoformat(stamp)),
+    )
     state: dict = {"status": "running"}
     payload = {"id": "h9", "phase": "plan"}
     result = request_active_handoff(state, payload=payload)
     assert result is None
     assert state["status"] == "awaiting_phase_handoff"
     assert state["phase_handoff"] is payload
+    assert payload == {"id": "h9", "phase": "plan", "requested_at": stamp}
+    assert datetime.fromisoformat(payload["requested_at"]).tzinfo is UTC
+
+
+def test_request_active_handoff_preserves_same_id_stamp_and_restamps_new_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamps = iter((
+        datetime(2026, 7, 29, 9, 31, 22, tzinfo=UTC),
+        datetime(2026, 7, 29, 9, 31, 23, tzinfo=UTC),
+    ))
+    monkeypatch.setattr(
+        handoff_mod, "datetime", SimpleNamespace(now=lambda _tz: next(stamps)),
+    )
+    state: dict = {"status": "running"}
+    first = {"id": "h1", "phase": "plan", "other": "unchanged"}
+    request_active_handoff(state, payload=first)
+    same_id = {"id": "h1", "phase": "plan", "other": "unchanged"}
+    request_active_handoff(state, payload=same_id)
+    new_id = {"id": "h2", "phase": "plan", "other": "unchanged"}
+    request_active_handoff(state, payload=new_id)
+
+    assert same_id["requested_at"] == first["requested_at"]
+    assert new_id["requested_at"] != first["requested_at"]
+    assert first["other"] == same_id["other"] == new_id["other"] == "unchanged"
+    assert state["phase_handoff"] is new_id
 
 
 def test_clear_active_handoff_pops_payload_and_runs() -> None:
@@ -283,7 +319,7 @@ def test_halt_not_implemented_here() -> None:
     assert "halt" not in {*handoff_mod.__all__}
 
 
-def test_module_imports_only_run_state_types_and_typing() -> None:
+def test_module_imports_only_stdlib_and_run_state_types() -> None:
     src = Path(handoff_mod.__file__).read_text()
     tree = ast.parse(src)
     imported_modules: set[str] = set()
@@ -293,9 +329,9 @@ def test_module_imports_only_run_state_types_and_typing() -> None:
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 imported_modules.add(alias.name)
-    # Only typing + the sibling pure types module are permitted.
+    # Only stdlib time/typing + the sibling pure types module are permitted.
     assert imported_modules <= {
-        "__future__", "typing", "pipeline.run_state.types",
+        "__future__", "datetime", "typing", "pipeline.run_state.types",
     }
     forbidden = ("runtime", "resume", "finaliz", "provider", "subprocess", "os")
     for mod in imported_modules:

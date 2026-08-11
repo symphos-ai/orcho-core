@@ -1,4 +1,4 @@
-"""Typed, display-only verification command cost resolution."""
+"""Typed verification command cost resolution for display and eager cadence."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ VERIFICATION_COSTS: tuple[VerificationCost, ...] = (
     "fast", "moderate", "slow", "unknown",
 )
 
-# Higher rank is more conservative.  Keep this separate from policy/action:
-# cost is metadata and must never affect execution control flow.
+# Higher rank is more conservative. Keep this separate from policy/action:
+# cost may select eager fast reruns, but never changes blocking semantics.
 _COST_RANK: dict[VerificationCost, int] = {
     "fast": 0,
     "moderate": 1,

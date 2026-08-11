@@ -25,6 +25,7 @@ from pipeline.verification_contract import (
     VerificationContract,
     VerificationContractError,
 )
+from sdk.errors import InvalidVerificationContract
 
 
 def _contract_plugin() -> PluginConfig:
@@ -94,10 +95,39 @@ class TestProjectVerificationContractSeam:
     def test_returns_none_without_contract(self) -> None:
         assert project_verification_contract(PluginConfig()) is None
 
-    def test_declared_invalid_contract_raises(self) -> None:
+    def test_declared_invalid_contract_raises_typed_error(self) -> None:
         plugin = PluginConfig(work_mode="turbo")  # not a known work mode
-        with pytest.raises(VerificationContractError):
+        with pytest.raises(InvalidVerificationContract) as excinfo:
             project_verification_contract(plugin)
+
+        # Typed at the boundary (exit code, no traceback) and caused by the
+        # structural complaint, which stays in the chain for callers.
+        assert excinfo.value.exit_code == 2
+        assert isinstance(excinfo.value.__cause__, VerificationContractError)
+
+    def test_invalid_contract_message_names_plugin_and_recheck(
+        self, tmp_path: Path,
+    ) -> None:
+        plugin = PluginConfig(
+            verification={"commands": {"vitest": {"run": "npx vitest run",
+                                                  "timeout_sec": 900}}},
+        )
+        with pytest.raises(InvalidVerificationContract) as excinfo:
+            project_verification_contract(plugin, project_dir=str(tmp_path))
+
+        message = str(excinfo.value)
+        assert str(tmp_path / ".orcho/multiagent/plugin.py") in message
+        # the structural complaint, with the legal vocabulary
+        assert "unknown field 'timeout_sec'" in message
+        assert "known fields: cost, env, parity, run, timeout" in message
+        # and the read-only way to re-check without starting a run
+        assert f"orcho quality-gates --project {tmp_path}" in message
+
+    def test_invalid_contract_message_without_project_dir(self) -> None:
+        with pytest.raises(InvalidVerificationContract) as excinfo:
+            project_verification_contract(PluginConfig(work_mode="turbo"))
+
+        assert ".orcho/multiagent/plugin.py" in str(excinfo.value)
 
     def test_declared_valid_contract_returned(self) -> None:
         contract = project_verification_contract(_contract_plugin())

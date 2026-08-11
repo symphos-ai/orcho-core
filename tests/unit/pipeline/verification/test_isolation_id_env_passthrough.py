@@ -84,8 +84,8 @@ def test_isolation_id_reaches_bootstrap_and_before_delivery_executor(
     monkeypatch.setattr(
         verification_command,
         "_execute",
-        lambda argv, cwd, sub_env: (
-            captured_envs.append(dict(sub_env)) or (0, "", "", 0.0, "")
+        lambda argv, cwd, sub_env, **_kw: (
+            captured_envs.append(dict(sub_env)) or (0, "", "", 0.0, "", "completed")
         ),
     )
 

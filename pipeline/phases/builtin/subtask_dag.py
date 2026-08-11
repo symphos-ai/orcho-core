@@ -778,6 +778,7 @@ def _run_subtask_dag_implement(
     # along as read-only prior context so they are NOT re-invoked or re-mutated.
     run_plan = parsed_plan
     prior_results = None
+    operator_feedback = ""
     retry_payload = state.extras.get("implement_retry")
     retry_ids = _retry_incomplete_ids(retry_payload)
     if retry_ids:
@@ -802,6 +803,14 @@ def _run_subtask_dag_implement(
                 attestation_summary=str(data.get("attestation_summary", "")),
                 attestation_error=data.get("attestation_error"),
             )
+        # ADR 0176: the operator's retry_feedback text is authoritative
+        # guidance for redoing this work, so it must reach the replayed
+        # subtask's PROMPT — not merely the operator-facing banner below.
+        # ``implement_retry['feedback']`` (seeded by the single handoff seam)
+        # is the retry-scoped carrier; ``state.human_feedback`` is the
+        # plan/repair-phase carrier and is deliberately not read here.
+        if isinstance(retry_payload, dict):
+            operator_feedback = str(retry_payload.get("feedback") or "")
         _log_implement_retry_banner(
             retry_ids=retry_ids,
             retry_payload=retry_payload,
@@ -822,6 +831,7 @@ def _run_subtask_dag_implement(
         invoke_subtask=_invoke_subtask,
         prior_results=prior_results,
         verification_part=_verification_contract_part(state, "implement"),
+        operator_feedback=operator_feedback,
     )
     state.dag_result = result
 
@@ -929,6 +939,10 @@ def _run_subtask_dag_implement(
                     verification_part=_verification_contract_part(
                         state, "implement",
                     ),
+                    # Same run, same operator instruction: a substance-repair
+                    # pass inside a retry is still redoing the work the
+                    # operator spoke about, so it must not lose the guidance.
+                    operator_feedback=operator_feedback,
                 )
                 # F1: overlay THIS pass's receipts immediately. The substance
                 # repair engine keeps only the final pass's receipts, so a

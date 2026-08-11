@@ -100,7 +100,7 @@ def test_active_child(tmp_path: Path) -> None:
 def test_gate_pending(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     _mk(runs, "r", {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",
@@ -321,7 +321,7 @@ def test_inspected_meta_seam_drives_delivery_gate(tmp_path: Path) -> None:
 
     # With the provider-merged meta carrying a pending gate → delivery_gate.
     merged = {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",
@@ -403,3 +403,15 @@ def test_missing_facts_is_tuple(tmp_path: Path) -> None:
     })
     rl = _lineage(runs, "r")
     assert isinstance(rl.missing_facts, tuple)
+
+
+def test_reclaimed_worktree_is_not_projected_as_preserved_source(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {
+        "status": "halted", "halt_reason": "commit_decision_fix", "project": "/x",
+        "worktree": {"path": "/historical", "isolation": "per_run", "reclaimed": {"at": "2026-07-29T00:00:00Z"}},
+    })
+    lineage = _lineage(runs, "r")
+    assert lineage.source_worktree_preserved is False
+    assert lineage.recommended_run_id is None
+    assert "historical" in lineage.reason

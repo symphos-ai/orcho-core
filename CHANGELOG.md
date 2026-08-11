@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-08-11
+
+This release makes stalled verification commands a typed, recoverable
+outcome, keeps delivery decidability honest, and adds retention-aware
+workspace cleanup.
+
+### Added
+
+- Verification commands can declare a per-command `timeout` budget, and an
+  invalid declaration fails with a typed contract error instead of being
+  silently ignored.
+- A verification command that exceeds its budget produces a typed `timeout`
+  command outcome and failure kind, so repair and gate policy can react to it
+  like any other classified failure.
+- Workspace cleanup reports and reclaims retained run worktrees and old run
+  roots. Retention protects unrecoverable work — dirty checkouts, unpushed
+  branches, and resumable handoffs — while an explicit `--force` path reclaims
+  abandoned old runs. The report and reclaim surfaces are also part of the
+  typed public SDK.
+- Run status exposes recorded spend and the last-event position, so external
+  watchers can judge liveness without tailing raw events.
+- Operator pauses carry durable requested-at timestamps.
+- Existing projects can be connected to a managed workspace in place, without
+  restructuring the checkout, and the quick-start documentation walks that
+  path end to end.
+- A deterministic mock review loop and documented mock harness reproduce
+  false-ready review behavior without model cost.
+
+### Changed
+
+- A delivery gate is decidable only when a decision can actually be taken
+  now: stopped runs no longer project decidable gates, and retained stopped
+  gates keep their kind and a resume-first reason.
+- Fast verification gates rerun eagerly after repair instead of waiting for
+  the next slow pass.
+- Public SDK timestamps are timezone-unambiguous.
+- Plugin setup and project-owned quality gates are documented as core
+  onboarding, with worked gate-strategy examples.
+
+### Fixed
+
+- Operator feedback given when retrying a paused handoff reaches the agent
+  that redoes the work instead of being dropped.
+- The workspace cleanup boundary guard is scoped to files this repository
+  tracks.
+
 ## 0.6.0 - 2026-07-28
 
 This release strengthens cross-project recovery, makes verification cost a

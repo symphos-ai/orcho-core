@@ -43,6 +43,7 @@ def build_orch_argv_from_args(args: Any) -> list[str]:
         run_id=getattr(args, "run_id", None),
         max_rounds=getattr(args, "max_rounds", None),
         mock_validate_plan_reject=getattr(args, "mock_validate_plan_reject", 0) or 0,
+        mock_review_reject=getattr(args, "mock_review_reject", 0) or 0,
         model=getattr(args, "model", None),
         output_dir=getattr(args, "output_dir", None),
         dry_run=getattr(args, "dry_run", False),

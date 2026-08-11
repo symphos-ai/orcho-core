@@ -79,6 +79,16 @@ class TestNoPending:
         # raw_meta is the full, unprojected meta dict.
         assert snap.raw_meta == meta
 
+    def test_snapshot_preserves_additive_reclaimed_worktree_marker(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        marker = {"at": "2026-07-29T00:00:00Z", "disposition": "archive"}
+        _make_run(runs, "reclaimed", {
+            "status": "done", "worktree": {"path": "/historical", "reclaimed": marker},
+        })
+        snapshot = _load(runs, "reclaimed")
+        assert snapshot.worktree and snapshot.worktree["reclaimed"] == marker
+
     def test_sub_runs_enumerated_with_status(self, tmp_path: Path) -> None:
         runs = tmp_path / "runs"
         runs.mkdir()

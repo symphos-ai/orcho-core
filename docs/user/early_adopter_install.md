@@ -82,29 +82,24 @@ export ORCHO_MCP_COMMAND="$ORCHO_CORE/.venv/bin/orcho-mcp"
 test -x "$ORCHO_MCP_COMMAND"
 ```
 
-## Create a workspace for the tester project
+## Connect the tester project in place
 
-For a single project:
-
-```text
-~/www/my-workspace/
-├── my-project/
-└── workspace-orchestrator/  # created by Orcho
-```
-
-Initialize it:
+Enter the existing repository and initialise Orcho:
 
 ```bash
-orcho workspace init ~/www/my-workspace
-source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
+cd ~/www/my-project
+orcho workspace init
 ```
+
+Orcho prints the external managed workspace path. The repository is not moved,
+and later CLI runs resolve the workspace from `--project`.
 
 For MCP, write a project-local config snippet:
 
 ```bash
-orcho workspace init ~/www/my-workspace \
-  --mcp-config ~/www/my-workspace/.mcp.json \
-  --mcp-server-name orcho-my-workspace \
+orcho workspace init ~/www/my-project \
+  --mcp-config ~/www/my-project/.mcp.json \
+  --mcp-server-name orcho-my-project \
   --orcho-mcp-command "$ORCHO_MCP_COMMAND"
 ```
 
@@ -120,11 +115,11 @@ edit `.mcp.json` to:
 ```json
 {
   "mcpServers": {
-    "orcho-my-workspace": {
+    "orcho-my-project": {
       "command": "/Users/me/orcho-preview/orcho-core/.venv/bin/python",
       "args": ["-m", "orcho_mcp"],
       "env": {
-        "ORCHO_WORKSPACE": "/Users/me/www/my-workspace/workspace-orchestrator"
+        "ORCHO_WORKSPACE": "/Users/me/.local/share/orcho/workspaces/my-project-<digest>/workspace-orchestrator"
       }
     }
   }
@@ -146,7 +141,7 @@ Pick a small task:
 ```bash
 orcho run \
   --task "Add input validation: return 400 if email is empty" \
-  --project ~/www/my-workspace/my-project
+  --project ~/www/my-project
 ```
 
 Then inspect:
@@ -155,7 +150,7 @@ Then inspect:
 orcho status
 orcho evidence
 
-cd ~/www/my-workspace/my-project
+cd ~/www/my-project
 git diff
 ```
 
@@ -166,7 +161,8 @@ git diff
 - Use a branch or disposable copy if they want to explore safely.
 - The workspace is state, not source code.
 - The MCP server is tied to one workspace through `ORCHO_WORKSPACE`.
-- For multiple project groups, create multiple workspace configs.
+- For intentional cross-project work, create a shared group workspace and
+  register its project list explicitly.
 
 ## Public package path
 
@@ -174,7 +170,8 @@ For the native CLI path, the package path is:
 
 ```bash
 pipx install orcho
-orcho workspace init ~/www/my-workspace
+cd ~/www/my-project
+orcho workspace init
 ```
 
 Plain `orcho` installs the core CLI and MCP server. The historical extras

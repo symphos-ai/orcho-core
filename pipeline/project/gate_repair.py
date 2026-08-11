@@ -83,13 +83,15 @@ def run_gate_hook(
     *,
     hook: str,
     phase: str = "",
+    costs: frozenset[str] | None = None,
+    rerun: bool = False,
 ) -> GateRepairOutcome:
     """Evaluate the required gates scheduled for ``hook`` (+ ``phase``) and route.
 
     Returns a no-op (``active=False``) when no contract is declared, the hook is
     ``manual_only`` (never auto-planned), or no required gate is scheduled for
-    this hook. Otherwise runs each required gate command and, on the first
-    failure that yields a blocking disposition, returns it.
+    this hook. ``costs`` limits execution without changing identity; ``rerun``
+    marks ledger events. Otherwise returns the first blocking disposition.
     """
     contract = _contract(run)
     if contract is None or hook == "manual_only":
@@ -105,15 +107,11 @@ def run_gate_hook(
         return GateRepairOutcome(active=False)
 
     plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
-    gates = _gates_for_hook(plan, hook=hook, phase=phase)
+    gates = _gates_for_hook(plan, hook=hook, phase=phase, costs=costs)
 
-    # Surface the gate before its (possibly multi-minute) checks run, so the
-    # terminal never looks hung after a phase. TERMINAL-only; header once.
-    if gates and _gate_progress_on(run):
-        _render_gate_section_header(len(gates), hook=hook, phase=phase)
+    _render_gate_hook_start(run, gates, hook=hook, phase=phase)
 
-    # ``executed`` accumulates the commands routing actually ran this hook so the
-    # reconciliation pass can tell apart "ran" from "planned but not run".
+    # Track commands routing ran so reconciliation can distinguish planned skips.
     executed: set[tuple[str, str, str]] = set()
     existing_receipts = (
         _delivery_receipt_statuses(run, contract) if hook == "before_delivery" else {}
@@ -191,6 +189,7 @@ def run_gate_hook(
             classification,
             hook=hook,
             phase=phase,
+            rerun=rerun,
         )
         if classification.status == "present":
             continue
@@ -442,6 +441,31 @@ def evaluate_post_phase_gates(run: Any, phase: str) -> None:
             hook="after_phase",
             phase=phase,
         )
+        if (
+            phase == "repair_changes"
+            and not (
+                (getattr(run.state, "phase_log", {}).get(phase, {}) or {})
+                .get("skipped")
+            )
+            and not getattr(run.state, "halt", False)
+            and run.state.phase_handoff_request is None
+        ):
+            # ``after_phase(implement)`` is the selected post-mutation
+            # verification identity. A later repair mutates that verified
+            # subject, so eagerly rerun every fast engine-owned identity from
+            # the same epoch. Moderate and slow gates remain on their declared
+            # cadence; pre-final receipt materialization will reuse these fresh
+            # fast results instead of discovering a one-second lint failure
+            # after the repair loop has closed.
+            run_gate_hook(
+                run,
+                run._gate_profile,
+                run._gate_ctx,
+                hook="after_phase",
+                phase="implement",
+                costs=frozenset({"fast"}),
+                rerun=True,
+            )
     finally:
         run._in_gate_hook = False
     if phase == "implement":
@@ -691,13 +715,21 @@ def _resolve_entry(entry: Any):
     )
 
 
-def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
+def _gates_for_hook(
+    plan: Any,
+    *,
+    hook: str,
+    phase: str,
+    costs: frozenset[str] | None = None,
+) -> list[Any]:
     """Engine-owned selected entries scheduled for ``hook`` (+ ``phase``)."""
     gates: list[Any] = []
     for entry in plan.entries:
         if entry.hook != hook:
             continue
         if hook in ("before_phase", "after_phase") and entry.phase != phase:
+            continue
+        if costs is not None and entry.cost not in costs:
             continue
         if _resolve_entry(entry).executor == "engine":
             gates.append(entry)
@@ -715,6 +747,18 @@ def _gates_for_hook(plan: Any, *, hook: str, phase: str) -> list[Any]:
 # is gated on TERMINAL presentation — sub-pipelines / SILENT stay silent.
 
 _GATE_BANNER_WIDTH = 68
+
+
+def _render_gate_hook_start(
+    run: Any,
+    gates: list[Any],
+    *,
+    hook: str,
+    phase: str,
+) -> None:
+    """Surface a possibly long gate batch before its first command executes."""
+    if gates and _gate_progress_on(run):
+        _render_gate_section_header(len(gates), hook=hook, phase=phase)
 
 
 def _gate_progress_on(run: Any) -> bool:
@@ -917,16 +961,57 @@ def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
     )
 
 
+# Failure kinds no repair agent can resolve from inside the run: the fix lives
+# in the environment, the declared contract, or the operator's judgment. They
+# route straight to the operator handoff instead of burning repair rounds.
+_AGENT_UNFIXABLE_KINDS = frozenset({
+    "provenance_failure",
+    "env_failure",
+    # A repair agent cannot establish a missing or unavailable Git subject
+    # identity.  Keep this fail-closed, but route it to the same operator
+    # handoff path as other execution-environment failures rather than
+    # spending repair-loop rounds on an external precondition.
+    "unverifiable",
+    # A command that ran out of wall-clock is not a failing test to repair: the
+    # budget is declared in the plugin contract, and a genuine hang is a
+    # diagnosis, not a code edit. Routed to the operator, but NOT as hygiene —
+    # see _finding_severity.
+    "timeout",
+})
+
+
 def _is_hygiene_failure(classification: Any) -> bool:
-    return getattr(classification, "failure_kind", None) in {
-        "provenance_failure",
-        "env_failure",
-        # A repair agent cannot establish a missing or unavailable Git subject
-        # identity.  Keep this fail-closed, but route it to the same operator
-        # handoff path as other execution-environment failures rather than
-        # spending repair-loop rounds on an external precondition.
-        "unverifiable",
-    }
+    return getattr(classification, "failure_kind", None) in _AGENT_UNFIXABLE_KINDS
+
+
+# Hygiene, in the severity sense, means "the proof machinery is broken, not the
+# change". A timeout is agent-unfixable too, but it leaves the required gate
+# with NO verdict at all — that is a P1 blocker, not a P3 note.
+_HYGIENE_SEVERITY_KINDS = _AGENT_UNFIXABLE_KINDS - {"timeout"}
+
+
+def _finding_severity(failure_kind: str) -> str:
+    return "P3" if failure_kind in _HYGIENE_SEVERITY_KINDS else "P1"
+
+
+def _required_fix(failure_kind: str, command: str) -> str:
+    """The one action that resolves this failure, addressed to whoever can act."""
+    if failure_kind == "timeout":
+        return (
+            f"The {command!r} gate produced no result: it did not finish within "
+            "its wall-clock budget. Either raise "
+            f"verification.commands[{command!r}].timeout in the project plugin "
+            "if the command is honestly that long, or diagnose the hang — an "
+            "empty output tail with the duration pinned to the budget means it "
+            "never started producing work. Then rerun the gate, or choose an "
+            "explicit waiver."
+        )
+    if failure_kind in _HYGIENE_SEVERITY_KINDS:
+        return (
+            "Fix the verification environment outside the agent or choose an "
+            "explicit waiver."
+        )
+    return "Fix the failing verification command and rerun it."
 
 
 def _passed(receipt: dict) -> bool:
@@ -1260,14 +1345,10 @@ def _request_handoff(
     failure_kind = getattr(classification, "failure_kind", "test_failure") or "test_failure"
     finding = {
         "id": f"verification_gate_{failure_kind}",
-        "severity": "P3" if hygiene else "P1",
+        "severity": _finding_severity(failure_kind),
         "title": f"Verification gate {failure_kind}",
         "body": evidence,
-        "required_fix": (
-            "Fix the verification environment outside the agent or choose an explicit waiver."
-            if hygiene
-            else "Fix the failing verification command and rerun it."
-        ),
+        "required_fix": _required_fix(failure_kind, entry.command),
         "failure_kind": failure_kind,
     }
     last_output = getattr(run.state, "last_critique", "") or evidence
@@ -1334,11 +1415,16 @@ def repark_verification_handoff_retry_blocked(
 
     artifacts = dict(active.get("artifacts") or {})
     findings = artifacts.get("findings")
+    # Which actions to offer follows from what the failure IS, so read the
+    # persisted ``failure_kind`` rather than inferring it from severity: a
+    # timeout is agent-unfixable (waiver / halt only) yet carries P1, so the
+    # severity proxy would silently offer it a repair retry.
+    first = findings[0] if isinstance(findings, list) and findings else None
+    first = first if isinstance(first, dict) else {}
     hygiene = (
-        isinstance(findings, list)
-        and bool(findings)
-        and isinstance(findings[0], dict)
-        and findings[0].get("severity") == "P3"
+        str(first.get("failure_kind") or "") in _AGENT_UNFIXABLE_KINDS
+        if first.get("failure_kind")
+        else first.get("severity") == "P3"
     )
     prior_id = str(active.get("id") or "gate:verification")
     prior_summary = artifacts.get("short_summary")

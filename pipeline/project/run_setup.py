@@ -269,19 +269,64 @@ def setup_checkpoint_and_metrics(
 
 def project_verification_contract(
     plugin: PluginConfig,
+    *,
+    project_dir: str | Path | None = None,
 ) -> VerificationContract | None:
     """Validate and return the declared verification contract, or ``None``.
 
     Thin seam the run coordinator calls once, unconditionally, between
     ``load_plugin`` and the pipeline header. Returns ``None`` when no contract
     is declared (run behaves byte-identically to before); raises
-    :class:`pipeline.verification_contract.VerificationContractError` when a
-    contract is declared but invalid, so the run fails fast with a clear error.
+    :class:`sdk.errors.InvalidVerificationContract` when a contract is declared
+    but invalid, so the run fails fast with a clear error.
+
+    The raise is typed on purpose. ``VerificationContract.from_plugin`` signals
+    a bad declaration with a plain ``ValueError``
+    (:class:`~pipeline.verification_contract.VerificationContractError`), which
+    no boundary maps — an unknown field in ``PLUGIN["verification"]`` used to
+    reach the operator as a Python traceback out of ``orcho run``. Wrapping it
+    here, at the one point the run path validates, gives every transport the
+    same operator-fixable message via the existing ``OrchoError`` handling;
+    ``project_dir`` (when known) names the offending plugin file.
 
     Read-only Stage 1: this never executes ``verification.commands``, writes a
     receipt, or blocks a transition — it only loads and validates the contract.
     """
-    return VerificationContract.from_plugin(plugin)
+    from pipeline.verification_contract import VerificationContractError
+    from sdk.errors import InvalidVerificationContract
+
+    try:
+        return VerificationContract.from_plugin(plugin)
+    except VerificationContractError as exc:
+        raise InvalidVerificationContract(
+            _invalid_contract_message(exc, project_dir),
+        ) from exc
+
+
+def _invalid_contract_message(
+    exc: Exception, project_dir: str | Path | None,
+) -> str:
+    """Operator-facing text for a declared-but-invalid verification contract.
+
+    Names the file that must change, the structural complaint, and the
+    read-only command that re-checks the declaration without starting a run.
+    """
+    from pipeline.plugins import PLUGIN_RELATIVE_PATH
+
+    where = (
+        str(Path(project_dir) / PLUGIN_RELATIVE_PATH)
+        if project_dir
+        else PLUGIN_RELATIVE_PATH
+    )
+    recheck = f"orcho quality-gates --project {project_dir}" if project_dir else (
+        "orcho quality-gates"
+    )
+    return (
+        f"Invalid verification contract in {where}:\n"
+        f"  {exc}\n"
+        "No phase was dispatched. Fix the PLUGIN[\"verification\"] declaration, "
+        f"then re-check it read-only with:\n  {recheck}"
+    )
 
 
 def print_pipeline_header(

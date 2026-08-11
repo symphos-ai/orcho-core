@@ -88,6 +88,9 @@ def _write_workspace_config(ws: Path, projects: dict[str, str]) -> None:
 
 def _session(*, scope: str | None, projects: tuple[str, ...]) -> dict:
     session: dict = {
+        # Engine entry: ``_run_commit_delivery`` only runs when the pipeline
+        # just finished its phases, i.e. ``status == "done"``. SDK projection
+        # tests that read a *persisted* parked gate set their own live status.
         "status": "done",
         "phases": {
             "final_acceptance": {"verdict": "APPROVED", "short_summary": "ok"},
@@ -442,7 +445,9 @@ def test_strict_mono_yields_reversible_typed_blocker(
     # Persist the parked gate and read it back through the SDK projection.
     (run_dir / "meta.json").write_text(
         json.dumps({
-            "status": "done",
+            # Scope guards are evaluated on a live parked gate. A completed
+            # lifecycle requires resume before it can be decided.
+            "status": "awaiting_commit_decision",
             "project": str(primary),
             "commit_delivery": decision.to_dict(),
         }),

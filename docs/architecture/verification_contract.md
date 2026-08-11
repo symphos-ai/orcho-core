@@ -184,12 +184,14 @@ continuity is R2 work, and terminal/DONE projection is R3 work.
 
 ADR 0130 retains the receipt status vocabulary (`present`, `missing`, `failed`,
 `stale`) while adding `failure_kind`: no receipt is `missing`; a nonzero exit is
-`test_failure`; no exit code/execution detail is `env_failure`; and an exit-0
+`test_failure`; a receipt whose typed `outcome` is `timeout` (schema v4,
+[ADR 0174](../adr/0174-typed-timeout-failure-kind.md)) is `timeout`; any other
+missing exit code/execution detail is `env_failure`; and an exit-0
 failed assertion is `provenance_failure` for `import_path_*` or `env_failure`
 otherwise. Fingerprint, checkout HEAD, and depended-on dependency movement are
 `stale` after execution/assertion classification.
 
-| Effective declared policy | `test_failure` / `missing` / `stale` | `provenance_failure` / `env_failure` |
+| Effective declared policy | `test_failure` / `timeout` / `missing` / `stale` | `provenance_failure` / `env_failure` |
 | --- | --- | --- |
 | `require` | blocking readiness, release gap, and delivery | visible `warn`, not an engine gap or delivery blocker |
 | `warn` / `suggest` | visible warning | visible warning |
@@ -199,6 +201,14 @@ A hygiene failure is not a source-code repair request. Its phase handoff uses
 existing `artifacts.findings`, `artifacts.short_summary`, and `last_output`, and
 offers only `continue_with_waiver` or `halt`. A waiver remains an explicit
 operator action; test failures retain repair-loop and `retry_feedback` behavior.
+
+`timeout` deliberately sits between the two columns' behaviours: it *blocks*
+like a test failure (a command that never finished proved nothing, so a
+required gate stays a required gap — the left column above), but it *routes*
+like hygiene (no repair rounds; the pause offers `continue_with_waiver` /
+`halt`, because an agent cannot raise the declared budget and a genuine hang is
+a diagnosis, not a code edit). Its finding is P1, and its `required_fix` names
+the per-command `timeout` declaration as the lever.
 
 No top-level handoff wire field is added. Core consumers use existing artifacts;
 an exact MCP `findings_summary` or
@@ -452,6 +462,35 @@ host.
 > Each command may declare `parity: absolute | differential` (validated as an
 > enum; default `absolute`). Commands are still **not** scheduled or blocking;
 > `verify run` is operator-invoked.
+
+#### Command wall-clock budget (`timeout`)
+
+A command may declare `timeout: <positive int seconds>` — the wall-clock budget
+the executor gives that subprocess. Absent a declaration the engine applies its
+default backstop (600s). The declaration moves the ceiling only; the failure
+semantics are unchanged, so exceeding it still degrades to a failed receipt
+(`exit_code: null`) with a `detail` naming the effective budget.
+
+Declare one when the command's honest runtime is within the same order of
+magnitude as the default — a suite that legitimately runs for minutes under
+worktree contention or a cold build cache is otherwise indistinguishable from a
+hang, and the truncated receipt reads as a red gate. The pathology to keep
+catchable is the real hang: an empty `stdout_tail` with `duration_s` pinned to
+the ceiling. Sizing the budget generously (well above observed runtime) keeps
+that signal while removing the false red; disabling the ceiling is not offered.
+
+```python
+"vitest": {
+    "env": "ix-local",
+    "run": ["npx", "vitest", "run"],
+    "timeout": 900,          # observed ~35s; budget covers contention, still catches hangs
+},
+```
+
+> Implemented ([ADR 0173](../adr/0173-verification-command-timeout.md)). Validated
+> as a positive `int` (a `bool` is rejected explicitly); non-integer, zero, and
+> negative values are `VerificationContractError`s at contract load, i.e. before
+> the run dispatches a phase.
 
 #### verification.required
 
@@ -716,10 +755,16 @@ resolved_cost          = command.cost when declared; otherwise the most
 ```
 
 `cost` / `default_cost` accept only `fast`, `moderate`, `slow`, or `unknown`.
-Cost is display and scheduling metadata only: it does not enter selection,
-policy/action derivation, execution eligibility, consequence, disposition, or
-receipt freshness. The resolver is order-independent, so swapping contributing
-gate-set declarations cannot change a conflict result.
+Cost does not enter selection, policy/action derivation, execution eligibility,
+consequence, disposition, or receipt freshness. It has one execution-cadence
+effect: after a later `repair_changes` mutation, the engine eagerly reruns the
+selected engine-owned `after_phase(implement)` identities resolved as `fast`.
+The original identity and action remain authoritative, and the execution is
+recorded as a rerun. Moderate, slow, and unknown-cost identities stay on their
+declared schedule. See
+[ADR 0165](../adr/0165-eager-fast-verification-after-repair.md).
+The resolver is order-independent, so swapping contributing gate-set
+declarations cannot change a conflict result.
 
 A schedule entry's optional `gate_sets` narrows the merge **source** only — it
 does not change `contributing_gate_sets` / `primary_gate_set` attribution. The
@@ -754,6 +799,12 @@ A failed required `after_phase(implement)` gate whose effective action is
 4. repeats up to the repair budget (`--max-rounds` / the profile's
    `repair_round` loop); a passing re-check closes the flow, budget exhaustion
    escalates to a handoff.
+
+When an ordinary reviewer-requested `repair_changes` phase mutates the subject
+after this flow, the engine eagerly reruns every selected fast identity from
+the same `after_phase(implement)` epoch. This catches cheap repair-introduced
+regressions before pre-final acceptance. It does not rerun moderate or slow
+gates and does not create a new scheduled identity.
 
 `continue_warn` warns without blocking; `handoff` pauses; `abort` stops the run.
 The ADR 0132 foundation does not change executor routing; `manual` and `suggest`
@@ -1605,6 +1656,7 @@ receipt is written, or any transition is blocked.
 | `verification.commands` | **Implemented (execution, Stage 3)** — projected in Stage 1, executed via `orcho verify run`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `verification.required` (list of command names) | **Implemented (Stage 3)** — validated list of declared names; drives `verify run --required`; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
 | `parity` (absolute/differential) | **Implemented (Stage 3)** — validated enum per command; differential lens on the receipt; [ADR 0080](../adr/0080-verification-contract-command-receipts.md) |
+| `timeout` (per-command seconds) | **Implemented (execution)** — validated positive int; overrides the engine's 600s backstop for that command only; [ADR 0173](../adr/0173-verification-command-timeout.md) |
 | `verification.schedule` (+ optional `policy`/`action`/`gate_sets`) | **Implemented (ADR 0132 foundation)** — validated normalized identities; executor adoption remains scheduled-gates task 2. |
 | `verification.gate_sets` / `verification.selection` | **Implemented (ADR 0132 foundation)** — deterministic selection and defaults merge feed `ScheduledGatePlan`; durable disposition migration remains task 3. |
 | `work_mode` (fast/pro/governed) | **Implemented (ADR 0132 foundation)** — exact policy projection; action/executor adoption is not part of this foundation. |

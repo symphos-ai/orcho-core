@@ -639,3 +639,17 @@ def test_promotion_does_not_block_contradictory_profile_with_undelivered_diff(
         project_dir=str(tmp_path / "api"),
     )
     assert promoted is None
+
+
+def test_classify_reclaimed_parent_never_reuses_historical_path(tmp_path: Path) -> None:
+    decision = classify_followup_worktree(
+        parent_run_dir=tmp_path / "parent",
+        followup_parent_worktree={
+            "isolation": "per_run", "path": str(tmp_path / "historical"),
+            "reclaimed": {"at": "2026-07-29T00:00:00Z"},
+        },
+        source_checkout=tmp_path / "source",
+    )
+    assert decision.blocked is True
+    assert decision.effective_parent_worktree is None
+    assert "historical" in (decision.block_message or "")

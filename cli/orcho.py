@@ -827,14 +827,16 @@ def _emit_delivery_setup_hints(result, project_group_root: str) -> None:
 
 
 def cmd_workspace_init(args: argparse.Namespace) -> int:
-    """Bootstrap an Orcho workspace under a project-group directory."""
+    """Connect a project in place or bootstrap an explicit project group."""
     from cli._workspace_runtime_gate import workspace_runtime_gate
     from sdk.workspace import (
         discover_undetected_candidates,
         preflight_workspace_target,
     )
+    from sdk.workspace_paths import project_repo_marker
 
     project_group_root = args.project_group_root or os.getcwd()
+    workspace_dir = getattr(args, "workspace_dir", None)
     no_interactive = bool(getattr(args, "no_interactive", False))
     dry_run = bool(getattr(args, "dry_run", False))
     force = bool(getattr(args, "force", False))
@@ -850,6 +852,7 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
         preflight_workspace_target(project_group_root, force=force)
         gate = workspace_runtime_gate(
             project_group_root,
+            workspace_dir=workspace_dir,
             no_interactive=no_interactive,
             dry_run=dry_run,
             force=force,
@@ -859,7 +862,12 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
         return exc.exit_code
 
     # Phase 1 (read-only): discover undetected folders.
-    candidates = discover_undetected_candidates(project_group_root)
+    project_mode = project_repo_marker(project_group_root) is not None
+    candidates = (
+        []
+        if project_mode
+        else discover_undetected_candidates(project_group_root)
+    )
 
     # Phase 2: interactive prompt (TTY + not --no-interactive + not dry-run).
     extra_projects: list = []
@@ -874,6 +882,7 @@ def cmd_workspace_init(args: argparse.Namespace) -> int:
     try:
         result = init_workspace(
             project_group_root,
+            workspace_dir=workspace_dir,
             workspace_name=getattr(args, "workspace_name", None),
             mcp_config=getattr(args, "mcp_config", None),
             mcp_server_name=getattr(args, "mcp_server_name", None),
@@ -910,6 +919,19 @@ def cmd_workspace_fine_tune(args: argparse.Namespace) -> int:
         return exc.exit_code
     print(format_fine_tune(result))
     return 0
+
+
+def cmd_workspace_cleanup(args: argparse.Namespace) -> int:
+    """Delegate workspace cleanup selection/execution to its focused adapter."""
+    from cli._workspace_cleanup import format_workspace_cleanup, workspace_cleanup_from_args
+
+    try:
+        result = workspace_cleanup_from_args(args)
+    except (OrchoError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(format_workspace_cleanup(result))
+    return 1 if result.receipt is not None and result.receipt.status == "partial" else 0
 
 
 def cmd_verify_overview(args: argparse.Namespace) -> int:
@@ -1774,12 +1796,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_ws_init = p_ws_sub.add_parser(
         "init",
-        help="Initialise an Orcho workspace under a project-group directory",
+        help="Connect the current project or initialise a shared workspace",
         description=(
-            "Create workspace-orchestrator/ under PROJECT_GROUP_ROOT with the "
-            "runs directory, env script, and optional MCP config snippet. "
-            "PROJECT_GROUP_ROOT should be a directory that holds one or more "
-            "project repos (e.g. ~/www/my-org), not a single repo itself."
+            "Run inside an existing project to connect it in place. Orcho "
+            "stores run state in an external managed workspace and leaves the "
+            "repository where it is. A non-project directory keeps the "
+            "advanced shared-workspace behavior and discovers child repos."
         ),
     )
     p_ws_init.add_argument(
@@ -1787,17 +1809,25 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         default=None,
         help=(
-            "Directory containing one or more project repos. Will be "
-            "created if it doesn't exist. Defaults to the current "
+            "Existing project repo to connect, or an explicit group directory "
+            "for a shared multi-project workspace. Defaults to the current "
             "working directory."
+        ),
+    )
+    p_ws_init.add_argument(
+        "--workspace-dir", default=None, metavar="PATH",
+        help=(
+            "Control workspace location for a project repo. By default Orcho "
+            "uses a deterministic directory under the platform user-data "
+            "root. Group directories still use workspace-orchestrator/."
         ),
     )
     p_ws_init.add_argument(
         "--workspace-name", default=None,
         help=(
             "Logical name for the workspace; used as the default MCP "
-            "server name suffix (orcho-<name>). Default: basename of "
-            "project_group_root."
+            "server name suffix (orcho-<name>). Default: project or group "
+            "directory name."
         ),
     )
     p_ws_init.add_argument(
@@ -1811,7 +1841,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-server-name", default=None, metavar="NAME",
         help=(
             "Server name to use in the MCP snippet/config. Default: "
-            "orcho-<slug(basename(project_group_root))>."
+            "orcho-<slug(project-or-group-name)>."
         ),
     )
     p_ws_init.add_argument(
@@ -1824,9 +1854,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_init.add_argument(
         "--force", action="store_true",
         help=(
-            "Allow initialising a target that itself looks like a project "
-            "repo, and replace a conflicting MCP server entry in an "
-            "existing .mcp.json."
+            "Continue when no agent runtime is installed, and replace a "
+            "conflicting MCP server entry in an existing .mcp.json."
         ),
     )
     p_ws_init.add_argument(
@@ -1874,6 +1903,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace directory (reserved; inspection is project-local).",
     )
     p_ws_fine.set_defaults(func=cmd_workspace_fine_tune)
+
+    p_ws_cleanup = p_ws_sub.add_parser(
+        "cleanup",
+        help="Report retained worktrees, or archive/delete expired stopped checkouts",
+        description=(
+            "Default is a read-only report. --reclaim-worktrees and "
+            "--reclaim-both archive by default; --delete is irreversible and "
+            "requires one of those reclaim tiers."
+        ),
+    )
+    cleanup_tier = p_ws_cleanup.add_mutually_exclusive_group()
+    cleanup_tier.add_argument(
+        "--reclaim-worktrees", action="store_true",
+        help="Archive/delete selected checkouts while preserving every run directory.",
+    )
+    cleanup_tier.add_argument(
+        "--reclaim-both", action="store_true",
+        help="After selected checkouts succeed, also archive/delete their eligible run roots.",
+    )
+    p_ws_cleanup.add_argument(
+        "--delete", action="store_true",
+        help="Irreversibly delete selected material; requires a reclaim tier (default is archive).",
+    )
+    p_ws_cleanup.add_argument(
+        "--older-than", type=_positive_int, default=None, metavar="DAYS",
+        help="Run-root fallback retention age in days (default: 30).",
+    )
+    p_ws_cleanup.add_argument(
+        "--force", action="store_true",
+        help="Reclaim only explicitly old protected work; requires --older-than and a reclaim tier.",
+    )
+    p_ws_cleanup.add_argument(
+        "--workspace", "-w", default=None,
+        help="Workspace directory (else $ORCHO_WORKSPACE / cwd walk-up).",
+    )
+    p_ws_cleanup.set_defaults(func=cmd_workspace_cleanup)
 
     # ── web ───────────────────────────────────────────────────────────────────
     # Hidden from help until the interface package ships on PyPI (advertising it
@@ -2154,6 +2219,13 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
         ),
     )
     if not cross:
+        mock.add_argument(
+            "--mock-review-reject", type=int, default=0, metavar="N",
+            help=(
+                "Mock-only: emit N rejected change reviews before approving. "
+                "Useful for exercising the review/repair loop."
+            ),
+        )
         mock.add_argument(
             "--no-worktree-isolation", action="store_true",
             help=(

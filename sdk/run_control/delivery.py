@@ -30,6 +30,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pipeline.run_state.release_verdict import is_release_blocked
+from pipeline.run_state.status_vocab import (
+    RESUMABLE_TERMINAL_STATUSES,
+    TERMINAL_CROSS_STATUSES,
+    TERMINAL_SUCCESS_STATUSES,
+)
 from pipeline.run_state.terminal_outcome import settle_delivery_terminal
 from sdk.run_control.types import (
     DeliveryDecisionActionValue,
@@ -76,6 +81,9 @@ _DELIVERY_SCOPE_BLOCKER: str = "delivery_scope_violation"
 # ``blocker`` field; fix/skip/halt stay open. Reused on both surfaces so the
 # string is identical on the wire.
 _PATCH_INVALID_BLOCKER: str = "patch_invalid"
+# A durable gate remains informative after its run has stopped, but it cannot
+# be decided until the run is resumed into a live parked state.
+_STOPPED_GATE_BLOCKER: str = "delivery_decision_requires_resume"
 
 
 def _commit_delivery_statuses() -> frozenset[str]:
@@ -165,12 +173,19 @@ def decide_delivery(
     ctx = meta.get("commit_delivery") if isinstance(meta, dict) else None
     resolved_run_id = _resolved_run_id(ctx, ref.run_dir, run_id)
 
-    if (
-        not isinstance(ctx, dict)
-        or (
-            ctx.get("status") not in _DECIDABLE_STATUSES
-            and not _is_rejected_release_gate(ctx)
+    if not isinstance(ctx, dict):
+        return DeliveryDecisionResult(
+            run_id=resolved_run_id,
+            action=action,
+            accepted=False,
+            status=_refusal_status(ctx),
+            terminal_outcome=_meta_terminal_outcome(meta),
+            blocker="no_pending_delivery_gate",
         )
+
+    if (
+        ctx.get("status") not in _DECIDABLE_STATUSES
+        and not _is_rejected_release_gate(ctx)
     ):
         return DeliveryDecisionResult(
             run_id=resolved_run_id,
@@ -179,6 +194,21 @@ def decide_delivery(
             status=_refusal_status(ctx),
             terminal_outcome=_meta_terminal_outcome(meta),
             blocker="no_pending_delivery_gate",
+        )
+
+    # Checked only after the gate block itself proved decision-shaped: a
+    # committed / skipped / malformed block on a stopped run is "no pending
+    # gate", not a resume-first gate.
+    stopped_reason = _stopped_delivery_gate_reason(meta)
+    if stopped_reason is not None:
+        return DeliveryDecisionResult(
+            run_id=resolved_run_id,
+            action=action,
+            accepted=False,
+            status=_refusal_status(ctx),
+            terminal_outcome=_meta_terminal_outcome(meta),
+            blocker=_STOPPED_GATE_BLOCKER,
+            reason=stopped_reason,
         )
 
     release_verdict = str(ctx.get("release_verdict") or "")
@@ -317,12 +347,17 @@ def delivery_decision_state(
     ctx = meta.get("commit_delivery") if isinstance(meta, dict) else None
     resolved_run_id = _resolved_run_id(ctx, ref.run_dir, run_id)
 
-    if (
-        not isinstance(ctx, dict)
-        or (
-            ctx.get("status") not in _DECIDABLE_STATUSES
-            and not _is_rejected_release_gate(ctx)
+    if not isinstance(ctx, dict):
+        return DeliveryDecisionState(
+            run_id=resolved_run_id,
+            decidable=False,
+            kind="none",
+            reason="no pending delivery gate",
         )
+
+    if (
+        ctx.get("status") not in _DECIDABLE_STATUSES
+        and not _is_rejected_release_gate(ctx)
     ):
         return DeliveryDecisionState(
             run_id=resolved_run_id,
@@ -331,6 +366,19 @@ def delivery_decision_state(
             reason="no pending delivery gate",
         )
 
+    # Checked only after the gate block itself proved decision-shaped: a
+    # committed / skipped / malformed block on a stopped run is "no pending
+    # gate", not a resume-first gate.
+    stopped_reason = _stopped_delivery_gate_reason(meta)
+    if stopped_reason is not None:
+        return DeliveryDecisionState(
+            run_id=resolved_run_id,
+            decidable=False,
+            kind=_delivery_gate_kind(ctx),
+            reason=stopped_reason,
+        )
+
+    requested_at = _durable_decided_at(ctx)
     status = str(ctx.get("status"))
     release_verdict = str(ctx.get("release_verdict") or "")
     release_blocked = is_release_blocked(release_verdict, empty_blocks=False)
@@ -355,6 +403,7 @@ def delivery_decision_state(
             blocked_actions=tuple(a for a in all_actions if a != "halt"),
             default_action=None,
             reason=_followup_correction_reason(resolved_run_id, ref.run_dir),
+            requested_at=requested_at,
             scope_disclosure=scope_disclosure,
         )
 
@@ -424,11 +473,52 @@ def delivery_decision_state(
         blocked_actions=tuple(blocked),
         default_action=default_action,
         reason=reason,
+        requested_at=requested_at,
         scope_disclosure=scope_disclosure,
     )
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
+
+def _stopped_delivery_gate_reason(meta: dict[str, Any]) -> str | None:
+    """Return the shared resume-first reason when a gate's run is stopped.
+
+    This is the sole lifecycle classifier for delivery-gate eligibility.  It
+    intentionally imports the canonical status vocabularies instead of owning
+    a parallel terminal-status literal.  A gate is durable context, not an
+    authorization to execute after its lifecycle has stopped.
+    """
+    status = meta.get("status")
+    stopped_statuses = (
+        TERMINAL_SUCCESS_STATUSES
+        | RESUMABLE_TERMINAL_STATUSES
+        | TERMINAL_CROSS_STATUSES
+    )
+    if isinstance(status, str) and status in stopped_statuses:
+        return f"run status {status!r} is stopped; resume first before deciding delivery"
+    return None
+
+
+def _delivery_gate_kind(ctx: dict[str, Any]) -> str:
+    """Preserve a durable gate's delivery/correction discriminator."""
+    if ctx.get("status") == "fix_requested" or is_release_blocked(
+        ctx.get("release_verdict"), empty_blocks=False,
+    ):
+        return "correction"
+    return "delivery"
+
+
+def _durable_decided_at(ctx: dict[str, Any]) -> str | None:
+    """Return a valid offset-aware durable delivery timestamp verbatim."""
+    value = ctx.get("decided_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value if parsed.tzinfo is not None else None
 
 
 def _scope_disclosure(ctx: Any) -> tuple[str, ...]:

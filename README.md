@@ -17,10 +17,12 @@ it, and prove what is ready to deliver.**
 
 📖 **Documentation:** [docs.orcho.dev](https://docs.orcho.dev)
 
-![One orcho run end to end, sped up: the opening envelope, the pipeline map, the plan contract, plan validation, implement subtasks with attestations, review, final acceptance, the delivery commit, and the closing rollup](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
+![Install Orcho, bootstrap the golden fixture, then watch one run implement a change, get rejected as false-ready, repair the blocker, pass review, and close with a green delivery receipt](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-run-demo.gif)
 
-<sub>One `orcho run` end to end (mock pipeline, sped up). Interactive version
-with pause and scrub: [docs.orcho.dev](https://docs.orcho.dev).</sub>
+<sub>Three commands to the first result: install, bootstrap, run. The recorded
+pipeline is deterministic mock mode using the real CLI and lifecycle; output is
+trimmed for pace. Interactive version with pause and scrub:
+[docs.orcho.dev](https://docs.orcho.dev/evidence/false-ready-delivery/).</sub>
 
 Use the coding agents you already trust. They remain the workers; Orcho owns
 the delivery protocol around them: plan → implementation → review → repair
@@ -40,9 +42,89 @@ Default: Claude (PLAN / BUILD / FIX) + Codex (REVIEW / QA).
 Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
 Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
-No engine fork is required for project-specific context. Orcho can run in
-generic mode; add an optional `plugin.py` when the project needs explicit
-architecture, file hints, prompts, or verification policy.
+No engine fork is required for project-specific context. Orcho starts with a
+safe generic fallback, and `workspace init` creates a language-neutral plugin
+scaffold. Completing that scaffold for the project is the recommended setup:
+it gives Orcho explicit architecture context, file hints, and authoritative
+verification policy instead of making every run rediscover them.
+
+---
+
+## Quick start — your existing repository
+
+With Python 3.12+, `pipx`, and one supported coding-agent CLI on `PATH`,
+install Orcho once and initialise it from inside the repository you already
+have:
+
+```bash
+pipx install orcho
+
+cd ~/www/my-project
+orcho workspace init
+orcho run --mock --task "Describe and implement one small change"
+orcho status
+```
+
+`workspace init` does not move, copy, or modify the repository layout. It
+registers the canonical project path and stores Orcho's control state in an
+external managed workspace. Later CLI commands resolve that workspace from
+the current project directory; no `--project` flag, environment script, or
+dedicated parent folder is required.
+
+The mock run exercises the delivery pipeline without calling a model. For a
+real run, remove `--mock` and make sure at least one supported coding-agent CLI
+is available on `PATH`.
+
+**Detailed walkthrough:** [Getting started](docs/user/00_getting_started.md)
+
+### Next step — a shared product workspace
+
+The in-place flow above is the fastest way to start. For a long-lived product,
+especially one split across repositories such as a backend and frontend, the
+recommended second step is to keep the related repositories under one
+intentional root and place the Orcho workspace there too:
+
+```text
+~/work/my-product/
+├── backend/
+├── frontend/
+└── workspace-orchestrator/  # created by Orcho
+```
+
+If the repositories already share a parent, use it. If they do not, reorganise
+them when that is practical; Orcho still accepts absolute paths, so this layout
+is a best practice rather than a requirement.
+
+Initialise the product root:
+
+```bash
+orcho workspace init ~/work/my-product
+```
+
+Then either run commands from `~/work/my-product`, where Orcho discovers the
+workspace automatically, or activate it once in a Unix shell and run from any
+directory:
+
+```bash
+source ~/work/my-product/workspace-orchestrator/orcho-env.sh
+```
+
+This gives mono-project and cross-project runs one place for aliases, policy,
+history, evidence, and MCP configuration. Cross-project work can then name the
+registered repositories explicitly:
+
+```bash
+orcho cross \
+  --task "Change the API contract and update the frontend" \
+  --projects backend frontend
+```
+
+`workspace init` registers the directory names as aliases, so repeating their
+absolute paths is unnecessary. `--projects` remains explicit because one
+workspace may contain more repositories than a particular change should touch.
+
+See [Connecting your project](docs/user/03_workspaces.md) for the complete
+shared-workspace setup and configuration precedence.
 
 ---
 
@@ -142,8 +224,8 @@ For source-checkout setup, tests, and contribution workflow, see
 ## Try the golden mock demo
 
 The fastest zero-API proof is the single-project CLI demo. It creates a
-disposable git-backed fixture, runs the full mock pipeline, reviews the diff,
-and writes evidence.
+disposable git-backed fixture, runs the full mock pipeline, rejects one
+false-ready implementation, repairs it, and writes the final evidence.
 
 For an installed CLI, use the packaged demo bootstrap:
 
@@ -172,15 +254,16 @@ orcho diff <run-id> --stat --workspace /tmp/orcho_demo_1a/workspace-orchestrator
 ```
 
 Full walkthrough: [docs/demos/demo-1a-single-project-cli.md](docs/demos/demo-1a-single-project-cli.md).
+For QA, release smokes, SDK checks, and repeatable recordings, see the
+[deterministic mock harness guide](docs/guides/deterministic_mock_harness.md).
 
 ---
 
-## First time? Start here
+## Go deeper
 
-**→ [docs/user/00_getting_started.md](docs/user/00_getting_started.md)**
-
-The full path from zero to the first result: prerequisites → install →
-connect your project → first run.
+The [getting-started guide](docs/user/00_getting_started.md) covers platform
+prerequisites, MCP client setup, real provider runs, evidence inspection, and
+the optional shared-root layout for intentional cross-project work.
 
 ---
 
@@ -202,7 +285,8 @@ Task
 
 ```bash
 # One project
-orcho run --task "Add input validation to /api/login" --project ~/my-project
+cd ~/my-project
+orcho run --task "Add input validation to /api/login"
 
 # Several projects at once
 orcho cross --task "Add rate limiting: API + client" \
@@ -223,9 +307,25 @@ orcho status | orcho history | orcho metrics
 
 ---
 
-## Connecting a project
+## Configure the generated project plugin
 
-Create `your-project/.orcho/multiagent/plugin.py`:
+`workspace init` prints the path to a generated plugin scaffold and its matching
+agent-rule templates. The scaffold is deliberately inert: init has not
+inspected the repository deeply enough to invent commands, environments, or
+delivery policy safely.
+
+Generic mode is sufficient for the first smoke run. For sustained use, copy
+the generated scaffold to `your-project/.orcho/multiagent/plugin.py`, merge the
+generated agent rules into the project's root instructions, and complete the
+configuration from facts found in the repository:
+
+If the project already has tests, linting, build checks, and CI, do not invent
+another quality system. Reuse those project-native commands in the plugin.
+CI remains the independent repository gate; the plugin lets Orcho select and
+run the relevant proof inside the task lifecycle, route a fixable failure back
+to repair, and attach durable receipts to readiness before delivery. It also
+keeps broad checks out of task prose, where planning and implementation agents
+can otherwise run them redundantly.
 
 ```python
 PLUGIN = {
@@ -250,8 +350,14 @@ Cost is evidence metadata: `fast` is bounded deterministic local feedback,
 `moderate` needs more setup or time, `slow` is broad or expensive, and
 `unknown` has no reliable predictable cost evidence. It never shortcuts
 selection, execution, policy, or action. See the practical [scheduled
-verification guide](docs/guides/scheduled_verification.md).
-Without `plugin.py`, orcho runs in generic mode.
+verification guide](docs/guides/scheduled_verification.md). For worked
+Python, PHP/Docker, and TypeScript/browser portfolios, see the public
+[quality gate strategy](https://docs.orcho.dev/extend/quality-gate-strategy/).
+Without a configured project plugin, Orcho still runs, but it falls back to
+generic context and has no project-owned scheduled verification contract.
+For the full workflow—including read-only fine-tune suggestions,
+agent-assisted repository discovery, and the engineer approval boundary—see
+[Configure the generated plugin scaffold](docs/user/03_workspaces.md#configure-the-generated-plugin-scaffold).
 
 ---
 

@@ -96,7 +96,7 @@ def test_needs_decision_torn_interrupted_with_active_payload(tmp_path: Path) -> 
 def test_needs_delivery_decision_approved_gate(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     _mk(runs, "r", {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",
@@ -365,7 +365,7 @@ def _scenarios(runs: Path) -> list[tuple[str, str, str | None]]:
     table.append(("decide", "needs_decision", None))
 
     _mk(runs, "deliver", {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "deliver",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",
@@ -586,7 +586,7 @@ def test_inspected_meta_seam_drives_delivery_branch(tmp_path: Path) -> None:
     # With the provider-merged meta carrying a pending gate → needs_delivery_decision,
     # and the attached recovery agrees on the delivery_gate subject.
     merged = {
-        "status": "halted", "halt_reason": "commit_delivery_pending",
+        "status": "awaiting_commit_decision",
         "commit_delivery": {
             "status": "pending", "run_id": "r",
             "project_path": "/x", "source_path": "/x", "baseline_ref": "HEAD",

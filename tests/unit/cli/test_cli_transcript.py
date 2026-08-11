@@ -1280,6 +1280,20 @@ def test_implement_summary_resumable_label_for_fresh_runs() -> None:
     assert "resumed from parent" not in out
 
 
+def test_repair_summary_uses_phase_title_in_summary_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "core.observability.logging.get_output_mode",
+        lambda: "summary",
+    )
+    out = _strip(
+        render_implement_summary(
+            title="Repair changes",
+            files_touched=["tests/test_validation.py"],
+        ),
+    )
+    assert out == "✓ repair changes · 0/0 subtasks · 1 files changed"
+
+
 def test_implement_summary_renders_subtask_progress_label() -> None:
     out = _strip(render_implement_summary(
         progress={"kind": "subtasks", "completed": 3, "total": 3},

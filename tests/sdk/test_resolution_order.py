@@ -14,6 +14,7 @@ import pytest
 
 from core.infra import config
 from sdk.runs import find_runs_dir
+from sdk.workspace_paths import managed_workspace_dir
 
 
 @pytest.fixture(autouse=True)
@@ -83,3 +84,34 @@ class TestFindRunsDirPrecedence:
         monkeypatch.setenv("ORCHO_WORKSPACE", str(tmp_path / "red"))
 
         assert find_runs_dir(runs_dir=explicit) == explicit
+
+    def test_project_cwd_resolves_managed_workspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = tmp_path / "projects" / "api"
+        (project / ".git").mkdir(parents=True)
+        nested = project / "src" / "api"
+        nested.mkdir(parents=True)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+        monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+        workspace = managed_workspace_dir(project)
+        runs = workspace / "runspace" / "runs"
+        runs.mkdir(parents=True)
+
+        assert find_runs_dir(cwd=nested) == runs
+
+    def test_managed_workspace_beats_unrelated_sibling_runspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = tmp_path / "projects" / "api"
+        (project / ".git").mkdir(parents=True)
+        unrelated = tmp_path / "workspace-orchestrator" / "runspace" / "runs"
+        unrelated.mkdir(parents=True)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+        monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
+        managed_runs = managed_workspace_dir(project) / "runspace" / "runs"
+        managed_runs.mkdir(parents=True)
+
+        assert find_runs_dir(cwd=project) == managed_runs

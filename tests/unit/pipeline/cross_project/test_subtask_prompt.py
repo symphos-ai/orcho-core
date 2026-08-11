@@ -193,3 +193,70 @@ def test_composition_order_is_stable() -> None:
     pos_exec    = text.index("Project rules for execution")
 
     assert pos_ctx < pos_skill < pos_subtask < pos_exec
+
+
+# ── Operator retry feedback (ADR 0176) ───────────────────────────────────────
+
+
+def test_operator_feedback_absent_by_default() -> None:
+    """An ordinary first pass renders no operator part at all.
+
+    Pins the no-regression half of ADR 0176: threading the new argument must
+    not change the prompt of a subtask nobody asked to redo.
+    """
+    turn, _ = _build_subtask_turn(SubTask(id="t1", goal="g"), PluginConfig())
+    assert all(p.kind != "human_feedback" for p in turn.parts)
+    assert "operator" not in turn.text.lower()
+
+
+def test_operator_feedback_is_byte_identical_to_the_canonical_part() -> None:
+    """The operator's own words reach the wire unmodified.
+
+    The subtask surface must not paraphrase, truncate, or re-frame the text —
+    framing lives in a separate notice part precisely so this body matches the
+    plan / repair surfaces byte for byte.
+    """
+    feedback = "Use the cached client.\n\n- do NOT open a new pool\n- keep TLS on"
+    turn, _ = _build_subtask_turn(
+        SubTask(id="t1", goal="g"), PluginConfig(), operator_feedback=feedback,
+    )
+    parts = [p for p in turn.parts if p.kind == "human_feedback"]
+    assert len(parts) == 1
+    assert parts[0].id == "human_feedback:operator_feedback"
+    assert parts[0].source == "operator"
+    assert parts[0].body == feedback
+    assert feedback in turn.text
+
+
+def test_operator_feedback_precedes_the_executable_block_with_its_notice() -> None:
+    """Order: notice → operator words → the one executable block.
+
+    The agent must read WHY it is redoing the work before WHAT the work is,
+    and the notice must deny scope widening (the failure mode a bare
+    instruction at the top of a prompt invites).
+    """
+    turn, _ = _build_subtask_turn(
+        SubTask(id="t1", goal="g"), PluginConfig(),
+        operator_feedback="Use the cached client",
+    )
+    text = turn.text
+    pos_notice = text.index("This subtask is being re-run")
+    pos_feedback = text.index("Use the cached client")
+    pos_subtask = text.index("## Current Executable Subtask")
+    assert pos_notice < pos_feedback < pos_subtask
+    assert "authoritative" in text[pos_notice:pos_feedback]
+    assert "does NOT widen your scope" in text[pos_notice:pos_feedback]
+
+
+def test_blank_operator_feedback_emits_neither_notice_nor_part() -> None:
+    """Whitespace-only feedback is not an instruction — emit nothing.
+
+    Otherwise a resume that carried an empty decision would frame an empty
+    body as authoritative guidance.
+    """
+    for blank in ("", "   ", "\n\t "):
+        turn, _ = _build_subtask_turn(
+            SubTask(id="t1", goal="g"), PluginConfig(), operator_feedback=blank,
+        )
+        assert all(p.kind != "human_feedback" for p in turn.parts)
+        assert "This subtask is being re-run" not in turn.text
