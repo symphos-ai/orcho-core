@@ -24,6 +24,7 @@ from core.observability.accounting_display import (
     format_estimated_entries_footer,
     runtime_accounting_hint,
 )
+from pipeline.engine.worktree import is_worktree_reclaimed
 from sdk import (
     CostReport,
     DetectedRuntime,
@@ -174,7 +175,7 @@ def _append_status_usage(out: list[str], status: RunStatus) -> None:
         f"{_status_label('  Tokens:')}  "
         f"{_stdout_paint(tokens_text, C.WHITE)}"
     )
-    cost = _float_metric(status.raw_metrics.get("total_cost_usd_equivalent"))
+    cost = status.total_cost_usd_equivalent
     if cost > 0.0:
         estimated = _metrics_cost_estimated(status.raw_metrics)
         out.append(
@@ -378,9 +379,16 @@ def _append_status_paths(
         )
     worktree = raw_meta.get("worktree")
     if isinstance(worktree, dict) and worktree.get("path"):
+        reclaimed = is_worktree_reclaimed(worktree)
         out.append(
-            f"{_status_label('    Worktree:')} {_status_muted(str(worktree['path']))}"
+            f"{_status_label('    Historical worktree:' if reclaimed else '    Worktree:')} {_status_muted(str(worktree['path']))}"
         )
+        marker = worktree.get("reclaimed")
+        if reclaimed and isinstance(marker, dict):
+            out.append(f"{_status_label('    Reclaimed:')} {_status_warning(str(marker['at']))}")
+            for label, key in (("Disposition", "disposition"), ("Archive", "archive_path"), ("Receipt", "receipt_path")):
+                if marker.get(key):
+                    out.append(f"{_status_label(f'    {label}:')} {_status_muted(str(marker[key]))}")
     parent_run_id = raw_meta.get("parent_run_id")
     if parent_run_id:
         out.append(
@@ -1729,7 +1737,12 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
     )
 
     out: list[str] = ["", paint(header, C.GREEN, C.BOLD), ""]
-    out.append(_workspace_kv("Project group:", result.group_root))
+    topology = getattr(result, "topology", "group")
+    primary_project = getattr(result, "primary_project", None)
+    if topology == "project" and primary_project is not None:
+        out.append(_workspace_kv("Project:", primary_project.path))
+    else:
+        out.append(_workspace_kv("Project group:", result.group_root))
     out.append(_workspace_kv("Workspace:", result.workspace_dir))
     out.append(_workspace_kv("Runs:", result.runs_dir))
     out.append(_workspace_kv("Env:", result.env_file))
@@ -1741,9 +1754,17 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
     interactive = getattr(result, "interactive", False)
 
     if result.detected_projects:
-        out.append(_workspace_heading("Detected projects:"))
+        label = (
+            "Registered project:"
+            if topology == "project"
+            else "Detected projects:"
+        )
+        out.append(_workspace_heading(label))
         for p in result.detected_projects:
-            out.append(f"    - {paint(p.name, C.GREEN)}")
+            out.append(
+                f"    - {paint(p.name, C.GREEN)} "
+                f"{paint(f'({p.path})', C.GREY)}"
+            )
         out.append("")
     else:
         # Only claim the group root is truly empty when there were no
@@ -1837,16 +1858,28 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             out.append(f"    {paint(f'⚠ {w}', C.YELLOW)}")
         out.append("")
 
-    out.append(_workspace_heading("Next shell step:"))
-    out.append(_workspace_command(f"source {result.env_file}"))
-    out.append("")
-    out.append(_workspace_heading("Try:"))
-    out.append(_workspace_command(f"orcho status --workspace {result.workspace_dir}"))
-    if result.detected_projects:
-        first = result.detected_projects[0].path
+    if topology == "project" and primary_project is not None:
+        out.append(_workspace_heading("Try from the project:"))
         out.append(_workspace_command(
-            f"orcho run --project {first} --task '...' --mock"
+            f"cd {shlex.quote(primary_project.path)}"
         ))
+        out.append(_workspace_command(
+            "orcho run --task '...' --mock"
+        ))
+        out.append(_workspace_command("orcho status"))
+    else:
+        out.append(_workspace_heading("Next shell step:"))
+        out.append(_workspace_command(f"source {result.env_file}"))
+        out.append("")
+        out.append(_workspace_heading("Try:"))
+        out.append(_workspace_command(
+            f"orcho status --workspace {result.workspace_dir}"
+        ))
+        if result.detected_projects:
+            first = shlex.quote(result.detected_projects[0].path)
+            out.append(_workspace_command(
+                f"orcho run --project {first} --task '...' --mock"
+            ))
     out.append("")
 
     # MCP snippet — always shown. When a config file was touched, also

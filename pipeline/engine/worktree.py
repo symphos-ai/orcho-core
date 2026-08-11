@@ -475,6 +475,22 @@ def teardown_worktree(
     )
 
 
+def reclaim_registered_worktree(*, project_dir: Path, path: Path) -> GitOpResult:
+    """Remove one retained registered checkout through the git lifecycle seam.
+
+    Workspace cleanup is intentionally prohibited from deleting a checkout
+    directory itself: doing so leaves a stale registration in the source
+    repository.  This small, verifiable seam is its sole removal authority.
+    """
+    if not registered_worktree_exists(project_dir=project_dir, path=path):
+        return GitOpResult(
+            ok=False,
+            error=f"registered worktree proof failed for {path}",
+            path=path,
+        )
+    return _remove_worktree(path, repo=project_dir, force=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -689,6 +705,19 @@ def registered_worktree_exists(*, project_dir: Path, path: Path) -> bool:
         if line.startswith("worktree ")
     }
     return str(path.resolve()) in listed
+
+
+def is_worktree_reclaimed(worktree: Mapping[str, Any] | None) -> bool:
+    """Whether a retained-worktree record was reclaimed by workspace cleanup.
+
+    ``worktree.reclaimed`` is additive durable history, not a replacement for
+    the original path.  Consumers must therefore use this predicate before
+    interpreting that historical path as a live checkout.
+    """
+    if not isinstance(worktree, Mapping):
+        return False
+    marker = worktree.get("reclaimed")
+    return isinstance(marker, Mapping) and isinstance(marker.get("at"), str) and bool(marker["at"])
 
 
 def _resolve_effective_mode(

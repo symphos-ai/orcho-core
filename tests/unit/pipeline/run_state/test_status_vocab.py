@@ -38,6 +38,12 @@ def test_terminal_cross_statuses_exact():
     )
 
 
+def test_stopped_retention_statuses_are_composed_from_lifecycle_vocabularies():
+    assert frozenset({
+        "done", "success", "completed", "halted", "failed", "interrupted", "cancelled",
+    }) == status_vocab.STOPPED_RETENTION_STATUSES
+
+
 def test_all_sets_are_frozensets():
     for name in (
         "TERMINAL_SUCCESS_STATUSES",

@@ -72,6 +72,37 @@ call time.
 
 ## Modules
 
+### `sdk.cleanup`
+
+```python
+report_workspace_cleanup(*, workspace=None, runs_dir=None, cwd=_CWD_DEFAULT,
+                         older_than=None, force=False) -> WorkspaceCleanupReport
+reclaim_workspace_cleanup(*, tier, disposition, workspace=None, runs_dir=None,
+                          cwd=_CWD_DEFAULT, older_than=None,
+                          force=False) -> WorkspaceCleanupReceipt
+```
+
+`report_workspace_cleanup` is read-only: it resolves the standard reader
+context, projects the engine selection into immutable counts and deterministic
+reason summaries, and creates no receipt, archive, metadata update, or checkout
+mutation. `reclaim_workspace_cleanup` is explicitly side-effecting: callers
+must choose `tier="worktrees" | "both"` and `disposition="archive" | "delete"`.
+It delegates selection and execution to the engine immediately before mutation,
+then copies only durable receipt facts into `WorkspaceCleanupReceipt`. `None`
+for `older_than` deliberately leaves the engine-owned default intact.
+
+`force=True` forwards the same narrow predicate to either call. A program can
+therefore use `report_workspace_cleanup(force=True, older_than=timedelta(...))`
+as a read-only forced-selection preview: it creates no receipt, archive,
+metadata update, or checkout mutation. The engine is the deep validation
+boundary and rejects force without an explicit `older_than`; the CLI adds the
+separate reclaim-tier usage requirement. Force selects only old root ids and
+only reports the documented `forced_reclaim_*` reasons; it does not weaken
+structural protections.
+
+This is an SDK-only contract. MCP is explicitly outside this decision and gains
+no cleanup tool or wire payload from it.
+
 ### `sdk.run_control.continuation` and `sdk.run_control.launch`
 
 `ContinuationRequest` is the explicit operator intent (`resume`, `followup`,
@@ -128,6 +159,25 @@ for fields the SDK hasn't promoted. `sub_projects` is the cross-run
 sub-project list (status per alias). `quality_gates` is a best-effort
 projection of finalized gate events from `evidence.json` when that artifact
 exists.
+
+`RunStatus.total_cost_usd_equivalent: float = 0.0` is the accounting-aware
+cost reference already present in the status snapshot's normalized metrics.
+It is `0.0` when metrics are unavailable, malformed, invalid, or accounting is
+disabled; clients do not need to inspect `raw_metrics` or invoke a separate
+metrics reader for this value.
+
+`RunStatus.last_event_seq: int | None = None` and
+`RunStatus.last_event_ts: str | None = None` identify the latest durable event
+position observed while loading status. `last_event_ts` is always an
+offset-aware ISO-8601 timestamp or `None`: an aware durable value is returned
+verbatim (including `Z`), while a legacy naive value is interpreted as this
+machine's local wall clock and returned with its numeric offset. A JSON-valid
+event with a valid `seq` but an unparseable `ts` returns that `seq` with
+`last_event_ts=None`; missing, unreadable, empty, or wholly malformed evidence
+produces `(None, None)`, and malformed JSON/shape at the tail falls back to the
+preceding valid event. These are position/observation data, not a staleness
+policy: clients choose any age, hung-run, or polling threshold. No
+event-history API call is needed merely to obtain the last-event position.
 
 ### `sdk.cross_parent_state`
 
@@ -368,6 +418,31 @@ or `None`), `files` (tuple of `RunDiffFileRecord(path, added, removed)`),
 `scope` (`"run"` or `"phase"`, echoes which artifact was asked for),
 `phase` (normalized phase name on phase calls, `None` on run calls).
 
+### `sdk.workspace`
+
+```python
+init_workspace(
+    project_group_root,
+    *,
+    workspace_dir=None,
+    workspace_name=None,
+    ...,
+) -> WorkspaceInitResult
+```
+
+Despite the retained parameter name, the primary input may be one existing
+project repository. In that mode the project is registered in place and the
+control workspace is created under the platform data root. `workspace_dir`
+overrides that managed location. A non-project directory keeps the explicit
+group-bootstrap behavior and discovers child repositories.
+
+`WorkspaceInitResult.topology` is `"project"` or `"group"`.
+`primary_project` contains the registered project in project mode and is
+`None` for a group bootstrap. `workspace_dir`, `runs_dir`, and the generated
+MCP snippet always contain the resolved control-workspace identity.
+
+See [ADR 0163](../adr/0163-existing-project-managed-workspace-onboarding.md).
+
 ### `sdk.prompts`
 
 ```python
@@ -483,6 +558,37 @@ tail_run_events(run_id, *, since_seq=0, poll=0.3, stop_predicate=None,
 build_decision_command(pending: PendingOperatorAction, action, *,
                        feedback=None, note=None) -> PhaseHandoffDecisionCommand
 ```
+
+### Open-pause and delivery timestamps
+
+`load_active_phase_handoff(...)` returns the durable active payload verbatim.
+Newly opened payloads add `requested_at`, an offset-aware UTC ISO-8601 string;
+legacy payloads remain readable and `payload.get("requested_at")` is `None`.
+The field belongs to the durable open transition, not to
+`PhaseHandoffRequested`, so advice reconstruction continues to use only the
+known runtime-signal fields.
+
+`DeliveryDecisionState.requested_at: str | None` is additive. For a decidable
+delivery or correction state it mirrors a valid, offset-aware durable
+`meta.commit_delivery.decided_at` verbatim; naive, absent, or malformed legacy
+values and non-decidable contexts publish `None`. Neither reader computes
+elapsed time or consults the current clock/filesystem mtime. Clients own any
+elapsed-time formatting, SLA policy, and presentation. See [ADR
+0164](../adr/0164-open-operator-pause-requested-at.md) and [ADR
+0168](../adr/0168-public-sdk-timestamps-unambiguous.md).
+
+### Delivery-gate eligibility
+
+`DeliveryDecisionState.decidable` means the gate is actionable **now**. A
+durable delivery or correction gate on `done`, `halted`, `failed`,
+`interrupted`, or `cancelled` remains observable with its kind and reason, but
+has `decidable=False` and no decision actions. Call `resume` first; after the
+lifecycle re-parks the unchanged gate in a live status such as
+`awaiting_commit_decision`, its existing actions are available again.
+
+`decide_delivery(...)` uses the same eligibility rule. For a stopped gate it
+returns `accepted=False` with a typed resume-required blocker and the same
+reason as `delivery_decision_state`; it does not modify `meta.json`.
 
 **`load_run_snapshot`** composes the existing read-only helpers
 (`find_run` / `load_meta` / `load_active_phase_handoff` /

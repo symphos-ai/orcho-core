@@ -53,6 +53,8 @@ class TestPackagedDemoBootstrap:
 
         assert "--project " in out
         assert "--profile feature" in out
+        assert "--mock-review-reject 1" in out
+        assert "--mock-validate-plan-reject" not in out
         assert shlex.quote(str(result.project_dir)) in out
         assert shlex.quote(str(result.workspace_dir)) in out
 

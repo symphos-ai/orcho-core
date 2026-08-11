@@ -115,10 +115,11 @@ def _park(
         decision_mode="defer",
     )
     ctx = decision.to_dict()
+    ctx["decided_at"] = "2026-07-29T09:31:22+00:00"
     if verification:
         ctx.update(verification)
     meta = {
-        "status": "halted",
+        "status": "awaiting_commit_decision",
         "halt_reason": "commit_delivery_pending",
         "commit_delivery": ctx,
     }
@@ -377,9 +378,10 @@ def test_state_delivery_gate(tmp_path: Path) -> None:
 
     assert state.decidable is True
     assert state.kind == "delivery"
-    assert set(state.available_actions) == {"approve", "apply", "skip", "halt"}
+    assert state.available_actions == ("approve", "apply", "skip", "halt")
     assert state.blocked_actions == ()
     assert state.default_action == "approve"
+    assert state.requested_at == "2026-07-29T09:31:22+00:00"
 
 
 def test_state_correction_gate_blocks_shipping(tmp_path: Path) -> None:
@@ -401,6 +403,7 @@ def test_state_correction_gate_blocks_shipping(tmp_path: Path) -> None:
     assert "RB1" in state.reason
     assert "Data loss on apply" in state.reason
     assert "Preserve existing rows" in state.reason
+    assert state.requested_at == "2026-07-29T09:31:22+00:00"
 
 
 def test_state_none_when_no_gate(tmp_path: Path) -> None:
@@ -412,6 +415,103 @@ def test_state_none_when_no_gate(tmp_path: Path) -> None:
 
     assert state.decidable is False
     assert state.kind == "none"
+    assert state.requested_at is None
+
+
+@pytest.mark.parametrize("status", ["done", "success", "completed", "halted", "failed", "interrupted", "cancelled"])
+def test_stopped_gate_requires_resume_without_mutation(tmp_path: Path, status: str) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    meta_path = runs_dir / "r1" / "meta.json"
+    meta = _meta(runs_dir)
+    meta["status"] = status
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    before = meta_path.read_bytes()
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+
+    assert state.decidable is False
+    assert state.kind == "delivery"
+    assert state.available_actions == ()
+    assert state.blocked_actions == ()
+    assert state.reason == f"run status {status!r} is stopped; resume first before deciding delivery"
+    assert result.accepted is False
+    assert result.blocker == "delivery_decision_requires_resume"
+    assert result.reason == state.reason
+    assert meta_path.read_bytes() == before
+
+
+def test_completed_delivery_on_stopped_run_is_not_a_resume_gate(tmp_path: Path) -> None:
+    """A committed block on a ``done`` run reads "no pending gate", never resume-first."""
+    runs_dir, _, _ = _park(tmp_path)
+    decided = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+    assert decided.accepted is True
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+    assert _meta(runs_dir)["status"] == "done"
+    assert state.decidable is False
+    assert state.kind == "none"
+    assert state.reason == "no pending delivery gate"
+
+    refused = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+    assert refused.accepted is False
+    assert refused.blocker == "no_pending_delivery_gate"
+    assert refused.reason is None
+
+
+def test_stopped_correction_gate_preserves_kind_and_becomes_decidable_when_live(tmp_path: Path) -> None:
+    runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
+    meta_path = runs_dir / "r1" / "meta.json"
+    meta = _meta(runs_dir)
+    meta["status"] = "halted"
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    stopped = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+    assert stopped.decidable is False
+    assert stopped.kind == "correction"
+
+    meta["status"] = "awaiting_commit_decision"
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    live = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+    assert live.decidable is True
+    assert live.kind == "correction"
+    assert live.available_actions == ("fix", "halt")
+
+
+def test_stopped_gate_can_be_decided_after_lifecycle_returns_live(tmp_path: Path) -> None:
+    runs_dir, repo, _ = _park(tmp_path)
+    meta_path = runs_dir / "r1" / "meta.json"
+    meta = _meta(runs_dir)
+    meta["status"] = "halted"
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    assert delivery_decision_state("r1", runs_dir=runs_dir, cwd=None).decidable is False
+    meta["status"] = "awaiting_commit_decision"
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+    assert result.accepted is True
+    assert (repo / "app.txt").read_text(encoding="utf-8") == "base\nrun\n"
+
+
+@pytest.mark.parametrize("decided_at", [None, "not-an-iso-timestamp"])
+def test_state_legacy_or_malformed_decided_at_is_none(
+    tmp_path: Path, decided_at: str | None,
+) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    meta = _meta(runs_dir)
+    if decided_at is None:
+        meta["commit_delivery"].pop("decided_at", None)
+    else:
+        meta["commit_delivery"]["decided_at"] = decided_at
+    (runs_dir / "r1" / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.decidable is True
+    assert state.requested_at is None
 
 
 def test_state_verification_block_removes_shipping(tmp_path: Path) -> None:
@@ -968,44 +1068,32 @@ def test_state_current_rejected_still_correction_fix_or_halt(tmp_path: Path) -> 
         assert result.blocker == "release_blocked"
 
 
-# ── T1: rejected / fix-marked correction directs to an ordinary follow-up ────
+# ── T1: stopped rejected / fix-marked correction requires resume ────────────
 #
 # After ``fix`` is accepted (status='fix_requested') — or when the run dead-ended
-# on an auto-refused rejected release (_is_rejected_release_gate) — repeating
-# ``fix`` is inert and a bare resume cannot advance the run. The state advertises
-    # no inert repeat (only ``halt`` stays) and routes the client to an ordinary
-# follow-up via the already-mapped ``reason`` field, naming the held diff.patch.
+# on an auto-refused rejected release (_is_rejected_release_gate) — its durable
+# gate remains observable, but the stopped lifecycle requires resume before any
+# decision can be offered.
 
 
-def test_state_fix_requested_directs_to_followup(tmp_path: Path) -> None:
+def test_state_fix_requested_requires_resume(tmp_path: Path) -> None:
     runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
     fix = decide_delivery("r1", "fix", runs_dir=runs_dir, cwd=None)
     assert fix.status == "fix_requested"
-    # An artifact diff must not alter the ordinary follow-up instruction.
+    # An artifact diff must not alter the stopped-gate projection.
     (runs_dir / "r1" / "diff.patch").write_text("patch\n", encoding="utf-8")
 
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
 
-    assert state.decidable is True
+    assert state.decidable is False
     assert state.kind == "correction"
-    # The inert ``fix`` repeat is NOT advertised as an actionable next step ...
-    assert "fix" not in state.available_actions
+    assert state.available_actions == ()
+    assert state.blocked_actions == ()
     assert state.default_action is None
-    # ... only ``halt`` (give up) remains available.
-    assert state.available_actions == ("halt",)
-    assert "fix" in state.blocked_actions
-    # ADR 0106: shipping (approve/apply) and skip stay blocked on the rejected
-    # release alongside the now-inert fix — none is offered as an actionable step.
-    assert set(state.blocked_actions) == {"fix", "approve", "apply", "skip"}
-    for inert in ("approve", "apply", "skip"):
-        assert inert not in state.available_actions
-    # The reason routes the client to an ordinary follow-up; diff artifacts are
-    # not replayed as correction input.
-    assert state.reason is not None
-    assert "orcho_run_resume run_id=r1" in state.reason
+    assert state.reason == "run status 'halted' is stopped; resume first before deciding delivery"
 
 
-def test_state_fix_requested_without_held_diff_still_points_to_followup(
+def test_state_fix_requested_without_held_diff_still_requires_resume(
     tmp_path: Path,
 ) -> None:
     runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
@@ -1016,9 +1104,8 @@ def test_state_fix_requested_without_held_diff_still_points_to_followup(
 
     state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
 
-    assert state.reason is not None
-    assert "orcho_run_resume run_id=r1" in state.reason
-    # Artifact presence is never part of the correction launch request.
+    assert state.reason == "run status 'halted' is stopped; resume first before deciding delivery"
+    # Artifact presence is not part of the lifecycle eligibility decision.
     assert "diff.patch" not in state.reason
 
 
@@ -1061,6 +1148,7 @@ def test_state_approved_pending_serialization_is_byte_identical(
         "blocked_actions": [],
         "default_action": "approve",
         "reason": None,
+        "requested_at": "2026-07-29T09:31:22+00:00",
         "scope_disclosure": [],
     }
 
@@ -1099,6 +1187,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
         "pr_intent",
         "pr_url",
         "blocker",
+        "reason",
         "followup_run_id",
         "scope_disclosure",
     }
@@ -1110,6 +1199,7 @@ def test_decide_approve_result_serialization_is_structurally_identical(
     assert payload["terminal_outcome"] == "done"
     assert payload["halt_reason"] is None
     assert payload["blocker"] is None
+    assert payload["reason"] is None
     assert payload["followup_run_id"] is None
     assert payload["scope_disclosure"] == []
     # bypass commits onto the checkout: commit_sha carries the outcome, the

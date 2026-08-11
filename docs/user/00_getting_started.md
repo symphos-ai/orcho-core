@@ -122,42 +122,57 @@ Docker, register a `docker run ... orcho-mcp` stdio server; with a source
 checkout, see `ORCHO_MCP_COMMAND` in
 [early_adopter_install.md](early_adopter_install.md).
 
-## 3. Create a workspace next to your project
+## 3. Connect your existing repository in place
 
-The workspace is where Orcho keeps runs, evidence, and settings. First
-prepare a parent folder and put your project inside. Any normal way
-works: `git clone`, `cp -R`, or moving an existing repo. Orcho does not
-copy or move your project for you.
+The workspace is where Orcho keeps runs, evidence, and settings. It does not
+need to contain your project, and your project does not need to be moved under
+an Orcho-specific parent.
 
-Keep the workspace next to the repo, not inside it:
-
-```text
-~/www/my-workspace/
-├── my-project/              ← your repo
-└── workspace-orchestrator/  ← Orcho creates this itself
-    └── .orcho/              ← settings and extension-point guides
-```
-
-When the parent folder is ready, ask Orcho to create its part:
+Enter the repository where it already lives:
 
 ```bash
-orcho workspace init ~/www/my-workspace
+cd ~/www/my-project
+orcho workspace init
 ```
 
-If you have several related projects, keep them under the same parent
-folder before running `orcho workspace init`:
+Or point at it explicitly:
 
-```text
-~/www/my-workspace/
-├── api/
-├── frontend/
-└── workspace-orchestrator/
-    └── .orcho/
+```bash
+orcho workspace init ~/www/my-project
 ```
 
-The generated `.orcho/` includes workspace settings, prompt override
-guides, a copyable plugin template, and a task-file guide. Re-running
-`workspace init` leaves existing scaffold files untouched.
+Orcho registers exactly that repository and creates a deterministic managed
+control workspace outside the checkout. The output shows both paths. It also
+includes workspace settings, prompt override guides, a copyable plugin
+template, and a task-file guide. Re-running `workspace init` is idempotent and
+leaves existing scaffold files untouched.
+
+The generated plugin is a safe, language-neutral starting point rather than a
+finished project contract. A generic smoke run works immediately, but the
+recommended next step is to adapt the scaffold into
+`<project>/.orcho/multiagent/plugin.py` using the repository's real
+architecture, commands, and environments. That configured plugin is where
+Orcho gains durable project context and authoritative scheduled verification.
+Existing tests and CI make this setup more grounded, not less necessary: reuse
+their project-native commands rather than defining a second quality system.
+CI remains an independent repository control, while Orcho gains in-run
+selection, repair or handoff routing, durable receipts, and readiness evidence
+before delivery.
+
+For the complete setup path, including agent-assisted discovery, see
+[Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold).
+The read-only `orcho workspace fine-tune --dry-run` command can propose an
+initial contract from repository markers, and the generated agent rules tell a
+coding agent how to inspect manifests, CI, and developer documentation before
+drafting the project configuration. Both are setup accelerators, not authority:
+an engineer reviews the resulting plugin and makes the final decision on
+commands, environments, selection, schedule, policy, and failure consequences.
+Use the [scheduled verification guide](../guides/scheduled_verification.md) for
+the authoring workflow and the [plugin reference](../expert/01_plugin.md) for
+every field. The public
+[quality gate strategy](https://docs.orcho.dev/extend/quality-gate-strategy/)
+compares worked portfolios across Python, PHP/Docker, and
+TypeScript/browser projects.
 
 ## 4. Pick a control surface
 
@@ -167,15 +182,17 @@ Use MCP if you want to drive Orcho from an MCP-aware client: start a
 run, check status/evidence, make a QA gate decision, and resume a task
 without reading raw logs.
 
-Add the Orcho server to the MCP config of your project/workspace
-context. `orcho workspace init` can print and write the snippet for you:
+Add the Orcho server to the MCP config of your project context.
+`orcho workspace init` prints the exact command and JSON shape with the managed
+workspace already filled in. To write a JSON client config during init:
 
 ```bash
 ORCHO_MCP_COMMAND="$(command -v orcho-mcp)"
 
-orcho workspace init ~/www/my-workspace \
-  --mcp-config ~/www/my-workspace/.mcp.json \
-  --mcp-server-name orcho-my-workspace \
+cd ~/www/my-project
+orcho workspace init \
+  --mcp-config .mcp.json \
+  --mcp-server-name orcho-my-project \
   --orcho-mcp-command "$ORCHO_MCP_COMMAND"
 ```
 
@@ -190,14 +207,9 @@ config files. Copy-paste instructions live in
 
 ### CLI — the terminal path
 
-Use the CLI if you want to work directly from a shell.
-
-On **macOS / Linux** (and WSL2 or Git Bash on Windows), source the generated
-env file to point the shell at the workspace:
-
-```bash
-source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh
-```
+Use the CLI directly from the project. No env script is required for the
+project-oriented journey: the current directory identifies the project and
+resolves the managed workspace created by init.
 
 Try it first with `--mock`. This runs the full pipeline end-to-end with a
 mock agent instead of a real model — no tokens spent, nothing calls your
@@ -206,8 +218,7 @@ real run:
 
 ```bash
 orcho run --mock \
-  --task "Add input validation: return 400 if email is empty or not valid format" \
-  --project ~/www/my-workspace/my-project
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
 Then the real run (this one calls your configured code-agent CLI and spends
@@ -215,20 +226,14 @@ tokens):
 
 ```bash
 orcho run \
-  --task "Add input validation: return 400 if email is empty or not valid format" \
-  --project ~/www/my-workspace/my-project
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
-On **native Windows (PowerShell)**, `orcho-env.sh` is a bash script; set the
-same two variables directly (or pass `--workspace` on each command):
+The native Windows command has the same shape:
 
 ```powershell
-$env:ORCHO_WORKSPACE = "$HOME\www\my-workspace\workspace-orchestrator"
-$env:ORCHO_RUNSPACE  = "$env:ORCHO_WORKSPACE\runspace"
-
 orcho run `
-  --task "Add input validation: return 400 if email is empty or not valid format" `
-  --project "$HOME\www\my-workspace\my-project"
+  --task "Add input validation: return 400 if email is empty or not valid format"
 ```
 
 Orcho will change files in the project you point it at. For a first run,
@@ -253,15 +258,55 @@ orcho evidence
 What changed in the project:
 
 ```bash
-cd ~/www/my-workspace/my-project
+cd ~/www/my-project
 git diff
 ```
 
-Run artifacts live here:
+Run artifacts live under the managed workspace path printed by init:
+`<managed-workspace>/runspace/runs/`.
+
+## 6. Best practice for several related repositories
+
+Do not reorganise projects for the first mono-project run. If you later want
+Orcho to coordinate several repositories in cross-project mode, a deliberate
+shared root makes aliases, history, MCP configuration, and delivery easier to
+reason about:
 
 ```text
-~/www/my-workspace/workspace-orchestrator/runspace/runs/
+~/work/my-product/
+├── api/
+├── web/
+├── contracts/
+└── workspace-orchestrator/
 ```
+
+Initialise that shared root explicitly:
+
+```bash
+orcho workspace init ~/work/my-product
+```
+
+Either run from `~/work/my-product` and let Orcho discover the workspace, or
+activate it once in a Unix shell to run from any directory:
+
+```bash
+source ~/work/my-product/workspace-orchestrator/orcho-env.sh
+```
+
+Then run cross-project work with an explicit project list:
+
+```bash
+orcho cross \
+  --task "Change the API contract and update both consumers" \
+  --projects api web
+```
+
+The aliases come from the projects registered by `workspace init`.
+`alias:/absolute/path` remains available for projects that are not registered
+in the active workspace.
+
+This layout is a best practice, not an engine requirement. Absolute project
+paths remain valid when repositories cannot or should not share a parent.
 
 ## If something goes wrong
 
@@ -279,15 +324,11 @@ $env:CLAUDE_BIN = (Get-Command claude).Source   # native Windows / PowerShell
 $env:CODEX_BIN  = (Get-Command codex).Source
 ```
 
-If the CLI does not see status/evidence, make sure the shell is
-connected to the workspace:
+If the CLI does not see status/evidence, give it the project or the workspace
+explicitly:
 
 ```bash
-source ~/www/my-workspace/workspace-orchestrator/orcho-env.sh   # macOS / Linux
-```
-
-```powershell
-$env:ORCHO_WORKSPACE = "$HOME\www\my-workspace\workspace-orchestrator"   # native Windows
+orcho status --workspace <managed-workspace-printed-by-init>
 ```
 
 If MCP looks at the wrong place, check `ORCHO_WORKSPACE` in the MCP

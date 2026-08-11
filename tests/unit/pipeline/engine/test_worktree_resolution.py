@@ -14,9 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from core.io.git_helpers import GitOpResult
 from pipeline.engine.worktree import (
     WorktreeConfigError,
     get_active_worktree_checkout,
+    reclaim_registered_worktree,
     reset_active_worktree_checkout,
     resolve_worktree_for_run,
     set_active_worktree_checkout,
@@ -52,6 +54,31 @@ def _init_repo(repo: Path) -> str:
 def _checkout_path(run_dir: Path, run_id: str) -> Path:
     root = run_dir.parent.parent if run_dir.parent.name == "runs" else run_dir.parent
     return root / "worktrees" / f"wt_{run_id}" / "checkout"
+
+
+def test_reclaim_registered_worktree_requires_proof_and_uses_removal_seam(monkeypatch, tmp_path: Path) -> None:
+    project_dir = tmp_path / "source"
+    checkout = tmp_path / "checkout"
+    calls: list[tuple[Path, Path, bool]] = []
+    monkeypatch.setattr(
+        "pipeline.engine.worktree.registered_worktree_exists",
+        lambda **_kwargs: True,
+    )
+
+    def remove(path: Path, *, repo: Path, force: bool) -> GitOpResult:
+        calls.append((path, repo, force))
+        return GitOpResult(ok=True, path=path)
+
+    monkeypatch.setattr("pipeline.engine.worktree._remove_worktree", remove)
+    assert reclaim_registered_worktree(project_dir=project_dir, path=checkout).ok
+    assert calls == [(checkout, project_dir, True)]
+
+    monkeypatch.setattr(
+        "pipeline.engine.worktree.registered_worktree_exists",
+        lambda **_kwargs: False,
+    )
+    assert not reclaim_registered_worktree(project_dir=project_dir, path=checkout).ok
+    assert calls == [(checkout, project_dir, True)]
 
 
 # ── Branch / run_id decoupling (cross worktree collision fix) ───────────────

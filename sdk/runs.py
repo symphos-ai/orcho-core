@@ -11,12 +11,10 @@ Resolution order:
 1. explicit ``runs_dir``
 2. explicit ``workspace`` → ``workspace/runspace/runs``
 3. ``$ORCHO_RUNSPACE/runs``
-4. walk-up from ``cwd`` (with sibling-scan) — only when ``cwd`` is not
-   ``None``. Walk-up beats ``$ORCHO_WORKSPACE`` because physical user
-   presence inside a tree is a stronger context signal than a global
-   env var (CLI: user sits in ``atas/bot_1`` while
-   ``$ORCHO_WORKSPACE`` globally points at ``qcg`` → user expects
-   ``atas`` runs, not ``qcg``).
+4. project-bound workspace or walk-up from ``cwd`` (with sibling-scan) — only
+   when ``cwd`` is not ``None``. A registered shared workspace or deterministic
+   managed workspace wins for a repository. Generic walk-up remains for
+   non-project workspace trees. This physical context beats a global env var.
 5. ``$ORCHO_WORKSPACE/runspace/runs`` (engine resolver, fallback)
 
 A `NoWorkspace` is raised when nothing resolves; `find_run` raises
@@ -69,6 +67,20 @@ def _walkup_runs_dir(cwd: Path) -> Path | None:
         cwd = cwd.resolve()
     except OSError:
         return None
+
+    # A repository-bound workspace is stronger than a generic sibling scan.
+    # This prevents an unrelated workspace under a broad parent such as
+    # ``~/www`` from capturing a project-oriented command.
+    try:
+        from sdk.workspace_paths import infer_workspace_from_project
+
+        bound_workspace = infer_workspace_from_project(cwd)
+        if bound_workspace is not None:
+            bound_runs = bound_workspace / "runspace" / "runs"
+            if bound_runs.is_dir():
+                return bound_runs
+    except (OSError, RuntimeError):
+        pass
 
     for level, candidate in enumerate((cwd, *cwd.parents)):
         if level > _WALKUP_MAX_LEVELS:

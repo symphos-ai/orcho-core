@@ -84,6 +84,79 @@ When worktree isolation is enabled, the physical git checkout lives outside
 the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.
 `meta.json` records that path in `worktree.path`.
 
+### Retention cleanup artifacts
+
+Workspace cleanup writes receipts outside run roots at
+`<runspace>/cleanup_receipts/<receipt_id>.json`, so they survive partial
+failure and `--reclaim-both`. Checkout receipt fields remain `selected`,
+`protected`, `inert`, `results`, `operations`, `errors`, archive paths, and
+`bytes_selected`, `bytes_archived`, and `bytes_reclaimed`. Archive is reversible and therefore
+reports archived bytes rather than reclaimed disk bytes; `--delete` reports
+reclaimed bytes. Every receipt also records boolean `force` and normalized UTC
+`force_cutoff`, including when `force` is false.
+
+Run-root retention adds `root_selected` and `root_protected` arrays. Their
+entries carry `root_run_id`, root `path`, stable `reason` and `detail`, plus
+the selected physical `dependency_paths`. These support the CLI's separate
+eligible/protected root reason summaries. Operations retain checkout kinds
+(`archive_snapshot`, registered/unregistered checkout removal) and add
+`run_archive_snapshot` followed by `run_root_remove` for each successful root;
+`results` records the corresponding `run_root` success or failure. A receipt
+can therefore be `partial` while retaining completed checkout/root operations
+and errors for other roots.
+
+The checkout `selected` and `protected` entries use the same stable `reason`
+and `detail` summary fields. `pause_retention_expired` means an otherwise
+eligible paused run with an open canonical handoff or gate passed its retention
+deadline; `retention_expired` is the ordinary stopped-run expiry. Thus an open
+handoff/gate is protective only during the retention window, not a permanent
+cleanup hold. The corresponding reason appears in both checkout and root
+summaries when both tiers are eligible. Dirty or unpushed work, live/unknown
+status, checkpoint-only handoffs, unsafe paths, unreadable state, and protected
+shared checkouts still prevent selection.
+
+When `force` is true and strict root-id age is proven, the only forced selected
+reason codes are `forced_reclaim_uncommitted_changes`,
+`forced_reclaim_unpushed_commits`, `forced_reclaim_active_handoff_or_gate`, and
+`forced_reclaim_checkpoint_handoff_active`. They may occur in `selected` and
+`root_selected`; their unprefixed forms remain the normal protection reasons.
+Structural reasons are unchanged and cannot be forced: `status_not_stopped`,
+`status_unknown`, `meta_unreadable`, `worktree_path_unsafe`,
+`run_root_path_unsafe`, `shared_checkout_protected`, cross-parent protections,
+unknown age, and unreadable Git state. Group/root revalidation can still add
+`changed_before_execution` after the original selection.
+
+The durable `worktree.retention_until` deadline takes precedence. Only an
+absent deadline uses the legacy timestamp prefix in the root run id plus the
+configured `--older-than` duration; malformed present data fails closed and
+directory mtime is never a fallback. Before any mutation the engine rereads
+the candidate and reapplies this predicate. A changed candidate is retained
+and reported as `changed_before_execution` where applicable, rather than using
+the earlier report as permission to remove it.
+
+Cleanup does not edit pending-decision or `decide` projections. If a selected
+root disappears, any projected queue entry disappears only because its run
+directory was removed; cleanup does not rewrite a pending decision artifact.
+In particular, expiry records a cleanup verdict in a new receipt; it never
+auto-decides, waives, continues, or alters the existing handoff/gate artifact.
+
+After a successful checkout reclaim, every preserved reference may contain:
+
+```json
+"worktree": {
+  "path": "/historical/checkout",
+  "reclaimed": {
+    "at": "2026-07-29T00:00:00Z",
+    "disposition": "archive",
+    "archive_path": "/runspace/cleanup_archive/cleanup-id/worktrees/wt_x",
+    "receipt_path": "/runspace/cleanup_receipts/cleanup-id.json"
+  }
+}
+```
+
+The path is historical evidence, not a retained checkout. Status, evidence,
+resume, and follow-up readers must not treat it as an in-place subject.
+
 Pause-time and terminal write contracts differ — see the per-file
 sections below.
 
@@ -619,15 +692,16 @@ delivery context (`source_path`, `project_path`, `baseline_ref`,
 `changed_paths`, `untracked_paths`, `release_verdict`, and any
 `verification_*` blockers) rides on the persisted gate so it can be replayed.
 
-An operator resolves the parked gate out of band through
+An operator first resumes this stopped checkpoint. Once lifecycle has re-parked
+the unchanged gate in a live status, it resolves the gate out of band through
 `sdk.decide_delivery(run_id, action)` (mirror:
 `RunService.decide_delivery`). The executor re-checks the hard guards from the
 persisted evidence, recomputes the patch against the held worktree (it never
 reads the non-serialised `patch_text`), applies the chosen action, and
 finalizes the run: `approve` / `apply` / `skip` settle it `done`; `halt` / `fix`
 keep it `halted` (`commit_decision_halt` / `commit_decision_fix`). The read-only
-companion `sdk.delivery_decision_state(run_id)` projects which actions are
-currently safe to offer.
+companion `sdk.delivery_decision_state(run_id)` preserves a stopped gate's kind
+and reason but offers no direct decision until the live re-park.
 
 ### Delivery publication facts
 

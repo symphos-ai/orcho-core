@@ -43,9 +43,17 @@ from pipeline.verification_subject import (
     capture_verification_subject,
 )
 
-# Command wall-clock budget. A hung command degrades to a failed receipt
-# (exit_code=None) rather than blocking the run indefinitely.
-_TIMEOUT_S = 600
+# Command wall-clock budget used when the contract declares none. A hung
+# command degrades to a failed receipt (exit_code=None) rather than blocking the
+# run indefinitely. A command whose honest runtime approaches this ceiling
+# declares its own ``timeout`` (validated positive int) — the default is a
+# backstop against hangs, not a statement about any project's suite.
+_DEFAULT_TIMEOUT_S = 600
+
+# How the execution itself ended, independent of what the command decided.
+# ``completed`` means the process ran to its own exit code (0 or not); the other
+# three mean there is no exit code to read, for three operator-distinct reasons.
+COMMAND_OUTCOMES: tuple[str, ...] = ("completed", "timeout", "error", "empty")
 
 
 def run_command(
@@ -70,7 +78,9 @@ def run_command(
     Returns a flat dict (NOT written to disk here): ``kind``, ``command``,
     ``env``, ``cwd`` (= eff_cwd), ``placeholders`` (checkout/project), ``argv``,
     ``env_overrides``, ``assertions``, ``exit_code``, ``duration_s``,
-    ``stdout_tail`` / ``stderr_tail``, ``log_path``, ``parity``, typed
+    ``stdout_tail`` / ``stderr_tail``, ``log_path``, ``parity``, ``outcome``
+    (how the *execution* ended — see :data:`COMMAND_OUTCOMES` — as opposed to
+    what the command decided), typed
     ``subject``, diagnostic ``git`` (``checkout_head`` / ``baseline_head`` —
     relative to ``ctx.checkout``), and ``dependencies`` (a sibling of ``git``:
     per-declared-dependency cross-repo provenance — ``git`` stays the subject's
@@ -84,7 +94,10 @@ def run_command(
 
     argv = _resolve_argv(cmd_spec.get("run", ""), ctx, python=python)
 
-    exit_code, stdout, stderr, duration_s, detail = _execute(argv, eff_cwd, sub_env)
+    timeout_s = int(cmd_spec.get("timeout") or _DEFAULT_TIMEOUT_S)
+    exit_code, stdout, stderr, duration_s, detail, outcome = _execute(
+        argv, eff_cwd, sub_env, timeout_s=timeout_s,
+    )
 
     log_path = _write_log(log_dir, command_name, stdout, stderr)
 
@@ -130,6 +143,7 @@ def run_command(
         "log_path": str(log_path) if log_path is not None else None,
         "parity": parity,
         "detail": detail,
+        "outcome": outcome,
         "git": {
             "checkout_head": diagnostic_identity.observed_head_oid if diagnostic_identity else None,
             # This is diagnostic provenance only; the typed subject remains
@@ -161,10 +175,18 @@ def _resolve_argv(
 
 def _execute(
     argv: list[str], eff_cwd: str, sub_env: dict[str, str],
-) -> tuple[int | None, str, str, float, str]:
-    """Run ``argv`` without a shell; degrade failures to ``exit_code=None``."""
+    *, timeout_s: int = _DEFAULT_TIMEOUT_S,
+) -> tuple[int | None, str, str, float, str, str]:
+    """Run ``argv`` without a shell; degrade failures to ``exit_code=None``.
+
+    Returns the trailing ``outcome`` as a typed member of
+    :data:`COMMAND_OUTCOMES`. Every non-``completed`` outcome carries the same
+    ``exit_code=None`` as before, so the *why* is no longer recoverable only
+    from prose in ``detail``: a command that never finished within its budget is
+    a different operator problem from one whose binary could not be spawned.
+    """
     if not argv:
-        return None, "", "", 0.0, "empty command (nothing to run)"
+        return None, "", "", 0.0, "empty command (nothing to run)", "empty"
     start = time.monotonic()
     try:
         proc = subprocess.run(  # noqa: S603 — argv is declared, not shell
@@ -173,21 +195,25 @@ def _execute(
             env=sub_env,
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_S,
+            timeout=timeout_s,
             check=False,
         )
     except subprocess.TimeoutExpired:
         return None, "", "", time.monotonic() - start, (
-            f"command timed out after {_TIMEOUT_S}s"
-        )
+            f"command timed out after {timeout_s}s"
+        ), "timeout"
     except (OSError, subprocess.SubprocessError) as exc:
-        return None, "", "", time.monotonic() - start, f"subprocess error: {exc}"
+        return (
+            None, "", "", time.monotonic() - start,
+            f"subprocess error: {exc}", "error",
+        )
     return (
         proc.returncode,
         proc.stdout or "",
         proc.stderr or "",
         time.monotonic() - start,
         "",
+        "completed",
     )
 
 

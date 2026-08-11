@@ -47,6 +47,7 @@ from pipeline.project.correction_followup import (
 from sdk.errors import LaunchError, RunNotFound
 from sdk.run_control.continuation import preflight_continuation
 from sdk.runs import find_runs_dir
+from sdk.workspace_paths import infer_workspace_from_project
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -94,6 +95,7 @@ class LaunchSpec:
     mock: bool = False
     max_rounds: int | None = None
     mock_validate_plan_reject: int = 0
+    mock_review_reject: int = 0
     output_mode: str = "summary"
     session_mode: str = "auto"
     attach: list[str] | None = None
@@ -430,8 +432,13 @@ def launch_run(spec: LaunchSpec, *, run_id: str | None = None) -> LaunchResult:
     """
     project_dir = _resolve_project_dir(spec.project_dir)
     task_file = _resolve_task_file(spec.task_file, project_dir=project_dir)
+    workspace = spec.workspace
+    if workspace is None and spec.runs_dir is None:
+        inferred = infer_workspace_from_project(project_dir)
+        if inferred is not None:
+            workspace = str(inferred)
     runs_dir = find_runs_dir(
-        workspace=spec.workspace, runs_dir=spec.runs_dir, cwd=None
+        workspace=workspace, runs_dir=spec.runs_dir, cwd=None
     )
     output_mode = normalize_output_mode(spec.output_mode)
 
@@ -449,6 +456,7 @@ def launch_run(spec: LaunchSpec, *, run_id: str | None = None) -> LaunchResult:
         mock=spec.mock,
         max_rounds=spec.max_rounds,
         mock_validate_plan_reject=spec.mock_validate_plan_reject,
+        mock_review_reject=spec.mock_review_reject,
         output_mode=output_mode,
         session_mode=spec.session_mode,
         profile=spec.profile,

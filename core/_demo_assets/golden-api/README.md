@@ -23,7 +23,7 @@ ORCHO_WORKSPACE=/tmp/orcho-golden \
     --task "Fix validation bug in sample API" \
     --mock \
     --profile feature \
-    --mock-validate-plan-reject 1 \
+    --mock-review-reject 1 \
     --run-id GOLDEN_REA0
 ```
 
@@ -35,12 +35,12 @@ Outputs land under `${ORCHO_WORKSPACE}/runspace/runs/GOLDEN_REA0/`:
 * `progress.log` — human-readable phase timeline
 * `evidence.json` — REA-0 placeholder; REA-3 will enrich it
 
-The `--mock-validate-plan-reject 1` knob forces one validate_plan rejection
-followed by an approval, so the run exercises the full feature-profile loop:
+The `--mock-review-reject 1` knob forces one change-review rejection followed
+by an approval, so the run exercises the false-ready and repair loop:
 
 ```text
-plan → validate_plan(reject) → plan(replan) → validate_plan(approve)
-     → implement → review_changes → repair_changes → final_acceptance → done
+plan → validate_plan(approve) → implement → review_changes(reject)
+     → repair_changes → review_changes(approve) → final_acceptance → done
 ```
 
 Add `--stream-output` to see each phase's mock content live in stdout.

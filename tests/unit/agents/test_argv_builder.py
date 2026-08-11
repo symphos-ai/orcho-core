@@ -50,6 +50,17 @@ def test_mock_validate_plan_reject_passes_count():
     assert argv[i + 1] == "2"
 
 
+def test_mock_review_reject_zero_omitted():
+    argv = build_orch_argv(project="/p", mock_review_reject=0)
+    assert "--mock-review-reject" not in argv
+
+
+def test_mock_review_reject_passes_count():
+    argv = build_orch_argv(project="/p", mock_review_reject=2)
+    i = argv.index("--mock-review-reject")
+    assert argv[i + 1] == "2"
+
+
 def test_profile_unset_omitted():
     """``profile=None`` (caller did not supply ``--profile``) leaves
     the flag out so the orchestrator's argparse default (``None`` →
@@ -159,6 +170,7 @@ def test_legacy_namespace_adapter_matches_kwargs_form():
         run_id=None,
         max_rounds=2,
         mock_validate_plan_reject=0,
+        mock_review_reject=0,
         model="claude-sonnet-4-6",
         output_dir="/out",
         dry_run=False,

@@ -99,6 +99,48 @@ class TestRunCommandBasics:
         assert receipt["detail"]
 
 
+class TestCommandTimeout:
+    """The declared per-command budget is what the subprocess actually gets.
+
+    Real sleep, real ceiling: the hang path is exactly the one that produced a
+    ``duration_s`` pinned to the ceiling with an empty stdout, so the test
+    asserts the receipt shape an operator reads (``exit_code=None`` + a detail
+    naming the effective budget), not just the call argument.
+    """
+
+    def test_declared_timeout_bounds_a_hanging_command(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        contract = _contract(commands={
+            "hang": {"run": "python -c \"import time; time.sleep(30)\"", "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        receipt = run_command("hang", contract.commands["hang"], contract, ctx)
+
+        assert receipt["exit_code"] is None
+        assert "timed out after 1s" in receipt["detail"]
+        assert receipt["duration_s"] < 30
+
+    def test_engine_default_applies_without_a_declaration(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from pipeline import verification_command
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        monkeypatch.setattr(verification_command, "_DEFAULT_TIMEOUT_S", 1)
+        contract = _contract(commands={
+            "hang": {"run": "python -c \"import time; time.sleep(30)\""},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        receipt = run_command("hang", contract.commands["hang"], contract, ctx)
+
+        assert receipt["exit_code"] is None
+        assert "timed out after 1s" in receipt["detail"]
+
+
 class TestPythonTokenAndCwd:
     def test_python_token_resolves_to_declared_interpreter(
         self, tmp_path: Path,

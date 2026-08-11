@@ -247,7 +247,9 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
     # the presentation gate (so a declared-but-invalid contract fails fast under
     # SILENT too, where the header never prints). Returns None when no contract
     # is declared, keeping the no-contract path byte-identical.
-    verification_contract = project_verification_contract(plugin)
+    verification_contract = project_verification_contract(
+        plugin, project_dir=request.project_dir,
+    )
     # Default-mode projection (T6): once the resolved profile is known,
     # fill the contract's ``work_mode`` from ``profile.default_mode`` when no
     # explicit work_mode was declared. An explicit project/contract work_mode

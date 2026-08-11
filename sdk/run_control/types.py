@@ -280,6 +280,10 @@ class DeliveryDecisionResult:
     # offline). Mirrors ``CommitDeliveryDecision.pr_url``.
     pr_url: str | None = None
     blocker: str | None = None
+    # Additive projection of the refusal explanation.  Successful and existing
+    # guard-refusal paths keep this ``None``; a stopped durable gate uses the
+    # exact same resume-first reason as ``DeliveryDecisionState``.
+    reason: str | None = None
     followup_run_id: str | None = None
     # Per-alias companion files (``[alias]/rel``) implicated by a delivery-scope
     # decision. Stage C (ADR 0102) populated this for a strict-mono violation
@@ -325,6 +329,15 @@ class DeliveryDecisionState:
     # strings, so the MCP-visible shape (``list[str]``) is unchanged. Empty for
     # every non-companion gate.
     scope_disclosure: tuple[str, ...] = ()
+    requested_at: str | None = field(
+        default=None,
+        metadata={
+            "description": (
+                "Offset-aware ISO-8601 durable delivery-decision timestamp; "
+                "published verbatim only when the durable value is aware."
+            ),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

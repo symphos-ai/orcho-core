@@ -39,6 +39,7 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -118,11 +119,11 @@ EXPECTED: dict[str, dict[str, object]] = {
         "condition": "needs_decision", "decidable": False, "kind": "none",
     },
     "needs_delivery_decision": {
-        "condition": "needs_delivery_decision", "decidable": True, "kind": "delivery",
+        "condition": "halted", "decidable": False, "kind": "delivery",
     },
     "correction_followup_required": {
         "condition": "correction_followup_required",
-        "decidable": True, "kind": "correction",
+        "decidable": False, "kind": "correction",
     },
     "failed": {
         "condition": "failed", "decidable": False, "kind": "none",
@@ -168,6 +169,13 @@ def _views(res: H.DriverResult, *, use_captured_meta: bool):
     return diag, rl, dds
 
 
+def _repark_delivery_gate(meta_path: Path) -> None:
+    """Model the lifecycle's resume tail that restores a live delivery pause."""
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["status"] = "awaiting_commit_decision"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+
 # ── (a)+(b) core→SDK consistency for every state ─────────────────────────────
 
 @pytest.mark.parametrize("name", list(EXPECTED))
@@ -208,7 +216,7 @@ def test_condition_recovery_and_delivery_state_agree(
     )
     # A decidable delivery/correction gate exists IFF the condition is one of
     # the two delivery-gated conditions — never for active/inert/needs_decision.
-    decidable_conditions = {"needs_delivery_decision", "correction_followup_required"}
+    decidable_conditions = {"needs_delivery_decision"}
     assert (diag.condition in decidable_conditions) is bool(dds.decidable), (
         f"{name}: decidable={dds.decidable} inconsistent with condition "
         f"{diag.condition!r}"
@@ -405,16 +413,15 @@ def test_continuation_read_models_preserve_retained_followup_and_preflight_block
     assert "finalized scheduled-gate ledger" in preflight.resolution.blocker
 
 
-def test_commit_delivery_pending_terminal_family_matches_predicate(
+def test_stopped_commit_delivery_pending_routes_to_checkpoint_resume(
     states: dict[str, H.DriverResult],
 ) -> None:
-    """TERMINAL-family drift catch for the parked-delivery settle.
+    """A stopped durable gate retains its diagnosis predicate but routes to resume.
 
     ``is_terminal_commit_delivery_pending`` is computed independently on the
-    settled meta and must be True; the SDK condition must then stay in the
-    delivery-gated / recover / inert family and never regress to ``active`` or
-    a residual resumable status. Fails if the SDK stopped treating a parked
-    ``commit_delivery_pending`` halt as a decidable terminal.
+    settled meta and must be True; the resume classifier deliberately does not
+    make it checkpoint-inert, and the SDK must not advertise a same-place
+    delivery decision while the lifecycle remains stopped.
     """
     res = states["needs_delivery_decision"]
     meta = res.meta
@@ -422,19 +429,13 @@ def test_commit_delivery_pending_terminal_family_matches_predicate(
     assert meta.get("halt_reason") == "commit_delivery_pending"
 
     assert is_terminal_commit_delivery_pending(meta) is True
-    assert is_terminal_resume_parent(meta) is True
+    assert is_terminal_resume_parent(meta) is False
 
     diag, _rl, dds = _views(res, use_captured_meta=False)
-    consistent_family = {
-        "needs_delivery_decision",
-        "correction_followup_required",
-        "recover_via_source_run",
-        "resume_inert_terminal",
-    }
-    assert diag.condition in consistent_family
+    assert diag.condition == "halted"
     assert diag.condition != "active"
     assert diag.condition != "failed"
-    assert dds.decidable is True
+    assert dds.decidable is False
     assert dds.kind == "delivery"
 
 
@@ -585,7 +586,7 @@ def fresh_base(tmp_path) -> Iterator:
 
 
 def test_delivery_skip_roundtrip_transitions_consistently(fresh_base) -> None:
-    """needs_delivery_decision → ``decide_delivery(skip)`` → re-diagnosis.
+    """stopped gate → resume re-park → ``decide_delivery(skip)`` → diagnosis.
 
     The real delivery command layer resolves the parked gate, ships nothing,
     and finalizes the run; the SDK condition must transition consistently from
@@ -596,9 +597,15 @@ def test_delivery_skip_roundtrip_transitions_consistently(fresh_base) -> None:
     runs_dir = res.run_dir.parent
 
     before = run_diagnosis(res.run_id, runs_dir=runs_dir, cwd=None)
-    assert before.condition == "needs_delivery_decision"
+    assert before.condition == "halted"
     before_dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None)
-    assert before_dds.decidable is True
+    assert before_dds.decidable is False
+    refused = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
+    assert refused.blocker == "delivery_decision_requires_resume"
+
+    _repark_delivery_gate(res.run_dir / "meta.json")
+    live_dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None)
+    assert live_dds.decidable is True
 
     result = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True
@@ -740,6 +747,7 @@ def test_sdk_settle_matches_finalization_terminal_for_approved(fresh_base) -> No
         is False
     )
 
+    _repark_delivery_gate(meta_path)
     result = decide_delivery(sdk_res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True
     assert result.terminal_outcome == "done"
@@ -791,21 +799,24 @@ def test_sdk_refuses_rejected_release_leaving_finalization_terminal(
     assert before.get("halt_reason") == "final_acceptance_rejected"
     assert is_terminal_final_acceptance_rejected(before) is True
 
-    # SDK read surface: the shipping action on the rejected release is refused
-    # (BEFORE ``_finalize``) and never flips the run to done.
+    # The stopped gate refuses first; resume restores the live gate before the
+    # release guard can refuse shipping (still before ``_finalize``).
+    stopped = decide_delivery(res.run_id, "approve", runs_dir=runs_dir, cwd=None)
+    assert stopped.blocker == "delivery_decision_requires_resume"
+    _repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "approve", runs_dir=runs_dir, cwd=None)
     assert result.accepted is False
     assert result.blocker == "release_blocked"
     assert result.terminal_outcome == "halted"
 
-    # The run is left at its finalization terminal — byte-stable, never done.
+    # The live re-park stays byte-stable through the release refusal, never done.
     after = json.loads(meta_path.read_text(encoding="utf-8"))
-    assert after.get("status") == "halted"
+    assert after.get("status") == "awaiting_commit_decision"
     assert after.get("halt_reason") == "final_acceptance_rejected"
-    assert is_terminal_final_acceptance_rejected(after) is True
+    assert is_terminal_final_acceptance_rejected(after) is False
 
     # Both surfaces agree the verdict is halted, never done.
-    assert result.terminal_outcome == after.get("status") == "halted"
+    assert result.terminal_outcome == "halted"
 
 
 def test_sdk_settle_halts_via_operator_halt_matching_reducer(fresh_base) -> None:
@@ -828,6 +839,7 @@ def test_sdk_settle_halts_via_operator_halt_matching_reducer(fresh_base) -> None
     runs_dir = res.run_dir.parent
     meta_path = res.run_dir / "meta.json"
 
+    _repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "halt", runs_dir=runs_dir, cwd=None)
     assert result.terminal_outcome == "halted"
     settled = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -887,7 +899,8 @@ def test_superseded_by_child_consistency_and_drift(fresh_base) -> None:
     )
     assert diag.recovery.active_child_run_id == res.child_run_id
 
-    # No delivery/correction gate on a superseded parent.
+    # The parent's delivery already resolved: no pending gate, and never a
+    # resume-first presentation for a resolved block (ADR 0175).
     assert dds.decidable is False
     assert dds.kind == "none"
 
@@ -995,7 +1008,8 @@ def test_plan_artifact_child_does_not_supersede_rejected_parent(fresh_base) -> N
     diag = run_diagnosis(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
     assert diag.condition == "correction_followup_required"
     dds = delivery_decision_state(res.parent_run_id, runs_dir=res.runs_dir, cwd=None)
-    assert dds.decidable is True
+    assert dds.decidable is False
+    assert dds.kind == "correction"
 
 
 def test_non_delivering_followup_leaves_parent_halted(fresh_base) -> None:
@@ -1330,6 +1344,7 @@ def test_eviction_sdk_delivery_settle_path(fresh_base) -> None:
     )
     meta_path.write_text(json.dumps(parked), encoding="utf-8")
 
+    _repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True
     assert result.terminal_outcome == "done"

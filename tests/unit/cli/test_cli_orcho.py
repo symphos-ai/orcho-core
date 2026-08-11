@@ -2229,6 +2229,7 @@ class TestWorkspaceInitParser:
         parser = self.build_parser()
         args = parser.parse_args(["workspace", "init", "/tmp/g"])
         assert args.workspace_name is None
+        assert args.workspace_dir is None
         assert args.mcp_config is None
         assert args.mcp_server_name is None
         assert args.orcho_mcp_command == "orcho-mcp"
@@ -2241,6 +2242,7 @@ class TestWorkspaceInitParser:
         args = parser.parse_args([
             "workspace", "init", "/tmp/g",
             "--workspace-name", "fino",
+            "--workspace-dir", "/tmp/control",
             "--mcp-config", "/tmp/g/.mcp.json",
             "--mcp-server-name", "orcho-fino",
             "--orcho-mcp-command", "/abs/bin/orcho-mcp",
@@ -2249,6 +2251,7 @@ class TestWorkspaceInitParser:
             "--no-scaffold",
         ])
         assert args.workspace_name == "fino"
+        assert args.workspace_dir == "/tmp/control"
         assert args.mcp_config == "/tmp/g/.mcp.json"
         assert args.mcp_server_name == "orcho-fino"
         assert args.orcho_mcp_command == "/abs/bin/orcho-mcp"
@@ -2413,22 +2416,30 @@ class TestCmdWorkspaceInit:
         assert "MCP config" in out
         assert cfg.is_file()
 
-    def test_refusal_returns_nonzero_exit(
-        self, tmp_path: Path, capsys,
+    def test_existing_repo_is_connected_in_place(
+        self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
         from cli.orcho import cmd_workspace_init
-        # Target that looks like a repo at the root → refused without --force.
         root = tmp_path / "g"
         root.mkdir()
         (root / "pyproject.toml").write_text("# repo", encoding="utf-8")
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
         rc = cmd_workspace_init(_make_args(
             project_group_root=str(root),
             force=False,
             dry_run=False,
         ))
-        assert rc != 0
-        err = capsys.readouterr().err
-        assert "individual project repo" in err
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert "Project:" in captured.out
+        assert str(root) in captured.out
+        assert "Registered project:" in captured.out
+        assert "orcho run --task '...' --mock" in captured.out
+        assert "Next shell step:" not in captured.out
+        assert not (root / "workspace-orchestrator").exists()
 
 
 class TestWorkspaceInitRuntimeGate:
@@ -2689,12 +2700,10 @@ class TestWorkspaceInitNoInteractive:
         config = json.loads((ws_dir / ".orcho" / "config.local.json").read_text())
         assert "no-marker" in config.get("projects", {})
 
-    def test_repo_root_refused_before_any_prompt_or_git_init(
+    def test_repo_root_connects_without_child_prompt_or_git_init(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
-        """P1: a single repo-root must be refused during preflight, BEFORE the
-        interactive discovery/prompt runs — otherwise we could `git init` a
-        child and only then reject the target."""
+        """A project target is registered directly; child discovery is skipped."""
         import io
 
         from cli.orcho import cmd_workspace_init
@@ -2705,6 +2714,7 @@ class TestWorkspaceInitNoInteractive:
         root.mkdir()
         (root / ".git").mkdir()
         (root / "subproj").mkdir()  # a child the prompt could touch
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
         called = []
         monkeypatch.setattr(
@@ -2722,10 +2732,13 @@ class TestWorkspaceInitNoInteractive:
             force=False,
         ))
 
-        assert rc != 0, "repo-root target must be refused"
-        assert called == [], "prompt (and git init) must NOT run for a refused target"
-        err = capsys.readouterr().err
-        assert "individual project repo" in err
+        assert rc == 0
+        assert called == [], "project mode must not inspect or mutate children"
+        assert not (root / "subproj" / ".git").exists()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert "Registered project:" in captured.out
+        assert not (root / "workspace-orchestrator").exists()
 
     # --- delivery setup hint (T3) ----------------------------------------
 

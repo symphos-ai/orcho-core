@@ -43,6 +43,13 @@ from pipeline.run_state.cross_parent import (
 
 # Internal helpers exposed for embedders building IPC bridges
 from sdk._jsonable import to_jsonable
+from sdk.cleanup import (
+    WorkspaceCleanupReasonSummary,
+    WorkspaceCleanupReceipt,
+    WorkspaceCleanupReport,
+    reclaim_workspace_cleanup,
+    report_workspace_cleanup,
+)
 from sdk.cost import aggregate_cost
 from sdk.cross_execution_graph import (
     CrossExecutionGraph,
@@ -281,6 +288,11 @@ __all__ = [
     "show_pricing",
     "refresh_pricing",
     "aggregate_cost",
+    "report_workspace_cleanup",
+    "reclaim_workspace_cleanup",
+    "WorkspaceCleanupReasonSummary",
+    "WorkspaceCleanupReport",
+    "WorkspaceCleanupReceipt",
     # Canonical resume/terminal classification predicates (additive re-export)
     "is_terminal_resume_parent",
     "is_terminal_success",

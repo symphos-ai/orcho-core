@@ -315,6 +315,30 @@ class TestResume:
         assert req.followup_base_task is None
         assert req.followup_session_seeds is None
 
+    @pytest.mark.parametrize(
+        "halt_reason",
+        ["commit_delivery_pending", "commit_delivery_scope_blocked"],
+    )
+    def test_stopped_delivery_gate_checkpoint_resume_is_allowed(
+        self, tmp_path: Path, halt_reason: str,
+    ) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _make_run(
+            runs,
+            "20260101_000000",
+            _project_meta(status="halted", halt_reason=halt_reason),
+        )
+        start_project = _Recorder("ran")
+        svc = _service(start_project=start_project)
+
+        assert svc.resume(ResumeCommand(
+            run_id="20260101_000000", runs_dir=runs, cwd=None,
+        )) == "ran"
+        request = start_project.args[0][0]
+        assert isinstance(request, ProjectRunRequest)
+        assert request.resume_from == "20260101_000000"
+
     def test_checkpoint_output_dir_is_parent_run_dir(self, tmp_path: Path) -> None:
         runs = tmp_path / "runs"
         runs.mkdir()

@@ -44,6 +44,18 @@ FAILURE_TERMINAL_STATUSES = frozenset({"failed", "halted", "interrupted"})
 #: alongside ``done`` / ``failed`` / ``halted``.
 TERMINAL_CROSS_STATUSES = frozenset({"done", "failed", "halted", "cancelled"})
 
+#: Statuses which prove that a retained checkout is no longer executing.
+#: This is deliberately composed from the lifecycle vocabularies above rather
+#: than repeating their members in the cleanup subsystem.  ``success`` and
+#: ``completed`` are accepted terminal-success spellings; ``interrupted`` is a
+#: stopped process state, but cleanup still separately protects it when it has
+#: a live handoff payload.
+STOPPED_RETENTION_STATUSES = (
+    TERMINAL_SUCCESS_STATUSES
+    | RESUMABLE_TERMINAL_STATUSES
+    | TERMINAL_CROSS_STATUSES
+)
+
 #: The run is paused awaiting an operator phase-handoff decision — the normal
 #: decision-ready handoff state.
 PAUSE_STATUS = "awaiting_phase_handoff"
