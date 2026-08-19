@@ -9,6 +9,7 @@ import sys
 import agents.stream as stream_module
 from agents.pty_diagnostics import PTY_EXHAUSTED_SENTINEL
 from agents.stream import (
+    StreamAbort,
     _stream_run,
     set_agent_log,
     set_stdout_echo,
@@ -102,6 +103,59 @@ def test_stream_run_idle_timeout_resets_on_output() -> None:
     assert "tick-0" in stdout
     assert "tick-3" in stdout
     assert duration >= 0.75
+
+
+def test_stream_run_timeout_keeps_drained_stderr_and_reason() -> None:
+    _stdout, rc, stderr, _duration = _stream_run(
+        [sys.executable, "-c", "import sys, time; sys.stderr.write('before-timeout\\n'); sys.stderr.flush(); time.sleep(5)"],
+        timeout=1,
+    )
+
+    assert rc != 0
+    assert "before-timeout" in stderr
+    assert "[TIMEOUT after 1s]" in stderr
+
+
+def test_stream_run_abort_keeps_drained_stderr_and_reason() -> None:
+    def abort(_line: str) -> None:
+        raise StreamAbort("test guard")
+
+    _stdout, rc, stderr, _duration = _stream_run(
+        [sys.executable, "-c", "import sys, time; sys.stderr.write('before-abort\\n'); sys.stderr.flush(); print('stop', flush=True); time.sleep(5)"],
+        on_line=abort,
+    )
+
+    assert rc != 0
+    assert "before-abort" in stderr
+    assert "[ABORTED by stream guard: test guard]" in stderr
+
+
+def test_stream_run_masks_assembled_stderr_once(monkeypatch) -> None:
+    token = "MASK-ME"
+    calls: list[str] = []
+
+    class CountingMasker:
+        active = True
+
+        def mask(self, text: str) -> str:
+            calls.append(text)
+            return text.replace(token, "***MASKED***")
+
+    original_spawn = stream_module._spawn_with_sandbox
+
+    def spawn_with_counting_masker(*args, **kwargs):
+        proc, _masker, env_stripped, launcher = original_spawn(*args, **kwargs)
+        return proc, CountingMasker(), env_stripped, launcher
+
+    monkeypatch.setattr(stream_module, "_spawn_with_sandbox", spawn_with_counting_masker)
+    _stdout, rc, stderr, _duration = _stream_run(
+        [sys.executable, "-c", f"import sys; sys.stderr.write('{token}')"],
+    )
+
+    assert rc == 0
+    assert token not in stderr
+    assert "***MASKED***" in stderr
+    assert calls == [token]
 
 
 def test_stream_run_echoes_stdout_when_enabled(capsys) -> None:

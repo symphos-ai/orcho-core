@@ -24,7 +24,7 @@ def has_uncommitted(cwd: str) -> bool:
     """True if the working tree at ``cwd`` has uncommitted changes."""
     r = subprocess.run(
         ["git", "status", "--porcelain"],
-        cwd=cwd, capture_output=True, text=True,
+        cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
     )
     return bool(r.stdout.strip())
 
@@ -33,7 +33,7 @@ def git_diff_stat(cwd: str) -> str:
     """``git diff --stat`` output for ``cwd`` (or '(no diff)' if clean)."""
     r = subprocess.run(
         ["git", "diff", "--stat"],
-        cwd=cwd, capture_output=True, text=True,
+        cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
     )
     return r.stdout.strip() or "(no diff)"
 
@@ -252,11 +252,14 @@ def _run_git(
     ``(-2, "", "git timed out after {N}s")``.
     """
     try:
+        # git emits raw UTF-8 pathnames; decoding with the process locale
+        # breaks on non-UTF-8 Windows codepages, so pin the codec.
         r = subprocess.run(
             ["git", *args],
             cwd=str(cwd) if cwd is not None else None,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=timeout_s,
         )
@@ -436,7 +439,8 @@ def apply_patch_to_checkout(
             cwd=str(checkout_path),
             input=patch_text,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=30.0,
         )

@@ -72,8 +72,12 @@ DEFAULT_ENV_ALLOWLIST: tuple[str, ...] = (
     "PROGRAMDATA",
     "COMSPEC",
     "PATHEXT",
-    # Agent provider API keys
+    # Agent provider API keys / auth tokens. ANTHROPIC_AUTH_TOKEN is the
+    # auth source the shipped claude-glm wrapper hard-requires; stripping
+    # it degrades the child into a locally-configured fallback session
+    # that the remote endpoint rejects long after spawn.
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
@@ -82,6 +86,7 @@ DEFAULT_ENV_ALLOWLIST: tuple[str, ...] = (
     # binary location at the orcho level, the agent process
     # must see the same override.
     "CLAUDE_BIN",
+    "CLAUDE_GLM_BIN",
     "CODEX_BIN",
     "GEMINI_BIN",
     "CLAUDE_CONFIG_DIR",

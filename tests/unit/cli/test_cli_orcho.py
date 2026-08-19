@@ -205,40 +205,10 @@ class TestParser:
         ])
         assert args.runtime_implement == "claude-glm"
 
-    def test_runtimes_install_subcommand(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_runtimes_command_is_not_registered(self) -> None:
         parser = self.build_parser()
-        destination = tmp_path / "bin" / "claude-glm"
-        args = parser.parse_args([
-            "runtimes",
-            "install",
-            "claude-glm",
-            "--path",
-            str(destination),
-        ])
-
-        assert args.command == "runtimes"
-        assert args.runtimes_cmd == "install"
-        assert args.func(args) == 0
-        assert destination.exists()
-        assert "Installed claude-glm wrapper" in capsys.readouterr().out
-
-    def test_runtimes_install_refuses_existing_file(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        parser = self.build_parser()
-        destination = tmp_path / "claude-glm"
-        destination.write_text("custom\n")
-        args = parser.parse_args([
-            "runtimes",
-            "install",
-            "claude-glm",
-            "--path",
-            str(destination),
-        ])
-
-        assert args.func(args) == 2
-        assert destination.read_text() == "custom\n"
-        assert "pass --force" in capsys.readouterr().err
+        with pytest.raises(SystemExit):
+            parser.parse_args(["runtimes"])
 
     def test_demos_bootstrap_subcommand(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -297,7 +267,7 @@ class TestParser:
         assert args.command == group
         assert args.func.__name__ == func_name
 
-    @pytest.mark.parametrize("group", ["profile", "runtimes", "demos", "workspace"])
+    @pytest.mark.parametrize("group", ["profile", "demos", "workspace"])
     def test_bare_arg_only_group_prints_help_clean(
         self, group: str, capsys: pytest.CaptureFixture[str],
     ) -> None:

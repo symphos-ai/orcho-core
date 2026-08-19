@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orcho-core"
-version = "0.7.0"
+version = "0.8.0"
 description = "Production harness and local-first control plane for accountable AI software delivery"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -136,8 +136,6 @@ core = [
     "_prompts/*.md",
     "_prompts/**/*.md",
     "_config/*.json",
-    "_runtime_wrappers/*.sh",
-    "_runtime_wrappers/*.cmd",
     "_demo_assets/golden-api/.gitignore",
     "_demo_assets/golden-api/.orcho/**/*.md",
     "_demo_assets/golden-api/**/*.md",

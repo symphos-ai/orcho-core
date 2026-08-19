@@ -108,6 +108,11 @@ class StalledCommand:
     output_tail: str
     reason: StallReason
     process_group: int | None = None
+    # Raw bytes actually drained from each stream at the diagnostic snapshot.
+    # ``None`` preserves readability of manually-created and pre-ADR-0177
+    # persisted carriers; stream-created records always supply integer counts.
+    stdout_bytes_read: int | None = None
+    stderr_bytes_read: int | None = None
 
     def __post_init__(self) -> None:
         # frozen dataclass: bound the free-text fields through the back door so
@@ -138,6 +143,8 @@ class StalledCommand:
             "elapsed_s": self.elapsed_s,
             "terminal": terminal,
             "recovery_actions": build_stall_recovery_actions(),
+            "stdout_bytes_read": self.stdout_bytes_read,
+            "stderr_bytes_read": self.stderr_bytes_read,
         }
         if self.command_preview:
             payload["command_preview"] = self.command_preview
@@ -164,7 +171,9 @@ class AgentCommandStalledError(Exception):
             message
             or (
                 f"agent command stalled in phase {stalled.phase!r} after "
-                f"{stalled.elapsed_s:.0f}s ({stalled.reason})"
+                f"{stalled.elapsed_s:.0f}s ({stalled.reason}); "
+                f"stdout_bytes_read={stalled.stdout_bytes_read}; "
+                f"stderr_bytes_read={stalled.stderr_bytes_read}"
             ),
         )
 

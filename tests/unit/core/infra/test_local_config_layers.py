@@ -432,3 +432,22 @@ def test_workspace_overlay_overrides_sandbox_limits(
     )
     merged = config._merge_json_layers()
     assert merged["sandbox"]["limits"] == {"memory_mb": 8192}
+
+
+def test_workspace_overlay_can_override_claude_glm_defaults(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["workspace_personal"],
+        {
+            "claude_glm": {
+                "sonnet_model": "workspace-glm",
+                "max_context_tokens": 99999,
+            },
+        },
+    )
+    merged = config._merge_json_layers()
+    assert merged["claude_glm"] == {
+        "sonnet_model": "workspace-glm",
+        "max_context_tokens": 99999,
+    }

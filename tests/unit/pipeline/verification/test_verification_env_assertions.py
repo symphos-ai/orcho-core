@@ -369,3 +369,94 @@ class TestRunScopedChannelStrip:
         monkeypatch.setenv("ORDINARY_HOST_VAR", "kept")
         _, _, sub_env, _ = resolve_env_runtime({}, _ctx(project=str(tmp_path)))
         assert sub_env["ORDINARY_HOST_VAR"] == "kept"
+
+
+def _fake_exe(directory: Path, name: str) -> Path:
+    """Create an executable file which shutil.which finds on this host."""
+    directory.mkdir(parents=True, exist_ok=True)
+    exe = directory / (name + (".exe" if os.name == "nt" else ""))
+    exe.write_text("")
+    exe.chmod(0o755)
+    return exe
+
+
+class TestWindowsAppsAliasInterpreter:
+    """A ``WindowsApps`` app-execution alias is never a quietly-PASSing
+    interpreter: a bare declared name routes around an alias PATH hit to a
+    real install, an unavoidable alias yields a failed ``interpreter_usable``
+    result (so ``all_passed`` is False), and a ``command_exists`` probe that
+    lands on an alias fails instead of reporting a usable binary. Pure
+    path-based simulation — no Windows host required."""
+
+    def test_bare_python_skips_alias_path_hit(self, tmp_path: Path) -> None:
+        alias_dir = tmp_path / "Microsoft" / "WindowsApps"
+        _fake_exe(alias_dir, "python")
+        real = _fake_exe(tmp_path / "real-install", "python")
+        spec = {
+            "python": "python",
+            "cwd": str(tmp_path),
+            "env": {"PATH": os.pathsep.join([str(alias_dir), str(real.parent)])},
+        }
+        python, _cwd, _env, _overrides = resolve_env_runtime(spec, _ctx())
+        assert python == str(real)
+
+    def test_bare_python_with_real_first_hit_is_unchanged(
+        self, tmp_path: Path,
+    ) -> None:
+        real = _fake_exe(tmp_path / "bin", "python")
+        spec = {
+            "python": "python",
+            "cwd": str(tmp_path),
+            "env": {"PATH": str(real.parent)},
+        }
+        python, *_rest = resolve_env_runtime(spec, _ctx())
+        assert python == "python"
+
+    def test_declared_alias_path_is_flagged_not_passed(
+        self, tmp_path: Path,
+    ) -> None:
+        alias = _fake_exe(tmp_path / "WindowsApps", "python")
+        spec = {"python": str(alias), "cwd": str(tmp_path), "assertions": []}
+        result = run_env_assertions("ci", spec, _ctx())
+        assert result["all_passed"] is False
+        a = _only(result)
+        assert a["kind"] == "interpreter_usable"
+        assert a["passed"] is False
+        assert "WindowsApps" in a["detail"]
+
+    def test_bare_python_with_only_alias_on_path_is_flagged(
+        self, tmp_path: Path,
+    ) -> None:
+        alias_dir = tmp_path / "WindowsApps"
+        _fake_exe(alias_dir, "python")
+        spec = {
+            "python": "python",
+            "cwd": str(tmp_path),
+            "env": {"PATH": str(alias_dir)},
+            "assertions": [],
+        }
+        result = run_env_assertions("ci", spec, _ctx())
+        assert result["all_passed"] is False
+        assert _only(result)["kind"] == "interpreter_usable"
+
+    def test_default_interpreter_yields_no_synthetic_result(
+        self, tmp_path: Path,
+    ) -> None:
+        spec = {"cwd": str(tmp_path), "assertions": []}
+        result = run_env_assertions("ci", spec, _ctx())
+        assert result["assertions"] == []
+        assert result["all_passed"] is True
+
+    def test_command_exists_alias_hit_is_failed(self, tmp_path: Path) -> None:
+        alias_dir = tmp_path / "WindowsApps"
+        alias = _fake_exe(alias_dir, "python")
+        spec = {
+            "cwd": str(tmp_path),
+            "env": {"PATH": str(alias_dir)},
+            "assertions": [{"command_exists": "python"}],
+        }
+        a = _only(run_env_assertions("ci", spec, _ctx()))
+        assert a["kind"] == "command_exists"
+        assert a["passed"] is False
+        assert a["actual"] == str(alias)
+        assert "WindowsApps" in a["detail"]

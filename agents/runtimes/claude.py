@@ -534,6 +534,10 @@ class ClaudeAgent:
         """Suffix for human-readable labels: `` --effort high`` or empty."""
         return f" --effort {self.effort}" if self.effort else ""
 
+    def _child_env_overrides(self) -> dict[str, str]:
+        """Return runtime-owned child environment additions, if any."""
+        return {}
+
     def invoke(
         self,
         prompt: str,
@@ -545,6 +549,7 @@ class ClaudeAgent:
     ) -> str:
         """Run Claude Code with the given prompt. See :class:`IAgentRuntime`."""
         _reject_text_attachments(attachments)
+        child_env_overrides = self._child_env_overrides()
         if self._followup_resume_pending and self.session_id:
             continue_session = True
             self._last_followup_parent_session_id = self.session_id
@@ -724,6 +729,7 @@ class ClaudeAgent:
                     stall_phase=_events.current_phase() or "",
                     owned_child_owner=self._owned_children,
                     agent_call_id=attempt_call_id,
+                    env_overrides=child_env_overrides,
                 )
             stderr = elide_text_for_model(stderr)
             if returncode != 0 and stderr:

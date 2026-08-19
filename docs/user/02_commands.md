@@ -42,7 +42,6 @@ the full argparse dump for every subcommand.
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
 | `orcho pricing` | Inspect / refresh the pricing data used by `cost` |
 | `orcho verify` | Execute declared verification-contract checks for a run |
-| `orcho runtimes` | Install helper wrappers for agent runtimes |
 | `orcho workspace` | Initialise and manage Orcho workspaces |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
 
@@ -161,10 +160,10 @@ export RUNTIME_REVIEW_CHANGES=codex
 Runtime ids include the built-ins `claude`, `claude-glm`, `codex`, and
 `gemini`, plus any plugin-provided runtime registered in the environment. See
 [../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md) for the GLM
-wrapper setup.
+adapter setup.
 
 Example: keep planning on Claude, then route implementation through the
-Claude-compatible GLM wrapper under Codex review:
+Claude-compatible GLM runtime under Codex review:
 
 ```bash
 orcho run \
@@ -172,7 +171,7 @@ orcho run \
   --project ./api \
   --runtime-plan claude \
   --runtime-implement claude-glm \
-  --model-implement 'glm-5.2[1m]' \
+  --model-implement 'glm-5.3' \
   --runtime-review-changes codex
 ```
 

@@ -96,11 +96,6 @@ from core.infra.demo_assets import (
     demo_names,
     render_demo_bootstrap,
 )
-from core.infra.runtime_wrappers import (
-    RuntimeWrapperError,
-    install_runtime_wrapper,
-    runtime_wrapper_names,
-)
 from core.io import prompt_loader as _prompt_loader
 from core.io.ansi import is_color_active
 from pipeline.run_state import repair_run_state
@@ -522,27 +517,6 @@ def cmd_workflows_list(args: argparse.Namespace) -> int:
             verbose_command="orcho workflows list --verbose",
         ),
     )
-
-
-def cmd_runtimes_install(args: argparse.Namespace) -> int:
-    try:
-        result = install_runtime_wrapper(
-            args.runtime,
-            destination=getattr(args, "path", None),
-            force=bool(getattr(args, "force", False)),
-        )
-    except RuntimeWrapperError as exc:
-        print(f"runtimes install: {exc}", file=sys.stderr)
-        return 2
-
-    verb = "Already installed" if result.already_current else "Installed"
-    print(f"{verb} {result.runtime} wrapper: {result.path}")
-    if not result.on_path:
-        print(
-            f"Note: {result.path.parent} is not on PATH; set "
-            f"{result.env_var}={result.path} or add that directory to PATH."
-        )
-    return 0
 
 
 def cmd_demos_bootstrap(args: argparse.Namespace) -> int:
@@ -1689,36 +1663,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show full profile descriptions under each row.",
     )
     p_workflows_list.set_defaults(func=cmd_workflows_list)
-
-    # ── runtimes ─────────────────────────────────────────────────────────────
-    p_runtimes = sub.add_parser(
-        "runtimes",
-        help="Install runtime helper wrappers",
-    )
-    p_runtimes.set_defaults(func=_print_group_help(p_runtimes))
-    p_runtimes_sub = p_runtimes.add_subparsers(dest="runtimes_cmd")
-    p_runtimes_install = p_runtimes_sub.add_parser(
-        "install",
-        help="Install a runtime helper wrapper",
-    )
-    p_runtimes_install.add_argument(
-        "runtime",
-        choices=runtime_wrapper_names(),
-        help="Runtime wrapper to install",
-    )
-    p_runtimes_install.add_argument(
-        "--path",
-        type=Path,
-        default=None,
-        help="Destination path (default: ~/.local/bin/<runtime>)",
-    )
-    p_runtimes_install.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help="Replace an existing destination file",
-    )
-    p_runtimes_install.set_defaults(func=cmd_runtimes_install)
 
     # ── demos ────────────────────────────────────────────────────────────────
     p_demos = sub.add_parser(
