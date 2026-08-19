@@ -61,6 +61,21 @@ class TestComputeChildEnv:
         assert "AWS_SECRET_ACCESS_KEY" not in out
         assert stripped == 1
 
+    def test_builtin_runtime_auth_and_bin_overrides_pass_through(self) -> None:
+        # The shipped GLM runtime authenticates via ANTHROPIC_AUTH_TOKEN and
+        # honors the CLAUDE_GLM_BIN binary override; a built-in runtime must
+        # not depend on variables the built-in sandbox strips.
+        env = {
+            "ANTHROPIC_AUTH_TOKEN": "glm-key",
+            "CLAUDE_GLM_BIN": r"C:\tools\claude.exe",
+            "AWS_SECRET_ACCESS_KEY": "AKIA…",
+        }
+        out, stripped = compute_child_env(env, _policy())
+        assert "ANTHROPIC_AUTH_TOKEN" in out
+        assert "CLAUDE_GLM_BIN" in out
+        assert "AWS_SECRET_ACCESS_KEY" not in out
+        assert stripped == 1
+
     def test_empty_parent_env(self) -> None:
         out, stripped = compute_child_env({}, _policy())
         assert out == {}

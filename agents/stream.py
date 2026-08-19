@@ -90,6 +90,39 @@ def _echo_stdout(text: str) -> None:
         _stdout_echo = False
 
 
+# Windows caps the whole CreateProcessW command line at 32767 characters
+# (characters, not bytes — a Cyrillic prompt hits it at half the byte size).
+# A command routed through a ``.cmd``/``.bat`` shim is re-parsed by cmd.exe,
+# whose budget is 8191 characters minus the implicit ``cmd.exe /c`` prefix.
+# Exceeding either surfaces as a misleading WinError 206 ("filename or
+# extension is too long") or a child-side "The command line is too long.",
+# neither of which names the argv-borne prompt as the cause.
+_WIN_CREATEPROCESS_CMDLINE_MAX = 32767
+_WIN_CMD_SHIM_CMDLINE_MAX = 8160
+
+
+def _windows_cmdline_overflow(cmd: list[str]) -> str | None:
+    """Return a startup-failure diagnostic when ``cmd`` cannot spawn on Windows.
+
+    ``None`` on POSIX and for command lines within the platform limits.
+    """
+    if sys.platform != "win32":
+        return None
+    length = len(subprocess.list2cmdline(cmd))
+    limit = _WIN_CREATEPROCESS_CMDLINE_MAX
+    surface = "the Windows CreateProcess limit"
+    if cmd and cmd[0].lower().endswith((".cmd", ".bat")):
+        limit = _WIN_CMD_SHIM_CMDLINE_MAX
+        surface = f"the cmd.exe limit for the {cmd[0]!r} shim"
+    if length < limit:
+        return None
+    return (
+        f"agent command line is {length} characters, which exceeds {surface} "
+        f"of {limit}. The composed phase prompt is passed via argv; shorten "
+        f"the task/plan for this phase or split the run so the prompt fits."
+    )
+
+
 def _spawn_with_sandbox(
     cmd: list[str],
     cwd: str | None,
@@ -370,6 +403,10 @@ def _stream_run(
             _echo_stdout(render_transcript_close() + "\n")
         _echo_stdout(render_result(returncode, duration) + "\n")
         return "", returncode, stderr_text, duration
+
+    overflow = _windows_cmdline_overflow(cmd)
+    if overflow is not None:
+        return _return_startup_failure(overflow)
 
     try:
         transport = select_transport()
