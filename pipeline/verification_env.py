@@ -33,6 +33,7 @@ import subprocess
 import sys
 from typing import Any
 
+from core.infra.platform import is_windows_apps_alias
 from pipeline.project.auto_detect import AUTODETECT_DECISION_ENV, WORK_MODE_ENV
 from pipeline.verification_contract import PlaceholderContext, resolve_placeholders
 
@@ -132,7 +133,35 @@ def resolve_env_runtime(
         sub_env.pop(key, None)
     sub_env.update(overrides)
 
+    python = _skip_windows_apps_alias(python, sub_env.get("PATH"))
+
     return python, eff_cwd, sub_env, overrides
+
+
+def _skip_windows_apps_alias(python: str, path_env: str | None) -> str:
+    """Route a bare interpreter name around the ``WindowsApps`` alias.
+
+    On Windows, ``python`` on PATH is usually the app-execution alias under
+    ``%LOCALAPPDATA%\\Microsoft\\WindowsApps``; it launches virtualized and
+    cannot see the managed workspace tree. When a *bare* declared name would
+    hit such an alias, re-search PATH with alias directories removed so a real
+    install wins. An explicit declared path is honoured as-is (flagged later
+    by :func:`_interpreter_alias_result`), and a name whose first hit is a
+    real interpreter — every non-Windows host — is returned unchanged.
+    """
+    if os.path.basename(python) != python:
+        return python
+    hit = shutil.which(python, path=path_env)
+    if hit is None or not is_windows_apps_alias(hit):
+        return python
+    entries = (
+        path_env if path_env is not None else os.environ.get("PATH", "")
+    ).split(os.pathsep)
+    filtered = os.pathsep.join(
+        d for d in entries if d and not is_windows_apps_alias(d)
+    )
+    real = shutil.which(python, path=filtered)
+    return real or python
 
 
 def run_env_assertions(
@@ -158,6 +187,9 @@ def run_env_assertions(
     interpreter = _interpreter_identity(python, eff_cwd, sub_env)
 
     results: list[dict[str, Any]] = []
+    alias_result = _interpreter_alias_result(python, sub_env)
+    if alias_result is not None:
+        results.append(alias_result)
     raw_assertions = env_spec.get("assertions")
     if isinstance(raw_assertions, (list, tuple)):
         for raw in raw_assertions:
@@ -232,6 +264,12 @@ def _evaluate(
     if "command_exists" in raw:
         name = resolve_placeholders(str(raw["command_exists"]), ctx)
         found = shutil.which(name, path=sub_env.get("PATH"))
+        if found is not None and is_windows_apps_alias(found):
+            return _result(
+                name, "command_exists", "present", found, False,
+                "resolves to a WindowsApps app-execution alias, "
+                "not a usable install",
+            )
         return _result(
             name, "command_exists", "present", found, found is not None,
             "" if found else "not found on PATH",
@@ -327,6 +365,33 @@ def _version_assert(
     return _result(
         argv[0], "version_contains", contains, combined.strip()[:200],
         passed, detail,
+    )
+
+
+def _interpreter_alias_result(
+    python: str, sub_env: dict[str, str],
+) -> dict[str, Any] | None:
+    """Failed synthetic assertion when the interpreter is a WindowsApps alias.
+
+    Reached only when :func:`_skip_windows_apps_alias` could not route around
+    the alias: the env declares an explicit ``WindowsApps`` path, or no real
+    interpreter exists elsewhere on PATH. Such an interpreter answers version
+    probes yet runs virtualized against a redirected ``LOCALAPPDATA``, so a
+    receipt must not report PASS for it. Returns ``None`` (no result) for a
+    usable interpreter — the case on every non-Windows host.
+    """
+    exe = (
+        python
+        if os.path.basename(python) != python
+        else shutil.which(python, path=sub_env.get("PATH"))
+    )
+    if not is_windows_apps_alias(exe):
+        return None
+    return _result(
+        python, "interpreter_usable", "real interpreter", exe, False,
+        "interpreter resolves to a WindowsApps app-execution alias; it runs "
+        "virtualized and cannot see the managed workspace — declare a real "
+        "interpreter (e.g. a venv python) in verification_env",
     )
 
 

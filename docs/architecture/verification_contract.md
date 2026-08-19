@@ -1753,6 +1753,15 @@ Like the ADR 0076 receipt, it is written **only** under `run_dir`, never the
 checkout. The `cwd` field records the *effective* cwd the assertions ran in
 (the declared checkout by default), so the receipt proves the declared subject.
 
+On Windows the engine refuses to bless the `WindowsApps` app-execution alias
+(`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`): it answers version probes
+but runs virtualized against a redirected `LOCALAPPDATA`, so it cannot see the
+managed workspace. A bare declared interpreter name that would hit such an
+alias is re-resolved to a real install elsewhere on `PATH`; when none exists
+(or the env declares an explicit alias path), the receipt gains a failed
+synthetic `interpreter_usable` assertion, and a `command_exists` probe landing
+on an alias fails instead of reporting a usable binary.
+
 ### The command-receipt (Stage 3)
 
 `orcho verify run` ([ADR 0080](../adr/0080-verification-contract-command-receipts.md))

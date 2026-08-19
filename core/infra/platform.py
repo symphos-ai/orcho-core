@@ -50,6 +50,23 @@ def venv_python_subpath() -> str:
     return ".venv/bin/python"
 
 
+def is_windows_apps_alias(path: str | os.PathLike[str] | None) -> bool:
+    """True when *path* contains a ``WindowsApps`` segment (either separator).
+
+    ``%LOCALAPPDATA%\\Microsoft\\WindowsApps\\python.exe`` is the Windows
+    app-execution alias for the Store Python: launching it runs a virtualized
+    process whose redirected ``LOCALAPPDATA`` cannot see this engine's managed
+    workspace tree, so an interpreter resolving there is quietly unusable even
+    though version/exists probes of it succeed. Pure path predicate
+    (case-insensitive, both separators) so callers on any host can skip or
+    flag such candidates without touching the filesystem.
+    """
+    if not path:
+        return False
+    segments = str(path).replace("\\", "/").split("/")
+    return any(segment.lower() == "windowsapps" for segment in segments)
+
+
 # ── Engine roots ──────────────────────────────────────────────────────────────
 
 def engine_home() -> Path:
