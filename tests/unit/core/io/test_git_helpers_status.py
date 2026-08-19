@@ -168,3 +168,30 @@ def test_git_backed_rename_reports_source_and_destination_once(tmp_path: Path) -
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
 
     assert git_changed_files(repo) == ["tracked.txt", "renamed.txt"]
+
+
+def test_text_mode_git_calls_pin_utf8_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    # git emits raw UTF-8 pathnames; decoding with the process locale breaks
+    # on non-UTF-8 Windows codepages. Every text-mode git call in this module
+    # must pin the codec instead of inheriting the locale.
+    from core.io import git_helpers
+
+    seen: list[dict[str, object]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_helpers.subprocess, "run", fake_run)
+    git_helpers.has_uncommitted(".")
+    git_helpers.git_diff_stat(".")
+    git_helpers._run_git(["rev-parse", "HEAD"], cwd=".")
+    git_helpers.apply_patch_to_checkout(
+        checkout_path=Path("."), patch_text="diff --git a/x b/x\n",
+    )
+
+    assert len(seen) == 4
+    for kwargs in seen:
+        assert kwargs.get("encoding") == "utf-8"
+        assert kwargs.get("errors") == "replace"
+        assert "text" not in kwargs

@@ -230,10 +230,19 @@ def _run_git(
     *,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
+    # git emits raw UTF-8 pathnames (NUL-delimited output is never quoted),
+    # so the decode must not depend on the process locale: on a non-UTF-8
+    # Windows codepage the default decode dies on any non-ASCII path.
     try:
-        return subprocess.run(
-            ["git", *args], cwd=str(cwd), capture_output=True, text=True,
+        result = subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True,
+            encoding="utf-8", errors="replace",
             timeout=30, env=env or {**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
+    # A dead capture thread leaves stdout as None; that is a failed probe,
+    # not a usable observation.
+    if result.stdout is None:
+        return None
+    return result
