@@ -27,10 +27,10 @@ _AUTH_HINTS = {
         "automation": "export ANTHROPIC_API_KEY=...",
     },
     "claude-glm": {
-        "login": "refresh the credentials used by your claude-glm wrapper",
-        "status": "claude-glm auth status",
-        "smoke": "claude-glm --print --model <model> 'Reply OK only'",
-        "automation": "set the API key consumed by your claude-glm wrapper",
+        "login": "set a fresh ANTHROPIC_AUTH_TOKEN for the GLM Coding Plan",
+        "status": "verify ANTHROPIC_AUTH_TOKEN is set in this shell",
+        "smoke": "claude --print --model <model> 'Reply OK only'",
+        "automation": "export ANTHROPIC_AUTH_TOKEN=<GLM Coding Plan key>",
     },
     "codex": {
         "login": "codex login",

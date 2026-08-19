@@ -35,13 +35,18 @@ def _tracked_python_files(root: Path) -> list[str]:
     commit introduced and no CI run can reproduce.
 
     ``git ls-files`` covers those cases by construction, since every one of
-    them is untracked or ignored.
+    them is untracked or ignored. Filter entries removed from the working tree
+    too: this boundary guard also runs before an uncommitted deletion is
+    handed off.
     """
     out = subprocess.run(
         ["git", "ls-files", "-z", "--", "*.py"],
         cwd=root, capture_output=True, text=True, check=True,
     )
-    return [rel for rel in out.stdout.split("\0") if rel]
+    return [
+        rel for rel in out.stdout.split("\0")
+        if rel and (root / rel).is_file()
+    ]
 
 
 def _report(runs: Path) -> WorkspaceCleanupReport:

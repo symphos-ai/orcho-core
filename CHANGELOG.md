@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- The `claude-glm` runtime now launches the installed plain `claude` executable
+  with an adapter-owned GLM environment. The retired `claude-glm` wrapper and
+  `orcho runtimes install` surface are no longer part of setup.
+
 ## 0.7.0 - 2026-08-11
 
 This release makes stalled verification commands a typed, recoverable

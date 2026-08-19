@@ -51,12 +51,47 @@ id, including the built-ins `claude`, `claude-glm`, `codex`, and `gemini`.
 | Variable | Example |
 |-----------|--------|
 | `CLAUDE_BIN` | `/custom/path/to/claude` |
-| `CLAUDE_GLM_BIN` | `/custom/path/to/claude-glm` |
+| `CLAUDE_GLM_BIN` | `/custom/path/to/claude` |
 | `CODEX_BIN` | `/custom/path/to/codex` |
 
-`claude-glm` is a Claude-compatible wrapper runtime with separate metrics and
-event labels. See [../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md)
-for the wrapper contract, key setup, and smoke tests.
+`claude-glm` is a Claude-compatible runtime identity with separate metrics and
+event labels. It launches the installed plain `claude` executable and applies
+the GLM environment in the child process. `CLAUDE_GLM_BIN`, when set, names the
+underlying Claude-compatible executable for this runtime; otherwise it uses
+`CLAUDE_BIN` or normal `claude` discovery. See
+[../guides/claude_glm_runtime.md](../guides/claude_glm_runtime.md) for setup
+and adapter settings.
+
+### Claude-compatible GLM adapter
+
+The `claude_glm` JSON object sets adapter defaults. Its model fields default to
+`glm-5.3` for `opus_model` and `sonnet_model`, `glm-4.7` for `haiku_model`, and
+`200000` for `max_context_tokens`:
+
+```json
+{
+  "claude_glm": {
+    "opus_model": "glm-5.3",
+    "sonnet_model": "glm-5.3",
+    "haiku_model": "glm-4.7",
+    "max_context_tokens": 200000
+  }
+}
+```
+
+The normal JSON-layer precedence applies to this object (shipped defaults →
+package-local → user → workspace shared → workspace personal). The following
+process environment overrides then win over the resolved JSON values:
+
+| Variable | Overrides |
+|----------|-----------|
+| `CLAUDE_GLM_OPUS_MODEL` | `claude_glm.opus_model` |
+| `CLAUDE_GLM_SONNET_MODEL` | `claude_glm.sonnet_model` |
+| `CLAUDE_GLM_HAIKU_MODEL` | `claude_glm.haiku_model` |
+| `CLAUDE_GLM_MAX_CONTEXT_TOKENS` | `claude_glm.max_context_tokens` |
+
+`CLAUDE_GLM_MAX_CONTEXT_TOKENS` must be a positive integer; model values must
+be non-empty strings.
 
 ### Timeouts
 
@@ -121,9 +156,9 @@ Example:
   "phases": {
     "plan":             {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
     "validate_plan":    {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "implement":        {"runtime": "claude-glm", "model": "glm-5.2[1m]", "effort": "medium"},
+    "implement":        {"runtime": "claude-glm", "model": "glm-5.3", "effort": "medium"},
     "review_changes":   {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "repair_changes":   {"runtime": "claude-glm", "model": "glm-5.2[1m]", "effort": "medium"},
+    "repair_changes":   {"runtime": "claude-glm", "model": "glm-5.3", "effort": "medium"},
     "final_acceptance": {"runtime": "codex",  "model": "gpt-5.5",         "effort": "low"}
   },
   "timeouts": {

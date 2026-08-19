@@ -129,6 +129,7 @@ def _spawn_with_sandbox(
     cwd: str | None,
     stdio: dict[str, object],
     sandbox_policy: "SandboxPolicy | None",
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[subprocess.Popen, "TokenMasker | None", int, object | None]:
     """Construct the agent Popen, applying sandbox policy when provided.
 
@@ -145,11 +146,14 @@ def _spawn_with_sandbox(
     pre-L1 spawn path.
     """
     if sandbox_policy is None or not sandbox_policy.isolation_active:
+        child_env = dict(os.environ)
+        child_env.update(env_overrides or {})
         proc = subprocess.Popen(
             cmd,
             cwd=cwd,
             stderr=subprocess.PIPE,
             close_fds=True,
+            env=child_env,
             **stdio,
         )
         return proc, None, 0, None
@@ -164,6 +168,11 @@ def _spawn_with_sandbox(
     prepared = launcher.prepare(
         cmd=cmd, cwd=cwd, parent_env=dict(os.environ)
     )
+    # Runtime adapter settings are applied after allowlist filtering, but an
+    # explicit denylist remains stronger than any adapter-provided value.
+    for name, value in (env_overrides or {}).items():
+        if name not in sandbox_policy.env_denylist:
+            prepared.env[name] = value
 
     popen_kwargs = dict(
         cwd=cwd,
@@ -252,6 +261,7 @@ def _stream_run(
     stall_phase: str = "",
     owned_child_owner: OwnedChildRegistry | None = None,
     agent_call_id: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[str, int, str, float]:
     """
     Run *cmd* via a PTY so the child sees a real terminal and flushes
@@ -425,7 +435,7 @@ def _stream_run(
         raise
     try:
         proc, masker, env_stripped, sandbox_launcher = _spawn_with_sandbox(
-            cmd, cwd, transport.popen_stdio(), sandbox_policy,
+            cmd, cwd, transport.popen_stdio(), sandbox_policy, env_overrides,
         )
         masker_ref[0] = masker
         # Process-group ownership: the Unix env backend wraps the
