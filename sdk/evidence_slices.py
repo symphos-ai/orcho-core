@@ -237,6 +237,8 @@ class StalledCommandRecovery:
     command_preview: str | None = None
     output_tail: str | None = None
     process_group: int | None = None
+    stdout_bytes_read: int | None = None
+    stderr_bytes_read: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,6 +698,8 @@ def active_stall_diagnostics(
                 command_preview=_optional_str(payload.get("command_preview")),
                 output_tail=_optional_str(payload.get("output_tail")),
                 process_group=_optional_int(payload.get("process_group")),
+                stdout_bytes_read=_optional_int(payload.get("stdout_bytes_read")),
+                stderr_bytes_read=_optional_int(payload.get("stderr_bytes_read")),
             )
         )
     return out
@@ -727,6 +731,8 @@ def _terminal_stall_recovery_from_meta(
         command_preview=_optional_str(failure.get("command_preview")),
         output_tail=_optional_str(failure.get("output_tail")),
         process_group=_optional_int(failure.get("process_group")),
+        stdout_bytes_read=_optional_int(failure.get("stdout_bytes_read")),
+        stderr_bytes_read=_optional_int(failure.get("stderr_bytes_read")),
     )
 
 

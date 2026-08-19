@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from agents.owned_child import OwnedChildHandle, OwnedChildRegistry, OwnedChildState
 from agents.pty_diagnostics import is_pty_exhaustion, render_pty_exhaustion_diagnostic
+from agents.stream_stderr import BoundedStderrReader
 from agents.stream_transport import select_transport
 
 if TYPE_CHECKING:
@@ -132,8 +133,8 @@ def _spawn_with_sandbox(
     """Construct the agent Popen, applying sandbox policy when provided.
 
     ``stdio`` carries the transport's stdin/stdout wiring (a PTY slave on POSIX,
-    ``DEVNULL`` + ``PIPE`` on native Windows). ``stderr`` is always a pipe read
-    after the child exits, independent of the transport.
+    ``DEVNULL`` + ``PIPE`` on native Windows). ``stderr`` is always a separately
+    drained pipe, independent of the transport.
 
     Returns ``(proc, masker, env_stripped_count, launcher)``. The
     launcher reference is returned so the caller can hold it alive
@@ -198,6 +199,8 @@ def _escalate_idle_stall(
     idle_timeout: int,
     log_fh,
     echo: Callable[[str], None],
+    stdout_bytes_read: int,
+    stderr_bytes_read: int,
 ) -> None:
     """Terminal idle-timeout escalation: scoped-kill → raise.
 
@@ -220,6 +223,8 @@ def _escalate_idle_stall(
     stalled = monitor.idle_stall(  # type: ignore[attr-defined]
         elapsed_s=elapsed_s,
         process_group=owner.process_group(child_handle),
+        stdout_bytes_read=stdout_bytes_read,
+        stderr_bytes_read=stderr_bytes_read,
     )
     owner.cancel(child_handle)
     owner.wait(child_handle, timeout=None)
@@ -306,6 +311,7 @@ def _stream_run(
     returncode = -1
     stderr_text = ""
     termination_reason: str | None = None
+    stdout_bytes_read = 0
 
     log_fh = None
     if _agent_log:
@@ -408,6 +414,7 @@ def _stream_run(
     if overflow is not None:
         return _return_startup_failure(overflow)
 
+    stderr_reader: BoundedStderrReader | None = None
     try:
         transport = select_transport()
     except OSError as exc:
@@ -440,6 +447,11 @@ def _stream_run(
             launcher=sandbox_launcher,
             start_identity=agent_call_id,
         )
+        # Start stderr draining before any stdout wait.  Keeping this separate
+        # preserves stdout's structured protocol while preventing a noisy
+        # stderr pipe from blocking the child before it can emit stdout/exit.
+        stderr_reader = BoundedStderrReader(proc.stderr)
+        stderr_reader.start()
         if log_fh and sandbox_policy is not None and sandbox_policy.isolation_active:
             log_fh.write(
                 f"[SANDBOX mode={sandbox_policy.mode.value} "
@@ -485,7 +497,11 @@ def _stream_run(
             main read loop and the post-exit drain so both surfaces apply the
             identical formatting / masking / callback path.
             """
-            nonlocal buf
+            nonlocal buf, stdout_bytes_read
+            # Account raw transport bytes before decoding and before line
+            # framing; final-drain chunks share this path. stderr remains
+            # diagnostic-only and never resets this stdout idle watchdog.
+            stdout_bytes_read += len(chunk)
             buf += chunk
             text = buf.decode("utf-8", errors="replace")
             aborted = False
@@ -499,7 +515,10 @@ def _stream_run(
                     # Write-through non-terminal diagnostic AT DETECTION — never
                     # kills, never raises, never writes the session.
                     stall_monitor.inspect_line(
-                        line, elapsed_s=time.monotonic() - _t0,
+                        line,
+                        elapsed_s=time.monotonic() - _t0,
+                        stdout_bytes_read=stdout_bytes_read,
+                        stderr_bytes_read=stderr_reader.total_bytes_read,
                     )
                 if not _handle_line_callback(line):
                     aborted = True
@@ -555,6 +574,8 @@ def _stream_run(
                             idle_timeout=idle_timeout,
                             log_fh=log_fh,
                             echo=_echo_stdout,
+                            stdout_bytes_read=stdout_bytes_read,
+                            stderr_bytes_read=stderr_reader.total_bytes_read,
                         )
                     owner.cancel(child_handle)
                     if log_fh:
@@ -602,10 +623,7 @@ def _stream_run(
 
         observation = owner.wait(child_handle, timeout=None)
         returncode = observation.exit_code if observation.exit_code is not None else -1
-        stderr_raw = (
-            proc.stderr.read().decode("utf-8", errors="replace")
-            if proc.stderr else ""
-        )
+        stderr_raw = stderr_reader.finish()
         # Mask stderr too — secrets that leak via stderr (e.g. the
         # provider CLI echoing an env-derived API key in an error
         # message) must not survive into the run transcript or the
@@ -614,6 +632,12 @@ def _stream_run(
         if termination_reason:
             stderr_text = f"{stderr_text.rstrip()}\n{termination_reason}".strip()
     finally:
+        # Terminal stall raises after the owned child is reaped; timeout and
+        # StreamAbort settle below before reaching their normal return path.
+        # This idempotent finalizer also covers any unexpected exception.
+        if stderr_reader is not None:
+            stderr_reader.finish()
+            stderr_reader.close()
         transport.close()
         duration = time.monotonic() - _t0
         # ``output.log`` keeps the legacy ``[EXIT …]`` line for

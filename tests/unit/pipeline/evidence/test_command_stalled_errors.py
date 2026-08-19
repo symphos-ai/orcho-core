@@ -59,6 +59,8 @@ def _terminal_stall_payload() -> dict:
         output_tail="(no output for 300s)",
         reason=StallReason.SILENT_CHILD_COMMAND,
         process_group=9090,
+        stdout_bytes_read=17,
+        stderr_bytes_read=29,
     ).event_payload(terminal=True)
 
 
@@ -69,6 +71,8 @@ def _non_terminal_stall_payload() -> dict:
         command_preview="kill -0 $(pgrep -f 'pytest -q -m')",
         output_tail="",
         reason=StallReason.UNSAFE_PROCESS_POLLING,
+        stdout_bytes_read=11,
+        stderr_bytes_read=13,
     ).event_payload(terminal=False)
 
 
@@ -117,12 +121,16 @@ def test_bundle_carries_both_paths_and_validates(tmp_path: Path) -> None:
         "interrupt", "resume_from_checkpoint", "halt",
     ]
     assert "command_preview" in nt
+    assert nt["stdout_bytes_read"] == 11
+    assert nt["stderr_bytes_read"] == 13
 
     # Terminal escalation.
     t = terminal[0]
     assert t["reason"] == "silent_child_command"
     assert t["elapsed_s"] == 300.0
     assert t["process_group"] == 9090
+    assert t["stdout_bytes_read"] == 17
+    assert t["stderr_bytes_read"] == 29
     assert [a["action"] for a in t["recovery_actions"]] == [
         "interrupt", "resume_from_checkpoint", "halt",
     ]

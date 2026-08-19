@@ -210,7 +210,7 @@ class TestDurableShapeContractStability:
             "prefix_hash": "abc",
             "payload_hash": "def",
             "wire_chars": 42,
-            "artifact_path": "/tmp/should_not_leak.md",  # noqa: hostile
+            "artifact_path": "/tmp/should_not_leak.md",
         })
         assert "artifact_path" not in result
 
