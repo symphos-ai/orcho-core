@@ -246,7 +246,7 @@ stalled-command → `provider_access` → `provider_runtime` → generic excerpt
 |---|---|---|---|---|---|
 | `provider_access` | `False` | `switch_runtime_or_restore_access` | `provider_access_detail()` (sanitized provider-access channel) | `AgentAccessError` — runtime cannot reach the provider surface | [0101](../adr/0101-provider-access-recovery-and-runtime-override.md) |
 | `provider_runtime` | `True` | `resume_or_retry_phase` | `provider_message` from `sanitized_failure_excerpt()` (omitted when empty) | `RateLimitError`, `ApiConnectionError`, `ApiTimeoutError`, `SystemResourceError` — transient usage/session/transport/local-resource condition past the retry budget | [0118](../adr/0118-provider-runtime-failure-classification.md) |
-| `stalled_command` | `True` | `interrupt_resume_or_halt` | bounded `command_preview` / `output_tail` / `reason` (sanitized carrier) | `AgentCommandStalledError` — idle-timeout escalation of a hung child command | [0103](../adr/0103-stalled-command-diagnostics-and-recovery.md) |
+| `stalled_command` | `True` | `interrupt_resume_or_halt` | bounded `command_preview` / `output_tail` / `reason` plus optional raw `stdout_bytes_read` / `stderr_bytes_read` snapshots (sanitized carrier) | `AgentCommandStalledError` — idle-timeout escalation of a hung child command | [0103](../adr/0103-stalled-command-diagnostics-and-recovery.md), [0177](../adr/0177-concurrent-stderr-drain-and-stall-byte-accounting.md) |
 
 A generic `AgentCallError` (and `AgentAuthenticationError` /
 `ContextOverflowError` — auth/prompt forms, **not** usage/session/transport)
@@ -273,6 +273,15 @@ written by the phase-failure handler.
 The typed SDK projection of these records lives in `sdk/evidence_slices.py`
 (`ErrorsAndHalt.recovery` for `provider_access`, `ErrorsAndHalt.provider_runtime`
 for `provider_runtime`, `list_stall_recovery()` for `stalled_command`).
+
+For stalled commands, the bytes are raw stream diagnostics, not retained-text
+lengths: stdout counts include final transport drain and stderr counts include
+all bytes drained by the 4 MiB bounded-tail helper, even after dropped-byte
+truncation. New terminal/live records carry both fields; older persisted
+records may omit them and SDK projectors return `None`. Stderr never resets the
+idle watchdog: idle classification remains stdout-based. The fields use the
+existing generic event/evidence pass-through and therefore require no
+MCP-specific wire shape.
 
 ## Active phase-handoff transition writers
 

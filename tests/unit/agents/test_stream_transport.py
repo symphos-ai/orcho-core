@@ -65,6 +65,24 @@ def test_stderr_is_captured(force_transport) -> None:
     assert "boom" in stderr
 
 
+def test_large_stderr_does_not_block_stdout_or_idle_watchdog(force_transport) -> None:
+    # 256 KiB exceeds a typical pipe capacity.  A post-exit stderr read leaves
+    # this child blocked before its delayed stdout and therefore idle-times out.
+    code = (
+        "import sys, time\n"
+        "sys.stderr.buffer.write(b'X' * (256 * 1024)); sys.stderr.flush()\n"
+        "time.sleep(0.15)\n"
+        "print('stdout-after-stderr', flush=True)\n"
+    )
+    stdout, rc, stderr, duration = _stream_run(
+        [sys.executable, "-c", code], idle_timeout=1,
+    )
+    assert rc == 0
+    assert "stdout-after-stderr" in stdout
+    assert len(stderr) >= 256 * 1024
+    assert duration < 3
+
+
 def test_final_line_without_newline_is_captured(force_transport) -> None:
     # No trailing newline exercises the post-loop tail flush on both paths.
     stdout, rc, _stderr, _dur = _stream_run(

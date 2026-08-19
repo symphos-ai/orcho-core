@@ -28,6 +28,7 @@ from agents.stall_protocol import (
 )
 from agents.stream import _stream_run
 from agents.stream_stall import StreamStallMonitor
+from agents.stream_transport import PipeTransport
 from core.observability import events as _events
 from sdk.evidence_slices import active_stall_diagnostics
 
@@ -226,6 +227,37 @@ def test_stream_run_unsafe_poll_default_sink_emits_non_terminal(tmp_path: Path) 
         _events.init_event_store(None)
 
 
+def test_live_stall_event_snapshots_both_stream_byte_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stderr is diagnostic-only, but its drained-byte snapshot is observable."""
+    monkeypatch.setattr(stream, "select_transport", lambda: PipeTransport())
+    run_dir = tmp_path / "run"
+    _events.init_event_store(run_dir)
+    poll = "pgrep -f 'pytest -q -m'"
+    code = (
+        "import sys, time\n"
+        "sys.stderr.buffer.write(b'ERR'); sys.stderr.flush(); time.sleep(.1)\n"
+        f"print({poll!r}, flush=True)\n"
+    )
+    try:
+        _stdout, rc, _stderr, _dur = _stream_run(
+            [sys.executable, "-c", code],
+            stall_sink=EventStallDiagnosticSink(),
+            stall_phase="implement",
+        )
+        assert rc == 0
+        event = next(e for e in _events.read_all(run_dir) if e.kind == "agent.command_stalled")
+        assert event.payload["terminal"] is False
+        assert event.payload["stdout_bytes_read"] == len(poll) + 1
+        assert event.payload["stderr_bytes_read"] == 3
+        diag = active_stall_diagnostics(run_dir)[0]
+        assert diag.stdout_bytes_read == len(poll) + 1
+        assert diag.stderr_bytes_read == 3
+    finally:
+        _events.init_event_store(None)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _stream_run integration — terminal idle-timeout (the single auto-kill)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,6 +299,28 @@ def test_stream_run_idle_timeout_escalates_to_stalled_error(tmp_path: Path) -> N
         assert terminal == []
         # No live non-terminal diagnostic either (a silent child never polled).
         assert active_stall_diagnostics(run_dir) == []
+    finally:
+        _events.init_event_store(None)
+
+
+def test_terminal_stall_carries_counts_in_carrier_and_error_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stream, "select_transport", lambda: PipeTransport())
+    _events.init_event_store(tmp_path / "run")
+    try:
+        with pytest.raises(AgentCommandStalledError) as excinfo:
+            _stream_run(
+                [sys.executable, "-c", "import sys, time; sys.stderr.write('ERR'); sys.stderr.flush(); time.sleep(5)"],
+                idle_timeout=1,
+                stall_sink=_SpySink(),
+                stall_phase="implement",
+            )
+        stalled = excinfo.value.stalled
+        assert stalled.stdout_bytes_read == 0
+        assert stalled.stderr_bytes_read == 3
+        assert "stdout_bytes_read=0" in str(excinfo.value)
+        assert "stderr_bytes_read=3" in str(excinfo.value)
     finally:
         _events.init_event_store(None)
 

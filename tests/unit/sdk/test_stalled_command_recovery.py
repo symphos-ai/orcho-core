@@ -27,6 +27,7 @@ from pipeline.run_state.stalled_command import (
 )
 from sdk.evidence_slices import (
     StalledCommandRecovery,
+    _terminal_stall_recovery_from_meta,
     active_stall_diagnostics,
 )
 
@@ -52,6 +53,8 @@ def test_build_failure_carries_bounded_fields() -> None:
         output_tail="…",
         reason=StallReason.SILENT_CHILD_COMMAND,
         process_group=4242,
+        stdout_bytes_read=17,
+        stderr_bytes_read=29,
     )
     failure = build_stalled_command_failure(stalled)
     assert failure["failure_kind"] == STALLED_COMMAND_FAILURE_KIND
@@ -60,6 +63,8 @@ def test_build_failure_carries_bounded_fields() -> None:
     assert failure["elapsed_s"] == 130.0
     assert failure["process_group"] == 4242
     assert failure["command_preview"] == "pytest -q -m 'not e2e'"
+    assert failure["stdout_bytes_read"] == 17
+    assert failure["stderr_bytes_read"] == 29
     # The durable recovery list matches the consistent verb set.
     assert [a["action"] for a in failure["recovery_actions"]] == list(
         STALL_RECOVERY_VERBS
@@ -83,7 +88,10 @@ def test_build_failure_omits_empty_optional_fields() -> None:
 # ── live non-terminal projector ──────────────────────────────────────────────
 
 
-def _stall_event(*, terminal: bool, seq: int = 1) -> Event:
+def _stall_event(
+    *, terminal: bool, seq: int = 1, stdout_bytes_read: int | None = None,
+    stderr_bytes_read: int | None = None,
+) -> Event:
     return Event(
         seq=seq,
         ts="2026-06-24T00:00:00.000",
@@ -95,13 +103,15 @@ def _stall_event(*, terminal: bool, seq: int = 1) -> Event:
             "elapsed_s": 12.0,
             "terminal": terminal,
             "command_preview": "kill -0 $(pgrep -f 'pytest -q -m')",
+            **({"stdout_bytes_read": stdout_bytes_read} if stdout_bytes_read is not None else {}),
+            **({"stderr_bytes_read": stderr_bytes_read} if stderr_bytes_read is not None else {}),
         },
     )
 
 
 def test_active_stall_diagnostics_reads_non_terminal_only() -> None:
     events = [
-        _stall_event(terminal=False, seq=1),
+        _stall_event(terminal=False, seq=1, stdout_bytes_read=11, stderr_bytes_read=13),
         _stall_event(terminal=True, seq=2),   # terminal escalation — excluded
         Event(seq=3, ts="t", kind="agent.text", phase=None, payload={}),
     ]
@@ -116,6 +126,24 @@ def test_active_stall_diagnostics_reads_non_terminal_only() -> None:
     # The projector fills in the consistent recovery verb set even when the
     # event payload omits it.
     assert diag.recovery_actions == tuple(STALL_RECOVERY_VERBS)
+    assert diag.stdout_bytes_read == 11
+    assert diag.stderr_bytes_read == 13
+
+
+def test_projectors_tolerate_legacy_records_without_byte_counts() -> None:
+    legacy_live = active_stall_diagnostics(events=[_stall_event(terminal=False)])[0]
+    legacy_terminal = _terminal_stall_recovery_from_meta({
+        "failure": {
+            "failure_kind": STALLED_COMMAND_FAILURE_KIND,
+            "failed_phase": "implement",
+            "reason": "silent_child_command",
+        },
+    })
+    assert legacy_live.stdout_bytes_read is None
+    assert legacy_live.stderr_bytes_read is None
+    assert legacy_terminal is not None
+    assert legacy_terminal.stdout_bytes_read is None
+    assert legacy_terminal.stderr_bytes_read is None
 
 
 def test_active_stall_diagnostics_reads_from_disk(tmp_path: Path) -> None:

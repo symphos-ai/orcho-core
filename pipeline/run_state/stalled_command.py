@@ -62,6 +62,8 @@ def build_stalled_command_failure(stalled: StalledCommand) -> dict[str, Any]:
         "reason": str(stalled.reason),
         "elapsed_s": stalled.elapsed_s,
         "recovery_actions": build_stall_recovery_actions(),
+        "stdout_bytes_read": stalled.stdout_bytes_read,
+        "stderr_bytes_read": stalled.stderr_bytes_read,
     }
     if stalled.command_preview:
         failure["command_preview"] = stalled.command_preview
@@ -93,6 +95,8 @@ def write_finalization_snapshot(
         "reason": str(stalled.reason),
         "elapsed_s": stalled.elapsed_s,
         "recovery_actions": list(STALL_RECOVERY_VERBS),
+        "stdout_bytes_read": stalled.stdout_bytes_read,
+        "stderr_bytes_read": stalled.stderr_bytes_read,
     }
     if stalled.command_preview:
         snapshot["command_preview"] = stalled.command_preview

@@ -870,6 +870,12 @@ def _build_command_stalled_errors(
         pgroup = _optional_int(payload.get("process_group"))
         if pgroup is not None:
             record["process_group"] = pgroup
+        stdout_bytes = _optional_int(payload.get("stdout_bytes_read"))
+        if stdout_bytes is not None:
+            record["stdout_bytes_read"] = stdout_bytes
+        stderr_bytes = _optional_int(payload.get("stderr_bytes_read"))
+        if stderr_bytes is not None:
+            record["stderr_bytes_read"] = stderr_bytes
         out.append(record)
     return out
 
