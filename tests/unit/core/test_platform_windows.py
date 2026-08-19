@@ -151,3 +151,29 @@ def test_default_engine_home_windows(monkeypatch, tmp_path):
 
     home = plat_mod.default_engine_home()
     assert home == tmp_path / "orcho-core"
+
+
+# ── is_windows_apps_alias ────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("path,expected", [
+    (r"C:\Users\u\AppData\Local\Microsoft\WindowsApps\python.exe", True),
+    ("C:/Users/u/AppData/Local/Microsoft/WindowsApps/python.exe", True),
+    (r"C:\Program Files\WindowsApps\PythonSoftwareFoundation"
+     r".Python.3.12_qbz5n2kfra8p0\python.exe", True),
+    (r"c:\users\u\appdata\local\microsoft\windowsapps\python3.exe", True),
+    (r"C:\Python312\python.exe", False),
+    (r"C:\dev\my-windowsapps-notes\python.exe", False),
+    ("/usr/bin/python3", False),
+    ("/home/u/.venv/bin/python", False),
+    ("", False),
+    (None, False),
+])
+def test_is_windows_apps_alias(path, expected):
+    from core.infra.platform import is_windows_apps_alias
+    assert is_windows_apps_alias(path) is expected
+
+
+def test_is_windows_apps_alias_accepts_pathlike(tmp_path):
+    from core.infra.platform import is_windows_apps_alias
+    assert is_windows_apps_alias(tmp_path / "WindowsApps" / "python") is True
+    assert is_windows_apps_alias(tmp_path / "bin" / "python") is False
