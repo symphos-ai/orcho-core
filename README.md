@@ -137,8 +137,10 @@ OS-agnostic [Docker](#docker) / [direct engine](#direct-engine-dependency)
 paths.
 
 Prerequisites on every OS: **Python 3.12+**, and for real (non-`--mock`) runs at
-least one code-agent CLI or compatible wrapper (`claude`, `claude-glm`,
-`codex`, or `gemini`) available to Orcho.
+least one code-agent CLI (`claude`, `codex`, or `gemini`) available to Orcho.
+`claude-glm` is an Orcho runtime identity that launches the installed plain
+`claude` CLI with its GLM-compatible environment; it is not another executable
+to install. See [the Claude-compatible GLM guide](docs/guides/claude_glm_runtime.md).
 
 > `pipx ensurepath` updates `PATH` for **future** shells, not the one you run it
 > in. So after `ensurepath` you must **open a new terminal** before `pipx` (and

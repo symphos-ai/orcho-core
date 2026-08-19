@@ -429,7 +429,9 @@ def test_claude_glm_uses_distinct_runtime_identity(
     from core.infra import config
     from core.observability import events
 
-    monkeypatch.setattr(config, "get_claude_glm_bin", lambda: "/fake/claude-glm")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "glm-token")
+    config.AppConfig.load.cache_clear()
+    monkeypatch.setattr(config, "get_claude_glm_bin", lambda: "/fake/claude")
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         events,
@@ -438,21 +440,68 @@ def test_claude_glm_uses_distinct_runtime_identity(
     )
     mock_stream_run.return_value = _stream_result(_assistant_event("ok"))
 
-    agent = ClaudeGlmAgent(model="glm-5.2[1m]")
+    agent = ClaudeGlmAgent(model="glm-5.3")
     assert agent.invoke("hi", "/project") == "ok"
 
     cmd = mock_stream_run.call_args.args[0]
-    assert cmd[0] == "/fake/claude-glm"
+    assert cmd[0] == "/fake/claude"
+    assert not any(part.endswith(("claude-glm.cmd", "claude-glm.sh")) for part in cmd)
     assert "--model" in cmd
-    assert "glm-5.2[1m]" in cmd
+    assert "glm-5.3" in cmd
+    assert mock_stream_run.call_args.kwargs["env_overrides"] == {
+        "ANTHROPIC_AUTH_TOKEN": "glm-token",
+        "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.3",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+        "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1",
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "API_TIMEOUT_MS": "3000000",
+    }
     assert mock_stream_run.call_args.kwargs["label"].startswith(
-        "claude-glm --print --model glm-5.2[1m]"
+        "claude-glm --print --model glm-5.3"
     )
 
     starts = [payload for event, payload in emitted if event == "agent.start"]
     ends = [payload for event, payload in emitted if event == "agent.end"]
     assert starts and starts[-1]["agent"] == "claude-glm"
     assert ends and ends[-1]["agent"] == "claude-glm"
+
+
+def test_claude_glm_missing_token_stops_before_binary_or_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_stream_run: MagicMock,
+) -> None:
+    from core.infra import config
+
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    resolver = MagicMock(return_value="/unused/claude")
+    monkeypatch.setattr(config, "get_claude_glm_bin", resolver)
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_AUTH_TOKEN"):
+        ClaudeGlmAgent(model="glm-5.3").invoke("hi", "/project")
+
+    resolver.assert_not_called()
+    mock_stream_run.assert_not_called()
+
+
+def test_claude_glm_constructor_is_lazy_and_plain_claude_has_no_child_env(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_stream_run: MagicMock,
+) -> None:
+    from core.infra import config
+
+    resolver = MagicMock(return_value="/unused/claude")
+    monkeypatch.setattr(config, "get_claude_glm_bin", resolver)
+    ClaudeGlmAgent(model="glm-5.3")
+    resolver.assert_not_called()
+
+    plain = ClaudeAgent(model="claude-sonnet-test")
+    plain.bin = "/plain/claude"
+    plain.invoke("hi", "/project")
+    assert mock_stream_run.call_args.kwargs["env_overrides"] == {}
 
 
 def test_claude_glm_identity_contract_is_locked() -> None:
