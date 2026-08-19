@@ -131,7 +131,7 @@ def _merge_local_layer(cfg: dict, local: dict) -> None:
     for section in ("timeouts", "session", "codemap", "hypothesis",
                     "language", "artifacts", "pipeline", "commit",
                     "worktree", "pre_run_dirty", "sandbox", "cli",
-                    "accounting"):
+                    "accounting", "claude_glm"):
         if section in local and isinstance(local[section], dict):
             overlay = {
                 key: value
@@ -236,6 +236,7 @@ def _merge_json_layers(*, workspace: Path | str | None = None) -> dict:
         "sandbox":       dict(raw_defaults.get("sandbox", {})),
         "cli":           dict(raw_defaults.get("cli", {})),
         "accounting":    dict(raw_defaults.get("accounting", {})),
+        "claude_glm":    dict(raw_defaults.get("claude_glm", {})),
     }
 
     if _local_config_disabled():
@@ -450,8 +451,12 @@ def get_claude_bin() -> str:
 
 
 def get_claude_glm_bin() -> str:
-    from core.infra.platform import claude_glm_candidates
-    return _find_binary("claude-glm", claude_glm_candidates())
+    """Resolve the GLM adapter executable without looking for a wrapper."""
+    if env_val := os.environ.get("CLAUDE_GLM_BIN"):
+        if Path(env_val).exists():
+            return env_val
+        raise RuntimeError(f"CLAUDE_GLM_BIN={env_val!r} set but file not found")
+    return get_claude_bin()
 
 
 def get_codex_bin() -> str:
@@ -653,6 +658,7 @@ class AppConfig:
     sandbox:    dict[str, Any] = field(default_factory=dict)  # process-level isolation (ADR 0034)
     cli:        dict[str, Any] = field(default_factory=dict)  # CLI defaults (e.g. output_mode)
     accounting: dict[str, Any] = field(default_factory=dict)  # opt-in dollar accounting
+    claude_glm: dict[str, Any] = field(default_factory=dict)  # GLM adapter defaults
 
     @classmethod
     @cache
@@ -763,6 +769,39 @@ class AppConfig:
 
         accounting_defaults = _resolve_accounting(raw)
 
+        claude_glm_defaults: dict[str, Any] = {
+            "opus_model": "glm-5.3", "sonnet_model": "glm-5.3",
+            "haiku_model": "glm-4.7", "max_context_tokens": 200000,
+        }
+        claude_glm_defaults.update({
+            key: value for key, value in raw.get("claude_glm", {}).items()
+            if not key.startswith("_")
+        })
+        for key, env_key in (
+            ("opus_model", "CLAUDE_GLM_OPUS_MODEL"),
+            ("sonnet_model", "CLAUDE_GLM_SONNET_MODEL"),
+            ("haiku_model", "CLAUDE_GLM_HAIKU_MODEL"),
+        ):
+            if value := os.environ.get(env_key):
+                claude_glm_defaults[key] = value
+        raw_context = os.environ.get(
+            "CLAUDE_GLM_MAX_CONTEXT_TOKENS",
+            str(claude_glm_defaults["max_context_tokens"]),
+        )
+        try:
+            claude_glm_defaults["max_context_tokens"] = int(raw_context)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer"
+            ) from exc
+        if claude_glm_defaults["max_context_tokens"] <= 0:
+            raise ValueError(
+                "CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer"
+            )
+        for key in ("opus_model", "sonnet_model", "haiku_model"):
+            if not str(claude_glm_defaults.get(key, "")).strip():
+                raise ValueError(f"claude_glm.{key} must be a non-empty string")
+
         return cls(
             phases     = {p: dict(spec) for p, spec in raw.get("phases", {}).items()},
             timeouts   = dict(raw.get("timeouts", {})),
@@ -778,6 +817,7 @@ class AppConfig:
             sandbox    = sandbox_defaults,
             cli        = cli_defaults,
             accounting = accounting_defaults,
+            claude_glm = claude_glm_defaults,
         )
 
     # ── phase views (canonical) ──────────────────────────────────────────────

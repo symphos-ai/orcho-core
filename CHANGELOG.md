@@ -1,6 +1,62 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - 2026-08-20
+
+This release makes Orcho usable on native Windows. A first-time onboarding
+report on a non-UTF-8 Windows host found five blockers; four are fixed here,
+and the fifth now fails fast with a diagnostic that names its own cause. The
+`claude-glm` runtime also stops routing through a shell wrapper, which is a
+breaking change to how that runtime is set up.
+
+### Changed
+
+- **BREAKING**: the `claude-glm` runtime launches the installed plain `claude`
+  executable with an adapter-owned GLM environment. The packaged `claude-glm`
+  wrapper scripts and the `orcho runtimes install` surface that installed them
+  are gone. Model ids are configuration rather than baked into a script, and
+  default to `glm-5.3` (opus/sonnet) and `glm-4.7` (haiku). See the migration
+  note below.
+- Child process stderr is drained continuously while the agent runs, instead
+  of being read only after the child exits. A child that filled its stderr
+  pipe previously blocked mid-phase and was misreported as a silent, stalled
+  agent. Retention is bounded, and a truncated payload says how many bytes it
+  dropped.
+- Stalled-command evidence records bytes read per stream, so a child that is
+  thinking and a child that is blocked on a full pipe no longer look identical
+  to an operator.
+
+### Fixed
+
+- Git output is decoded as UTF-8 rather than with the process locale.
+  Verification and delivery probes crashed on any repository containing
+  non-ASCII pathnames when the console codepage was not UTF-8, and a probe
+  whose capture died now reports a failure instead of raising.
+- The sandbox no longer strips `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_GLM_BIN`, the
+  variables the shipped GLM runtime path requires. Stripping the token
+  degraded the child into a fallback session that the remote endpoint rejected
+  minutes later as an authentication error.
+- An agent command line that exceeds the Windows process-creation limit fails
+  immediately, naming the composed length, the applicable limit, and the
+  argv-borne prompt as the cause, instead of dying with an unrelated
+  "filename or extension is too long" error.
+- The Microsoft Store `python` alias is never reported as a usable
+  interpreter. It runs virtualized and cannot see Orcho's own workspace tree,
+  so verification receipts recorded a passing environment that could not work.
+
+### Migration
+
+`claude-glm` operators: remove any installed `claude-glm` wrapper from `PATH`
+and drop `orcho runtimes install claude-glm` from setup scripts. Keep
+`ANTHROPIC_AUTH_TOKEN` in the environment as before; set `CLAUDE_GLM_BIN` only
+to point at a specific `claude` executable. Override model ids through
+configuration if the defaults above are not what your plan serves.
+
+### Known limitations
+
+- On Windows, composed phase prompts still ride argv, so a very large plan
+  (roughly 32k characters, which a non-Latin plan reaches at about half that
+  byte size) cannot be spawned. This is now a fast, self-explaining failure
+  rather than an obscure one; out-of-band prompt delivery is a separate change.
 
 ## 0.7.0 - 2026-08-11
 

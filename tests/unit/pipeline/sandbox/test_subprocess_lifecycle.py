@@ -246,3 +246,22 @@ class TestSpawnCompletion:
         )
         assert rc == 0
         assert "ok" in stdout
+
+    def test_adapter_environment_is_delivered_but_denylist_wins(self) -> None:
+        policy = SandboxPolicy(
+            mode=SandboxMode.ENV,
+            env_denylist=("DENIED_ADAPTER_VALUE",),
+        )
+        code = (
+            "import os; print(os.getenv('GLM_ADAPTER_VALUE')); "
+            "print(os.getenv('DENIED_ADAPTER_VALUE'))"
+        )
+        stdout, rc, _stderr, _dur = _stream_run(
+            [sys.executable, "-c", code], sandbox_policy=policy,
+            env_overrides={
+                "GLM_ADAPTER_VALUE": "delivered",
+                "DENIED_ADAPTER_VALUE": "blocked",
+            },
+        )
+        assert rc == 0
+        assert stdout.splitlines() == ["delivered", "None"]

@@ -72,7 +72,14 @@ class StreamStallMonitor:
         self._tail = (self._tail + text)[-OUTPUT_TAIL_MAX:]
 
     # ── non-terminal write-through (at the moment of detection) ─────────────
-    def inspect_line(self, line: str, *, elapsed_s: float) -> bool:
+    def inspect_line(
+        self,
+        line: str,
+        *,
+        elapsed_s: float,
+        stdout_bytes_read: int | None = None,
+        stderr_bytes_read: int | None = None,
+    ) -> bool:
         """Write through a non-terminal diagnostic if ``line`` polls processes.
 
         Runs the text-only unsafe-process-polling guard over the commands in
@@ -97,6 +104,8 @@ class StreamStallMonitor:
                     output_tail="",
                     reason=StallReason.UNSAFE_PROCESS_POLLING,
                     process_group=None,
+                    stdout_bytes_read=stdout_bytes_read,
+                    stderr_bytes_read=stderr_bytes_read,
                 )
             )
             recorded = True
@@ -104,7 +113,12 @@ class StreamStallMonitor:
 
     # ── terminal idle-timeout carrier (no kill / no raise here) ─────────────
     def idle_stall(
-        self, *, elapsed_s: float, process_group: int | None,
+        self,
+        *,
+        elapsed_s: float,
+        process_group: int | None,
+        stdout_bytes_read: int | None = None,
+        stderr_bytes_read: int | None = None,
     ) -> StalledCommand:
         """Build the bounded terminal carrier for an idle-timeout.
 
@@ -125,6 +139,8 @@ class StreamStallMonitor:
             output_tail=self._tail,
             reason=reason,
             process_group=process_group,
+            stdout_bytes_read=stdout_bytes_read,
+            stderr_bytes_read=stderr_bytes_read,
         )
 
 

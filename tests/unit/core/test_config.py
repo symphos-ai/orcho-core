@@ -4,6 +4,7 @@ No filesystem access, no subprocess — pure constant validation.
 """
 
 import importlib
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -197,3 +198,54 @@ class TestCommitSection:
         assert app.commit["interactive_default"] == "approve"
         assert app.commit["auto_in_ci"] == "approve"
         assert app.commit["add_untracked"] is True
+
+
+class TestClaudeGlmSection:
+    def test_binary_override_wins_and_falls_back_to_plain_claude(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path,
+    ) -> None:
+        override = tmp_path / "claude-compatible"
+        override.touch()
+        plain = MagicMock(return_value="/plain/claude")
+        monkeypatch.setattr(config, "get_claude_bin", plain)
+        monkeypatch.setenv("CLAUDE_GLM_BIN", str(override))
+        assert config.get_claude_glm_bin() == str(override)
+        plain.assert_not_called()
+
+        monkeypatch.delenv("CLAUDE_GLM_BIN")
+        assert config.get_claude_glm_bin() == "/plain/claude"
+        plain.assert_called_once_with()
+
+    def test_defaults_and_environment_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key in (
+            "CLAUDE_GLM_OPUS_MODEL", "CLAUDE_GLM_SONNET_MODEL",
+            "CLAUDE_GLM_HAIKU_MODEL", "CLAUDE_GLM_MAX_CONTEXT_TOKENS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().claude_glm == {
+            "opus_model": "glm-5.3",
+            "sonnet_model": "glm-5.3",
+            "haiku_model": "glm-4.7",
+            "max_context_tokens": 200000,
+        }
+        monkeypatch.setenv("CLAUDE_GLM_OPUS_MODEL", "custom-opus")
+        monkeypatch.setenv("CLAUDE_GLM_SONNET_MODEL", "custom-sonnet")
+        monkeypatch.setenv("CLAUDE_GLM_HAIKU_MODEL", "custom-haiku")
+        monkeypatch.setenv("CLAUDE_GLM_MAX_CONTEXT_TOKENS", "123456")
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().claude_glm == {
+            "opus_model": "custom-opus",
+            "sonnet_model": "custom-sonnet",
+            "haiku_model": "custom-haiku",
+            "max_context_tokens": 123456,
+        }
+
+    @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+    def test_context_override_requires_positive_integer(
+        self, monkeypatch: pytest.MonkeyPatch, value: str,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_GLM_MAX_CONTEXT_TOKENS", value)
+        config.AppConfig.load.cache_clear()
+        with pytest.raises(ValueError, match="positive integer"):
+            config.AppConfig.load()

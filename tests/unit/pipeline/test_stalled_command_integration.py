@@ -61,6 +61,8 @@ def test_terminal_stall_end_to_end(tmp_path: Path) -> None:
             output_tail="(no output for 300s)",
             reason=StallReason.SILENT_CHILD_COMMAND,
             process_group=9090,
+            stdout_bytes_read=17,
+            stderr_bytes_read=29,
         )
         exc = AgentCommandStalledError(stalled)
 
@@ -76,6 +78,8 @@ def test_terminal_stall_end_to_end(tmp_path: Path) -> None:
         ]
         assert fake.session["status"] == "failed"
         assert fake.session["halt_reason"].startswith("stalled_command:")
+        assert failure["stdout_bytes_read"] == 17
+        assert failure["stderr_bytes_read"] == 29
 
         # 2) events: terminal agent.command_stalled + run.end
         events = _events.read_all(run_dir)
@@ -83,6 +87,8 @@ def test_terminal_stall_end_to_end(tmp_path: Path) -> None:
         assert len(stall_events) == 1
         assert stall_events[0].payload["terminal"] is True
         assert stall_events[0].payload["reason"] == "silent_child_command"
+        assert stall_events[0].payload["stdout_bytes_read"] == 17
+        assert stall_events[0].payload["stderr_bytes_read"] == 29
         run_end = [e for e in events if e.kind == "run.end"]
         assert len(run_end) == 1
         assert run_end[0].payload["status"] == "failed"
@@ -124,7 +130,7 @@ def test_stream_to_pipeline_failure_emits_exactly_one_terminal_record(
         raised: AgentCommandStalledError | None = None
         try:
             _stream_run(
-                [sys.executable, "-c", "import time; time.sleep(5)"],
+                [sys.executable, "-c", "import sys, time; sys.stderr.write('ERR'); sys.stderr.flush(); time.sleep(5)"],
                 idle_timeout=1,
                 stall_sink=EventStallDiagnosticSink(),
                 stall_phase="implement",
@@ -151,6 +157,10 @@ def test_stream_to_pipeline_failure_emits_exactly_one_terminal_record(
     terminal = [e for e in stalls if e["terminal"] is True]
     assert len(terminal) == 1
     assert terminal[0]["reason"] == "silent_child_command"
+    assert fake.session["failure"]["stdout_bytes_read"] == 0
+    assert fake.session["failure"]["stderr_bytes_read"] == 3
+    assert terminal[0]["stdout_bytes_read"] == 0
+    assert terminal[0]["stderr_bytes_read"] == 3
     assert [a["action"] for a in terminal[0]["recovery_actions"]] == [
         "interrupt", "resume_from_checkpoint", "halt",
     ]

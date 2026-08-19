@@ -87,18 +87,8 @@ def test_wheel_install_round_trip(tmp_path: Path) -> None:
         mock_artifacts = [
             name for name in names if name.endswith("/Implementation.py")
         ]
-        cmd_wrapper = next(
-            (
-                name
-                for name in names
-                if name.endswith("_runtime_wrappers/claude-glm.cmd")
-            ),
-            None,
-        )
-        assert cmd_wrapper is not None, (
-            "claude-glm.cmd missing from wheel; the "
-            "_runtime_wrappers/*.cmd package-data glob was not applied"
-        )
+        assert not any("_runtime_wrappers/" in name for name in names)
+        assert not any(name.endswith((".cmd", ".sh")) for name in names)
     assert not mock_artifacts, (
         "mock implementation artifacts leaked into wheel:\n"
         + "\n".join(mock_artifacts)
