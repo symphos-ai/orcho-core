@@ -579,9 +579,9 @@ class CodexAgent:
         )
         cmd += ["-o", str(last_message_path)]
         if resumed_session_id:
-            cmd += [resumed_session_id, prompt]
+            cmd += [resumed_session_id, "-"]
         else:
-            cmd += ["--cd", safe, prompt]
+            cmd += ["--cd", safe, "-"]
         from core.io.transcript import render_agent_invocation, render_incoming_prompt
         from core.observability.logging import get_verbose
         from core.observability.prompt_trace import take_last_prompt_turn as _take_turn
@@ -693,6 +693,8 @@ class CodexAgent:
                         stall_phase=_events.current_phase() or "",
                         owned_child_owner=self._owned_children,
                         agent_call_id=attempt_call_id,
+                        prompt=prompt,
+                        delivery_mode="stdin",
                     )
                 stderr = elide_text_for_model(stderr)
                 new_sid = _extract_codex_session_id(stdout)

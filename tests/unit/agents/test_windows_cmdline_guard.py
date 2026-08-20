@@ -46,6 +46,12 @@ class TestWindowsCmdlineOverflow:
         assert str(_WIN_CREATEPROCESS_CMDLINE_MAX) in overflow
         assert "argv" in overflow
 
+    def test_windows_stdin_delivery_does_not_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert _windows_cmdline_overflow(
+            _cmd_of_length(_WIN_CREATEPROCESS_CMDLINE_MAX + 100), "stdin",
+        ) is None
+
     def test_cmd_shim_uses_the_lower_cmd_exe_budget(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

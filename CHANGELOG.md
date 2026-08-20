@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1 - 2026-08-20
+
+This release removes the Windows command-line ceiling on composed phase
+prompts. 0.8.0 made the failure explicit; 0.8.1 makes it not happen: the
+prompt no longer travels through argv at all.
+
+### Changed
+- Built-in runtimes (`claude`, `claude-glm`, `codex`, `gemini`) now deliver
+  the composed phase prompt to the agent process over stdin; argv carries
+  only flags (ADR 0178). Field-measured plans of 40-61 kB — previously
+  unlaunchable as `validate_plan` input on Windows because of the 32,767-char
+  `CreateProcessW` limit — now run on every platform. Which runtime authors
+  the plan no longer decides whether the next phase can start.
+- The prompt is written from a dedicated writer thread with explicit EOF, so
+  payloads larger than the OS pipe buffer cannot deadlock the child process.
+- Prompts no longer appear in process-argument listings, so process
+  inspection tools on shared hosts no longer see prompt contents.
+
+### Known Notes
+- Third-party runtime adapters keep argv delivery by default and remain
+  covered by the 0.8.0 pre-spawn command-line guard; adapters can opt into
+  stdin delivery via the new invocation surface documented in the agent
+  contracts guide.
+
 ## 0.8.0 - 2026-08-20
 
 This release makes Orcho usable on native Windows. A first-time onboarding

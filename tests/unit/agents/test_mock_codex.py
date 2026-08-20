@@ -2,8 +2,20 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 from agents.runtimes._strategy import _MockCodex
+
+
+def test_mock_codex_roundtrips_large_unicode_prompt_without_provider_process() -> None:
+    prompt = "Проверка stdin ��\n" * 6000
+    mock = _MockCodex()
+    with patch("subprocess.Popen", side_effect=AssertionError("provider started")):
+        payload = mock.invoke(prompt, cwd="/tmp")
+
+    assert _verdict(payload) == "APPROVED"
+    assert mock.last_input_prompt == prompt
+    assert mock.session_id == "mock-codex-1"
 
 
 def _verdict(payload: str) -> str:

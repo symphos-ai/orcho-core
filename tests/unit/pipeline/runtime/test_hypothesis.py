@@ -119,8 +119,7 @@ class TestClaudeHypothesizeViaInvoke:
     def test_includes_codemap_in_prompt(self, claude, mock_stream) -> None:
         prompt = self._hypothesis_prompt("task", "/proj", codemap="MapText")
         claude.invoke(prompt, "/proj")
-        cmd = mock_stream.call_args[0][0]
-        rendered = cmd[-1]
+        rendered = mock_stream.call_args.kwargs["prompt"]
         assert "MapText" in rendered
         assert "task" in rendered
 
