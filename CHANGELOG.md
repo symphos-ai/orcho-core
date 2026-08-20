@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.2 - 2026-08-20
+
+Closes the remaining finding from the native-Windows field report: the
+per-phase effort knob on profiles now actually steers the run.
+
+### Fixed
+- A phase `effort` declared by the active profile — including `profiles_v2`
+  overlays written by `orcho profile customize --phase-effort` — reaches
+  agent dispatch. Previously the overlay was written, validated, and
+  reported as a change, but slot construction read only the global
+  `phases.<phase>.effort` config, so the run silently kept the global
+  value (and the run header displayed it). The profile declaration now
+  wins for its phase; the global config remains the default for phases
+  the profile leaves silent, and the run header shows the effective
+  value.
+
 ## 0.8.1 - 2026-08-20
 
 This release removes the Windows command-line ceiling on composed phase

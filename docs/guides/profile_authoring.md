@@ -84,6 +84,12 @@ The effective order is package → user → workspace shared → workspace perso
 → environment, matching the familiar `settings.json` / `settings.local.json`
 split. Commit the shared team policy; keep the local override personal.
 
+A phase `effort` declared on the profile (including via
+`--phase-effort`) wins over the global `phases.<phase>.effort` entry in
+`config.local.json` for that phase: the profile is the targeted knob, the
+global config the default. Phases the profile leaves silent keep the
+configured value.
+
 Use `profile customize` for small changes to existing built-ins: `default_mode`,
 `change_handoff`, `implementation_execution`, `worktree_isolation`, phase
 `effort`, phase `handoff`, and execution session knobs. Write a separate custom

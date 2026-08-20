@@ -70,6 +70,7 @@ def setup_runtime(
     model: str,
     runtime_override: dict[str, str] | None = None,
     skill_trust: SkillTrustPolicy | None = None,
+    profile_phase_efforts: dict[str, str] | None = None,
 ) -> RuntimeSetup:
     """Resolve provider, per-phase models, phase config, and agent registry.
 
@@ -86,6 +87,13 @@ def setup_runtime(
     leaks to other phases. It is honored only on the synthesize path (no
     caller-supplied ``phase_config``); a plain resume with no persisted record
     passes ``None`` and behaviour is unchanged.
+
+    ``profile_phase_efforts`` is the active profile's per-phase ``effort``
+    projection (including ``profiles_v2`` overlays written by
+    ``profile customize --phase-effort``). A phase present in the map wins
+    over the global ``phases.<phase>.effort`` config — the profile is the
+    targeted knob, the config the default. Honored only on the synthesize
+    path, like ``runtime_override``.
     """
     plan_model, implement_model, repair_model, repair_escalation_model, review_model = (
         _resolve_phase_models(phase_config, fallback_code_model=model)
@@ -105,6 +113,7 @@ def setup_runtime(
         repair_model=repair_model, repair_escalation_model=repair_escalation_model,
         review_model=review_model,
         runtime_override=runtime_override,
+        profile_phase_efforts=profile_phase_efforts,
     )
     from pipeline.skills import (
         configure_phase_agent_skill_scope,
@@ -328,12 +337,16 @@ def _synthesize_phase_config(
     repair_escalation_model: str,
     review_model: str,
     runtime_override: dict[str, str] | None = None,
+    profile_phase_efforts: dict[str, str] | None = None,
 ) -> PhaseAgentConfig:
     """Return ``phase_config`` as-is when supplied; otherwise build one
     via ``_provider.resolve(runtime, model, effort=...)`` for every slot.
 
     Runtime/model/effort for each phase come from AppConfig
-    (``phase_runtime_map`` / ``phase_model_map`` / ``phase_effort_map``).
+    (``phase_runtime_map`` / ``phase_model_map`` / ``phase_effort_map``);
+    a phase present in ``profile_phase_efforts`` (the active profile's
+    declaration, including ``profiles_v2`` overlays) wins over the global
+    effort map for that phase.
     No phase is hardwired to Claude or Codex here — a runtime id
     registered under ``orcho.agent_runtimes`` and pinned via
     ``phase_runtime_map`` routes through the same construction path.
@@ -377,7 +390,8 @@ def _synthesize_phase_config(
         return _provider.resolve(
             runtime,
             model,
-            effort=phase_efforts.get(phase),
+            effort=(profile_phase_efforts or {}).get(phase)
+            or phase_efforts.get(phase),
         )
 
     return PhaseAgentConfig(
