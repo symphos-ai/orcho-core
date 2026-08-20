@@ -1,7 +1,7 @@
 """GeminiAgent runtime adapter contracts.
 
 The agent wraps the ``@google/gemini-cli`` Node CLI. Every invocation
-runs through ``gemini -p <prompt> -m <model> -o stream-json
+runs through ``gemini -m <model> -o stream-json
 --skip-trust --approval-mode <plan|yolo>`` so the CLI emits one JSON
 event per line. These tests pin the wrapper behaviour around
 ``_stream_run``:
@@ -170,13 +170,16 @@ class TestInvokeCliShape:
         idx = cmd.index("-m")
         assert cmd[idx + 1] == "gemini-test"
 
-    def test_prompt_passed_via_p_flag(
+    def test_prompt_is_delivered_via_stdin_without_p_flag(
         self, gemini: GeminiAgent, mock_stream_run: MagicMock,
     ) -> None:
         gemini.invoke("the prompt text", "/project")
         cmd = mock_stream_run.call_args[0][0]
-        idx = cmd.index("-p")
-        assert cmd[idx + 1] == "the prompt text"
+        assert "-p" not in cmd
+        assert "the prompt text" not in cmd
+        kwargs = mock_stream_run.call_args.kwargs
+        assert kwargs["prompt"] == "the prompt text"
+        assert kwargs["delivery_mode"] == "stdin"
 
     def test_cwd_passed_through(
         self, gemini: GeminiAgent, mock_stream_run: MagicMock,

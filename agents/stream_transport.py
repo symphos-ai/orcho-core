@@ -47,6 +47,8 @@ import sys
 import threading
 from typing import Any
 
+from agents.stream_prompt import PromptDeliveryMode
+
 # Read granularity for both transports. Matches the historical PTY read size.
 _READ_CHUNK = 4096
 
@@ -65,7 +67,7 @@ class StreamTransport:
     fan-out, masking, watchdogs — stays in :mod:`agents.stream`.
     """
 
-    def popen_stdio(self) -> dict[str, Any]:
+    def popen_stdio(self, delivery_mode: PromptDeliveryMode = "argv") -> dict[str, Any]:
         """Return the ``Popen`` stdin/stdout kwargs for the child.
 
         ``stderr`` is owned by the spawn helper (always ``subprocess.PIPE``) and
@@ -106,10 +108,11 @@ class PtyTransport(StreamTransport):
 
         self._master_fd, self._slave_fd = pty.openpty()
 
-    def popen_stdio(self) -> dict[str, Any]:
+    def popen_stdio(self, delivery_mode: PromptDeliveryMode = "argv") -> dict[str, Any]:
         # Both stdin and stdout ride the slave end so the child sees a real TTY
         # on both and line-buffers its output.
-        return {"stdin": self._slave_fd, "stdout": self._slave_fd}
+        stdin = subprocess.PIPE if delivery_mode == "stdin" else self._slave_fd
+        return {"stdin": stdin, "stdout": self._slave_fd}
 
     def after_spawn(self, proc: subprocess.Popen) -> None:  # noqa: ARG002 — parity
         # The parent only reads the master end; close the slave so the child is
@@ -156,12 +159,13 @@ class PipeTransport(StreamTransport):
         self._thread: threading.Thread | None = None
         self._eof_seen = False
 
-    def popen_stdio(self) -> dict[str, Any]:
+    def popen_stdio(self, delivery_mode: PromptDeliveryMode = "argv") -> dict[str, Any]:
         # No TTY available: stdin is DEVNULL, stdout is a pipe we drain. The
         # child's stdout is therefore a plain pipe, so a CLI probing
         # ``sys.stdout.isatty()`` sees a non-interactive stream, as with any
         # piped invocation.
-        return {"stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE}
+        stdin = subprocess.PIPE if delivery_mode == "stdin" else subprocess.DEVNULL
+        return {"stdin": stdin, "stdout": subprocess.PIPE}
 
     def after_spawn(self, proc: subprocess.Popen) -> None:
         stdout = proc.stdout

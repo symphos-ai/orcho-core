@@ -295,7 +295,11 @@ class TestInvokeReadOnly:
         # so a regression cannot silently bring back the restrictive
         # mode.
         assert "--sandbox" not in cmd
-        assert cmd[-1] == "the prompt"
+        assert cmd[-1] == "-"
+        assert "the prompt" not in cmd
+        kwargs = mock_stream_run.call_args.kwargs
+        assert kwargs["prompt"] == "the prompt"
+        assert kwargs["delivery_mode"] == "stdin"
 
 
 # ── invoke(): write path (codex exec) ──────────────────────────────────────
@@ -375,7 +379,7 @@ class TestInvokeWrite:
         cmd = mock_stream_run.call_args[0][0]
         assert cmd[:3] == [codex.bin, "exec", "resume"]
         assert "sess-prior" in cmd
-        assert cmd[-2:] == ["sess-prior", "task"]
+        assert cmd[-2:] == ["sess-prior", "-"]
         assert "--cd" not in cmd
 
     def test_nonzero_returncode_raises_runtime_error(

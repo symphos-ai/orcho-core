@@ -561,7 +561,7 @@ class ClaudeAgent:
 
         cmd: list[str] = [
             *_wrap_windows_cmd(self.bin),
-            "--print",
+            "-p",
         ]
         if mutates_artifacts:
             # Claude write path: pre-accept edits and skip per-tool permission
@@ -576,7 +576,6 @@ class ClaudeAgent:
         ]
         if continue_session and self.session_id:
             cmd += ["--resume", self.session_id]
-        cmd += [prompt]
 
         from core.io.transcript import render_agent_invocation, render_incoming_prompt
         from core.observability.logging import get_verbose
@@ -730,6 +729,8 @@ class ClaudeAgent:
                     owned_child_owner=self._owned_children,
                     agent_call_id=attempt_call_id,
                     env_overrides=child_env_overrides,
+                    prompt=prompt,
+                    delivery_mode="stdin",
                 )
             stderr = elide_text_for_model(stderr)
             if returncode != 0 and stderr:

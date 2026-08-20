@@ -18,8 +18,31 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from agents.runtimes._strategy import _MockClaude
+
+
+def test_mock_claude_roundtrips_large_unicode_prompt_without_provider_process(
+    tmp_path: Path,
+) -> None:
+    prompt = "Проверка stdin ��\n" * 6000
+    mock = _MockClaude()
+    with patch("subprocess.Popen", side_effect=AssertionError("provider started")):
+        output = mock.invoke(prompt, str(tmp_path))
+
+    assert output
+    assert mock.last_input_prompt == prompt
+
+
+def test_mock_claude_records_byte_identical_stdin_prompt_and_session(tmp_path: Path) -> None:
+    prompt = "Unicode prompt: ž ��\n"
+    mock = _MockClaude()
+    output = mock.invoke(prompt, str(tmp_path), continue_session=True)
+
+    assert output
+    assert mock.last_input_prompt == prompt
+    assert mock.session_id == "mock-claude-1"
 
 
 def _projects(tmp: Path) -> dict[str, Path]:

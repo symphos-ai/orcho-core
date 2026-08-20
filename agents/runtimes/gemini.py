@@ -3,8 +3,9 @@ agents/runtimes/gemini.py — GeminiAgent (thin wrapper around the
 ``@google/gemini-cli`` Node CLI).
 
 Implements :class:`IAgentRuntime`. Each invocation runs through
-``gemini -p <prompt> -m <model> -o stream-json --skip-trust
---approval-mode <plan|yolo>`` so the CLI emits one JSON event per line.
+``gemini -m <model> -o stream-json --skip-trust
+--approval-mode <plan|yolo>`` with the composed prompt on stdin, so the CLI
+emits one JSON event per line.
 The runtime captures ``init.session_id`` from the stream and resumes
 later calls with ``-r <session_id>``.
 
@@ -323,7 +324,6 @@ class GeminiAgent:
         )
         cmd: list[str] = [
             *_wrap_windows_cmd(self.bin),
-            "-p", prompt,
             "-m", self.model,
             "-o", "stream-json",
             "--skip-trust",
@@ -364,7 +364,7 @@ class GeminiAgent:
                 model=self.model,
             ))
         label = (
-            f"gemini -p --model {self.model}{self._effort_label()} "
+            f"gemini --model {self.model}{self._effort_label()} "
             f"({mode_label})"
         )
 
@@ -453,6 +453,8 @@ class GeminiAgent:
                     stall_phase=_events.current_phase() or "",
                     owned_child_owner=self._owned_children,
                     agent_call_id=attempt_call_id,
+                    prompt=prompt,
+                    delivery_mode="stdin",
                 )
             stderr = elide_text_for_model(stderr)
             if returncode != 0 and stderr:

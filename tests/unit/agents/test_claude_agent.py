@@ -296,12 +296,16 @@ class TestInvokeCliShape:
         cmd = mock_stream_run.call_args[0][0]
         assert "--effort" not in cmd
 
-    def test_prompt_appended_as_last_positional_arg(
+    def test_prompt_is_delivered_via_stdin_with_print_flag(
         self, claude: ClaudeAgent, mock_stream_run: MagicMock,
     ) -> None:
         claude.invoke("the prompt text", "/project")
         cmd = mock_stream_run.call_args[0][0]
-        assert cmd[-1] == "the prompt text"
+        assert "-p" in cmd
+        assert "the prompt text" not in cmd
+        kwargs = mock_stream_run.call_args.kwargs
+        assert kwargs["prompt"] == "the prompt text"
+        assert kwargs["delivery_mode"] == "stdin"
 
     def test_cwd_passed_through(
         self, claude: ClaudeAgent, mock_stream_run: MagicMock,
