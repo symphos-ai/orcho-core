@@ -74,7 +74,9 @@ def test_codex_followup_seed_forces_first_resume(
 
     cmd = mock_stream_run.call_args[0][0]
     assert cmd[:3] == [agent.bin, "exec", "resume"]
-    assert cmd[-2:] == ["parent-codex", "task"]
+    assert cmd[-2:] == ["parent-codex", "-"]
+    assert mock_stream_run.call_args.kwargs["prompt"] == "task"
+    assert mock_stream_run.call_args.kwargs["delivery_mode"] == "stdin"
     assert agent._last_resumed_session_id == "parent-codex"
     assert agent._last_followup_parent_session_id == "parent-codex"
     assert agent._followup_resume_pending is False

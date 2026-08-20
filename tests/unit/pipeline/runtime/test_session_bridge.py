@@ -139,10 +139,11 @@ class TestBridgePersistsAcrossPhases:
         x_prompt = f"Apply this critique:\n{y_output}"
         claude_x.invoke(x_prompt, "/proj", mutates_artifacts=True)
 
-        # The X invoke saw the critique as part of its prompt arg
-        # (last positional in the cmd list).
-        cmd = mock_stream.call_args[0][0]
-        assert critique in cmd[-1], "Y's output must travel as prompt text"
+        # The X invoke retains the critique as input text even though built-in
+        # runtimes now send that text through stdin instead of argv.
+        assert critique in mock_stream.call_args.kwargs["prompt"], (
+            "Y's output must travel as prompt text"
+        )
         # And the two bridges never crossed.
         assert claude_x.session_id == "sess_X_1"
         assert claude_y.session_id == "sess_Y_1"

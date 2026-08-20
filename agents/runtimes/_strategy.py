@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from agents.stream_prompt import roundtrip_prompt_via_stdin
 from core.observability.metrics import estimate_tokens
 
 if TYPE_CHECKING:
@@ -297,6 +298,7 @@ class _MockClaude:
         self._last_followup_parent_session_id: str | None = None
         self._session_counter = 0
         self.last_prompt: str = ""
+        self.last_input_prompt: str = ""
         self.last_duration_s: float = 0.0
 
     # ── IAgentRuntime ─────────────────────────────────────────────────────
@@ -342,7 +344,12 @@ class _MockClaude:
           ``plan.parsed`` event for the lifecycle vocabulary.
         """
         if mutates_artifacts:
+            # Keep the legacy ``run`` entry point in the write path: a few
+            # integrations deliberately wrap it to observe CHAIN resumes.
+            # ``run`` owns the single stdin roundtrip for this invocation.
             return self.run(prompt, cwd, continue_session=continue_session)
+        prompt = roundtrip_prompt_via_stdin(prompt)
+        self.last_input_prompt = prompt
         self._record_runtime_resume(continue_session=continue_session)
         # Correction triage (ADR 0085) is a read-only reviewer pass keyed on
         # the ``[correction_triage]`` task marker. Detect it first so the
@@ -449,6 +456,13 @@ class _MockClaude:
 
     # ── Legacy direct entry points (kept for tests during Phase 7 migration)
     def run(self, prompt: str, cwd: str = "", *, continue_session: bool = False) -> str:
+        prompt = roundtrip_prompt_via_stdin(prompt)
+        self.last_input_prompt = prompt
+        return self._run_delivered(prompt, cwd, continue_session=continue_session)
+
+    def _run_delivered(
+        self, prompt: str, cwd: str, *, continue_session: bool,
+    ) -> str:
         self._record_runtime_resume(continue_session=continue_session)
         if self._latency:
             time.sleep(self._latency)
@@ -564,6 +578,7 @@ class _MockCodex:
         self._review_reject_budget = max(0, int(review_reject_rounds))
         self._review_calls = 0
         self.last_prompt: str = ""
+        self.last_input_prompt: str = ""
         self.last_duration_s: float = 0.0
 
     # ── IAgentRuntime ─────────────────────────────────────────────────────
@@ -607,6 +622,8 @@ class _MockCodex:
           ``plan_*.md`` / ``hypothesis_*.md`` filename prefix — still
           works. Other prompts are treated as uncommitted-change review.
         """
+        prompt = roundtrip_prompt_via_stdin(prompt)
+        self.last_input_prompt = prompt
         self._record_runtime_resume(continue_session=continue_session)
         if mutates_artifacts:
             raise NotImplementedError(

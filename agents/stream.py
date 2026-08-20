@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from agents.owned_child import OwnedChildHandle, OwnedChildRegistry, OwnedChildState
 from agents.pty_diagnostics import is_pty_exhaustion, render_pty_exhaustion_diagnostic
+from agents.stream_prompt import PromptDeliveryMode, PromptStdinWriter
 from agents.stream_stderr import BoundedStderrReader
 from agents.stream_transport import select_transport
 
@@ -102,12 +103,14 @@ _WIN_CREATEPROCESS_CMDLINE_MAX = 32767
 _WIN_CMD_SHIM_CMDLINE_MAX = 8160
 
 
-def _windows_cmdline_overflow(cmd: list[str]) -> str | None:
+def _windows_cmdline_overflow(
+    cmd: list[str], delivery_mode: PromptDeliveryMode = "argv",
+) -> str | None:
     """Return a startup-failure diagnostic when ``cmd`` cannot spawn on Windows.
 
     ``None`` on POSIX and for command lines within the platform limits.
     """
-    if sys.platform != "win32":
+    if delivery_mode != "argv" or sys.platform != "win32":
         return None
     length = len(subprocess.list2cmdline(cmd))
     limit = _WIN_CREATEPROCESS_CMDLINE_MAX
@@ -262,6 +265,8 @@ def _stream_run(
     owned_child_owner: OwnedChildRegistry | None = None,
     agent_call_id: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    prompt: str | None = None,
+    delivery_mode: PromptDeliveryMode = "argv",
 ) -> tuple[str, int, str, float]:
     """
     Run *cmd* via a PTY so the child sees a real terminal and flushes
@@ -420,11 +425,15 @@ def _stream_run(
         _echo_stdout(render_result(returncode, duration) + "\n")
         return "", returncode, stderr_text, duration
 
-    overflow = _windows_cmdline_overflow(cmd)
+    if delivery_mode not in ("argv", "stdin"):
+        raise ValueError(f"unsupported prompt delivery mode: {delivery_mode!r}")
+
+    overflow = _windows_cmdline_overflow(cmd, delivery_mode)
     if overflow is not None:
         return _return_startup_failure(overflow)
 
     stderr_reader: BoundedStderrReader | None = None
+    prompt_writer: PromptStdinWriter | None = None
     try:
         transport = select_transport()
     except OSError as exc:
@@ -435,7 +444,7 @@ def _stream_run(
         raise
     try:
         proc, masker, env_stripped, sandbox_launcher = _spawn_with_sandbox(
-            cmd, cwd, transport.popen_stdio(), sandbox_policy, env_overrides,
+            cmd, cwd, transport.popen_stdio(delivery_mode), sandbox_policy, env_overrides,
         )
         masker_ref[0] = masker
         # Process-group ownership: the Unix env backend wraps the
@@ -479,6 +488,9 @@ def _stream_run(
                 command_preview=" ".join(cmd),
             )
         transport.after_spawn(proc)  # POSIX closes slave fd; Windows starts reader
+        if delivery_mode == "stdin":
+            prompt_writer = PromptStdinWriter(proc.stdin, prompt or "")
+            prompt_writer.start()
 
         def _handle_line_callback(line: str) -> bool:
             """Run ``on_line``; return False when it requested abort."""
@@ -634,6 +646,8 @@ def _stream_run(
         observation = owner.wait(child_handle, timeout=None)
         returncode = observation.exit_code if observation.exit_code is not None else -1
         stderr_raw = stderr_reader.finish()
+        if prompt_writer is not None:
+            prompt_writer.finish()
         # Mask stderr too — secrets that leak via stderr (e.g. the
         # provider CLI echoing an env-derived API key in an error
         # message) must not survive into the run transcript or the
@@ -648,6 +662,8 @@ def _stream_run(
         if stderr_reader is not None:
             stderr_reader.finish()
             stderr_reader.close()
+        if prompt_writer is not None:
+            prompt_writer.finish()
         transport.close()
         duration = time.monotonic() - _t0
         # ``output.log`` keeps the legacy ``[EXIT …]`` line for

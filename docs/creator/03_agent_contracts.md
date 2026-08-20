@@ -74,6 +74,26 @@ must not require an installed CLI. The path to the external binary is
 resolved lazily on the first real `invoke()` via `lazy_cli_binary`; the
 `agent.bin` property remains settable for tests and runtime adapters.
 
+### Prompt delivery
+
+The runtime receives the fully composed `prompt` string; composition, prompt
+tracing, transcript rendering, masking, metrics, and persisted evidence remain
+outside the delivery choice. `_stream_run` exposes an internal delivery seam:
+`delivery_mode="argv"` is the default for third-party adapters and retains the
+historical stdio wiring and Windows command-line guard. An adapter whose CLI
+accepts stdin passes the unchanged text as `prompt=...` with
+`delivery_mode="stdin"`; the spawn-owned writer sends UTF-8 input and closes
+stdin for EOF after spawn.
+
+An adapter owns only its provider CLI's flag and session-id shape. It must not
+implement a separate writer, transport, retry pipe reuse, or prompt
+composition path. Built-in adapters use stdin; the default remains `argv` so a
+third-party adapter is not changed merely by adopting this Protocol.
+
+This seam is transport-internal. It does not add SDK or MCP fields and does not
+promise any provider behavior beyond how the adapter invokes its CLI. See
+[ADR 0178](../adr/0178-prompt-stdin-delivery.md).
+
 ### `invoke()` parameters
 
 | Parameter | Semantics |
@@ -160,9 +180,9 @@ class GeminiAgent:
 ```
 
 Specifics:
-- Wraps `@google/gemini-cli` via
-  `gemini -p <prompt> -m <model> -o stream-json --skip-trust
-  --approval-mode <plan|yolo>`.
+- Wraps `@google/gemini-cli` with its stream-json and approval flags; the
+  composed prompt is delivered through stdin rather than a prompt flag/value
+  pair.
 - `mutates_artifacts=False` ⇒ `--approval-mode plan`. This is the CLI's
   read-only mode: reviewer phases may read files but must not write.
 - `mutates_artifacts=True` ⇒ `--approval-mode yolo`. Write phases run
