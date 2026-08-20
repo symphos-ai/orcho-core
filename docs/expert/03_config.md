@@ -183,6 +183,11 @@ just one field, for example `{"phases":{"implement":{"effort":"medium"}}}`,
 and `runtime/model` stay as defined by the lower layer. `repair_escalation`
 is optional — add it if the profile uses second-round repair.
 
+`effort` here is the global default. When the active profile declares an
+effort for a phase — in its JSON or via
+`orcho profile customize --phase-effort` — the profile value wins for that
+phase; the `phases` entry applies only where the profile is silent.
+
 ### Delivery publication
 
 `commit.publish` accepts exactly `off`, `auto`, or `always`; the default is
