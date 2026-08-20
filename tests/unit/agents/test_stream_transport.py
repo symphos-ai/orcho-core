@@ -9,6 +9,7 @@ POSIX-only and skipped where ``pty.openpty`` is unavailable.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -159,3 +160,50 @@ def test_pty_transport_child_stdout_is_a_tty(monkeypatch) -> None:
     )
     assert rc == 0
     assert "True" in stdout
+
+
+@pytest.mark.parametrize("transport_type", _TRANSPORTS)
+def test_transport_preserves_argv_stdio_and_uses_pipe_for_stdin(transport_type) -> None:
+    transport = transport_type
+    instance = transport()
+    try:
+        argv_stdio = instance.popen_stdio()
+        stdin_stdio = instance.popen_stdio("stdin")
+        if transport is PtyTransport:
+            assert argv_stdio["stdin"] == argv_stdio["stdout"]
+            assert stdin_stdio["stdin"] is subprocess.PIPE
+            assert stdin_stdio["stdout"] == argv_stdio["stdout"]
+        else:
+            assert argv_stdio["stdin"] is subprocess.DEVNULL
+            assert stdin_stdio["stdin"] is subprocess.PIPE
+            assert stdin_stdio["stdout"] is subprocess.PIPE
+    finally:
+        instance.close()
+
+
+def test_stdin_prompt_roundtrip_and_eof_for_each_transport(force_transport) -> None:
+    payload = "ž" * 40000  # >64 KiB once UTF-8 encoded
+    code = (
+        "import hashlib, sys\n"
+        "data = sys.stdin.read()\n"
+        "print(len(data.encode('utf-8')), flush=True)\n"
+        "print(hashlib.sha256(data.encode()).hexdigest(), flush=True)\n"
+    )
+    stdout, rc, stderr, _dur = _stream_run(
+        [sys.executable, "-c", code], prompt=payload, delivery_mode="stdin",
+    )
+    assert rc == 0
+    assert stderr == ""
+    assert str(len(payload.encode("utf-8"))) in stdout
+    import hashlib
+    assert hashlib.sha256(payload.encode()).hexdigest() in stdout
+
+
+def test_stdin_prompt_early_exit_is_normal_stream_result(force_transport) -> None:
+    _stdout, rc, stderr, _dur = _stream_run(
+        [sys.executable, "-c", "import sys; sys.exit(9)"],
+        prompt="x" * 200000,
+        delivery_mode="stdin",
+    )
+    assert rc == 9
+    assert stderr == ""
