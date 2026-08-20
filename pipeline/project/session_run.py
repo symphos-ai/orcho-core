@@ -46,7 +46,7 @@ from pipeline.project.isolation_setup import (
 from pipeline.project.profile_dispatch import (
     dispatch_via_v2_profile as _dispatch_via_v2_profile,
 )
-from pipeline.project.profile_setup import setup_profile
+from pipeline.project.profile_setup import profile_phase_efforts, setup_profile
 from pipeline.project.run import _PipelineRun
 from pipeline.project.run_setup import (
     init_run_session,
@@ -240,6 +240,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         model=request.model,
         runtime_override=runtime_override,
         skill_trust=plugin.skill_trust,
+        profile_phase_efforts=profile_phase_efforts(_profile.v2_profile),
     )
 
     # Read-only Stage 1 verification-contract projection. Validate ONCE,
