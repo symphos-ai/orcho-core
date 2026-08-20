@@ -429,6 +429,28 @@ def _resolve_cross_handoff(
     )
 
 
+def profile_phase_efforts(profile) -> dict[str, str]:
+    """Project the profile's per-phase ``effort`` declarations to a plain map.
+
+    Walks top-level ``PhaseStep`` entries and the steps inside ``LoopStep``
+    rounds; a phase declared twice keeps the last declaration. Phases with no
+    declared effort are absent, so callers can distinguish "profile says
+    nothing" from an explicit level and fall back to the global
+    ``phases.<phase>.effort`` config. This is the map ``profiles_v2``
+    overlays written by ``profile customize --phase-effort`` land in.
+    """
+    efforts: dict[str, str] = {}
+    for step in getattr(profile, "steps", ()) or ():
+        inner = getattr(step, "steps", None)
+        phase_steps = inner if inner is not None else (step,)
+        for phase_step in phase_steps:
+            phase = getattr(phase_step, "phase", None)
+            effort = getattr(phase_step, "effort", None)
+            if phase and effort is not None:
+                efforts[str(phase)] = str(effort)
+    return efforts
+
+
 def _resolve_change_handoff(profile) -> str:
     """Resolve profile/config-owned code-change handoff strategy.
 
@@ -455,6 +477,7 @@ def _resolve_change_handoff(profile) -> str:
 __all__ = [
     "ProfileSetup",
     "CrossHandoffResolution",
+    "profile_phase_efforts",
     "setup_profile",
     "_raise_unresolved_profile",
     "_resolve_profile_name",
