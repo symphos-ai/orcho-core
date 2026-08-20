@@ -183,11 +183,15 @@ def test_transport_preserves_argv_stdio_and_uses_pipe_for_stdin(transport_type) 
 
 def test_stdin_prompt_roundtrip_and_eof_for_each_transport(force_transport) -> None:
     payload = "ž" * 40000  # >64 KiB once UTF-8 encoded
+    # Read the raw bytes: the writer's contract is byte-accurate UTF-8
+    # delivery, and a text-mode ``sys.stdin.read()`` would re-decode those
+    # bytes with the child's locale codec (cp1252 on Windows runners),
+    # corrupting the length/hash without any writer defect.
     code = (
         "import hashlib, sys\n"
-        "data = sys.stdin.read()\n"
-        "print(len(data.encode('utf-8')), flush=True)\n"
-        "print(hashlib.sha256(data.encode()).hexdigest(), flush=True)\n"
+        "data = sys.stdin.buffer.read()\n"
+        "print(len(data), flush=True)\n"
+        "print(hashlib.sha256(data).hexdigest(), flush=True)\n"
     )
     stdout, rc, stderr, _dur = _stream_run(
         [sys.executable, "-c", code], prompt=payload, delivery_mode="stdin",
