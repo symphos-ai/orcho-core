@@ -60,15 +60,16 @@ def test_cancel_uses_pid_when_child_group_is_our_parent_group(monkeypatch) -> No
     handle = registry.register(proc, group_owned=True)  # type: ignore[arg-type]
     monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 9)
     monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 9)
-    killpg_calls: list[int] = []
+    terminated_groups: list[int | None] = []
     monkeypatch.setattr(
-        "agents.owned_child.os.killpg", lambda pgid, _signal: killpg_calls.append(pgid),
+        "agents.owned_child.terminate_tree",
+        lambda tree, *, deadline: terminated_groups.append(tree.pgid) or tree.process.kill(),
     )
 
     registry.cancel(handle)
 
     assert proc.kill_calls == 1
-    assert killpg_calls == []
+    assert terminated_groups == [None]
 
 
 def test_cancel_uses_confirmed_distinct_owned_group(monkeypatch) -> None:
@@ -77,12 +78,13 @@ def test_cancel_uses_confirmed_distinct_owned_group(monkeypatch) -> None:
     handle = registry.register(proc, group_owned=True)  # type: ignore[arg-type]
     monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 12)
     monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 9)
-    killpg_calls: list[int] = []
+    terminated_groups: list[int | None] = []
     monkeypatch.setattr(
-        "agents.owned_child.os.killpg", lambda pgid, _signal: killpg_calls.append(pgid),
+        "agents.owned_child.terminate_tree",
+        lambda tree, *, deadline: terminated_groups.append(tree.pgid),
     )
 
     registry.cancel(handle)
 
-    assert killpg_calls == [12]
+    assert terminated_groups == [12]
     assert proc.kill_calls == 0

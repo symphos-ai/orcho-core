@@ -94,6 +94,10 @@ orcho-core/
 
 ## How core/ is organized
 
+`core/io/process_tree.py` owns cross-platform process-tree creation,
+liveness, and termination; `core/io/bounded_proc.py` layers typed bounded
+stdout/stderr collection and timeout reaping above that boundary.
+
 Each subdomain (`infra/`, `observability/`, `io/`, `context/`) has its own `__init__.py` that re-exports the public API.
 Import through stable package boundaries when the subdomain already provides
 such an API. For leaf helpers with a clear owning scope, a direct import from

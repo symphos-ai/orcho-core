@@ -28,15 +28,21 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.io.process_tree import (
+    detached_spawn_kwargs,
+    detached_tree_descriptor,
+    pid_is_alive,
+    terminate_recorded_tree,
+)
 from core.observability.logging import normalize_output_mode
 from pipeline.argv import build_orch_argv
 from pipeline.control.continuation import ContinuationRequest
@@ -190,16 +196,7 @@ def now_iso() -> str:
 
 def is_pid_alive(pid: int) -> bool:
     """Return True if ``pid`` is alive (or exists with a different uid)."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # PID exists but belongs to another user — treat as alive.
-        return True
+    return pid_is_alive(pid)
 
 
 def _mint_run_id() -> str:
@@ -240,6 +237,7 @@ def write_launch_state(run: LaunchedRun) -> None:
         "run_id": run.run_id,
         "pid": run.pid,
         "pgid": run.pgid,
+        "process_tree": detached_tree_descriptor(run.pid),
         "command": run.command,
         "project_dir": run.project_dir,
         "started_at": run.started_at,
@@ -395,8 +393,7 @@ def _spawn_detached(
 ) -> subprocess.Popen:
     """Launch ``cmd`` detached in its own session.
 
-    ``start_new_session=True`` makes the child a session leader so its
-    pgid equals its pid and ``killpg`` reaches the whole process tree.
+    Platform adapter flags create an independently owned process tree.
     Raises :class:`LaunchError` on any spawn failure.
     """
     try:
@@ -406,7 +403,7 @@ def _spawn_detached(
             stderr=subprocess.STDOUT,
             cwd=project_dir,
             env=env,
-            start_new_session=True,
+            **detached_spawn_kwargs(),
         )
     except (OSError, FileNotFoundError) as e:
         raise LaunchError(f"failed to spawn pipeline subprocess: {e}") from e
@@ -711,7 +708,6 @@ def cancel_run(
         raise ValueError(
             f"cancel mode must be 'graceful' or 'hard', got {mode!r}"
         )
-    sig = signal.SIGTERM if mode == "graceful" else signal.SIGKILL
 
     rd = find_runs_dir(runs_dir=runs_dir, cwd=None)
     run_dir = rd / run_id
@@ -725,7 +721,6 @@ def cancel_run(
         return CancelResult(run_id=run_id, status="already_done")
 
     pid = int(state.get("pid", 0))
-    pgid = int(state.get("pgid", pid))
 
     if not is_pid_alive(pid):
         # Orphan path: dead pid but non-terminal meta. Overwrite the state
@@ -740,10 +735,16 @@ def cancel_run(
         return CancelResult(run_id=run_id, status="already_dead")
 
     try:
-        os.killpg(pgid, sig)
+        delivered = terminate_recorded_tree(
+            state.get("process_tree"), fallback_pid=pid,
+            hard=mode == "hard", deadline=time.monotonic() + 1.0,
+        )
     except ProcessLookupError:
         return CancelResult(run_id=run_id, status="already_dead")
-    return CancelResult(run_id=run_id, status=f"signal_sent({mode})")
+    # ``delivered`` may differ from ``mode``: a Windows tree with no shared
+    # console cannot be asked politely, and reporting the requested mode would
+    # promise a checkpoint the pipeline never got the chance to write.
+    return CancelResult(run_id=run_id, status=f"signal_sent({delivered})")
 
 
 __all__ = [

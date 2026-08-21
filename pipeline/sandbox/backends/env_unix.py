@@ -46,7 +46,7 @@ def _build_preexec(limits: SandboxLimits) -> callable:
 
     def _apply() -> None:
         # 1. New process group so a parent-side kill can take the
-        #    whole subtree with one ``os.killpg(pgid, SIGKILL)``.
+        #    whole subtree with one owner-adapter termination request.
         # setpgrp can fail when the child is already a process group
         # leader (rare under PTY); ignore and continue rather than
         # aborting the spawn.
