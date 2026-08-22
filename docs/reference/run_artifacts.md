@@ -77,8 +77,18 @@ the identical event is idempotent.  This is the only persisted rerun trail.
 ├── runner.log                 # decolorized banner / phase log
 ├── progress.log               # live-card snapshots
 ├── phase_handoff_decisions/   # one file per resolved handoff
+├── run_supervisor.json        # detached SDK process ownership (when SDK-launched)
 └── mcp_supervisor.json        # MCP supervisor handle (only when spawned via MCP)
 ```
+
+### `run_supervisor.json`
+
+The framework-neutral SDK writes this additive detached-launch artifact. Its
+existing `pid` and `pgid` remain the compatibility facts. New launches also
+write `process_tree` with `platform`, `root_pid`, `group_id`, and
+`group_owned`; it describes only the recorded descendant tree that
+`cancel_run` may terminate. Missing `process_tree` in an older artifact is
+safely projected from `pid`/`pgid`. It is not an MCP or observability payload.
 
 When worktree isolation is enabled, the physical git checkout lives outside
 the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.

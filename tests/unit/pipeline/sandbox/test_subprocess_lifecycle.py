@@ -184,16 +184,16 @@ class TestKillpgGuardWhenSetpgrpFailed:
         monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 42)
         monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 42)
 
-        def _killpg_should_not_run(_pgid: int, _sig: int) -> None:
-            kill_calls.append("killpg")
-        monkeypatch.setattr("agents.owned_child.os.killpg", _killpg_should_not_run)
+        def _terminate_tree(tree, *, deadline: float) -> None:
+            kill_calls.append("tree" if tree.pgid is not None else "proc.kill")
+        monkeypatch.setattr("agents.owned_child.terminate_tree", _terminate_tree)
 
         proc = _FakeProc()
         registry = OwnedChildRegistry()
         registry.cancel(registry.register(proc, group_owned=True))
 
         assert kill_calls == ["proc.kill"], (
-            "killpg ran despite the child sharing the parent's process "
+            "tree termination ran despite the child sharing the parent's process "
             "group — orchestrator self-DoS risk"
         )
 
@@ -217,15 +217,15 @@ class TestKillpgGuardWhenSetpgrpFailed:
         monkeypatch.setattr("agents.owned_child.os.getpgid", lambda _pid: 99)
         monkeypatch.setattr("agents.owned_child.os.getpgrp", lambda: 42)
 
-        def _fake_killpg(_pgid: int, _sig: int) -> None:
-            kill_calls.append("killpg")
-        monkeypatch.setattr("agents.owned_child.os.killpg", _fake_killpg)
+        def _terminate_tree(tree, *, deadline: float) -> None:
+            kill_calls.append("tree" if tree.pgid is not None else "proc.kill")
+        monkeypatch.setattr("agents.owned_child.terminate_tree", _terminate_tree)
 
         proc = _FakeProc()
         registry = OwnedChildRegistry()
         registry.cancel(registry.register(proc, group_owned=True))
 
-        assert kill_calls == ["killpg"]
+        assert kill_calls == ["tree"]
 
 
 class TestSpawnCompletion:
