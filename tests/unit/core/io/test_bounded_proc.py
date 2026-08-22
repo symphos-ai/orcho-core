@@ -8,6 +8,7 @@ import pytest
 
 from core.io.bounded_proc import Completed, SpawnFailure, TimedOut, run_bounded
 from core.io.process_tree import pid_is_alive
+from core.io.service_command import ServiceCommandEvent, observe_service_commands
 
 
 def test_completed_preserves_binary_and_text_output() -> None:
@@ -57,7 +58,10 @@ def test_inherited_pipe_descendant_is_killed_within_total_budget(tmp_path: Path)
 def test_timeout_reports_partial_output_and_reap_state() -> None:
     result = run_bounded(
         [sys.executable, "-c", "import sys,time; print('before'); sys.stdout.flush(); time.sleep(30)"],
-        timeout_s=0.05,
+        # Comfortably past interpreter startup: the assertion is that partial
+        # output survives the timeout, not that a 50 ms ceiling can outrace a
+        # cold ``python -c`` on a loaded machine.
+        timeout_s=1.0,
         reap_budget_s=0.3,
         text=True,
     )
@@ -93,3 +97,56 @@ def test_exhausted_reap_budget_is_reported_rather_than_waited_out(monkeypatch) -
     assert isinstance(result, TimedOut)
     assert result.reap_exhausted is True
     assert result.returncode is None
+
+
+class _Observer:
+    def __init__(self, deadline: float | None = None) -> None:
+        self.deadline = deadline
+        self.events: list[ServiceCommandEvent] = []
+
+    def on_start(self, event: ServiceCommandEvent) -> float | None:
+        self.events.append(event)
+        return self.deadline
+
+    def on_terminal(self, event: ServiceCommandEvent) -> None:
+        self.events.append(event)
+
+
+def test_observer_sees_secret_free_start_and_completion() -> None:
+    observer = _Observer()
+    with observe_service_commands(observer):
+        result = run_bounded(
+            [sys.executable, "-c", "print('done')"], timeout_s=1,
+            env={"SERVICE_SECRET": "must-not-appear"}, input_data="also-secret",
+            text=True,
+        )
+
+    assert isinstance(result, Completed)
+    assert [event.state for event in observer.events] == ["start", "completed"]
+    start, terminal = observer.events
+    assert start.identity.startswith(sys.executable)
+    assert "must-not-appear" not in repr(start)
+    assert "also-secret" not in repr(start)
+    assert terminal.effective_timeout_s <= start.declared_timeout_s
+
+
+def test_observer_deadline_tightens_timeout_without_changing_reap() -> None:
+    started = time.monotonic()
+    observer = _Observer(deadline=started + 0.04)
+    with observe_service_commands(observer):
+        result = run_bounded(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            timeout_s=5, reap_budget_s=0.3,
+        )
+    elapsed = time.monotonic() - started
+
+    assert isinstance(result, TimedOut)
+    assert elapsed < 0.5
+    assert [event.state for event in observer.events] == ["start", "timed_out"]
+    assert observer.events[-1].effective_timeout_s < 0.1
+
+
+def test_command_identity_is_bounded_without_observer() -> None:
+    result = run_bounded([sys.executable, "-c", "print('ok')", "x" * 1000], timeout_s=1)
+
+    assert isinstance(result, Completed)

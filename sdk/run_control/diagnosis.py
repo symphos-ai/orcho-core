@@ -43,11 +43,14 @@ prints, mutates, or finalizes.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.io.process_tree import pid_is_alive
 from pipeline.control.continuation import resolve_continuation_decision
 from pipeline.control.resume_context import (
     detect_active_followup_child,
@@ -56,6 +59,8 @@ from pipeline.control.resume_context import (
 from pipeline.run_state.status_vocab import RESUMABLE_TERMINAL_STATUSES
 from sdk.phase_handoff import _is_decidable_handoff_status
 from sdk.run_control.delivery import delivery_decision_state
+from sdk.run_control.events import _last_valid_event_position
+from sdk.run_control.launch import read_launch_state
 
 # The closed continuation-subject vocabulary + lineage resolver live in the
 # recovery_lineage sibling. They are re-exported here so the read-model's full
@@ -102,6 +107,7 @@ CONDITION_NEEDS_DELIVERY_DECISION = "needs_delivery_decision"
 CONDITION_RECOVER_VIA_SOURCE_RUN = "recover_via_source_run"
 CONDITION_RESUME_INERT_TERMINAL = "resume_inert_terminal"
 CONDITION_CLOSED_BY_FOLLOWUP = "closed_by_followup"
+CONDITION_STALLED = "stalled"
 CONDITION_ACTIVE = "active"
 
 _RUNNING_STATUS = "running"
@@ -136,6 +142,11 @@ def run_diagnosis(
     ``recover_via_source_run`` for a source the supervisor already settled as
     terminal. Candidates absent from the mapping still resolve from disk.
     Strictly read-only.
+
+    A ``running`` run whose durable startup artifact has exceeded its budget
+    without an event or output advance is returned as ``condition='stalled'``
+    with ``recommended_next_action='inspect_or_cancel'``; it is never a
+    resume recommendation.
 
     Raises:
         ValueError: ``run_id`` is empty — a programming error, distinct from a
@@ -208,6 +219,89 @@ def _safe_recovery(
         )
     except Exception:  # noqa: BLE001 — auxiliary lineage must never break diagnosis
         return None
+
+
+def _startup_stalled_reason(run_dir: Path, status: str | None) -> str | None:
+    """Return a startup-stall explanation from bounded durable facts only."""
+    if status != _RUNNING_STATUS:
+        return None
+    try:
+        artifact = json.loads((run_dir / "startup_command.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(artifact, dict):
+        return None
+    try:
+        budget = float(artifact.get("budget_s"))
+        armed_at = datetime.fromisoformat(str(artifact.get("armed_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0 or armed_at.tzinfo is None:
+        return None
+    elapsed = (datetime.now(UTC) - armed_at.astimezone(UTC)).total_seconds()
+    if elapsed < budget:
+        return None
+    event_size = _file_size(run_dir / "events.jsonl")
+    output_size = _file_size(run_dir / "output.log")
+    if event_size > _as_nonnegative_int(artifact.get("baseline_events_size")):
+        return None
+    if output_size > _as_nonnegative_int(artifact.get("baseline_output_size")):
+        return None
+    last_seq, last_ts = _last_valid_event_position(run_dir / "events.jsonl")
+    if _timestamp_after(last_ts, armed_at):
+        return None
+    command = artifact.get("command")
+    command_detail = ""
+    if isinstance(command, dict):
+        identity = command.get("identity")
+        cwd = command.get("cwd")
+        if isinstance(identity, str) and identity:
+            command_detail = f" command={identity!r}"
+        if isinstance(cwd, str) and cwd:
+            command_detail += f" cwd={cwd!r}"
+    pid_state = _pid_state(run_dir)
+    position = f" last_event_seq={last_seq}" if last_seq is not None else " no valid event"
+    if last_ts:
+        position += f" last_event_at={last_ts}"
+    return (
+        f"startup has been idle for {elapsed:.1f}s (budget {budget:.1f}s);"
+        f" pid={pid_state};{position}.{command_detail} inspect or cancel"
+    )
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _as_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _timestamp_after(timestamp: str | None, baseline: datetime) -> bool:
+    if not timestamp:
+        return False
+    try:
+        observed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return observed.tzinfo is not None and observed.astimezone(UTC) > baseline.astimezone(UTC)
+
+
+def _pid_state(run_dir: Path) -> str:
+    state = read_launch_state(run_dir)
+    pid = state.get("pid") if isinstance(state, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return "unknown"
+    try:
+        return "alive" if pid_is_alive(pid) else "dead"
+    except Exception:  # noqa: BLE001 - diagnostics must fail safe
+        return "unknown"
 
 
 def _classify(
@@ -327,7 +421,16 @@ def _classify(
     if terminal:
         return _terminal_branch(run_id, status, halt_reason, meta, cont)
 
-    # (7) active — the run is currently executing.
+    # (7) stalled — durable startup made no progress inside its budget.
+    stalled_reason = _startup_stalled_reason(run_dir, status)
+    if stalled_reason is not None:
+        return RunDiagnosis(
+            run_id=run_id, condition=CONDITION_STALLED, reason=stalled_reason,
+            status=status, halt_reason=halt_reason,
+            recommended_next_action="inspect_or_cancel",
+        )
+
+    # (8) active — the run is currently executing.
     if status == _RUNNING_STATUS:
         return RunDiagnosis(
             run_id=run_id,
@@ -337,7 +440,7 @@ def _classify(
             halt_reason=halt_reason,
         )
 
-    # (8) residual resumable non-terminal stop — halted / failed / interrupted
+    # (9) residual resumable non-terminal stop — halted / failed / interrupted
     # (the status itself is the condition). RESUMABLE_TERMINAL_STATUSES is the
     # canonical owner of that vocabulary, consulted only to document intent; the
     # condition mirrors the status regardless so no parser is needed.

@@ -1483,7 +1483,7 @@ def test_atexit_interrupted_follows_policy(
     # with an undecided handoff needs an operator decision).
     captured: list = []
     monkeypatch.setattr(
-        "pipeline.project.bootstrap.atexit.register",
+        "pipeline.project.interruption.atexit.register",
         lambda fn: captured.append(fn),
     )
     output_dir = tmp_path / "run"

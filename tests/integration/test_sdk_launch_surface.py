@@ -339,6 +339,36 @@ def test_cancel_orphan(env: tuple[Path, Path]) -> None:
     assert state["halt_reason"] == "interrupted_orphan"
 
 
+def test_sigterm_writes_interrupted_artifacts_before_exit(tmp_path: Path) -> None:
+    """Read artifacts only after the signalled process has actually exited."""
+    run_dir = tmp_path / "interrupted"
+    code = """
+import sys, time
+from pathlib import Path
+from core.observability import events
+from pipeline.project.interruption import install_interrupt_handlers
+run_dir = Path(sys.argv[1])
+events.init_event_store(run_dir)
+session = {\"status\": \"running\", \"phase_handoff\": {\"id\": \"h1\"}}
+install_interrupt_handlers(run_dir, session)
+print(\"ready\", flush=True)
+time.sleep(30)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", code, str(run_dir)], stdout=subprocess.PIPE, text=True,
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "ready"
+    os.kill(child.pid, signal.SIGTERM)
+    assert child.wait(timeout=3) != 0
+
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["status"] == "interrupted"
+    assert meta["phase_handoff"]["id"] == "h1"
+    event_kinds = [json.loads(line)["kind"] for line in (run_dir / "events.jsonl").read_text().splitlines()]
+    assert event_kinds == ["run.interrupted"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="real Windows taskkill tree regression")
 def test_cancel_windows_recorded_tree_terminates_descendant(tmp_path: Path) -> None:
     """A persisted Windows tree descriptor reaches a live grandchild."""

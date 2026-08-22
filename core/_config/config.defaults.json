@@ -14,6 +14,7 @@
     "claude_seconds": 0,
     "codex_seconds": 0,
     "gemini_seconds": 0,
+    "startup_stall_seconds": 120,
     "claude_idle_seconds": 1800,
     "codex_idle_seconds": 900,
     "gemini_idle_seconds": 900

@@ -38,7 +38,6 @@ Bootstrap helpers do not call those three directly; they are used by
 
 from __future__ import annotations
 
-import atexit
 import contextlib
 import json
 import os
@@ -58,7 +57,6 @@ from pipeline.engine import (
 )
 from pipeline.plugins import PluginConfig
 from pipeline.project.types import PresentationPolicy
-from pipeline.run_state.terminal import mark_run_interrupted
 
 # ── exceptions ────────────────────────────────────────────────────────────
 
@@ -221,6 +219,7 @@ _RUN_DIR_MATERIALIZED_FILES = frozenset({
     "output.log",
     "evidence.json",
     "evidence.md",
+    "startup_command.json",
 })
 _RUN_DIR_MATERIALIZED_GLOBS = (
     "plan_*.md",
@@ -535,29 +534,16 @@ def init_session_with_atexit(
         with contextlib.suppress(OSError):
             save_session(output_dir, session)
 
-        def _on_exit_mark_interrupted(
-            _output_dir=output_dir, _session=session,
-        ) -> None:
-            if _session.get("status") == "running":
-                # ``halt_reason`` mirrors the SDK halt path + finalize
-                # state.halt path so any non-``done`` terminal status
-                # carries a non-null reason. ``"interrupted"`` is the
-                # honest minimal label: atexit fires on graceful
-                # SIGTERM, KeyboardInterrupt, unhandled exception, and
-                # parent-process death — without a signal handler we
-                # cannot distinguish, so a more specific tag (e.g.
-                # ``"cancelled_sigterm"``) would over-claim. Downstream
-                # consumers (SDK resume-gate, MCP wire, dashboards)
-                # that key off ``meta.halt_reason`` now see something
-                # for this class of terminations too. An active
-                # ``phase_handoff`` is preserved — an interrupted run
-                # with an undecided handoff needs an operator decision.
-                mark_run_interrupted(
-                    _session, interrupted_at=datetime.now().isoformat(),
-                )
-                with contextlib.suppress(Exception):
-                    save_session(_output_dir, _session)
-        atexit.register(_on_exit_mark_interrupted)
+        from pipeline.project.interruption import (
+            install_interrupt_handlers,
+            register_interruption_fallback,
+        )
+
+        # atexit covers ordinary interpreter shutdown paths only. SIGTERM's
+        # default disposition does not run it, so the signal handler persists
+        # the terminal artifact before asking Python to exit.
+        register_interruption_fallback(output_dir, session)
+        install_interrupt_handlers(output_dir, session)
     return session
 
 
