@@ -727,3 +727,11 @@ The SDK lives inside `orcho-core` and follows its release cadence. The
 contracts above are stable: breaking changes ship with an announced
 deprecation cycle, not silent drift. New fields on dataclasses are
 non-breaking; field removal or rename is breaking.
+## Startup-stall diagnosis
+
+`run_diagnosis(...)` remains the same `RunDiagnosis` dataclass. For a running
+run whose persisted startup artifact exceeded its budget without event or
+`output.log` progress, it returns `condition="stalled"` **before** the normal
+`condition="active"` branch. Its recommendation is `inspect_or_cancel`, not
+a resume action; the reason includes durable command/cwd and PID liveness when
+available. This is core-only vocabulary: no MCP or SDK schema change.

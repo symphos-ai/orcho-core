@@ -906,7 +906,7 @@ def test_bootstrap_rehydrate_preserves_persisted_requested_at(
 ) -> None:
     """Both bootstrap resume paths carry the durable pause clock verbatim."""
     monkeypatch.setattr(
-        "pipeline.project.bootstrap.atexit.register", lambda _fn: None,
+        "pipeline.project.interruption.atexit.register", lambda _fn: None,
     )
     requested_at = "2026-07-29T08:15:00+00:00"
     payload = _stamped_handoff_payload(requested_at=requested_at)

@@ -5,9 +5,16 @@ import subprocess
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 
 from core.io.process_tree import spawn_process, terminate_tree
+from core.io.service_command import (
+    ServiceCommandEvent,
+    bounded_command_identity,
+    service_command_observer,
+    utc_now,
+)
 
 Output = str | bytes
 
@@ -75,7 +82,43 @@ def run_bounded(
     descendant cannot keep the interpreter alive after this function returns.
     """
     started = time.monotonic()
-    deadline = started + max(0.0, timeout_s)
+    declared_timeout_s = max(0.0, timeout_s)
+    deadline = started + declared_timeout_s
+    observer = service_command_observer.get()
+    # Keep the no-observer path semantically identical to the original runner:
+    # no argv formatting or wall-clock lookup happens unless a run opted in.
+    identity = ""
+    started_at = ""
+    if observer is not None:
+        identity = bounded_command_identity(args)
+        started_at = utc_now()
+        start_event = ServiceCommandEvent(
+            state="start", identity=identity, cwd=cwd, started_at=started_at,
+            observed_at=started_at, declared_timeout_s=declared_timeout_s,
+            effective_timeout_s=declared_timeout_s,
+        )
+        try:
+            observer_deadline = observer.on_start(start_event)
+        except Exception:
+            # Observation cannot alter command execution if durable storage is
+            # unavailable or an optional observer has a bug.
+            observer_deadline = None
+        if observer_deadline is not None:
+            with suppress(TypeError, ValueError):
+                deadline = min(deadline, float(observer_deadline))
+
+    def observe_terminal(state: str) -> None:
+        if observer is None:
+            return
+        observed_at = utc_now()
+        event = ServiceCommandEvent(
+            state=state,  # type: ignore[arg-type]
+            identity=identity, cwd=cwd, started_at=started_at,
+            observed_at=observed_at, declared_timeout_s=declared_timeout_s,
+            effective_timeout_s=max(0.0, deadline - started),
+        )
+        with suppress(Exception):
+            observer.on_terminal(event)
     stdout, stderr = bytearray(), bytearray()
     empty: Output = "" if text else b""
     try:
@@ -85,6 +128,7 @@ def run_bounded(
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
     except (OSError, ValueError) as exc:
+        observe_terminal("spawn_failure")
         return SpawnFailure(str(exc), empty, empty, exc)
 
     process = tree.process
@@ -104,6 +148,7 @@ def run_bounded(
 
     while time.monotonic() < deadline:
         if process.poll() is not None and out_done.is_set() and err_done.is_set():
+            observe_terminal("completed")
             return Completed(process.returncode, _convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors))
         time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
@@ -111,8 +156,10 @@ def run_bounded(
     terminate_tree(tree, deadline=reap_deadline)
     while time.monotonic() < reap_deadline:
         if process.poll() is not None and out_done.is_set() and err_done.is_set():
+            observe_terminal("timed_out")
             return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.returncode, False)
         time.sleep(min(0.01, max(0.0, reap_deadline - time.monotonic())))
+    observe_terminal("timed_out")
     return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.poll(), not (out_done.is_set() and err_done.is_set()))
 
 

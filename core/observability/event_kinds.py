@@ -46,6 +46,7 @@ class EventKind(StrEnum):
     # ── Run lifecycle ───────────────────────────────────────────────
     RUN_START = "run.start"
     RUN_END = "run.end"
+    RUN_INTERRUPTED = "run.interrupted"
 
     # ── Phase lifecycle ────────────────────────────────────────────
     PHASE_START = "phase.start"
@@ -165,6 +166,7 @@ REQUIRED_PAYLOAD_KEYS: dict[EventKind, frozenset[str]] = {
     # Lifecycle ─────────────────────────────────────────────────────
     EventKind.RUN_START: frozenset({"task", "run_kind"}),
     EventKind.RUN_END: frozenset({"status"}),
+    EventKind.RUN_INTERRUPTED: frozenset({"reason", "interrupted_at"}),
 
     EventKind.PHASE_START: frozenset({"title"}),
     EventKind.PHASE_END: frozenset({"title", "outcome"}),

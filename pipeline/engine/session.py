@@ -8,7 +8,9 @@ cross_orchestrator.py — previously duplicated as `save_session` /
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -53,5 +55,18 @@ def save_session(output_dir: Path, session: dict) -> Path:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     f = output_dir / "meta.json"
-    f.write_text(json.dumps(session, indent=2, ensure_ascii=False), encoding="utf-8")
+    # Atomic replace, not an in-place rewrite: a reader must never observe a
+    # half-written run state, and a signal arriving mid-write must not leave a
+    # truncated file behind (the interrupted write never resumes — the
+    # interruption handler exits the process).
+    tmp = f.with_name(f"{f.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(
+            json.dumps(session, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+        os.replace(tmp, f)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
     return f

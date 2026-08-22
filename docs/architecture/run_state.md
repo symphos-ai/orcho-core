@@ -544,6 +544,14 @@ restored.
 
 ## Deferred
 
+### Startup and interruption transitions
+
+Before the first `phase.start`, the startup watchdog may settle a run as
+`halted` with `halt_reason="startup_stalled"` and the typed
+`meta.halt.phase="startup"` record. It emits one `run.end`; service calls do
+not add command event pairs. A graceful signal instead writes `interrupted`,
+preserves active `phase_handoff`, and emits one `run.interrupted` before exit.
+
 - **Verification environment provenance.** The state machine can now represent
   no-diff verification outcomes, implement attestation pauses, and terminal
   cleanup consistently. It does not yet own the richer verification environment
