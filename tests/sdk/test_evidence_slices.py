@@ -30,6 +30,7 @@ from sdk import (
     list_subtask_receipts,
     load_status,
 )
+from sdk.evidence import collect_evidence
 
 
 def _write_launcher_state(run_dir: Path, supervisor: dict) -> None:
@@ -74,6 +75,27 @@ def _seed_run(
         }) + "\n", encoding="utf-8",
     )
     return run_dir
+
+
+def test_sdk_evidence_projects_structured_startup_halt(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    run_dir = _seed_run(runs, "20260510_200000_startup", meta={
+        "task": "demo", "status": "halted", "halt_reason": "startup_stalled",
+        "halt": {
+            "phase": "startup", "cause": "command_timeout",
+            "budget_s": 4, "elapsed_s": 4.1,
+            "command": {
+                "identity": "git status", "cwd": "/work",
+                "started_at": "2026-05-10T20:00:00Z",
+            },
+        },
+    })
+
+    bundle = collect_evidence(run_dir.name, runs_dir=runs, cwd=None)
+
+    assert bundle.body["startup_halt"]["command"]["identity"] == "git status"
+    assert bundle.body["startup_halt"]["budget_s"] == 4
 
 
 # ── findings ────────────────────────────────────────────────────────────────

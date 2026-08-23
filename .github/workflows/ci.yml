@@ -182,6 +182,13 @@ jobs:
             tests/unit/agents/test_stream_transport.py \
             tests/unit/agents/test_stream.py
 
+      - name: Process-tree timeout and cancel regressions
+        if: steps.filter.outputs.code == 'true'
+        run: |
+          python -m pytest -q \
+            tests/unit/core/io/test_bounded_proc.py::test_inherited_pipe_descendant_is_killed_within_total_budget \
+            tests/integration/test_sdk_launch_surface.py::test_cancel_windows_recorded_tree_terminates_descendant
+
       - name: End-to-end orcho run --mock
         if: steps.filter.outputs.code == 'true'
         run: |

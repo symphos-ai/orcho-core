@@ -8,14 +8,21 @@ fact remain private to :class:`OwnedChildRegistry`.
 
 from __future__ import annotations
 
-import contextlib
 import os
-import signal
 import subprocess
+import sys
+import time
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
+
+from core.io.process_tree import ProcessTree, terminate_tree
+
+# How long a termination request may wait for the platform killer to report
+# back. It must be a real budget: an already-elapsed deadline would leave the
+# Windows tree-kill with nothing to spend and silently do nothing.
+_TERMINATE_REAP_BUDGET_S = 2.0
 
 
 class OwnedChildState(StrEnum):
@@ -125,7 +132,14 @@ class OwnedChildRegistry:
             try:
                 pgid = os.getpgid(handle.pid)
                 if pgid != os.getpgrp():
-                    os.killpg(pgid, signal.SIGKILL)
+                    terminate_tree(
+                        ProcessTree(
+                            process=child.proc,
+                            platform="windows" if sys.platform == "win32" else "posix",
+                            pgid=pgid,
+                        ),
+                        deadline=time.monotonic() + _TERMINATE_REAP_BUDGET_S,
+                    )
                     return self.poll(handle)
             except OSError:
                 # A missing group may race with exit; first check, then use the
@@ -133,8 +147,13 @@ class OwnedChildRegistry:
                 observed = self.poll(handle)
                 if observed.state is not OwnedChildState.RUNNING:
                     return observed
-        with contextlib.suppress(OSError):
-            child.proc.kill()
+        terminate_tree(
+            ProcessTree(
+                process=child.proc,
+                platform="windows" if sys.platform == "win32" else "posix",
+            ),
+            deadline=time.monotonic() + _TERMINATE_REAP_BUDGET_S,
+        )
         return self.poll(handle)
 
     def process_group(self, handle: OwnedChildHandle) -> int | None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,58 @@ def test_active(tmp_path: Path) -> None:
     d = _diag(runs, "r")
     assert d.condition == diag.CONDITION_ACTIVE
     assert d.continuation_subject is None
+
+
+def _startup_artifact(*, age_s: float = 130, event_size: int = 0, output_size: int = 0) -> str:
+    armed = datetime.now(UTC) - timedelta(seconds=age_s)
+    return json.dumps({
+        "armed_at": armed.isoformat().replace("+00:00", "Z"), "budget_s": 120,
+        "baseline_events_size": event_size, "baseline_output_size": output_size,
+        "command": {"identity": "git status", "cwd": "/project"},
+    })
+
+
+def test_startup_stale_running_run_is_not_active(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event,
+        "startup_command.json": _startup_artifact(event_size=len(event.encode())),
+        "output.log": "",
+        "run_supervisor.json": json.dumps({"pid": 99999999}),
+    })
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_STALLED
+    assert d.recommended_next_action == "inspect_or_cancel"
+    assert "pid=dead" in d.reason
+    assert "git status" in d.reason and "/project" in d.reason
+
+
+def test_startup_recent_or_progressing_run_stays_active(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "recent", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "startup_command.json": _startup_artifact(age_s=1, event_size=len(event.encode())),
+    })
+    _mk(runs, "event", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event + event.replace('"seq":1', '"seq":2'),
+        "startup_command.json": _startup_artifact(event_size=len(event.encode())),
+    })
+    _mk(runs, "output", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "output.log": "new output",
+        "startup_command.json": _startup_artifact(event_size=len(event.encode())),
+    })
+    assert _diag(runs, "recent").condition == diag.CONDITION_ACTIVE
+    assert _diag(runs, "event").condition == diag.CONDITION_ACTIVE
+    assert _diag(runs, "output").condition == diag.CONDITION_ACTIVE
+
+
+def test_startup_stall_pid_unknown_is_explicit(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "startup_command.json": _startup_artifact(),
+    })
+    assert "pid=unknown" in _diag(runs, "r").reason
 
 
 def test_needs_decision_awaiting_handoff(tmp_path: Path) -> None:
@@ -700,3 +753,17 @@ def test_module_declares_no_decision_table_literal() -> None:
         and members in _FORBIDDEN_SET_SIGNATURES
     ]
     assert not hits, f"diagnosis.py re-declares a guarded decision table: {hits}"
+
+
+def test_stalled_vocabulary_and_active_order_are_single_and_guarded() -> None:
+    src = Path(diag.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    stalled_defs = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "CONDITION_STALLED" for target in node.targets)
+    ]
+    assert len(stalled_defs) == 1
+    assert src.index("stalled_reason = _startup_stalled_reason") < src.index(
+        "condition=CONDITION_ACTIVE",
+    )

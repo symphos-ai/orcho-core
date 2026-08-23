@@ -51,8 +51,8 @@ class RunEventType(StrEnum):
     :attr:`RUN_START`, :attr:`RUN_END`, :attr:`PHASE_START`,
     :attr:`PHASE_END`, :attr:`PHASE_HANDOFF_REQUESTED`.
 
-    The rest are client-neutral / deferred types required for reducer
-    completeness but **not emitted by any current writer** — halt is in
+    The rest are client-neutral types required for reducer completeness.
+    ``run.interrupted`` is emitted by the project interruption writer; halt is in
     practice observed from on-disk decision artifacts, not the event
     stream: :attr:`RUN_STARTED`, :attr:`PHASE_HANDOFF_DECIDED`,
     :attr:`RUN_INTERRUPTED`, :attr:`RUN_HALTED`.
@@ -65,7 +65,7 @@ class RunEventType(StrEnum):
     PHASE_END = "phase.end"
     PHASE_HANDOFF_REQUESTED = "phase.handoff_requested"
 
-    # ── Client-neutral / deferred (no current writer emits these) ──
+    # ── Client-neutral / deferred ──────────────────────────────────
     RUN_STARTED = "run.started"
     PHASE_HANDOFF_DECIDED = "phase_handoff.decided"
     RUN_INTERRUPTED = "run.interrupted"

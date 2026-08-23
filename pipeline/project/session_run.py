@@ -62,6 +62,10 @@ from pipeline.project.runtime_setup import (
     apply_session_seeds,
     setup_runtime,
 )
+from pipeline.project.startup_watchdog import (
+    checkpoint_startup_watchdog,
+    startup_watchdog_scope,
+)
 from pipeline.project.state_setup import (
     StateInputs,
     build_pipeline_state,
@@ -384,6 +388,9 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         plan_source_run_id=_iso_inputs.plan_source_run_id,
     )
     ctx.session = session
+    if checkpoint_startup_watchdog(session):
+        ctx.halted = True
+        return
 
     _iso = setup_isolation(
         session=session,
@@ -406,6 +413,9 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         from_run_plan_parent_dir=request.from_run_plan_parent_dir,
     )
     if _iso.halted:
+        ctx.halted = True
+        return
+    if checkpoint_startup_watchdog(session):
         ctx.halted = True
         return
     ctx.git_cwd = _iso.git_cwd
@@ -479,6 +489,8 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
     ))
     ctx.state = _state_setup.state
     ctx.codemap = _state_setup.codemap
+    if checkpoint_startup_watchdog(session):
+        ctx.halted = True
 
 
 def _build_and_dispatch(request: ProjectRunRequest, ctx: _ProjectRunContext) -> dict:
@@ -598,31 +610,32 @@ def run_project_pipeline_session(
     if request.output_dir is not None:
         request.output_dir.mkdir(parents=True, exist_ok=True)
     request = _promote_plan_only_followup(request)
-    ctx = _resolve_profile_runtime(request)
-    from pipeline.project.resume_control import (
-        ResumeControlError,
-        materialize_resume_control_refusal,
-        read_resume_refusal_provenance,
-    )
+    with startup_watchdog_scope(request.output_dir):
+        ctx = _resolve_profile_runtime(request)
+        from pipeline.project.resume_control import (
+            ResumeControlError,
+            materialize_resume_control_refusal,
+            read_resume_refusal_provenance,
+        )
 
-    provenance = read_resume_refusal_provenance(
-        request.output_dir if request.resume_from else None,
-    )
-    with scoped_isolation_id(ctx.session_ts):
-        try:
-            _resolve_state(request, ctx)
-            if ctx.halted:
-                return ctx.session, request.output_dir, ctx.session_ts
-            session = _build_and_dispatch(request, ctx)
-        except ResumeControlError as error:
-            session = materialize_resume_control_refusal(
-                session=ctx.session,
-                output_dir=request.output_dir,
-                checkpoint=ctx.ckpt,
-                state=ctx.state,
-                provenance=provenance,
-                error=error,
-                task=request.task,
-                project_dir=request.project_dir,
-            )
-    return session, request.output_dir, ctx.session_ts
+        provenance = read_resume_refusal_provenance(
+            request.output_dir if request.resume_from else None,
+        )
+        with scoped_isolation_id(ctx.session_ts):
+            try:
+                _resolve_state(request, ctx)
+                if ctx.halted:
+                    return ctx.session, request.output_dir, ctx.session_ts
+                session = _build_and_dispatch(request, ctx)
+            except ResumeControlError as error:
+                session = materialize_resume_control_refusal(
+                    session=ctx.session,
+                    output_dir=request.output_dir,
+                    checkpoint=ctx.ckpt,
+                    state=ctx.state,
+                    provenance=provenance,
+                    error=error,
+                    task=request.task,
+                    project_dir=request.project_dir,
+                )
+        return session, request.output_dir, ctx.session_ts

@@ -571,6 +571,20 @@ CLAUDE_IDLE_TIMEOUT = _optional_timeout("CLAUDE_IDLE_TIMEOUT", "claude_idle_seco
 CODEX_IDLE_TIMEOUT  = _optional_timeout("CODEX_IDLE_TIMEOUT",  "codex_idle_seconds", 900)
 GEMINI_IDLE_TIMEOUT = _optional_timeout("GEMINI_IDLE_TIMEOUT", "gemini_idle_seconds", 900)
 
+
+def _startup_stall_timeout(raw: object, default: int = 120) -> int:
+    """Coerce the startup budget; invalid or disabled values fail safe."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+STARTUP_STALL_TIMEOUT = _startup_stall_timeout(
+    os.environ.get("ORCHO_STARTUP_STALL_TIMEOUT", _TIMEOUTS.get("startup_stall_seconds", 120))
+)
+
 _RUNTIME_TIMEOUTS = {
     "claude": CLAUDE_TIMEOUT,
     "claude-glm": CLAUDE_TIMEOUT,
@@ -873,6 +887,15 @@ class AppConfig:
     @property
     def gemini_idle_timeout(self) -> int:
         return int(self.timeouts.get("gemini_idle_seconds", 900) or 0)
+
+    @property
+    def startup_stall_seconds(self) -> int:
+        """Positive startup watchdog budget, with an env override."""
+        raw = os.environ.get(
+            "ORCHO_STARTUP_STALL_TIMEOUT",
+            self.timeouts.get("startup_stall_seconds", 120),
+        )
+        return _startup_stall_timeout(raw)
 
     @property
     def plan_language(self) -> str:

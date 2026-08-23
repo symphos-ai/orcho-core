@@ -95,6 +95,13 @@ with vtimed("codex review"):            # measures block duration
 
 ## core/io/ — input/output
 
+### `process_tree.py` and `bounded_proc.py`
+
+`process_tree.py` is the single platform-specific owner of detached process
+trees and their termination. `bounded_proc.py` drains command pipes, applies a
+hard timeout plus reap budget, and returns typed completion, spawn-failure, or
+timeout outcomes. Callers must not add independent group-kill logic.
+
 ### `retry.py`
 
 ```python

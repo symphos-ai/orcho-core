@@ -14,28 +14,58 @@ discipline so callers in :mod:`pipeline.engine.worktree` can branch on
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from core.io.bounded_proc import Completed, TimedOut, run_bounded
+
+# Internal so stalled-git regressions can tighten the ceiling without changing
+# any helper signature.  Reaping is part of the command's wall-clock budget.
+_GIT_TIMEOUT_S = 30.0
+_GIT_REAP_BUDGET_S = 1.0
+
 
 def has_uncommitted(cwd: str) -> bool:
-    """True if the working tree at ``cwd`` has uncommitted changes."""
-    r = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
-    )
-    return bool(r.stdout.strip())
+    """True if the working tree at ``cwd`` has uncommitted changes.
+
+    Raises rather than answering "clean" when git could not be consulted —
+    see :func:`_run_git_strict`.
+    """
+    return bool(_run_git_strict(["status", "--porcelain"], cwd=cwd).strip())
 
 
 def git_diff_stat(cwd: str) -> str:
-    """``git diff --stat`` output for ``cwd`` (or '(no diff)' if clean)."""
-    r = subprocess.run(
-        ["git", "diff", "--stat"],
-        cwd=cwd, capture_output=True, encoding="utf-8", errors="replace",
+    """``git diff --stat`` output for ``cwd`` (or '(no diff)' if clean).
+
+    Raises rather than answering "(no diff)" when git could not be consulted —
+    see :func:`_run_git_strict`.
+    """
+    return _run_git_strict(["diff", "--stat"], cwd=cwd).strip() or "(no diff)"
+
+
+def _run_git_strict(args: list[str], *, cwd: str | Path) -> str:
+    """Bounded git invocation whose failures stay failures.
+
+    These callers ask a *question about the working tree*, and "git did not
+    answer" is not the answer "the tree is clean". A silent degrade here reads
+    downstream as "no file changes were produced", so an unreachable cwd, a
+    missing binary, and a stalled git all raise. Boundedness is the only thing
+    the bounded runner adds to this path.
+    """
+    result = run_bounded(
+        ["git", *args], cwd=str(cwd), timeout_s=_GIT_TIMEOUT_S,
+        reap_budget_s=_GIT_REAP_BUDGET_S, text=True, encoding="utf-8", errors="replace",
     )
-    return r.stdout.strip() or "(no diff)"
+    if isinstance(result, Completed):
+        return str(result.stdout)
+    if isinstance(result, TimedOut):
+        raise TimeoutError(
+            f"git {' '.join(args)} timed out after {_GIT_TIMEOUT_S:g}s in {cwd}",
+        )
+    if result.exception is not None:
+        raise result.exception
+    raise OSError(result.error)
 
 
 def git_head(cwd: str | Path) -> str | None:
@@ -183,14 +213,11 @@ def _parse_git_status_porcelain(output: bytes) -> tuple[GitStatusRecord, ...]:
 
 def git_changed_file_records(cwd: str | Path) -> tuple[GitStatusRecord, ...]:
     """Collect exact working-tree changes, degrading only on invocation failure."""
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            cwd=str(cwd), capture_output=True, check=False, timeout=30.0,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return ()
-    if result.returncode != 0:
+    result = run_bounded(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=str(cwd), timeout_s=_GIT_TIMEOUT_S, reap_budget_s=_GIT_REAP_BUDGET_S,
+    )
+    if not isinstance(result, Completed) or result.returncode != 0:
         return ()
     return _parse_git_status_porcelain(result.stdout)
 
@@ -241,7 +268,8 @@ class GitOpResult:
 
 
 def _run_git(
-    args: list[str], *, cwd: str | Path | None = None, timeout_s: float = 30.0,
+    args: list[str], *, cwd: str | Path | None = None, timeout_s: float | None = None,
+    input_data: str | None = None,
 ) -> tuple[int, str, str]:
     """Run a git command, never raising on git-side failure.
 
@@ -251,25 +279,21 @@ def _run_git(
     non-zero exit. Timeout collapses to
     ``(-2, "", "git timed out after {N}s")``.
     """
-    try:
-        # git emits raw UTF-8 pathnames; decoding with the process locale
-        # breaks on non-UTF-8 Windows codepages, so pin the codec.
-        r = subprocess.run(
-            ["git", *args],
-            cwd=str(cwd) if cwd is not None else None,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=timeout_s,
-        )
-    except FileNotFoundError as e:
-        return -1, "", f"git binary not found: {e}"
-    except OSError as e:
-        return -1, "", f"git invocation failed: {e}"
-    except subprocess.TimeoutExpired:
-        return -2, "", f"git timed out after {timeout_s}s"
-    return r.returncode, r.stdout, r.stderr
+    # git emits raw UTF-8 pathnames; decoding with the process locale breaks
+    # on non-UTF-8 Windows codepages, so pin the codec.
+    effective_timeout = _GIT_TIMEOUT_S if timeout_s is None else timeout_s
+    result = run_bounded(
+        ["git", *args], cwd=str(cwd) if cwd is not None else None,
+        timeout_s=effective_timeout, reap_budget_s=_GIT_REAP_BUDGET_S,
+        input_data=input_data, text=True, encoding="utf-8", errors="replace",
+    )
+    if isinstance(result, Completed):
+        return result.returncode, result.stdout, result.stderr
+    if isinstance(result, TimedOut):
+        return -2, "", f"git timed out after {effective_timeout}s"
+    if isinstance(result.exception, FileNotFoundError):
+        return -1, "", f"git binary not found: {result.exception}"
+    return -1, "", f"git invocation failed: {result.error}"
 
 
 def create_worktree(
@@ -433,27 +457,16 @@ def apply_patch_to_checkout(
         args.append("--check")
     args.append("-")  # read from stdin
 
-    try:
-        r = subprocess.run(
-            ["git", *args],
-            cwd=str(checkout_path),
-            input=patch_text,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=30.0,
-        )
-    except FileNotFoundError as e:
-        return GitOpResult(ok=False, error=f"git binary not found: {e}")
-    except OSError as e:
-        return GitOpResult(ok=False, error=f"git invocation failed: {e}")
-    except subprocess.TimeoutExpired:
-        return GitOpResult(ok=False, error="git apply timed out after 30s")
-
-    if r.returncode != 0:
+    rc, _stdout, stderr = _run_git(
+        args, cwd=checkout_path, input_data=patch_text,
+    )
+    if rc == -2:
         return GitOpResult(
-            ok=False, error=r.stderr.strip() or f"rc={r.returncode}",
+            ok=False, error=f"git apply timed out after {_GIT_TIMEOUT_S:g}s",
+        )
+    if rc != 0:
+        return GitOpResult(
+            ok=False, error=stderr.strip() or f"rc={rc}",
         )
     return GitOpResult(ok=True)
 

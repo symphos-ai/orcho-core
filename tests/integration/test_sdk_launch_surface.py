@@ -214,6 +214,12 @@ def test_launch(env: tuple[Path, Path], live_runs) -> None:
     assert state["run_id"] == run.run_id
     assert state["pid"] == run.pid
     assert state["pgid"] == run.pgid
+    assert state["process_tree"] == {
+        "platform": "windows" if os.name == "nt" else "posix",
+        "root_pid": run.pid,
+        "group_id": run.pid,
+        "group_owned": True,
+    }
     assert state["project_dir"] == str(project_dir.resolve())
     assert state["command"] == run.command
     assert state["mock"] is True
@@ -331,6 +337,78 @@ def test_cancel_orphan(env: tuple[Path, Path]) -> None:
     state = json.loads((run_dir / "run_supervisor.json").read_text())
     assert state["status"] == "interrupted"
     assert state["halt_reason"] == "interrupted_orphan"
+
+
+def test_sigterm_writes_interrupted_artifacts_before_exit(tmp_path: Path) -> None:
+    """Read artifacts only after the signalled process has actually exited."""
+    run_dir = tmp_path / "interrupted"
+    code = """
+import sys, time
+from pathlib import Path
+from core.observability import events
+from pipeline.project.interruption import install_interrupt_handlers
+run_dir = Path(sys.argv[1])
+events.init_event_store(run_dir)
+session = {\"status\": \"running\", \"phase_handoff\": {\"id\": \"h1\"}}
+install_interrupt_handlers(run_dir, session)
+print(\"ready\", flush=True)
+time.sleep(30)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", code, str(run_dir)], stdout=subprocess.PIPE, text=True,
+    )
+    assert child.stdout is not None
+    assert child.stdout.readline().strip() == "ready"
+    os.kill(child.pid, signal.SIGTERM)
+    assert child.wait(timeout=3) != 0
+
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["status"] == "interrupted"
+    assert meta["phase_handoff"]["id"] == "h1"
+    event_kinds = [json.loads(line)["kind"] for line in (run_dir / "events.jsonl").read_text().splitlines()]
+    assert event_kinds == ["run.interrupted"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows taskkill tree regression")
+def test_cancel_windows_recorded_tree_terminates_descendant(tmp_path: Path) -> None:
+    """A persisted Windows tree descriptor reaches a live grandchild."""
+    runs_dir = tmp_path / "runs"
+    run_id = "windows-tree"
+    run_dir = runs_dir / run_id
+    run_dir.mkdir(parents=True)
+    grandchild_pid = run_dir / "grandchild.pid"
+    child_code = (
+        "import pathlib,subprocess,sys,time; "
+        f"child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        f"pathlib.Path({str(grandchild_pid)!r}).write_text(str(child.pid)); time.sleep(30)"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    (run_dir / "run_supervisor.json").write_text(json.dumps({
+        "pid": parent.pid, "pgid": parent.pid,
+        "process_tree": {
+            "platform": "windows", "root_pid": parent.pid,
+            "group_id": parent.pid, "group_owned": True,
+        },
+    }))
+    for _ in range(100):
+        if grandchild_pid.exists():
+            break
+        time.sleep(0.02)
+    assert grandchild_pid.exists()
+
+    result = cancel_run(run_id, runs_dir=str(runs_dir), mode="hard")
+
+    assert result.status == "signal_sent(hard)"
+    parent.wait(timeout=5)
+    descendant = int(grandchild_pid.read_text())
+    for _ in range(100):
+        if not is_pid_alive(descendant):
+            break
+        time.sleep(0.02)
+    assert not is_pid_alive(descendant)
 
 
 def test_cancel_missing_state_raises(env: tuple[Path, Path]) -> None:

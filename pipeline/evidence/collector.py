@@ -165,7 +165,26 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
     if multi_project_delivery is not None:
         bundle["multi_project_delivery"] = multi_project_delivery
 
+    startup_halt = _build_startup_halt(meta)
+    if startup_halt is not None:
+        bundle["startup_halt"] = startup_halt
+
     return bundle
+
+
+def _build_startup_halt(meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Project the structured startup halt without parsing presentation logs."""
+    halt = meta.get("halt")
+    if meta.get("halt_reason") != "startup_stalled" or not isinstance(halt, dict):
+        return None
+    if halt.get("phase") != "startup":
+        return None
+    return {
+        "cause": str(halt.get("cause") or ""),
+        "budget_s": halt.get("budget_s"),
+        "elapsed_s": halt.get("elapsed_s"),
+        "command": dict(halt["command"]) if isinstance(halt.get("command"), dict) else None,
+    }
 
 
 def _build_multi_project_delivery(

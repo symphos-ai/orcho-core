@@ -123,6 +123,9 @@ def publish_run_start(
         plan_source=plan_source,
         projected_profile=projected_profile,
     )
+    from pipeline.project.startup_watchdog import arm_startup_watchdog
+
+    arm_startup_watchdog()
 
 
 def init_run_session(

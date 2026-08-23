@@ -72,13 +72,24 @@ the identical event is idempotent.  This is the only persisted rerun trail.
 ├── checkpoints.db             # SQLite — phase log + agent_sessions
 ├── parsed_plan.json           # typed plan (when plan ran)
 ├── plan_<run_id>_r<N>.{md,json}  # per-round plan artifacts
+├── startup_command.json          # startup watchdog budget/baseline/breadcrumb
 ├── diff.patch                 # captured run diff
 ├── output.log                 # raw stdout/stderr capture
 ├── runner.log                 # decolorized banner / phase log
 ├── progress.log               # live-card snapshots
 ├── phase_handoff_decisions/   # one file per resolved handoff
+├── run_supervisor.json        # detached SDK process ownership (when SDK-launched)
 └── mcp_supervisor.json        # MCP supervisor handle (only when spawned via MCP)
 ```
+
+### `run_supervisor.json`
+
+The framework-neutral SDK writes this additive detached-launch artifact. Its
+existing `pid` and `pgid` remain the compatibility facts. New launches also
+write `process_tree` with `platform`, `root_pid`, `group_id`, and
+`group_owned`; it describes only the recorded descendant tree that
+`cancel_run` may terminate. Missing `process_tree` in an older artifact is
+safely projected from `pid`/`pgid`. It is not an MCP or observability payload.
 
 When worktree isolation is enabled, the physical git checkout lives outside
 the run directory at `<workspace>/runspace/worktrees/<worktree_id>/checkout/`.
@@ -211,7 +222,12 @@ before atexit ran (SIGKILL, OOM kill, host crash, segfault). The
 MCP supervisor's `orcho_run_status` merge layer corrects this on
 the wire for runs spawned via MCP; raw `meta.status` does not.
 
-### `halt_reason` (top-level)
+### Startup watchdog artifact and `halt_reason` (top-level)
+
+`startup_command.json` is `{armed_at,budget_s,baseline_events_size,baseline_output_size,command?}`.
+`command` is `{identity,cwd,started_at,declared_timeout_s,effective_timeout_s}` and contains no env/stdin.
+The ceiling writes canonical `halt_reason="startup_stalled"` and
+`meta.halt={phase:"startup",cause,budget_s,elapsed_s,command}`.
 
 Stamped on every terminal status except `done` and (for now)
 `awaiting_*` states. Canonical values that the SDK + parsers
