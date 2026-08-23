@@ -7,8 +7,8 @@ state is built with :func:`dataclasses.replace` and freshly-constructed
 tuples; the event ``payload`` is read as a read-only mapping.
 
 Several modeled event types (``run.started``, ``phase_handoff.decided``,
-``run.interrupted``, ``run.halted``) are client-neutral and not emitted by
-any current writer — see :class:`pipeline.run_state.types.RunEventType`.
+``run.halted``) are client-neutral and not emitted by current writers;
+``run.interrupted`` is persisted by the project interruption writer.
 Halt is, in practice, observed from on-disk decision artifacts by the
 consistency layer, not from the event stream; the reducer models the
 synthetic ``phase_handoff.decided`` / ``run.halted`` forms for completeness.

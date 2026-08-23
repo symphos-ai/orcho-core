@@ -347,7 +347,7 @@ def classify_error(
 
 # Signal numbers whose process-death *shape* is meaningful, kept as raw ints so
 # classification stays provider- and OS-neutral (and does not depend on Windows
-# lacking e.g. ``signal.SIGKILL`` as an attribute).
+# lacking a platform-specific forced-termination signal attribute).
 _SIG_ABRT = 6    # SIGABRT — abort()
 _SIG_KILL = 9    # SIGKILL — OOM killer / forced kill
 _SIG_SEGV = 11   # SIGSEGV — segfault

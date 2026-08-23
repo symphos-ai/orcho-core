@@ -90,6 +90,12 @@ def test_validate_payload_rejects_missing_required_field() -> None:
         )
 
 
+def test_validate_payload_accepts_run_interrupted() -> None:
+    validate_payload(
+        "run.interrupted", {"reason": "signal:15", "interrupted_at": "2026-08-22T00:00:00Z"},
+    )
+
+
 def test_validate_payload_accepts_extra_fields() -> None:
     """Extra fields are fine — the contract is a *lower* bound."""
     validate_payload(

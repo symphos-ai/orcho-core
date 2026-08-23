@@ -34,6 +34,7 @@ gate, runtime, or tool path actually runs.
 |---|---|---|---|
 | `run.start` | Run lifecycle opened. | `task`, `run_kind` | Yes |
 | `run.end` | Run lifecycle closed with final status. | `status` | Yes |
+| `run.interrupted` | Durable graceful interruption boundary. | `reason`, `interrupted_at` | Yes |
 | `phase.start` | Phase boundary opened. | `title` | Yes |
 | `phase.end` | Phase boundary closed. | `title`, `outcome` | Yes |
 | `agent.start` | Runtime invocation opened. | `agent`, `model` | Yes |
@@ -68,7 +69,7 @@ gate, runtime, or tool path actually runs.
 
 ## Consumer rules
 
-* Use `run.start` and `run.end` for run lifecycle.
+* Use `run.start`, `run.interrupted`, and `run.end` for run lifecycle.
 * Use `phase.start` and `phase.end` for phase boundaries.
 * Use `agent.tool_use` and `agent.mcp_tool_call` for live tool activity.
   These events are emitted from the JSONL parser path and do not depend

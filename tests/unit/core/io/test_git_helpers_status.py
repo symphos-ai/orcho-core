@@ -1,16 +1,20 @@
 """Exact working-tree status collection uses porcelain v1's NUL protocol."""
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from core.io import git_helpers
+from core.io.bounded_proc import Completed, SpawnFailure, TimedOut
 from core.io.git_helpers import (
     GitStatusKind,
     GitStatusParseError,
     _parse_git_status_porcelain,
+    _run_git,
     git_changed_file_records,
     git_changed_files,
 )
@@ -77,22 +81,16 @@ def test_git_changed_files_deduplicates_rename_identities(monkeypatch: pytest.Mo
 @pytest.mark.parametrize(
     "outcome",
     [
-        SimpleNamespace(returncode=1, stdout=b""),
-        FileNotFoundError("git"),
-        OSError("unavailable cwd"),
-        subprocess.TimeoutExpired(["git"], 30),
+        Completed(1, b"", b""),
+        SpawnFailure("git", b"", b""),
+        TimedOut(b"", b"", None, True),
     ],
 )
 def test_git_changed_file_records_degrades_expected_invocation_failures(
     monkeypatch: pytest.MonkeyPatch,
     outcome: object,
 ) -> None:
-    def run(*args: object, **kwargs: object) -> object:
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return outcome
-
-    monkeypatch.setattr("core.io.git_helpers.subprocess.run", run)
+    monkeypatch.setattr("core.io.git_helpers.run_bounded", lambda *args, **kwargs: outcome)
 
     assert git_changed_file_records("unused") == ()
     assert git_changed_files("unused") == []
@@ -103,19 +101,19 @@ def test_git_changed_file_records_uses_exact_binary_porcelain_command(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def run(*args: object, **kwargs: object) -> SimpleNamespace:
+    def run(*args: object, **kwargs: object) -> Completed:
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return SimpleNamespace(returncode=0, stdout=b"")
+        return Completed(0, b"", b"")
 
-    monkeypatch.setattr("core.io.git_helpers.subprocess.run", run)
+    monkeypatch.setattr("core.io.git_helpers.run_bounded", run)
 
     assert git_changed_file_records("repo") == ()
     assert captured["args"] == (
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )
     assert captured["kwargs"] == {
-        "cwd": "repo", "capture_output": True, "check": False, "timeout": 30.0,
+        "cwd": "repo", "timeout_s": 30.0, "reap_budget_s": 1.0,
     }
 
 
@@ -123,12 +121,24 @@ def test_git_changed_file_records_raises_for_malformed_successful_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "core.io.git_helpers.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b"R  only-destination\0"),
+        "core.io.git_helpers.run_bounded",
+        lambda *args, **kwargs: Completed(0, b"R  only-destination\0", b""),
     )
 
     with pytest.raises(GitStatusParseError):
         git_changed_file_records("unused")
+
+
+def test_run_git_preserves_missing_binary_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    missing = FileNotFoundError("git")
+    monkeypatch.setattr(
+        "core.io.git_helpers.run_bounded",
+        lambda *args, **kwargs: SpawnFailure(str(missing), b"", b"", missing),
+    )
+
+    assert _run_git(["rev-parse", "HEAD"]) == (
+        -1, "", "git binary not found: git",
+    )
 
 
 def _init_repo(repo: Path) -> None:
@@ -176,13 +186,13 @@ def test_text_mode_git_calls_pin_utf8_decode(monkeypatch: pytest.MonkeyPatch) ->
     # must pin the codec instead of inheriting the locale.
     from core.io import git_helpers
 
-    seen: list[dict[str, object]] = []
+    seen: list[tuple[object, dict[str, object]]] = []
 
     def fake_run(cmd, **kwargs):
-        seen.append(kwargs)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        seen.append((cmd, kwargs))
+        return Completed(0, "", "")
 
-    monkeypatch.setattr(git_helpers.subprocess, "run", fake_run)
+    monkeypatch.setattr(git_helpers, "run_bounded", fake_run)
     git_helpers.has_uncommitted(".")
     git_helpers.git_diff_stat(".")
     git_helpers._run_git(["rev-parse", "HEAD"], cwd=".")
@@ -191,7 +201,71 @@ def test_text_mode_git_calls_pin_utf8_decode(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert len(seen) == 4
-    for kwargs in seen:
+    assert [cmd for cmd, _kwargs in seen] == [
+        ["git", "status", "--porcelain"],
+        ["git", "diff", "--stat"],
+        ["git", "rev-parse", "HEAD"],
+        ["git", "apply", "-"],
+    ]
+    assert [kwargs["cwd"] for _cmd, kwargs in seen] == [".", ".", ".", "."]
+    assert seen[-1][1]["input_data"] == "diff --git a/x b/x\n"
+    for _cmd, kwargs in seen:
+        assert kwargs.get("text") is True
         assert kwargs.get("encoding") == "utf-8"
         assert kwargs.get("errors") == "replace"
-        assert "text" not in kwargs
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable git shim")
+def test_stalled_git_degrades_status_helpers_within_short_ceiling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    git = tmp_path / "git"
+    # Every path in the stub must be absolute. PATH is stripped to this
+    # directory below, so a ``#!/usr/bin/env python3`` shebang or a bare
+    # ``sleep`` cannot be resolved: the stub would exit 127 at once and the
+    # test would be measuring process startup latency, not a stall — passing
+    # or failing on whether a cold spawn happened to exceed the ceiling.
+    git.write_text("#!/bin/sh\nexec /bin/sleep 30\n", encoding="utf-8")
+    git.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr("core.io.git_helpers._GIT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr("core.io.git_helpers._GIT_REAP_BUDGET_S", 0.1)
+
+    started = time.monotonic()
+    # ``git_changed_file_records`` owns a documented degrade-to-empty contract.
+    assert git_changed_file_records(str(tmp_path)) == ()
+    # The working-tree questions do not: a stall is an unknown answer, never
+    # a clean tree. Both must still return inside the declared ceiling.
+    with pytest.raises(TimeoutError):
+        git_helpers.has_uncommitted(str(tmp_path))
+    with pytest.raises(TimeoutError):
+        git_helpers.git_diff_stat(str(tmp_path))
+    assert time.monotonic() - started < 1.0
+
+
+class TestWorkingTreeQuestionsStayHonest:
+    """``has_uncommitted`` / ``git_diff_stat`` answer a question about the
+    working tree. "git could not be consulted" is not the answer "clean" —
+    downstream that reads as "no file changes were produced" and lets final
+    acceptance approve an empty diff surface."""
+
+    def test_unusable_cwd_raises_instead_of_reporting_clean(self, tmp_path) -> None:
+        missing = tmp_path / "not-a-directory"
+
+        with pytest.raises(OSError):
+            git_helpers.has_uncommitted(str(missing))
+        with pytest.raises(OSError):
+            git_helpers.git_diff_stat(str(missing))
+
+    def test_stalled_git_raises_instead_of_reporting_clean(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(
+            git_helpers, "run_bounded",
+            lambda *args, **kwargs: TimedOut(
+                stdout="", stderr="", returncode=None, reap_exhausted=True,
+            ),
+        )
+
+        with pytest.raises(TimeoutError):
+            git_helpers.has_uncommitted(str(tmp_path))
+        with pytest.raises(TimeoutError):
+            git_helpers.git_diff_stat(str(tmp_path))

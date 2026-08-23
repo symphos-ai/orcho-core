@@ -91,6 +91,39 @@ class TestTimeouts:
         assert app.codex_idle_timeout > 0
         assert app.gemini_idle_timeout > 0
 
+    def test_startup_stall_timeout_defaults_to_120_seconds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("ORCHO_STARTUP_STALL_TIMEOUT", raising=False)
+        monkeypatch.setenv("ORCHO_DISABLE_LOCAL_CONFIG", "1")
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().startup_stall_seconds == 120
+
+    def test_startup_stall_timeout_default_json_overlay_and_env_precedence(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path,
+    ) -> None:
+        overlay = tmp_path / "config.local.json"
+        overlay.write_text('{"timeouts": {"startup_stall_seconds": 37}}')
+        monkeypatch.setattr(
+            config, "_iter_local_config_paths", lambda **_: iter((overlay,)),
+        )
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        monkeypatch.delenv("ORCHO_STARTUP_STALL_TIMEOUT", raising=False)
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().startup_stall_seconds == 37
+
+        monkeypatch.setenv("ORCHO_STARTUP_STALL_TIMEOUT", "9")
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().startup_stall_seconds == 9
+
+    @pytest.mark.parametrize("value", ("0", "-1", "not-a-number"))
+    def test_invalid_startup_stall_timeout_falls_back_to_default(
+        self, monkeypatch: pytest.MonkeyPatch, value: str,
+    ) -> None:
+        monkeypatch.setenv("ORCHO_STARTUP_STALL_TIMEOUT", value)
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().startup_stall_seconds == 120
+
 
 # ── Stage 4: pipeline section ───────────────────────────────────────────────
 

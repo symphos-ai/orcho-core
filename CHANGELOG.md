@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.3 - 2026-08-23
+
+Closes the startup-hang family reported from a native-Windows field host
+(#250): a run could block forever before its first phase, nothing could stop
+it, and every observation surface reported it as healthy.
+
+### Fixed
+- Service commands are bounded on every platform. A declared timeout now
+  terminates the whole process tree and reaps under a separate budget, so a
+  descendant holding inherited pipes (Git for Windows spawns the real
+  `git.exe` as a grandchild) can no longer keep a run blocked indefinitely.
+  Previously the post-timeout reap had no deadline at all.
+- Run cancellation works on Windows. Detached launches record their process
+  tree, and cancellation reaches it through a platform adapter instead of the
+  POSIX-only `os.killpg` / `SIGKILL` pair, which simply did not exist there.
+  A graceful cancel asks a `CREATE_NEW_PROCESS_GROUP` tree to stop and reports
+  the mode it actually delivered rather than claiming a graceful stop.
+- Liveness probing no longer terminates the process it inspects. On Windows
+  `os.kill(pid, 0)` calls `TerminateProcess`; the probe now reads process
+  state instead.
+- A cancelled run stops claiming it is running. A SIGTERM / SIGBREAK handler
+  persists the interrupted terminal state and emits `run.interrupted`; the
+  previous atexit-only safety net never ran on signal termination, leaving
+  `meta.json` at `status: running` forever.
+- `has_uncommitted` and `git_diff_stat` raise instead of reporting a clean
+  tree when git cannot be consulted, and `meta.json` is replaced atomically,
+  so no reader can observe a truncated or misleading run state.
+
+### Added
+- A startup watchdog halts a run that has emitted nothing beyond `run.start`
+  and grown no `output.log` inside a configurable budget, with a typed reason
+  naming the service command in flight — "blocked in `git status` in <dir>"
+  rather than an indefinite `running`.
+- `run_diagnosis` gains a `stalled` condition, returned ahead of `active`,
+  derived from durable artifacts only and recommending inspect-or-cancel.
+
+### Known Notes
+- Windows coverage for the timeout and cancel paths runs in the dedicated
+  `windows-smoke` CI job.
+
 ## 0.8.2 - 2026-08-20
 
 Closes the remaining finding from the native-Windows field report: the

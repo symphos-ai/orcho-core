@@ -194,7 +194,7 @@ class TestApplyOnResume:
 
         # Don't leave a real atexit hook registered by the unit test.
         monkeypatch.setattr(
-            "pipeline.project.bootstrap.atexit.register", lambda fn: None,
+            "pipeline.project.interruption.atexit.register", lambda fn: None,
         )
         _patch_candidates(monkeypatch, [{"runtime": "codex", "model": "gpt5"}])
         run_dir = tmp_path / "run"
@@ -236,7 +236,7 @@ class TestApplyOnResume:
         from pipeline.project.bootstrap import init_session_with_atexit
 
         monkeypatch.setattr(
-            "pipeline.project.bootstrap.atexit.register", lambda fn: None,
+            "pipeline.project.interruption.atexit.register", lambda fn: None,
         )
         run_dir = tmp_path / "run"
         run_dir.mkdir()

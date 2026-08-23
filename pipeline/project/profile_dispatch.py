@@ -386,6 +386,9 @@ def emit_phase_banner(
         always prints; the silent path needs the log half without the
         stdout half.
     """
+    from pipeline.project.startup_watchdog import disarm_startup_watchdog
+
+    disarm_startup_watchdog()
     cfg = _PHASE_BANNER_CONFIG.get(name)
     if cfg is None:
         return
