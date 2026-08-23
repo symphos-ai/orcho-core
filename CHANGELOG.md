@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.4 - 2026-08-23
+
+A single-line follow-up to the 0.8.3 startup-hang family (#250). The same
+field host re-tested 0.8.3 and found a second, independent defect underneath
+the one we fixed: every run launched through an embedder never started, while
+the identical task through the CLI worked.
+
 ### Fixed
 - Detached launches no longer inherit the launcher's stdin. A run spawned by
   an embedder whose own stdin is a live transport channel could block inside
