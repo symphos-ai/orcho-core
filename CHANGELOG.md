@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Detached launches no longer inherit the launcher's stdin. A run spawned by
+  an embedder whose own stdin is a live transport channel could block inside
+  CPython's interpreter startup, while it built `sys.stdin` and probed that
+  inherited handle — before executing a single line of Python. The run
+  produced no events, no log bytes and no `meta.json`, so nothing downstream
+  could name it. `stdin` is now pinned to `DEVNULL` at the single detached
+  spawn site, matching what bounded service commands already did.
+
 ## 0.8.3 - 2026-08-23
 
 Closes the startup-hang family reported from a native-Windows field host
