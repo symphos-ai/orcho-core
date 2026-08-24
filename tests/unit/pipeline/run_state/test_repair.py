@@ -2,11 +2,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from pipeline.run_state import repair as repair_mod, repair_run_state
+from pipeline.run_state import (
+    consistency as consistency_mod,
+    repair as repair_mod,
+    repair_run_state,
+)
+from pipeline.run_state.consistency import validate_run_state
 
 _REPAIRS_DIR = "run_state_repairs"
 
@@ -57,6 +63,7 @@ def _backup_files(run_dir: Path) -> list[Path]:
 
 
 _HALT_DECIDED_AT = "2026-06-07T12:00:00+00:00"
+_ORPHAN_CODE = "running_without_live_process"
 
 
 def _torn_halt_run(run_dir: Path) -> None:
@@ -68,6 +75,55 @@ def _torn_halt_run(run_dir: Path) -> None:
         "h1",
         {"action": "halt", "handoff_id": "h1", "decided_at": _HALT_DECIDED_AT},
     )
+
+
+def _orphaned_running_run(
+    run_dir: Path,
+    *,
+    status: str = "running",
+    event_at: datetime | None = None,
+    started_at: datetime | None = None,
+    terminal_event: str | None = None,
+    include_handoff: bool = False,
+) -> None:
+    now = datetime.now(UTC)
+    event_time = event_at or now - timedelta(minutes=5)
+    launch_time = started_at or now - timedelta(minutes=5)
+    meta = {"status": status}
+    if include_handoff:
+        meta["phase_handoff"] = {"id": "h1"}
+    _write_meta(run_dir, meta)
+    events: list[dict] = [
+        {
+            "seq": 1,
+            "ts": event_time.isoformat(),
+            "kind": "run.start",
+            "payload": {},
+        }
+    ]
+    if include_handoff:
+        events.append({
+            "seq": 2,
+            "ts": event_time.isoformat(),
+            "kind": "phase.handoff_requested",
+            "payload": {"handoff_id": "h1", "phase": "validate_plan"},
+        })
+    if terminal_event:
+        events.append({
+            "seq": len(events) + 1,
+            "ts": event_time.isoformat(),
+            "kind": terminal_event,
+            "payload": {},
+        })
+    _write_events(run_dir, events)
+    run_dir.joinpath("run_supervisor.json").write_text(
+        json.dumps({"pid": 4321, "started_at": launch_time.isoformat()}),
+        encoding="utf-8",
+    )
+
+
+def _dead_pid(_pid: int) -> bool:
+    return False
 
 
 def test_dry_run_reports_but_writes_nothing(tmp_path: Path) -> None:
@@ -172,6 +228,123 @@ def test_interrupted_active_no_decision_is_refused(tmp_path: Path) -> None:
     # nothing written.
     assert _read_meta(tmp_path)["phase_handoff"] == {"id": "h1"}
     assert not (tmp_path / _REPAIRS_DIR).exists()
+
+
+def test_orphaned_running_dry_run_reports_three_canonical_changes(tmp_path: Path) -> None:
+    _orphaned_running_run(tmp_path)
+    original = _read_meta(tmp_path)
+
+    report = repair_run_state(tmp_path, pid_probe=_dead_pid)
+
+    assert report.applied is False
+    assert report.issue_codes == (_ORPHAN_CODE,)
+    changes = {change.field: change for change in report.changes}
+    assert set(changes) == {"status", "interrupted_at", "halt_reason"}
+    assert changes["status"].after == "interrupted"
+    assert changes["interrupted_at"].after is not None
+    assert changes["halt_reason"].after == "interrupted_orphan"
+    assert {change.issue_code for change in changes.values()} == {_ORPHAN_CODE}
+    assert _read_meta(tmp_path) == original
+    assert not (tmp_path / _REPAIRS_DIR).exists()
+
+
+def test_orphaned_running_apply_is_idempotent_and_keeps_active_handoff(tmp_path: Path) -> None:
+    _orphaned_running_run(tmp_path, include_handoff=True)
+
+    first = repair_run_state(tmp_path, apply=True, pid_probe=_dead_pid)
+
+    meta = _read_meta(tmp_path)
+    assert first.applied is True
+    assert meta["status"] == "interrupted"
+    assert meta["halt_reason"] == "interrupted_orphan"
+    assert meta["interrupted_at"] == first.repaired_at
+    assert meta["phase_handoff"] == {"id": "h1"}
+    assert len(_backup_files(tmp_path)) == 1
+    assert len(_audit_files(tmp_path)) == 1
+    audit = json.loads(first.audit_path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+    assert _ORPHAN_CODE in audit["issue_codes"]
+    assert {change["field"] for change in audit["changes"]} == {
+        "status", "interrupted_at", "halt_reason",
+    }
+
+    bytes_after_first = (tmp_path / "meta.json").read_bytes()
+    second = repair_run_state(tmp_path, apply=True, pid_probe=_dead_pid)
+
+    assert second.applied is False
+    assert second.changes == ()
+    assert (tmp_path / "meta.json").read_bytes() == bytes_after_first
+    assert len(_backup_files(tmp_path)) == 1
+    assert len(_audit_files(tmp_path)) == 1
+
+
+def test_orphan_repair_noops_for_alive_fresh_terminal_parked_and_bad_facts(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    cases = [
+        ("alive", {"pid_probe": lambda _pid: True}),
+        ("fresh", {"event_at": now, "started_at": now - timedelta(minutes=5)}),
+        ("terminal-event", {"terminal_event": "run.end"}),
+        ("terminal-status", {"status": "done"}),
+        ("parked", {"status": "awaiting_phase_handoff"}),
+        ("bad-launch", {"started_at": None}),
+    ]
+    for name, options in cases:
+        run_dir = tmp_path / name
+        run_dir.mkdir()
+        _orphaned_running_run(
+            run_dir,
+            status=options.get("status", "running"),  # type: ignore[arg-type]
+            event_at=options.get("event_at"),  # type: ignore[arg-type]
+            started_at=options.get("started_at"),  # type: ignore[arg-type]
+            terminal_event=options.get("terminal_event"),  # type: ignore[arg-type]
+        )
+        if name == "bad-launch":
+            run_dir.joinpath("run_supervisor.json").write_text(
+                json.dumps({"pid": "bad", "started_at": "not-a-time"}), encoding="utf-8"
+            )
+        report = repair_run_state(
+            run_dir, pid_probe=options.get("pid_probe", _dead_pid)  # type: ignore[arg-type]
+        )
+        assert report.applied is False, name
+        assert report.changes == (), name
+        assert _ORPHAN_CODE not in report.issue_codes, name
+        assert not (run_dir / _REPAIRS_DIR).exists(), name
+
+
+def test_orphan_repair_noops_when_pid_probe_errors(tmp_path: Path) -> None:
+    _orphaned_running_run(tmp_path)
+
+    def _probe_error(_pid: int) -> bool:
+        raise OSError("probe unavailable")
+
+    report = repair_run_state(tmp_path, pid_probe=_probe_error)
+
+    assert report.changes == ()
+    assert _ORPHAN_CODE not in report.issue_codes
+    assert not (tmp_path / _REPAIRS_DIR).exists()
+
+
+def test_validate_run_state_never_calls_repair_pid_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orphaned_running_run(tmp_path)
+    called = False
+
+    def _probe(_pid: int) -> bool:
+        nonlocal called
+        called = True
+        raise AssertionError("validate_run_state must not probe process liveness")
+
+    monkeypatch.setattr(repair_mod, "pid_is_alive", _probe)
+
+    report = validate_run_state(tmp_path)
+
+    assert called is False
+    assert _ORPHAN_CODE not in {issue.code for issue in report.issues}
+    source = Path(consistency_mod.__file__).read_text(encoding="utf-8")
+    assert "run_supervisor.json" not in source
+    assert "pid_is_alive" not in source
 
 
 def test_meta_write_failure_leaves_original_intact(

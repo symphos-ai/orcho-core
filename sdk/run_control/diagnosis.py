@@ -36,10 +36,12 @@ predicate that owns it.
 
 Provider boundary: :func:`run_diagnosis` reads durable ``meta.json`` lazily and
 accepts an already-resolved ``meta`` so an embedder's supervisor-merge (e.g.
-reading ``mcp_supervisor.json``) stays *outside* core — this module never reads
-a supervisor file. The same seam extends to recovery lineage via ``source_meta``
-(see :mod:`sdk.run_control.recovery_lineage`). Strictly read-only: it never
-prints, mutates, or finalizes.
+reading ``mcp_supervisor.json``) stays *outside* core. Engine-owned launch and
+progress facts come only from :mod:`pipeline.run_state.liveness`; this module
+does not interpret a provider supervisor format. The same seam extends to
+recovery lineage via ``source_meta`` (see
+:mod:`sdk.run_control.recovery_lineage`). Strictly read-only: it never prints,
+mutates, or finalizes.
 """
 from __future__ import annotations
 
@@ -50,17 +52,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from core.io.process_tree import pid_is_alive
 from pipeline.control.continuation import resolve_continuation_decision
 from pipeline.control.resume_context import (
     detect_active_followup_child,
     is_terminal_resume_parent,
 )
+from pipeline.run_state.liveness import (
+    DurableProgressState,
+    LaunchState,
+    RunLivenessFacts,
+    read_liveness_facts,
+)
 from pipeline.run_state.status_vocab import RESUMABLE_TERMINAL_STATUSES
 from sdk.phase_handoff import _is_decidable_handoff_status
 from sdk.run_control.delivery import delivery_decision_state
 from sdk.run_control.events import _last_valid_event_position
-from sdk.run_control.launch import read_launch_state
 
 # The closed continuation-subject vocabulary + lineage resolver live in the
 # recovery_lineage sibling. They are re-exported here so the read-model's full
@@ -143,10 +149,11 @@ def run_diagnosis(
     terminal. Candidates absent from the mapping still resolve from disk.
     Strictly read-only.
 
-    A ``running`` run whose durable startup artifact has exceeded its budget
-    without an event or output advance is returned as ``condition='stalled'``
-    with ``recommended_next_action='inspect_or_cancel'``; it is never a
-    resume recommendation.
+    A ``running`` run with a dead recorded process plus stale durable progress,
+    a launcher that never reached startup arming, or a durable startup artifact
+    that exceeded its budget without event/output advance is returned as
+    ``condition='stalled'`` with ``recommended_next_action='inspect_or_cancel'``;
+    it is never a resume recommendation.
 
     Raises:
         ValueError: ``run_id`` is empty — a programming error, distinct from a
@@ -221,7 +228,11 @@ def _safe_recovery(
         return None
 
 
-def _startup_stalled_reason(run_dir: Path, status: str | None) -> str | None:
+def _startup_stalled_reason(
+    run_dir: Path,
+    status: str | None,
+    liveness: RunLivenessFacts,
+) -> str | None:
     """Return a startup-stall explanation from bounded durable facts only."""
     if status != _RUNNING_STATUS:
         return None
@@ -259,7 +270,7 @@ def _startup_stalled_reason(run_dir: Path, status: str | None) -> str | None:
             command_detail = f" command={identity!r}"
         if isinstance(cwd, str) and cwd:
             command_detail += f" cwd={cwd!r}"
-    pid_state = _pid_state(run_dir)
+    pid_state = liveness.pid_state.value
     position = f" last_event_seq={last_seq}" if last_seq is not None else " no valid event"
     if last_ts:
         position += f" last_event_at={last_ts}"
@@ -293,15 +304,82 @@ def _timestamp_after(timestamp: str | None, baseline: datetime) -> bool:
     return observed.tzinfo is not None and observed.astimezone(UTC) > baseline.astimezone(UTC)
 
 
-def _pid_state(run_dir: Path) -> str:
-    state = read_launch_state(run_dir)
-    pid = state.get("pid") if isinstance(state, dict) else None
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return "unknown"
+def _dead_process_stalled_reason(
+    run_dir: Path,
+    status: str | None,
+    liveness: RunLivenessFacts,
+) -> str | None:
+    """Explain the conservative dead-process form of ``stalled``.
+
+    This condition uses the shared liveness predicate, which requires a
+    recorded dead PID, stale durable progress, and no terminal event. It is a
+    diagnosis only; repair remains an explicit operator action.
+    """
+    if (
+        status != _RUNNING_STATUS
+        or not liveness.launch_is_stale
+        or not liveness.dead_process_with_stale_progress
+    ):
+        return None
+    progress = (
+        "no durable event was recorded"
+        if liveness.progress_state is DurableProgressState.ABSENT
+        else f"the last durable event was {liveness.last_event_kind!r}"
+    )
+    arming = (
+        " The startup arming artifact was never recorded."
+        if _startup_artifact_is_absent(run_dir)
+        else ""
+    )
+    return (
+        f"recorded launch pid {liveness.pid} is no longer alive and {progress} "
+        f"for at least {liveness.grace_seconds:.0f}s; no terminal event was "
+        f"recorded.{arming} Run `orcho repair-state` to inspect and safely "
+        "finalize the orphaned run state."
+    )
+
+
+def _missing_startup_arming_reason(
+    run_dir: Path,
+    status: str | None,
+    liveness: RunLivenessFacts,
+) -> str | None:
+    """Explain an old launch that never advanced beyond its startup boundary."""
+    if (
+        status != _RUNNING_STATUS
+        or liveness.has_terminal_event
+        or liveness.launch_state is not LaunchState.PRESENT
+        or not liveness.launch_is_stale
+        or not _startup_artifact_is_absent(run_dir)
+    ):
+        return None
+    at_start_boundary = (
+        liveness.progress_state is DurableProgressState.ABSENT
+        or (
+            liveness.progress_state is DurableProgressState.STALE
+            and liveness.last_event_kind == "run.start"
+        )
+    )
+    if not at_start_boundary:
+        return None
+    boundary = (
+        "no durable event reached the startup boundary"
+        if liveness.progress_state is DurableProgressState.ABSENT
+        else "durable history did not advance beyond the run.start startup boundary"
+    )
+    return (
+        "startup arming was never reached: the launcher is older than "
+        f"{liveness.grace_seconds:.0f}s and {boundary}. Inspect or cancel "
+        "this stalled run."
+    )
+
+
+def _startup_artifact_is_absent(run_dir: Path) -> bool:
+    """Return true only for a definitely absent artifact, never an I/O error."""
     try:
-        return "alive" if pid_is_alive(pid) else "dead"
-    except Exception:  # noqa: BLE001 - diagnostics must fail safe
-        return "unknown"
+        return not (run_dir / "startup_command.json").exists()
+    except OSError:
+        return False
 
 
 def _classify(
@@ -421,14 +499,22 @@ def _classify(
     if terminal:
         return _terminal_branch(run_id, status, halt_reason, meta, cont)
 
-    # (7) stalled — durable startup made no progress inside its budget.
-    stalled_reason = _startup_stalled_reason(run_dir, status)
-    if stalled_reason is not None:
-        return RunDiagnosis(
-            run_id=run_id, condition=CONDITION_STALLED, reason=stalled_reason,
-            status=status, halt_reason=halt_reason,
-            recommended_next_action="inspect_or_cancel",
-        )
+    # (7) stalled — dead process, never-armed startup, then the existing
+    # artifact-backed watchdog proof. Terminal/decision/lineage branches above
+    # retain priority; a terminal event makes all liveness stalls a no-op.
+    liveness = read_liveness_facts(run_dir) if status == _RUNNING_STATUS else None
+    if liveness is not None and not liveness.has_terminal_event:
+        dead_process_reason = _dead_process_stalled_reason(run_dir, status, liveness)
+        if dead_process_reason is not None:
+            return _stalled_diagnosis(run_id, dead_process_reason, status, halt_reason)
+
+        missing_arming_reason = _missing_startup_arming_reason(run_dir, status, liveness)
+        if missing_arming_reason is not None:
+            return _stalled_diagnosis(run_id, missing_arming_reason, status, halt_reason)
+
+        artifact_stalled_reason = _startup_stalled_reason(run_dir, status, liveness)
+        if artifact_stalled_reason is not None:
+            return _stalled_diagnosis(run_id, artifact_stalled_reason, status, halt_reason)
 
     # (8) active — the run is currently executing.
     if status == _RUNNING_STATUS:
@@ -480,6 +566,23 @@ def _classify(
         ),
         blocked=continuation.blocked,
         block_message=continuation.reason if continuation.blocked else None,
+    )
+
+
+def _stalled_diagnosis(
+    run_id: str,
+    reason: str,
+    status: str | None,
+    halt_reason: str | None,
+) -> RunDiagnosis:
+    """Build every stalled branch with the existing MCP action vocabulary."""
+    return RunDiagnosis(
+        run_id=run_id,
+        condition=CONDITION_STALLED,
+        reason=reason,
+        status=status,
+        halt_reason=halt_reason,
+        recommended_next_action="inspect_or_cancel",
     )
 
 
