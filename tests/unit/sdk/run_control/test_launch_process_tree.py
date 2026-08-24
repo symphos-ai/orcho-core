@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -90,3 +93,43 @@ def test_cancel_reports_the_mode_actually_delivered(
     result = cancel_run("run", runs_dir=str(tmp_path), mode="graceful")
 
     assert result.status == "signal_sent(hard)"
+
+
+def test_spawn_detached_never_inherits_the_launcher_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """stdin is pinned, not inherited.
+
+    An embedder that spawns runs from a stdio transport would otherwise
+    hand the child its live client channel, and CPython hangs probing
+    that handle before it executes any Python.
+    """
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("sdk.run_control.launch.detached_spawn_kwargs", dict)
+    monkeypatch.setattr(
+        "sdk.run_control.launch.subprocess.Popen",
+        lambda *args, **kwargs: captured.update(kwargs) or object(),
+    )
+    with (tmp_path / "log").open("w") as log:
+        _spawn_detached(["python"], project_dir=str(tmp_path), env={}, log_fd=log)
+
+    assert captured["stdin"] is subprocess.DEVNULL
+
+
+def test_spawned_child_reads_an_immediately_empty_stdin(tmp_path: Path) -> None:
+    """The delivered semantics: the child's stdin is at EOF, not open."""
+    log_path = tmp_path / "log"
+    with log_path.open("w") as log:
+        popen = _spawn_detached(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.write(repr(sys.stdin.read()))",
+            ],
+            project_dir=str(tmp_path),
+            env=dict(os.environ),
+            log_fd=log,
+        )
+    assert popen.wait(timeout=30) == 0
+    assert log_path.read_text(encoding="utf-8") == "''"

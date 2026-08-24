@@ -394,11 +394,19 @@ def _spawn_detached(
     """Launch ``cmd`` detached in its own session.
 
     Platform adapter flags create an independently owned process tree.
-    Raises :class:`LaunchError` on any spawn failure.
+    ``stdin`` is pinned to ``DEVNULL`` rather than inherited: a detached
+    run never reads from the launcher, and inheriting the launcher's
+    stdin is actively unsafe when that handle is an embedder's live
+    transport channel. CPython probes every inherited standard handle
+    while it builds ``sys.stdin`` inside ``Py_InitializeFromConfig``, so
+    a handle that does not answer a seek hangs the child before it runs
+    a single line of Python — no events, no log bytes, nothing to
+    diagnose. Raises :class:`LaunchError` on any spawn failure.
     """
     try:
         return subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             cwd=project_dir,
