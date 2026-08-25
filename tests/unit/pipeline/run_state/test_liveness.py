@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -128,3 +128,140 @@ def test_liveness_is_read_only_and_does_not_import_sdk(tmp_path: Path) -> None:
         or (isinstance(node, ast.ImportFrom) and node.module and (node.module == "sdk" or node.module.startswith("sdk.")))
         for node in ast.walk(tree)
     )
+
+
+def test_unusable_launch_artifact_shapes_are_unknown_not_missing(tmp_path: Path) -> None:
+    """A directory and a non-object payload are distinct from a clean absence.
+
+    ``MISSING`` licenses the pre-arming conclusion; an artifact we merely
+    failed to understand must not, or an unreadable disk becomes a verdict.
+    """
+    a_directory = tmp_path / "dir-run"
+    (a_directory / "run_supervisor.json").mkdir(parents=True)
+    a_list = tmp_path / "list-run"
+    a_list.mkdir()
+    (a_list / "run_supervisor.json").write_text("[1, 2]", encoding="utf-8")
+    unreadable = tmp_path / "bad-json-run"
+    unreadable.mkdir()
+    (unreadable / "run_supervisor.json").write_text("{not json", encoding="utf-8")
+    absent = tmp_path / "absent-run"
+    absent.mkdir()
+
+    for run_dir in (a_directory, a_list, unreadable):
+        facts = read_liveness_facts(run_dir, pid_probe=lambda _pid: False, now=_NOW)
+        assert facts.launch_state is LaunchState.UNKNOWN
+        assert facts.pid is None
+        assert not facts.dead_process_with_stale_progress
+
+    assert read_liveness_facts(absent, now=_NOW).launch_state is LaunchState.MISSING
+
+
+def test_unreadable_event_history_is_unknown_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing event read must not be reported as an absent event stream."""
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(hours=2)).isoformat())
+
+    def _boom(_run_dir: Path) -> list[dict[str, object]]:
+        raise OSError("event stream unreadable")
+
+    monkeypatch.setattr("pipeline.run_state.liveness.read_all", _boom)
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: False, now=_NOW, grace_seconds=60)
+
+    assert facts.progress_state is DurableProgressState.UNKNOWN
+    assert not facts.durable_progress_is_stale
+    assert not facts.dead_process_with_stale_progress
+
+
+def test_an_event_from_the_future_ages_to_unknown(tmp_path: Path) -> None:
+    """A clock skew must not read as fresh progress, nor as stale."""
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(hours=2)).isoformat())
+    _write_events(tmp_path, _event(ts=_NOW + timedelta(minutes=5)))
+
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: False, now=_NOW, grace_seconds=60)
+
+    assert facts.progress_state is DurableProgressState.UNKNOWN
+    assert not facts.dead_process_with_stale_progress
+
+
+def test_a_naive_caller_clock_disables_time_based_facts(tmp_path: Path) -> None:
+    """Without a usable clock nothing can be aged, so nothing is concluded."""
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(hours=2)).isoformat())
+    _write_events(tmp_path, _event(ts=_NOW - timedelta(hours=1)))
+
+    facts = read_liveness_facts(
+        tmp_path, pid_probe=lambda _pid: False, now=datetime(2026, 8, 24, 12), grace_seconds=60,
+    )
+
+    assert facts.progress_state is DurableProgressState.UNKNOWN
+    assert not facts.launch_is_stale
+    assert not facts.dead_process_with_stale_progress
+
+
+@pytest.mark.parametrize("grace", [0, -30, float("nan"), "not-a-number", object()])
+def test_an_unusable_grace_falls_back_to_the_configured_startup_budget(
+    tmp_path: Path, grace: object
+) -> None:
+    """A caller cannot disable ageing by passing zero, negative, or garbage."""
+    from core.infra.config import AppConfig
+
+    configured = float(AppConfig.load().startup_stall_seconds)
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(hours=2)).isoformat())
+
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: False, now=_NOW, grace_seconds=grace)
+
+    assert facts.grace_seconds == configured
+    assert facts.grace_seconds > 0
+
+
+def test_a_non_boolean_probe_result_is_unknown(tmp_path: Path) -> None:
+    """Only a real True/False answers the liveness question."""
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(hours=2)).isoformat())
+
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: "yes", now=_NOW, grace_seconds=60)
+
+    assert facts.pid_state is PidState.UNKNOWN
+    assert not facts.dead_process_with_stale_progress
+
+
+def test_an_unusable_configured_grace_still_leaves_ageing_armed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bad configuration degrades to a fallback budget, never to no budget."""
+    from pipeline.run_state import liveness
+
+    class _Config:
+        startup_stall_seconds = float("nan")
+
+    monkeypatch.setattr(liveness.AppConfig, "load", classmethod(lambda _cls: _Config()))
+    _write_launch(tmp_path, pid=123, started_at=(_NOW - timedelta(days=1)).isoformat())
+
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: False, now=_NOW)
+
+    assert facts.grace_seconds == liveness._FALLBACK_GRACE_S
+    assert facts.launch_is_stale
+    assert facts.dead_process_with_stale_progress
+
+
+@pytest.mark.parametrize("started_at", [
+    "",                                  # empty string is not a timestamp
+    {"at": "2026-08-24T10:00:00Z"},      # a nested object is not one either
+    12345,                               # nor an epoch number
+    datetime.max.replace(tzinfo=timezone(timedelta(hours=-14))),  # overflows on convert
+])
+def test_untranslatable_launch_timestamps_never_age_a_run(
+    tmp_path: Path, started_at: object
+) -> None:
+    """Anything we cannot turn into a UTC instant leaves the run unaged."""
+    (tmp_path / "run_supervisor.json").write_text(
+        json.dumps({"pid": 123, "started_at": started_at}, default=str)
+        if not isinstance(started_at, datetime)
+        else json.dumps({"pid": 123, "started_at": started_at.isoformat()}),
+        encoding="utf-8",
+    )
+
+    facts = read_liveness_facts(tmp_path, pid_probe=lambda _pid: False, now=_NOW, grace_seconds=60)
+
+    assert facts.launch_started_at is None
+    assert not facts.launch_is_stale
+    assert not facts.dead_process_with_stale_progress

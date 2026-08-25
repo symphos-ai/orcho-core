@@ -112,6 +112,37 @@ def test_missing_startup_arming_stalls_at_startup_boundary(tmp_path: Path) -> No
     assert "run.start startup boundary" in d.reason
 
 
+def test_an_unreadable_startup_artifact_never_claims_missing_arming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An I/O error is not evidence of absence.
+
+    The pre-arming verdict rests on the startup artifact not existing. A
+    failing stat must therefore read as "cannot tell", or a bad filesystem
+    starts producing stall verdicts about healthy runs.
+    """
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event,
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=300),
+    })
+
+    original = Path.exists
+
+    def _raise_for_startup_artifact(self: Path) -> bool:
+        if self.name == "startup_command.json":
+            raise OSError("stat failed")
+        return original(self)
+
+    monkeypatch.setattr(Path, "exists", _raise_for_startup_artifact)
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_ACTIVE
+    assert "startup arming was never reached" not in (d.reason or "")
+
+
 def test_artifact_backed_startup_stall_preserves_its_reason(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
