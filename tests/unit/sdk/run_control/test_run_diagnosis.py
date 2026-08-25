@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -75,19 +76,57 @@ def _startup_artifact(*, age_s: float = 130, event_size: int = 0, output_size: i
     })
 
 
-def test_startup_stale_running_run_is_not_active(tmp_path: Path) -> None:
+def _launch_state(*, pid: int, age_s: float) -> str:
+    started = datetime.now(UTC) - timedelta(seconds=age_s)
+    return json.dumps({"pid": pid, "started_at": started.isoformat()})
+
+
+def test_dead_stale_running_run_is_stalled_for_repair(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event,
+        "run_supervisor.json": _launch_state(pid=99999999, age_s=300),
+    })
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_STALLED
+    assert d.recommended_next_action == "inspect_or_cancel"
+    assert "no longer alive" in d.reason
+    assert "startup arming artifact was never recorded" in d.reason
+    assert "orcho repair-state" in d.reason
+
+
+def test_missing_startup_arming_stalls_at_startup_boundary(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event,
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=300),
+    })
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_STALLED
+    assert d.recommended_next_action == "inspect_or_cancel"
+    assert "startup arming was never reached" in d.reason
+    assert "run.start startup boundary" in d.reason
+
+
+def test_artifact_backed_startup_stall_preserves_its_reason(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
     _mk(runs, "r", {"status": "running", "project": "/x"}, files={
         "events.jsonl": event,
         "startup_command.json": _startup_artifact(event_size=len(event.encode())),
         "output.log": "",
-        "run_supervisor.json": json.dumps({"pid": 99999999}),
     })
+
     d = _diag(runs, "r")
+
     assert d.condition == diag.CONDITION_STALLED
     assert d.recommended_next_action == "inspect_or_cancel"
-    assert "pid=dead" in d.reason
+    assert "startup has been idle" in d.reason
+    assert "pid=unknown" in d.reason
     assert "git status" in d.reason and "/project" in d.reason
 
 
@@ -108,6 +147,37 @@ def test_startup_recent_or_progressing_run_stays_active(tmp_path: Path) -> None:
     assert _diag(runs, "recent").condition == diag.CONDITION_ACTIVE
     assert _diag(runs, "event").condition == diag.CONDITION_ACTIVE
     assert _diag(runs, "output").condition == diag.CONDITION_ACTIVE
+
+
+def test_live_healthy_recent_launch_and_fresh_progress_stay_active(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    now = datetime.now(UTC).isoformat()
+    old = _launch_state(pid=99999999, age_s=300)
+    _mk(runs, "live", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": json.dumps({"seq": 1, "ts": now, "kind": "phase.start"}) + "\n",
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=300),
+    })
+    _mk(runs, "recent", {"status": "running", "project": "/x"}, files={
+        "run_supervisor.json": _launch_state(pid=99999999, age_s=1),
+    })
+    _mk(runs, "fresh", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": json.dumps({"seq": 1, "ts": now, "kind": "phase.start"}) + "\n",
+        "run_supervisor.json": old,
+    })
+
+    assert _diag(runs, "live").condition == diag.CONDITION_ACTIVE
+    assert _diag(runs, "recent").condition == diag.CONDITION_ACTIVE
+    assert _diag(runs, "fresh").condition == diag.CONDITION_ACTIVE
+
+
+def test_recent_launch_with_inherited_old_event_stays_active(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start"}\n',
+        "run_supervisor.json": _launch_state(pid=99999999, age_s=1),
+    })
+
+    assert _diag(runs, "r").condition == diag.CONDITION_ACTIVE
 
 
 def test_startup_stall_pid_unknown_is_explicit(tmp_path: Path) -> None:
@@ -384,6 +454,7 @@ _MCP_CONDITIONS = frozenset({
     "blocked_worktree",
     "recover_via_source_run",
     "resume_inert_terminal",
+    "stalled",
     "active",
     # residual resumable stop (status itself)
     "halted", "failed", "interrupted",
@@ -409,6 +480,14 @@ def _scenarios(runs: Path) -> list[tuple[str, str, str | None]]:
 
     _mk(runs, "active", {"status": "running", "project": "/x"})
     table.append(("active", "active", None))
+
+    stale_event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "stalled", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": stale_event,
+        "startup_command.json": _startup_artifact(event_size=len(stale_event.encode())),
+        "output.log": "",
+    })
+    table.append(("stalled", "stalled", None))
 
     _mk(runs, "decide", {
         "status": "awaiting_phase_handoff",
@@ -530,6 +609,7 @@ def test_parity_against_mcp_branch_contract(tmp_path: Path) -> None:
         diag.CONDITION_RECOVER_VIA_SOURCE_RUN,
         diag.CONDITION_RESUME_INERT_TERMINAL,
         diag.CONDITION_CLOSED_BY_FOLLOWUP,
+        diag.CONDITION_STALLED,
         "failed",
     }
     assert produced_conditions == expected_conditions
@@ -758,12 +838,19 @@ def test_module_declares_no_decision_table_literal() -> None:
 def test_stalled_vocabulary_and_active_order_are_single_and_guarded() -> None:
     src = Path(diag.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
-    stalled_defs = [
-        node for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "CONDITION_STALLED" for target in node.targets)
-    ]
-    assert len(stalled_defs) == 1
-    assert src.index("stalled_reason = _startup_stalled_reason") < src.index(
-        "condition=CONDITION_ACTIVE",
-    )
+    definitions = {
+        name: [
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
+        ]
+        for name in ("CONDITION_STALLED", "CONDITION_ACTIVE")
+    }
+    assert all(len(nodes) == 1 for nodes in definitions.values())
+    active_branch = src.index("condition=CONDITION_ACTIVE")
+    for stall_check in (
+        "dead_process_reason = _dead_process_stalled_reason",
+        "missing_arming_reason = _missing_startup_arming_reason",
+        "artifact_stalled_reason = _startup_stalled_reason",
+    ):
+        assert src.index(stall_check) < active_branch
