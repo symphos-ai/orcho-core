@@ -730,8 +730,20 @@ non-breaking; field removal or rename is breaking.
 ## Startup-stall diagnosis
 
 `run_diagnosis(...)` remains the same `RunDiagnosis` dataclass. For a running
-run whose persisted startup artifact exceeded its budget without event or
-`output.log` progress, it returns `condition="stalled"` **before** the normal
-`condition="active"` branch. Its recommendation is `inspect_or_cancel`, not
-a resume action; the reason includes durable command/cwd and PID liveness when
-available. This is core-only vocabulary: no MCP or SDK schema change.
+run it returns `condition="stalled"` **before** the normal
+`condition="active"` branch when bounded durable evidence shows one of these
+conditions:
+
+- a recorded launcher PID is proven dead, the launch and durable progress are
+  stale (or progress is absent after an old launch), and no terminal event was
+  recorded;
+- the launcher is old, no `startup_command.json` was armed, and history never
+  advanced beyond the startup boundary; or
+- the persisted startup artifact exceeded its budget without event or
+  `output.log` progress.
+
+The recommendation remains `inspect_or_cancel`, not a resume action. The
+dead-PID reason may tell an operator to use `orcho repair-state`, but that is
+human guidance rather than a new action token. PID liveness is only a bounded
+observation: an alive PID can be reused by another process and is not proof of
+run health. This is core-only behavior; no MCP or SDK schema change is made.

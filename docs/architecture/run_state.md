@@ -30,22 +30,29 @@ two can drift — for example when a process is killed after a halt decision is
 recorded but before the snapshot's `status` flips. The `run_state` layer
 exists to project, check, and (when asked) repair that relationship.
 
-## Three responsibilities
+## Four responsibilities
 
 The layer is split into isolated parts, each with a single job:
 
 - **Projection + consistency (read-only).** A pure reducer folds the event
   stream into a typed snapshot; a projector runs it over a run directory; a
   consistency checker names known torn shapes by stable problem codes. This
-  part never writes and is never imported by runtime / resume / finalization
-  paths.
-- **Repair (opt-in, off-line).** `repair_run_state` consumes the consistency
-  diagnosis and, for a strictly limited set of self-healable shapes, proposes
-  (dry-run by default) or applies a minimal, crash-safe `meta.json` mutation
-  that brings the snapshot back in line with the event-derived projection.
-  Repairs are idempotent and add no durable schema beyond a repair-audit
-  artifact. An interrupted run that still carries an undecided handoff is
-  **refused** — that needs an operator decision, not an automatic flip.
+  part never writes, reads launcher state, or probes a process, and is never
+  imported by runtime / resume / finalization paths.
+- **Liveness (read-only, on demand).** `liveness.py` tolerantly reads the
+  launcher anchor (`run_supervisor.json`) and latest durable event progress
+  once. It validates the PID and offset-aware launch timestamp, classifies
+  progress as absent/fresh/stale/unknown, observes the PID once, and never
+  polls, writes, or starts background work. A PID may be reused, so an alive
+  result prevents automatic interruption but never proves that this run is
+  healthy. See [ADR 0183](../adr/0183-run-liveness-from-launch-and-progress.md).
+- **Repair (opt-in, off-line).** `repair_run_state` first consumes the pure
+  consistency diagnosis, then may make a separate liveness observation for
+  its repair-local orphan-process check. It proposes (dry-run by default) or
+  applies a minimal, crash-safe `meta.json` mutation. Repairs are idempotent
+  and add no durable schema beyond a repair-audit artifact. An interrupted run
+  that still carries an undecided handoff is **refused** — that needs an
+  operator decision, not an automatic flip.
 - **State-transition helpers.** Focused writers own active handoff transitions,
   single-project terminal transitions, and cross terminal settlement in a run's
   flat state mapping (see below).
@@ -409,6 +416,17 @@ carrying an active `phase_handoff` with no recorded decision is reported as
 `needs_operator_decision` (no mutation, even with `--apply`); the operator
 must resolve the handoff through the decision API (halt/continue) before
 resuming, rather than have status flipped automatically.
+
+For a `running` run, repair can separately observe the launcher and durable
+progress after the pure validation pass. A proven-dead recorded PID is
+repairable only when both the launch and progress are stale and no terminal
+event exists. The dry-run then includes the generic
+`running_without_live_process` issue and proposes `status='interrupted'`, a
+repair timestamp in `interrupted_at`, and
+`halt_reason='interrupted_orphan'`. Applying it preserves an active handoff;
+the next invocation sees the ordinary interrupted-handoff refusal rather than
+creating more repair artifacts. Missing/malformed launch data, an unusable PID
+probe, fresh progress, a terminal event, and non-running statuses are no-ops.
 
 ## Resume-artifact bootstrap
 

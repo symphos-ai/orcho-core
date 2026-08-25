@@ -8,8 +8,9 @@ with the event-derived projection.
 
 Design rules:
 
-- ``validate_run_state`` is the single source of truth for problem codes; this
-  module never re-derives them, it only maps known codes to a safe mutation.
+- ``validate_run_state`` remains the single source of truth for durable-file
+  problem codes. This module only adds its explicitly environment-aware
+  ``running_without_live_process`` issue at the repair boundary.
 - Dry-run is the default (``apply=False``): the report lists the proposed
   changes but nothing is written to disk.
 - ``apply=True`` writes in a strict, crash-safe order: backup the original
@@ -19,7 +20,7 @@ Design rules:
 - Repairs are idempotent by construction: a second ``apply`` re-runs the
   diagnosis, finds nothing repairable, and writes nothing.
 
-Only three torn shapes are repaired in this stage:
+Only four torn shapes are repaired in this stage:
 
 - ``halt_decision_without_halted_meta`` — a halt decision artifact exists but
   ``meta.status`` never flipped. Heal to the exact post-halt shape the halt
@@ -29,6 +30,10 @@ Only three torn shapes are repaired in this stage:
   ``phase_handoff`` cleared.
 - ``terminal_with_stale_handoff`` (for ``status='halted'`` and ``'done'``) —
   clear the stale active ``phase_handoff`` payload.
+- ``running_without_live_process`` — a recorded process is proven dead after
+  the launch and durable progress have both exceeded their grace window. Heal
+  the run to the canonical interrupted shape while retaining any active
+  handoff for an operator decision.
 
 ``meta_handoff_without_event`` (a lost / desynced event stream) and an ordinary
 pending ``active_handoff_without_decision`` are deliberately NOT repaired here.
@@ -37,9 +42,9 @@ decision is refused (``needs_operator_decision``): the operator must decide the
 handoff through the sanctioned decision API rather than have status flipped
 automatically.
 
-This package depends at most on its own modules and
-:mod:`core.observability`; it never imports runtime / resume / finalization
-paths and changes no on-disk schema beyond the new repair audit artifact.
+This package depends at most on its own modules and read-only ``core``
+helpers; it never imports runtime / resume / finalization paths and changes no
+on-disk schema beyond the new repair audit artifact.
 """
 from __future__ import annotations
 
@@ -48,13 +53,16 @@ import json
 import os
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from core.io.process_tree import pid_is_alive
 from pipeline.run_state.consistency import validate_run_state
+from pipeline.run_state.liveness import RunLivenessFacts, read_liveness_facts
 from pipeline.run_state.status_vocab import INTERRUPTED_STATUS
 
 _REPAIRS_DIRNAME = "run_state_repairs"
@@ -64,9 +72,12 @@ _HALT_CODE = "halt_decision_without_halted_meta"
 _TERMINAL_STALE_CODE = "terminal_with_stale_handoff"
 _INTERRUPTED_ACTIVE_CODE = "interrupted_with_active_handoff"
 _NO_DECISION_CODE = "active_handoff_without_decision"
+_ORPHANED_RUNNING_CODE = "running_without_live_process"
 
 _HALTED_STATUS = "halted"
 _HALT_REASON = "phase_handoff_halt"
+_RUNNING_STATUS = "running"
+_ORPHAN_INTERRUPTED_REASON = "interrupted_orphan"
 
 
 class RunStateRepairAction(StrEnum):
@@ -125,13 +136,15 @@ def repair_run_state(
     action: str | RunStateRepairAction = "safe",
     *,
     apply: bool = False,
+    pid_probe: Callable[[int], bool] = pid_is_alive,
 ) -> RunStateRepairReport:
     """Diagnose and (optionally) repair known torn run-state shapes.
 
-    Runs :func:`validate_run_state` for diagnosis, maps the known self-healable
-    codes to a minimal ``meta.json`` mutation, and either reports the proposed
-    changes (``apply=False``, the default — nothing is written) or applies them
-    crash-safely (``apply=True``).
+    Runs :func:`validate_run_state` for durable diagnosis, then separately
+    observes liveness through the injectable ``pid_probe``. It maps the known
+    self-healable codes to a minimal ``meta.json`` mutation, and either reports
+    the proposed changes (``apply=False``, the default — nothing is written) or
+    applies them crash-safely (``apply=True``).
 
     ``applied`` is ``True`` only when ``apply=True`` and a non-empty change set
     was atomically written; a no-op ``apply`` (nothing to repair, or a refusal)
@@ -147,12 +160,23 @@ def repair_run_state(
     now = datetime.now(UTC)
     repaired_at = now.isoformat()
 
+    # Durable consistency validation stays pure. Environment-aware process
+    # facts are observed only afterwards, at this explicit repair boundary.
     report = validate_run_state(path)
-    issue_codes = tuple(sorted({issue.code for issue in report.issues}))
     meta = _read_meta(path)
+    liveness = read_liveness_facts(path, pid_probe=pid_probe)
+    orphaned_running = _is_orphaned_running(meta, liveness)
+    issue_codes = tuple(sorted(
+        {issue.code for issue in report.issues}
+        | ({_ORPHANED_RUNNING_CODE} if orphaned_running else set())
+    ))
 
     changes, needs_decision, repair_hint = _plan_changes(
-        report, meta, path, fallback_halted_at=repaired_at
+        report,
+        meta,
+        path,
+        fallback_halted_at=repaired_at,
+        orphaned_running=orphaned_running,
     )
 
     if not apply or not changes:
@@ -208,6 +232,7 @@ def _plan_changes(
     run_dir: Path,
     *,
     fallback_halted_at: str,
+    orphaned_running: bool,
 ) -> tuple[list[RunStateRepairChange], bool, str | None]:
     """Map diagnosed codes to a safe change set, a refusal flag, and a hint."""
     codes = {issue.code for issue in report.issues}
@@ -275,8 +300,40 @@ def _plan_changes(
                 "phase_handoff", meta.get("phase_handoff"), None, _TERMINAL_STALE_CODE
             )
         )
+    elif orphaned_running:
+        changes.extend([
+            RunStateRepairChange(
+                "status", status, INTERRUPTED_STATUS, _ORPHANED_RUNNING_CODE
+            ),
+            RunStateRepairChange(
+                "interrupted_at",
+                meta.get("interrupted_at"),
+                fallback_halted_at,
+                _ORPHANED_RUNNING_CODE,
+            ),
+            RunStateRepairChange(
+                "halt_reason",
+                meta.get("halt_reason"),
+                _ORPHAN_INTERRUPTED_REASON,
+                _ORPHANED_RUNNING_CODE,
+            ),
+        ])
 
     return changes, False, None
+
+
+def _is_orphaned_running(meta: dict[str, Any], liveness: RunLivenessFacts) -> bool:
+    """Return true only for an old, dead, non-terminal running process.
+
+    PID reuse makes an ``alive`` observation inconclusive, so it never proves
+    health. Conversely, a ``dead`` result is repairable only after both the
+    launch and durable progress are stale and no terminal event was recorded.
+    """
+    return (
+        meta.get("status") == _RUNNING_STATUS
+        and liveness.launch_is_stale
+        and liveness.dead_process_with_stale_progress
+    )
 
 
 def _apply(
