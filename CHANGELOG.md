@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.8.5 - 2026-08-25
+
+Closes the observability half of the field-reported Windows startup-hang
+family (#259). The hangs themselves were fixed in 0.8.3 and 0.8.4; these are
+the surfaces that reported a run as healthy while it could not advance.
+
+### Fixed
+- A run that cannot advance is no longer reported as active. `run_diagnosis`
+  now classifies two further shapes as stalled: a recorded process that is
+  gone with stale durable progress, and a launch that never reached its own
+  startup arming. The previous stall verdict read `startup_command.json`,
+  which the orchestrator writes from inside the run — so a run that died
+  before that point left nothing to judge, and the worst startup failure was
+  invisible to the detector built for it. The verdicts now rest on facts the
+  launcher records at spawn time.
+- `repair-state` can finalise an orphaned run. A non-terminal run with no live
+  process and no terminal event is now a repairable shape that proposes
+  `interrupted`, idempotently. Previously it reported no issues and no
+  proposed changes, leaving such runs permanently `running`.
+- A non-positive or non-finite startup grace can no longer disable stall
+  ageing. `NaN` survived the previous validation and made every ageing
+  comparison false, silently switching the detector off.
+
+### Notes
+- `pid_is_alive` establishes only that a PID currently exists. Because an OS
+  may reuse a PID, an alive result is deliberately not treated as proof of
+  ownership, and a dead result is only acted on together with stale durable
+  progress and no terminal event.
 
 ## 0.8.4 - 2026-08-23
 
