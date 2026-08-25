@@ -15,6 +15,7 @@ the run as stalled.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +29,11 @@ from core.observability.events import read_all
 
 _LAUNCH_FILENAME = "run_supervisor.json"
 _TERMINAL_EVENT_KINDS = frozenset({"run.end", "run.interrupted"})
+
+# Last-resort grace when neither the caller nor configuration supplies a usable
+# one. Ageing must never be disabled by bad input: a budget that can't fire is
+# indistinguishable from having no detector at all.
+_FALLBACK_GRACE_S = 120.0
 
 
 class LaunchState(StrEnum):
@@ -225,16 +231,30 @@ def _probe_pid(pid: int | None, probe: Callable[[int], bool]) -> PidState:
 
 
 def _resolve_grace_seconds(value: float | None) -> float:
-    """Use the configured startup grace unless a valid explicit value is given."""
+    """Use the configured startup grace unless a valid explicit value is given.
+
+    ``NaN`` and the infinities have to be rejected explicitly: they survive
+    ``float()`` and are not ``<= 0``, so they would install themselves as the
+    budget, and every ageing comparison against them is false. That silently
+    disables the detector rather than failing it — the exact shape of blindness
+    this module exists to remove.
+    """
+    explicit = _usable_seconds(value)
+    if explicit is not None:
+        return explicit
+    configured = _usable_seconds(AppConfig.load().startup_stall_seconds)
+    return configured if configured is not None else _FALLBACK_GRACE_S
+
+
+def _usable_seconds(value: Any) -> float | None:
+    """Return a positive finite float, or None for anything that is not one."""
     if value is None:
-        value = AppConfig.load().startup_stall_seconds
+        return None
     try:
-        grace = float(value)
+        seconds = float(value)
     except (TypeError, ValueError, OverflowError):
-        return float(AppConfig.load().startup_stall_seconds)
-    if grace <= 0:
-        return float(AppConfig.load().startup_stall_seconds)
-    return grace
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
 
 
 def _positive_int(value: Any) -> int | None:
