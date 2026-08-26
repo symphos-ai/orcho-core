@@ -22,6 +22,7 @@ via the local ``mock_stream_run`` fixture.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -429,11 +430,14 @@ class TestInvokeOutput:
 def test_claude_glm_uses_distinct_runtime_identity(
     monkeypatch: pytest.MonkeyPatch,
     mock_stream_run: MagicMock,
+    tmp_path: Path,
 ) -> None:
     from core.infra import config
     from core.observability import events
 
+    glm_config = tmp_path / "glm-config"
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "glm-token")
+    monkeypatch.setenv("CLAUDE_GLM_CONFIG_DIR", str(glm_config))
     config.AppConfig.load.cache_clear()
     monkeypatch.setattr(config, "get_claude_glm_bin", lambda: "/fake/claude")
     emitted: list[tuple[str, dict]] = []
@@ -458,6 +462,7 @@ def test_claude_glm_uses_distinct_runtime_identity(
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.3",
         "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5.3",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.7",
+        "CLAUDE_CONFIG_DIR": str(glm_config),
         "CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT": "1",
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "200000",
         "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
@@ -1175,3 +1180,70 @@ class TestClaudeProbeIdentity:
         ident = agent.probe_identity()  # must not raise
         assert ident.available is False
         assert ident.source == "no_binary"
+
+
+def test_claude_glm_never_inherits_the_operator_claude_config_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The adapter owns the credential scope, ambient state does not.
+
+    The CLI prefers credentials found in its config directory over the
+    environment, so a child that inherits the operator's ordinary directory
+    authenticates as whoever is logged in there rather than with the token
+    this adapter just set.
+    """
+    from core.infra import config
+
+    operator_dir = tmp_path / "operators-own-claude-config"
+    operator_dir.mkdir()
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "glm-token")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(operator_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_GLM_CONFIG_DIR", raising=False)
+    config.AppConfig.load.cache_clear()
+
+    env = ClaudeGlmAgent._child_env_overrides(ClaudeGlmAgent(model="glm-5.3"))
+
+    assert env["CLAUDE_CONFIG_DIR"] != str(operator_dir)
+    assert Path(env["CLAUDE_CONFIG_DIR"]) == tmp_path / "home" / ".orcho" / "claude-glm-config"
+    config.AppConfig.load.cache_clear()
+
+
+def test_claude_glm_config_dir_is_created_and_private(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """It holds credentials, so it must exist before launch and be private."""
+    from core.infra import config
+
+    target = tmp_path / "nested" / "glm-config"
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "glm-token")
+    monkeypatch.setenv("CLAUDE_GLM_CONFIG_DIR", str(target))
+    config.AppConfig.load.cache_clear()
+
+    env = ClaudeGlmAgent._child_env_overrides(ClaudeGlmAgent(model="glm-5.3"))
+
+    assert env["CLAUDE_CONFIG_DIR"] == str(target)
+    assert target.is_dir()
+    assert target.stat().st_mode & 0o077 == 0
+    config.AppConfig.load.cache_clear()
+
+
+def test_claude_glm_config_dir_survives_an_existing_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A second run must not fail on the directory the first one made."""
+    from core.infra import config
+
+    target = tmp_path / "glm-config"
+    target.mkdir()
+    (target / ".credentials.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "glm-token")
+    monkeypatch.setenv("CLAUDE_GLM_CONFIG_DIR", str(target))
+    config.AppConfig.load.cache_clear()
+
+    env = ClaudeGlmAgent._child_env_overrides(ClaudeGlmAgent(model="glm-5.3"))
+
+    assert env["CLAUDE_CONFIG_DIR"] == str(target)
+    assert (target / ".credentials.json").exists()
+    config.AppConfig.load.cache_clear()

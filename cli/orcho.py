@@ -2210,11 +2210,12 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
     models.add_argument("--model-implement", default=None, help="Override implement model.")
     models.add_argument(
         "--model-repair-changes", default=None,
-        help="Override repair model.",
+        help="Override the repair model (repair_changes and repair_escalation).",
     )
     models.add_argument(
         "--model-review-changes", default=None,
-        help="Override review model.",
+        help="Override the reviewer model (validate_plan, review_changes, "
+             "final_acceptance).",
     )
     models.add_argument(
         "--runtime-plan", default=None,
@@ -2226,11 +2227,12 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
     )
     models.add_argument(
         "--runtime-repair-changes", default=None,
-        help="Override repair runtime.",
+        help="Override the repair runtime (repair_changes and repair_escalation).",
     )
     models.add_argument(
         "--runtime-review-changes", default=None,
-        help="Override review runtime.",
+        help="Override the reviewer runtime (validate_plan, review_changes, "
+             "final_acceptance).",
     )
 
     if not cross:

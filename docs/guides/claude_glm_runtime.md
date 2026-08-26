@@ -69,6 +69,7 @@ The shipped adapter defaults are:
 | `sonnet_model` | `glm-5.3` |
 | `haiku_model` | `glm-4.7` |
 | `max_context_tokens` | `200000` |
+| `config_dir` | `~/.orcho/claude-glm-config` |
 
 Set team or personal defaults in the `claude_glm` section of the normal Orcho
 configuration. For example:
@@ -79,7 +80,8 @@ configuration. For example:
     "opus_model": "glm-5.3",
     "sonnet_model": "glm-5.3",
     "haiku_model": "glm-4.7",
-    "max_context_tokens": 200000
+    "max_context_tokens": 200000,
+    "config_dir": ""
   }
 }
 ```
@@ -94,9 +96,32 @@ variables override the final JSON values for the process that launches Orcho:
 | `CLAUDE_GLM_SONNET_MODEL` | `sonnet_model` |
 | `CLAUDE_GLM_HAIKU_MODEL` | `haiku_model` |
 | `CLAUDE_GLM_MAX_CONTEXT_TOKENS` | `max_context_tokens` |
+| `CLAUDE_GLM_CONFIG_DIR` | `config_dir` |
 
 The context override must be a positive integer. Model overrides must be
-non-empty strings. See [the configuration reference](../expert/03_config.md)
+non-empty strings. An empty `config_dir` means the per-user default above.
+
+## Why this runtime keeps its own CLI configuration directory
+
+The adapter sets `CLAUDE_CONFIG_DIR` for the child it launches, and does not
+let the ambient one through. The CLI resolves credentials from its
+configuration directory in preference to the environment, so a child that
+inherited the operator's ordinary directory would authenticate as whoever is
+logged in there rather than with the GLM token — which fails against the GLM
+endpoint even though the token is valid.
+
+Setting `CLAUDE_CONFIG_DIR` by hand does not solve this, and is worth
+understanding before trying: it is process-global, so isolating this runtime
+that way also strips the credentials of every other Claude-family runtime in
+the same pipeline. An adapter-owned directory is what makes a mixed-vendor
+run — some phases on this runtime, others on the ordinary one — possible at
+all.
+
+The directory holds onboarding and trust state as well as credentials, so it
+is per-user and stable rather than per-run: a location inside a run's
+checkout would be discarded between runs and would dirty the tree the run is
+judged on. Point `config_dir` somewhere else if you need to, but keep those
+two properties. See [the configuration reference](../expert/03_config.md)
 for the full configuration-layer table.
 
 ## Route phases to GLM
@@ -112,6 +137,15 @@ orcho run \
   --runtime-repair-changes claude-glm \
   --model-repair-changes glm-5.3
 ```
+
+Four flags cover every phase, because two of them govern a group:
+`--runtime-repair-changes` also sets `repair_escalation`, and
+`--runtime-review-changes` also sets `validate_plan` and `final_acceptance`.
+Passing all four therefore routes a whole pipeline to this runtime. Passing
+only some leaves the rest on their configured defaults — a partial swap that
+looks like a whole one until a phase authenticates against the wrong endpoint.
+To set a grouped phase independently of its siblings, use the `phases.*`
+configuration block, which is per-phase.
 
 For a team-wide workspace policy, use `.orcho/config.json`; use
 `.orcho/config.local.json` for a personal override:
@@ -140,3 +174,25 @@ parent shell before starting Orcho. If `CLAUDE_GLM_BIN` is rejected, correct it
 to an existing plain Claude-compatible executable or unset it to use normal
 `claude` discovery. If the run fails after invocation, confirm that the
 configured model is accepted by the GLM endpoint.
+
+### `401 authentication_failed` on a token that works elsewhere
+
+If the same token succeeds against the GLM endpoint with `curl` but every
+phase on this runtime fails authentication, the child is authenticating as
+something other than that token. Run the CLI directly with the adapter's
+environment and look at `apiKeySource` in its output: `"none"` means it
+resolved credentials from a configuration directory instead of the
+environment.
+
+The adapter now supplies its own configuration directory, so this should not
+occur; on releases before that fix it happened on every host with a logged-in
+Claude subscription. If you see it, check which `config_dir` the adapter
+resolved before changing anything else — and do not set `CLAUDE_CONFIG_DIR`
+yourself as a workaround, for the reason given above.
+
+### `[claude-code:unrecognized_model]` in the output
+
+This line is printed on every call and is harmless — the request proceeds and
+returns `rc=0`. It is a consequence of passing a model alias, which is what
+makes the CLI substitute `ANTHROPIC_DEFAULT_OPUS_MODEL`; that substitution
+works. Do not read it as the cause of a failing run.
