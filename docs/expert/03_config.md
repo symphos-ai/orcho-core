@@ -66,7 +66,10 @@ and adapter settings.
 
 The `claude_glm` JSON object sets adapter defaults. Its model fields default to
 `glm-5.3` for `opus_model` and `sonnet_model`, `glm-4.7` for `haiku_model`, and
-`200000` for `max_context_tokens`:
+`200000` for `max_context_tokens`. `config_dir` is the CLI configuration
+directory this adapter gives its child; an empty value means the per-user
+default `~/.orcho/claude-glm-config`, and the adapter never passes through the
+ambient `CLAUDE_CONFIG_DIR`:
 
 ```json
 {
@@ -74,7 +77,8 @@ The `claude_glm` JSON object sets adapter defaults. Its model fields default to
     "opus_model": "glm-5.3",
     "sonnet_model": "glm-5.3",
     "haiku_model": "glm-4.7",
-    "max_context_tokens": 200000
+    "max_context_tokens": 200000,
+    "config_dir": ""
   }
 }
 ```
@@ -89,6 +93,7 @@ process environment overrides then win over the resolved JSON values:
 | `CLAUDE_GLM_SONNET_MODEL` | `claude_glm.sonnet_model` |
 | `CLAUDE_GLM_HAIKU_MODEL` | `claude_glm.haiku_model` |
 | `CLAUDE_GLM_MAX_CONTEXT_TOKENS` | `claude_glm.max_context_tokens` |
+| `CLAUDE_GLM_CONFIG_DIR` | `claude_glm.config_dir` |
 
 `CLAUDE_GLM_MAX_CONTEXT_TOKENS` must be a positive integer; model values must
 be non-empty strings.

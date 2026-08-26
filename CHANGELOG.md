@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- The Claude-compatible GLM adapter owns its CLI configuration directory. It
+  previously supplied the token, endpoint and model mapping but let the child
+  inherit the operator's ordinary configuration directory — and the CLI
+  resolves credentials from there in preference to the environment, so on any
+  host with a logged-in Claude subscription every GLM call failed
+  authentication on a valid token. Setting `CLAUDE_CONFIG_DIR` by hand could
+  not fix it: the variable is process-global, so isolating this runtime also
+  stripped the credentials of every other Claude-family runtime in the same
+  pipeline, which made mixed-vendor runs impossible. The adapter now points
+  the child at a per-user directory (`~/.orcho/claude-glm-config`, overridable
+  via `claude_glm.config_dir` or `CLAUDE_GLM_CONFIG_DIR`).
+
 ## 0.8.5 - 2026-08-25
 
 Closes the observability half of the field-reported Windows startup-hang

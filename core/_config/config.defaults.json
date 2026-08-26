@@ -20,11 +20,12 @@
     "gemini_idle_seconds": 900
   },
   "claude_glm": {
-    "_comment": "Claude-compatible GLM adapter defaults. CLAUDE_GLM_* model overrides win; CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer.",
+    "_comment": "Claude-compatible GLM adapter defaults. CLAUDE_GLM_* overrides win; CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer. 'config_dir' is where this adapter keeps its own CLI config; empty means the per-user default, and it is never the operator's ordinary config directory.",
     "opus_model": "glm-5.3",
     "sonnet_model": "glm-5.3",
     "haiku_model": "glm-4.7",
-    "max_context_tokens": 200000
+    "max_context_tokens": 200000,
+    "config_dir": ""
   },
   "session": {
     "_comment": "Caller-side policy for implement → repair_changes session continuation (ADR 0023). 'mode' picks the SessionMode (auto/stateless/chain/hybrid); 'chain_same_model_only' guards CHAIN against accidental cross-model resume. AUTO also suppresses CHAIN when prior implement usage exceeds the token or tool-call budget. Runtimes may capture session_id on every invoke; this only controls when the orchestrator passes continue_session=True.",
