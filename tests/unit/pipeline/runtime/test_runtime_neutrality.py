@@ -276,6 +276,36 @@ class TestSynthesizePhaseConfigGeneric:
         assert out is sentinel
         assert provider.calls == []
 
+    def test_profile_effort_overrides_global_and_silent_phase_keeps_global(
+        self, monkeypatch
+    ) -> None:
+        from core.infra import config as core_config
+        from pipeline.project.runtime_setup import _synthesize_phase_config
+
+        class _FakeApp:
+            phase_runtime_map = {}
+            phase_model_map = {}
+            phase_effort_map = {"plan": "medium", "implement": "medium"}
+
+        monkeypatch.setattr(
+            core_config.AppConfig, "load", staticmethod(lambda: _FakeApp()),
+        )
+
+        provider = _RecordingProvider()
+        cfg = _synthesize_phase_config(
+            None,
+            _provider=provider,
+            plan_model="plan-model",
+            implement_model="implement-model",
+            repair_model="repair-model",
+            repair_escalation_model="repair-escalation-model",
+            review_model="review-model",
+            profile_phase_efforts={"plan": "low"},
+        )
+
+        assert cfg.plan_agent.effort == "low"
+        assert cfg.implement_agent.effort == "medium"
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Step 3b — build_phase_config_from_overrides
@@ -283,6 +313,63 @@ class TestSynthesizePhaseConfigGeneric:
 
 
 class TestBuildPhaseConfigFromOverrides:
+
+    def test_profile_effort_rebinds_without_override_and_survives_override(
+        self, monkeypatch
+    ) -> None:
+        import pipeline.project.phase_config as phase_config
+        from agents.registry import AgentRegistry
+        from core.infra import config as core_config
+
+        class _FakeApp:
+            phase_runtime_map = {
+                "plan": "claude",
+                "validate_plan": "claude",
+                "implement": "claude",
+                "review_changes": "claude",
+                "repair_changes": "claude",
+                "repair_escalation": "claude",
+                "final_acceptance": "claude",
+            }
+            phase_model_map = {
+                "plan": "plan-model",
+                "validate_plan": "validate-model",
+                "implement": "implement-model",
+                "review_changes": "review-model",
+                "repair_changes": "repair-model",
+                "repair_escalation": "repair-escalation-model",
+                "final_acceptance": "final-model",
+            }
+            phase_effort_map = {"plan": "medium", "implement": "medium"}
+
+        registry = AgentRegistry()
+        registry.register(
+            "claude", lambda model, effort=None: _FakeAgent("claude", model, effort),
+        )
+        registry.register(
+            "codex", lambda model, effort=None: _FakeAgent("codex", model, effort),
+        )
+        monkeypatch.setattr(
+            core_config.AppConfig, "load", staticmethod(lambda: _FakeApp()),
+        )
+        monkeypatch.setattr(
+            phase_config.AgentRegistry, "default", staticmethod(lambda: registry),
+        )
+
+        inherited = phase_config.build_phase_config_from_overrides(
+            profile_phase_efforts={"plan": "low"},
+        )
+        assert inherited.plan_agent.effort == "low"
+        assert inherited.implement_agent.effort == "medium"
+
+        overridden = phase_config.build_phase_config_from_overrides(
+            plan="override-plan-model",
+            runtime_plan="codex",
+            profile_phase_efforts={"plan": "low"},
+        )
+        assert overridden.plan_agent.runtime == "codex"
+        assert overridden.plan_agent.model == "override-plan-model"
+        assert overridden.plan_agent.effort == "low"
 
     def test_custom_runtime_override_routes_through_resolve(self) -> None:
         # Register a custom runtime under "acme" via a one-off registry

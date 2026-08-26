@@ -3197,6 +3197,80 @@ class TestProjectOrchestratorMain:
         assert phase_config.review_changes_agent.model == "gpt-workspace-review"
         assert phase_config.final_acceptance_agent.model == "gpt-workspace-final"
 
+    def test_profile_effort_overrides_global_and_silent_phase_keeps_default(
+        self, main_env, monkeypatch
+    ) -> None:
+        from core.infra import config
+
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        local_config = main_env["workspace"] / ".orcho" / "config.local.json"
+        local_config.parent.mkdir(parents=True)
+        local_config.write_text(
+            json.dumps({
+                "phases": {
+                    "plan": {"effort": "medium"},
+                    "validate_plan": {"effort": "medium"},
+                },
+                "profiles_v2": {
+                    "research": {
+                        "plan": {"effort": "low"},
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        config._reset_config()
+        self._set_argv(
+            monkeypatch,
+            "--task", "research task",
+            "--project", str(main_env["project"]),
+            "--profile", "research",
+        )
+
+        from pipeline.project_orchestrator import main
+        main()
+
+        phase_config = main_env["run_pipeline"].call_args.kwargs["phase_config"]
+        assert phase_config.plan_agent.effort == "low"
+        assert phase_config.validate_plan_agent.effort == "medium"
+
+    def test_plan_model_runtime_override_keeps_profile_effort(
+        self, main_env, monkeypatch
+    ) -> None:
+        from core.infra import config
+
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        local_config = main_env["workspace"] / ".orcho" / "config.local.json"
+        local_config.parent.mkdir(parents=True)
+        local_config.write_text(
+            json.dumps({
+                "phases": {"plan": {"effort": "medium"}},
+                "profiles_v2": {
+                    "research": {
+                        "plan": {"effort": "low"},
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        config._reset_config()
+        self._set_argv(
+            monkeypatch,
+            "--task", "research task",
+            "--project", str(main_env["project"]),
+            "--profile", "research",
+            "--model-plan", "gpt-override-plan",
+            "--runtime-plan", "codex",
+        )
+
+        from pipeline.project_orchestrator import main
+        main()
+
+        plan_agent = main_env["run_pipeline"].call_args.kwargs["phase_config"].plan_agent
+        assert plan_agent.runtime == "codex"
+        assert plan_agent.model == "gpt-override-plan"
+        assert plan_agent.effort == "low"
+
     def test_task_file_wins_over_task_when_both_given(
         self, main_env, monkeypatch, tmp_path: Path
     ) -> None:
