@@ -113,6 +113,14 @@ PLUGIN = {
                 "env": "core-local",
                 "parity": "differential",
                 "cost": "slow",
+                # Measures 7-8 minutes and keeps growing; the engine's 600s
+                # default is a hang backstop, not a budget for it. Without an
+                # explicit budget the gate reports ``class=timeout`` with no
+                # exit code — a verdict carrying no test outcome at all, which
+                # has both blocked green work and hidden real failures. 1200s
+                # is ~2.5x the measured runtime: headroom for contention,
+                # still short enough to stay a hang backstop.
+                "timeout": 1200,
                 "run": [
                     "python",
                     "-m",
@@ -126,6 +134,10 @@ PLUGIN = {
                 "env": "core-local",
                 "parity": "differential",
                 "cost": "slow",
+                # Same reason as broad-non-e2e: spawns real subprocesses and
+                # git worktrees, so it is the other command here whose honest
+                # runtime can approach the default backstop.
+                "timeout": 1200,
                 "run": ["python", "-m", "pytest", "-q", "-m", "e2e"],
             },
         },
