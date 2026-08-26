@@ -5311,3 +5311,51 @@ class TestTuiDispatch:
         args = argparse.Namespace(run_id="r1", run_dir=None, follow=True, replay=False)
         assert cmd_tui(args) == 0
         assert seen["argv"] == ["--run-id", "r1", "--follow"]
+
+
+def test_profile_customize_output_marks_a_superseded_write() -> None:
+    """The operator must see that a successful write will not be used."""
+    from pathlib import Path as _Path
+
+    from cli._formatters import format_profile_customize
+    from sdk.profile_customize import ProfileCustomizeResult
+
+    rendered = format_profile_customize(
+        ProfileCustomizeResult(
+            profile="feature",
+            scope="workspace",
+            config_path=_Path("/ws/.orcho/config.local.json"),
+            dry_run=False,
+            changes=("plan.execution.session_split",),
+            overlay={},
+            shadowed=(
+                "plan.execution.session_split is superseded at run time by "
+                "pipeline.session_split_override['plan']='common'",
+            ),
+        )
+    )
+
+    assert "not in effect" in rendered
+    assert "session_split_override" in rendered
+    # Still reported as a completed write, not as a failure.
+    assert rendered.startswith("Updated profile customization for feature")
+
+
+def test_profile_customize_output_stays_quiet_without_a_conflict() -> None:
+    from pathlib import Path as _Path
+
+    from cli._formatters import format_profile_customize
+    from sdk.profile_customize import ProfileCustomizeResult
+
+    rendered = format_profile_customize(
+        ProfileCustomizeResult(
+            profile="feature",
+            scope="workspace",
+            config_path=_Path("/ws/.orcho/config.local.json"),
+            dry_run=False,
+            changes=("plan.effort",),
+            overlay={},
+        )
+    )
+
+    assert "not in effect" not in rendered

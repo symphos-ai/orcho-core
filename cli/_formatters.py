@@ -1219,6 +1219,16 @@ def format_profile_customize(result: ProfileCustomizeResult) -> str:
         "  changes:",
     ]
     out.extend(f"    - {change}" for change in result.changes)
+    if result.shadowed:
+        # The write succeeded and persists; this says the run will not use it.
+        out.append("")
+        out.append("  ! not in effect:")
+        out.extend(f"    - {note}" for note in result.shadowed)
+        out.append(
+            "    Remove that entry from pipeline.session_split_override, or "
+            "keep it if the"
+        )
+        out.append("    override is deliberate — the profile value stays written either way.")
     return "\n".join(out)
 
 

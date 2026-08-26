@@ -3,6 +3,24 @@
 ## Unreleased
 
 ### Fixed
+- `orcho profile customize --session-split` no longer reports a write the run
+  will silently discard. `pipeline.session_split_override` applies after the
+  profile by design — it is the operator escape hatch — so a valid, persisted
+  overlay value can still not be what the run uses. The command now names the
+  collision, and the value stays written so it takes effect once the override
+  is removed.
+
+### Documentation
+- The configuration reference and the profile authoring guide now state which
+  side wins between a `profiles_v2` overlay and a global block: `phases.*`
+  effort, `pipeline.change_handoff`, `pipeline.implementation_execution` and
+  `worktree.isolation` are defaults that a profile declaration beats, while
+  `pipeline.session_split_override` deliberately beats the profile. The rule
+  previously existed only in a comment inside the shipped defaults file.
+
+## Unreleased
+
+### Fixed
 - The Claude-compatible GLM adapter owns its CLI configuration directory. It
   previously supplied the token, endpoint and model mapping but let the child
   inherit the operator's ordinary configuration directory — and the CLI

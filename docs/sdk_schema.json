@@ -2318,6 +2318,12 @@
           "default_factory": null,
           "name": "overlay",
           "type": "dict[str, Any]"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "shadowed",
+          "type": "tuple[str, ...]"
         }
       ],
       "frozen": true,
