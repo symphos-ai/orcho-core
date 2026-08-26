@@ -73,7 +73,11 @@ from pipeline.project.correction_followup import (
 )
 from pipeline.project.followup_worktree import FollowupPlanContinuationError
 from pipeline.project.phase_config import build_phase_config_from_overrides
-from pipeline.project.profile_setup import _resolve_profile_name, _resolve_v2_profile
+from pipeline.project.profile_setup import (
+    _resolve_profile_name,
+    _resolve_v2_profile,
+    profile_phase_efforts,
+)
 from pipeline.project.project_aliases import resolve_project_alias
 from pipeline.project.types import ProjectRunRequest
 from pipeline.project.workspace_picker import (
@@ -1295,6 +1299,13 @@ Examples:
     # built from a single review_model for all reviewer slots, which silently
     # ignored per-phase model overrides (gpt-5.4 vs gpt-5.5) AND lost effort
     # entirely (codex inheriting xhigh from ~/.codex/config.toml).
+    _phase_config_profile = _resolve_v2_profile(
+        profile_name=args.profile,
+        allow_env_override=(
+            _resume_mode == _ResumeMode.FRESH
+            and _from_run_plan_parent_dir is None
+        ),
+    )
     phase_config = build_phase_config_from_overrides(
         plan=args.model_plan,
         implement=args.model_implement,
@@ -1305,6 +1316,7 @@ Examples:
         runtime_repair_changes=args.runtime_repair_changes,
         runtime_review_changes=args.runtime_review_changes,
         plugin=load_plugin(args.project),
+        profile_phase_efforts=profile_phase_efforts(_phase_config_profile),
     )
 
     from agents.runtimes import make_mock_phase_config, make_provider

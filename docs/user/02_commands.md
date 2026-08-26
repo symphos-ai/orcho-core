@@ -147,6 +147,22 @@ interactively. For non-interactive transports there are explicit flags:
 --runtime-implement / --runtime-review-changes / --runtime-repair-changes
 ```
 
+Four flags cover every phase, because two of them govern a group rather than
+the single phase they are named after:
+
+| Flag | Phases it sets |
+|------|----------------|
+| `--runtime-plan` / `--model-plan` | `plan` |
+| `--runtime-implement` / `--model-implement` | `implement` |
+| `--runtime-repair-changes` / `--model-repair-changes` | `repair_changes`, `repair_escalation` |
+| `--runtime-review-changes` / `--model-review-changes` | `validate_plan`, `review_changes`, `final_acceptance` |
+
+So passing all four does route the whole pipeline to one vendor — but passing
+only some leaves the rest on their configured defaults, which is easy to
+mistake for a phase having no flag at all. To set a grouped phase
+independently of its siblings, use the `phases.*` configuration block, which
+is per-phase.
+
 The same routing is available permanently through environment
 variables:
 

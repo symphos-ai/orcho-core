@@ -1179,3 +1179,42 @@ class TestCrossCliModelOverrideBridge:
         # per build_phase_config_from_overrides; review_changes_agent
         # is the one run_cross_pipeline actually reads for codex init.
         assert phase_config.review_changes_agent.model == "gpt-custom-review"
+
+    def test_profile_efforts_override_global_and_keep_silent_phase_default(
+        self, main_env, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        local_config = main_env["workspace"] / ".orcho" / "config.local.json"
+        local_config.parent.mkdir(parents=True)
+        local_config.write_text(
+            json.dumps({
+                "phases": {
+                    "plan": {"effort": "medium"},
+                    "validate_plan": {"effort": "medium"},
+                },
+                "profiles_v2": {
+                    "feature": {
+                        "plan": {"effort": "low"},
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "orcho-cross",
+                "--task", "T",
+                "--projects", f"unity:{main_env['unity']}",
+                "--profile", "feature",
+                "--workspace", str(main_env["workspace"]),
+            ],
+        )
+
+        from pipeline.cross_project.cli import main
+        main()
+
+        phase_config = main_env["run_cross_pipeline"].call_args.kwargs["phase_config"]
+        assert phase_config.plan_agent.effort == "low"
+        assert phase_config.validate_plan_agent.effort == "medium"

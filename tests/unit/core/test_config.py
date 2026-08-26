@@ -253,25 +253,31 @@ class TestClaudeGlmSection:
         for key in (
             "CLAUDE_GLM_OPUS_MODEL", "CLAUDE_GLM_SONNET_MODEL",
             "CLAUDE_GLM_HAIKU_MODEL", "CLAUDE_GLM_MAX_CONTEXT_TOKENS",
+            "CLAUDE_GLM_CONFIG_DIR",
         ):
             monkeypatch.delenv(key, raising=False)
         config.AppConfig.load.cache_clear()
+        # An empty ``config_dir`` means "the adapter's per-user default"; the
+        # adapter resolves it, so configuration never names a home path.
         assert config.AppConfig.load().claude_glm == {
             "opus_model": "glm-5.3",
             "sonnet_model": "glm-5.3",
             "haiku_model": "glm-4.7",
             "max_context_tokens": 200000,
+            "config_dir": "",
         }
         monkeypatch.setenv("CLAUDE_GLM_OPUS_MODEL", "custom-opus")
         monkeypatch.setenv("CLAUDE_GLM_SONNET_MODEL", "custom-sonnet")
         monkeypatch.setenv("CLAUDE_GLM_HAIKU_MODEL", "custom-haiku")
         monkeypatch.setenv("CLAUDE_GLM_MAX_CONTEXT_TOKENS", "123456")
+        monkeypatch.setenv("CLAUDE_GLM_CONFIG_DIR", "/tmp/custom-glm-config")
         config.AppConfig.load.cache_clear()
         assert config.AppConfig.load().claude_glm == {
             "opus_model": "custom-opus",
             "sonnet_model": "custom-sonnet",
             "haiku_model": "custom-haiku",
             "max_context_tokens": 123456,
+            "config_dir": "/tmp/custom-glm-config",
         }
 
     @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
