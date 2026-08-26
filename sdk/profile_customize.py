@@ -145,7 +145,7 @@ def _shadowed_by_global_override(change_labels: list[str]) -> tuple[str, ...]:
     Read-only and non-fatal: the write is valid and stays written. This exists
     because the opposite — a writer reporting success while the reader
     discards the value, with no signal at either end — is a failure mode this
-    project has already paid for once.
+    project has already run into once, and it cost days to diagnose.
     """
     suffix = ".execution.session_split"
     phases = [label[: -len(suffix)] for label in change_labels if label.endswith(suffix)]
