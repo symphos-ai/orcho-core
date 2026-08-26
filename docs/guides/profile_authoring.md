@@ -88,7 +88,23 @@ A phase `effort` declared on the profile (including via
 `--phase-effort`) wins over the global `phases.<phase>.effort` entry in
 `config.local.json` for that phase: the profile is the targeted knob, the
 global config the default. Phases the profile leaves silent keep the
-configured value.
+configured value. The same holds for `change_handoff`,
+`implementation_execution` and `worktree_isolation`.
+
+One field goes the other way: `pipeline.session_split_override` applies *after*
+the profile, so a global entry beats what `--session-split` writes. That is
+what the `_override` in its name means — it is the escape hatch for forcing a
+split without editing a profile. `profile customize` reports the collision
+rather than leaving you to discover it in a run:
+
+```
+  ! not in effect:
+    - plan.execution.session_split is superseded at run time by
+      pipeline.session_split_override['plan']='common'
+```
+
+The value is still written, and takes effect once the override entry is gone.
+See [the configuration reference](../expert/03_config.md) for the full table.
 
 Use `profile customize` for small changes to existing built-ins: `default_mode`,
 `change_handoff`, `implementation_execution`, `worktree_isolation`, phase

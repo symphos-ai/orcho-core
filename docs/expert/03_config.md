@@ -242,6 +242,36 @@ The loader deep-merges each phase patch into the built-in profile before normal
 profile validation, so the same schema errors surface for local overlays as for
 the shipped JSON.
 
+#### Which wins: a profile overlay or a global block?
+
+Most global settings are **defaults**, and a profile declaration beats them for
+the phases it declares. Phases the profile says nothing about keep the global
+value — an overlay narrows, it does not replace.
+
+| Global setting | Against a profile declaration |
+|----------------|-------------------------------|
+| `phases.<phase>.effort` | profile wins |
+| `pipeline.change_handoff` | profile wins |
+| `pipeline.implementation_execution` | profile wins |
+| `worktree.isolation` | profile wins |
+| `pipeline.session_split_override` | **global wins** |
+
+The last row is deliberate, and the `_override` in its name is the signal: it
+exists so an operator can force a session split for a workspace or a single run
+without editing any profile, so it applies *after* the profile and its
+overlays. The consequence is worth stating plainly, because it looks like a
+bug: `orcho profile customize --session-split` can write a valid value that the
+run then does not use. The CLI says so when it happens —
+
+```
+  ! not in effect:
+    - plan.execution.session_split is superseded at run time by
+      pipeline.session_split_override['plan']='common'
+```
+
+— and the written value stays in the overlay, taking effect as soon as the
+override entry is removed.
+
 Disable all local layers entirely for a deterministic run:
 
 ```bash

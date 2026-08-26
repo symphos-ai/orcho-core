@@ -27,6 +27,16 @@ class ProfileCustomizeResult:
     dry_run: bool
     changes: tuple[str, ...]
     overlay: dict[str, Any]
+    shadowed: tuple[str, ...] = ()
+    """Writes that a global config override currently supersedes.
+
+    A profile declaration normally wins over the global defaults in
+    ``phases.*`` and ``pipeline.*``. ``pipeline.session_split_override`` is the
+    deliberate exception — an operator escape hatch that applies *after* the
+    profile — so a value written here can be correct, persisted, and still not
+    be what the run uses. Reporting it is the difference between a knob that
+    looks broken and one whose precedence is visible.
+    """
 
 
 _SCOPES = frozenset({"workspace", "user"})
@@ -125,6 +135,35 @@ def customize_profile(
         dry_run=dry_run,
         changes=tuple(change_labels),
         overlay=overlay,
+        shadowed=_shadowed_by_global_override(change_labels),
+    )
+
+
+def _shadowed_by_global_override(change_labels: list[str]) -> tuple[str, ...]:
+    """Name the writes that ``session_split_override`` currently supersedes.
+
+    Read-only and non-fatal: the write is valid and stays written. This exists
+    because the opposite — a writer reporting success while the reader
+    discards the value, with no signal at either end — is a failure mode this
+    project has already paid for once.
+    """
+    suffix = ".execution.session_split"
+    phases = [label[: -len(suffix)] for label in change_labels if label.endswith(suffix)]
+    if not phases:
+        return ()
+    try:
+        import core.infra.config as _core_config
+
+        override = _core_config.AppConfig.load().pipeline.get("session_split_override") or {}
+    except Exception:  # noqa: BLE001 — an advisory must never fail the write
+        return ()
+    if not isinstance(override, dict):
+        return ()
+    return tuple(
+        f"{phase}.execution.session_split is superseded at run time by "
+        f"pipeline.session_split_override[{phase!r}]={override[phase]!r}"
+        for phase in phases
+        if phase in override
     )
 
 
