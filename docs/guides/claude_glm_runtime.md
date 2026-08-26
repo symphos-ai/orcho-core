@@ -138,6 +138,13 @@ orcho run \
   --model-repair-changes glm-5.3
 ```
 
+The per-phase command-line flags cover `plan`, `implement`, `repair-changes`
+and `review-changes`. `validate_plan` and `final_acceptance` have no flags, so
+a whole-pipeline vendor choice cannot be expressed on the command line — those
+two phases keep whatever the profile or configuration says. Route them in
+configuration, as below, rather than assuming a `--runtime-*` flag carried
+through the whole run.
+
 For a team-wide workspace policy, use `.orcho/config.json`; use
 `.orcho/config.local.json` for a personal override:
 
@@ -165,3 +172,25 @@ parent shell before starting Orcho. If `CLAUDE_GLM_BIN` is rejected, correct it
 to an existing plain Claude-compatible executable or unset it to use normal
 `claude` discovery. If the run fails after invocation, confirm that the
 configured model is accepted by the GLM endpoint.
+
+### `401 authentication_failed` on a token that works elsewhere
+
+If the same token succeeds against the GLM endpoint with `curl` but every
+phase on this runtime fails authentication, the child is authenticating as
+something other than that token. Run the CLI directly with the adapter's
+environment and look at `apiKeySource` in its output: `"none"` means it
+resolved credentials from a configuration directory instead of the
+environment.
+
+The adapter now supplies its own configuration directory, so this should not
+occur; on releases before that fix it happened on every host with a logged-in
+Claude subscription. If you see it, check which `config_dir` the adapter
+resolved before changing anything else — and do not set `CLAUDE_CONFIG_DIR`
+yourself as a workaround, for the reason given above.
+
+### `[claude-code:unrecognized_model]` in the output
+
+This line is printed on every call and is harmless — the request proceeds and
+returns `rc=0`. It is a consequence of passing a model alias, which is what
+makes the CLI substitute `ANTHROPIC_DEFAULT_OPUS_MODEL`; that substitution
+works. Do not read it as the cause of a failing run.
