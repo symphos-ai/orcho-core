@@ -666,6 +666,16 @@ Examples:
     # implement / repair_changes / review_changes parameters. Always build
     # this after workspace env resolution so workspace-local config drives
     # reviewer models even when no CLI --model-* override is supplied.
+    # Look up only the requested profile's effort projection here; cross-run
+    # lifecycle/profile projection remains owned by run_cross_pipeline.
+    from core.infra.paths import CONFIG_DIR
+    from pipeline.profiles.loader import load_profiles_v2_with_plugins
+    from pipeline.project.profile_setup import profile_phase_efforts
+
+    _cross_profiles = load_profiles_v2_with_plugins(
+        CONFIG_DIR / "pipeline_profiles_v2.json",
+    )
+    _requested_cross_profile = _cross_profiles.get(args.profile)
     phase_config = build_phase_config_from_overrides(
         plan=args.model_plan,
         implement=args.model_build,
@@ -678,6 +688,10 @@ Examples:
         # Per-project plugin hints don't apply to cross-pipeline overrides;
         # the same overrides win for every sub-project.
         plugin=None,
+        profile_phase_efforts=(
+            profile_phase_efforts(_requested_cross_profile)
+            if _requested_cross_profile is not None else {}
+        ),
     )
 
     from core.observability.logging import apply_output_mode
