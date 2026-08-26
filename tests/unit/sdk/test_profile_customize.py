@@ -124,3 +124,72 @@ def test_customize_profile_user_scope_uses_home_config(
     data = json.loads(result.config_path.read_text(encoding="utf-8"))
     assert data["profiles_v2"]["small_task"]["_profile"]["default_mode"] == "pro"
 
+
+
+def _fake_pipeline_config(monkeypatch: pytest.MonkeyPatch, override: object) -> None:
+    """Pin ``pipeline.session_split_override`` without touching real config."""
+    import core.infra.config as core_config
+
+    class _App:
+        pipeline = {"session_split_override": override}
+
+    monkeypatch.setattr(core_config.AppConfig, "load", classmethod(lambda _cls: _App()))
+
+
+def test_customize_reports_a_write_the_global_override_supersedes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The write is valid, persisted — and not what the run will use.
+
+    ``session_split_override`` applies after the profile by design, so this is
+    the one customizable field where a successful write can be inert. Saying
+    nothing is what turned the same shape into a multi-day field debug once.
+    """
+    monkeypatch.setenv("ORCHO_WORKSPACE", str(tmp_path / "workspace"))
+    _fake_pipeline_config(monkeypatch, {"plan": "common"})
+
+    result = customize_profile("feature", session_split=("plan=per_role",))
+
+    assert result.changes == ("plan.execution.session_split",)
+    assert len(result.shadowed) == 1
+    note = result.shadowed[0]
+    assert "plan.execution.session_split" in note
+    assert "session_split_override" in note
+    assert "'common'" in note
+    # The advisory never withholds the write.
+    data = json.loads(result.config_path.read_text(encoding="utf-8"))
+    assert data["profiles_v2"]["feature"]["plan"]["execution"]["session_split"] == "per_role"
+
+
+def test_customize_is_silent_when_nothing_supersedes_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a live override for that same phase is worth reporting."""
+    monkeypatch.setenv("ORCHO_WORKSPACE", str(tmp_path / "workspace"))
+    _fake_pipeline_config(monkeypatch, {"implement": "common"})
+
+    result = customize_profile(
+        "feature", session_split=("plan=per_role",), phase_effort=("plan=low",),
+    )
+
+    assert result.shadowed == ()
+
+
+def test_customize_advisory_never_breaks_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable or malformed config must not fail a valid customization."""
+    import core.infra.config as core_config
+
+    monkeypatch.setenv("ORCHO_WORKSPACE", str(tmp_path / "workspace"))
+
+    def _boom(_cls: object) -> object:
+        raise RuntimeError("config unreadable")
+
+    monkeypatch.setattr(core_config.AppConfig, "load", classmethod(_boom))
+    result = customize_profile("feature", session_split=("plan=per_role",))
+    assert result.shadowed == ()
+
+    _fake_pipeline_config(monkeypatch, "not-a-mapping")
+    result = customize_profile("feature", session_split=("plan=per_role",))
+    assert result.shadowed == ()

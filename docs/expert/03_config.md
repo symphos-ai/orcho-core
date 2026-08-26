@@ -66,7 +66,10 @@ and adapter settings.
 
 The `claude_glm` JSON object sets adapter defaults. Its model fields default to
 `glm-5.3` for `opus_model` and `sonnet_model`, `glm-4.7` for `haiku_model`, and
-`200000` for `max_context_tokens`:
+`200000` for `max_context_tokens`. `config_dir` is the CLI configuration
+directory this adapter gives its child; an empty value means the per-user
+default `~/.orcho/claude-glm-config`, and the adapter never passes through the
+ambient `CLAUDE_CONFIG_DIR`:
 
 ```json
 {
@@ -74,7 +77,8 @@ The `claude_glm` JSON object sets adapter defaults. Its model fields default to
     "opus_model": "glm-5.3",
     "sonnet_model": "glm-5.3",
     "haiku_model": "glm-4.7",
-    "max_context_tokens": 200000
+    "max_context_tokens": 200000,
+    "config_dir": ""
   }
 }
 ```
@@ -89,6 +93,7 @@ process environment overrides then win over the resolved JSON values:
 | `CLAUDE_GLM_SONNET_MODEL` | `claude_glm.sonnet_model` |
 | `CLAUDE_GLM_HAIKU_MODEL` | `claude_glm.haiku_model` |
 | `CLAUDE_GLM_MAX_CONTEXT_TOKENS` | `claude_glm.max_context_tokens` |
+| `CLAUDE_GLM_CONFIG_DIR` | `claude_glm.config_dir` |
 
 `CLAUDE_GLM_MAX_CONTEXT_TOKENS` must be a positive integer; model values must
 be non-empty strings.
@@ -236,6 +241,36 @@ profile fields and by phase name for phase-step fields:
 The loader deep-merges each phase patch into the built-in profile before normal
 profile validation, so the same schema errors surface for local overlays as for
 the shipped JSON.
+
+#### Which wins: a profile overlay or a global block?
+
+Most global settings are **defaults**, and a profile declaration beats them for
+the phases it declares. Phases the profile says nothing about keep the global
+value — an overlay narrows, it does not replace.
+
+| Global setting | Against a profile declaration |
+|----------------|-------------------------------|
+| `phases.<phase>.effort` | profile wins |
+| `pipeline.change_handoff` | profile wins |
+| `pipeline.implementation_execution` | profile wins |
+| `worktree.isolation` | profile wins |
+| `pipeline.session_split_override` | **global wins** |
+
+The last row is deliberate, and the `_override` in its name is the signal: it
+exists so an operator can force a session split for a workspace or a single run
+without editing any profile, so it applies *after* the profile and its
+overlays. The consequence is worth stating plainly, because it looks like a
+bug: `orcho profile customize --session-split` can write a valid value that the
+run then does not use. The CLI says so when it happens —
+
+```
+  ! not in effect:
+    - plan.execution.session_split is superseded at run time by
+      pipeline.session_split_override['plan']='common'
+```
+
+— and the written value stays in the overlay, taking effect as soon as the
+override entry is removed.
 
 Disable all local layers entirely for a deterministic run:
 

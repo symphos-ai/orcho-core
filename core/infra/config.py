@@ -786,6 +786,7 @@ class AppConfig:
         claude_glm_defaults: dict[str, Any] = {
             "opus_model": "glm-5.3", "sonnet_model": "glm-5.3",
             "haiku_model": "glm-4.7", "max_context_tokens": 200000,
+            "config_dir": "",
         }
         claude_glm_defaults.update({
             key: value for key, value in raw.get("claude_glm", {}).items()
@@ -795,6 +796,7 @@ class AppConfig:
             ("opus_model", "CLAUDE_GLM_OPUS_MODEL"),
             ("sonnet_model", "CLAUDE_GLM_SONNET_MODEL"),
             ("haiku_model", "CLAUDE_GLM_HAIKU_MODEL"),
+            ("config_dir", "CLAUDE_GLM_CONFIG_DIR"),
         ):
             if value := os.environ.get(env_key):
                 claude_glm_defaults[key] = value

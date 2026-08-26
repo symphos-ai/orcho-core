@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.8.6 - 2026-08-26
+
+Three defects that share one shape: a value is written, accepted, and then
+silently not used. Reported from a native-Windows field host.
+
+### Fixed
+- A phase `effort` declared by the active profile now reaches the run. The rule
+  that a profile declaration beats the global `phases.<phase>.effort` map had
+  two owners, and the one the CLI reaches read only the global map: every CLI
+  run therefore discarded the profile's value, including one that
+  `orcho profile customize --phase-effort` had just written and reported as a
+  success. Both construction paths now delegate to a single resolver.
+- The Claude-compatible GLM adapter owns its CLI configuration directory. It
+  previously supplied the token, endpoint and model mapping but let the child
+  inherit the operator's ordinary configuration directory — and the CLI
+  resolves credentials from there in preference to the environment, so on any
+  host with a logged-in Claude subscription every GLM call failed
+  authentication on a valid token. Setting `CLAUDE_CONFIG_DIR` by hand could
+  not fix it: the variable is process-global, so isolating this runtime also
+  stripped the credentials of every other Claude-family runtime in the same
+  pipeline, which made mixed-vendor runs impossible. The adapter now points
+  the child at a per-user directory (`~/.orcho/claude-glm-config`, overridable
+  via `claude_glm.config_dir` or `CLAUDE_GLM_CONFIG_DIR`).
+- `orcho profile customize --session-split` no longer reports a write the run
+  will silently discard. `pipeline.session_split_override` applies after the
+  profile by design — it is the operator escape hatch — so a valid, persisted
+  overlay value can still not be what the run uses. The command now names the
+  collision, and the value stays written so it takes effect once the override
+  is removed.
+
+### Documentation
+- The configuration reference and the profile authoring guide now state which
+  side wins between a `profiles_v2` overlay and a global block: `phases.*`
+  effort, `pipeline.change_handoff`, `pipeline.implementation_execution` and
+  `worktree.isolation` are defaults that a profile declaration beats, while
+  `pipeline.session_split_override` deliberately beats the profile. The rule
+  previously existed only in a comment inside the shipped defaults file.
+- The per-phase routing flags document which phases they set. Two of the four
+  govern a group — `--runtime-repair-changes` also sets `repair_escalation`,
+  and `--runtime-review-changes` also sets `validate_plan` and
+  `final_acceptance` — which nothing user-facing had said.
+
+
+
 ## 0.8.5 - 2026-08-25
 
 Closes the observability half of the field-reported Windows startup-hang

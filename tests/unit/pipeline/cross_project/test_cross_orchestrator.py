@@ -90,10 +90,10 @@ def _make_fake_run_project_pipeline(handler):
 
 def test_build_phase_config_from_overrides_accepts_adr_0022_kwargs() -> None:
     """The helper's kwarg signature must keep ``implement`` /
-    ``repair_changes`` / ``review_changes`` (plus the matching
-    ``provider_*`` variants). Cross-orchestrator's CLI bridge passes
-    these names directly — if any kwarg gets renamed, cross-CLI breaks
-    silently with a TypeError on the next invocation.
+    ``repair_changes`` / ``review_changes`` runtime kwargs and the optional
+    profile-effort projection. Cross-orchestrator's CLI bridge passes these
+    names directly — if any kwarg gets renamed, cross-CLI breaks silently
+    with a TypeError on the next invocation.
     """
     from pipeline.project.phase_config import build_phase_config_from_overrides
 
@@ -107,6 +107,7 @@ def test_build_phase_config_from_overrides_accepts_adr_0022_kwargs() -> None:
         "runtime_implement",
         "runtime_repair_changes",
         "runtime_review_changes",
+        "profile_phase_efforts",
     }
     missing = expected_kwargs - set(sig.parameters)
     assert not missing, (

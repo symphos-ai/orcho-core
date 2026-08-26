@@ -3197,6 +3197,80 @@ class TestProjectOrchestratorMain:
         assert phase_config.review_changes_agent.model == "gpt-workspace-review"
         assert phase_config.final_acceptance_agent.model == "gpt-workspace-final"
 
+    def test_profile_effort_overrides_global_and_silent_phase_keeps_default(
+        self, main_env, monkeypatch
+    ) -> None:
+        from core.infra import config
+
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        local_config = main_env["workspace"] / ".orcho" / "config.local.json"
+        local_config.parent.mkdir(parents=True)
+        local_config.write_text(
+            json.dumps({
+                "phases": {
+                    "plan": {"effort": "medium"},
+                    "validate_plan": {"effort": "medium"},
+                },
+                "profiles_v2": {
+                    "research": {
+                        "plan": {"effort": "low"},
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        config._reset_config()
+        self._set_argv(
+            monkeypatch,
+            "--task", "research task",
+            "--project", str(main_env["project"]),
+            "--profile", "research",
+        )
+
+        from pipeline.project_orchestrator import main
+        main()
+
+        phase_config = main_env["run_pipeline"].call_args.kwargs["phase_config"]
+        assert phase_config.plan_agent.effort == "low"
+        assert phase_config.validate_plan_agent.effort == "medium"
+
+    def test_plan_model_runtime_override_keeps_profile_effort(
+        self, main_env, monkeypatch
+    ) -> None:
+        from core.infra import config
+
+        monkeypatch.delenv("ORCHO_DISABLE_LOCAL_CONFIG", raising=False)
+        local_config = main_env["workspace"] / ".orcho" / "config.local.json"
+        local_config.parent.mkdir(parents=True)
+        local_config.write_text(
+            json.dumps({
+                "phases": {"plan": {"effort": "medium"}},
+                "profiles_v2": {
+                    "research": {
+                        "plan": {"effort": "low"},
+                    },
+                },
+            }),
+            encoding="utf-8",
+        )
+        config._reset_config()
+        self._set_argv(
+            monkeypatch,
+            "--task", "research task",
+            "--project", str(main_env["project"]),
+            "--profile", "research",
+            "--model-plan", "gpt-override-plan",
+            "--runtime-plan", "codex",
+        )
+
+        from pipeline.project_orchestrator import main
+        main()
+
+        plan_agent = main_env["run_pipeline"].call_args.kwargs["phase_config"].plan_agent
+        assert plan_agent.runtime == "codex"
+        assert plan_agent.model == "gpt-override-plan"
+        assert plan_agent.effort == "low"
+
     def test_task_file_wins_over_task_when_both_given(
         self, main_env, monkeypatch, tmp_path: Path
     ) -> None:
@@ -5237,3 +5311,51 @@ class TestTuiDispatch:
         args = argparse.Namespace(run_id="r1", run_dir=None, follow=True, replay=False)
         assert cmd_tui(args) == 0
         assert seen["argv"] == ["--run-id", "r1", "--follow"]
+
+
+def test_profile_customize_output_marks_a_superseded_write() -> None:
+    """The operator must see that a successful write will not be used."""
+    from pathlib import Path as _Path
+
+    from cli._formatters import format_profile_customize
+    from sdk.profile_customize import ProfileCustomizeResult
+
+    rendered = format_profile_customize(
+        ProfileCustomizeResult(
+            profile="feature",
+            scope="workspace",
+            config_path=_Path("/ws/.orcho/config.local.json"),
+            dry_run=False,
+            changes=("plan.execution.session_split",),
+            overlay={},
+            shadowed=(
+                "plan.execution.session_split is superseded at run time by "
+                "pipeline.session_split_override['plan']='common'",
+            ),
+        )
+    )
+
+    assert "not in effect" in rendered
+    assert "session_split_override" in rendered
+    # Still reported as a completed write, not as a failure.
+    assert rendered.startswith("Updated profile customization for feature")
+
+
+def test_profile_customize_output_stays_quiet_without_a_conflict() -> None:
+    from pathlib import Path as _Path
+
+    from cli._formatters import format_profile_customize
+    from sdk.profile_customize import ProfileCustomizeResult
+
+    rendered = format_profile_customize(
+        ProfileCustomizeResult(
+            profile="feature",
+            scope="workspace",
+            config_path=_Path("/ws/.orcho/config.local.json"),
+            dry_run=False,
+            changes=("plan.effort",),
+            overlay={},
+        )
+    )
+
+    assert "not in effect" not in rendered
