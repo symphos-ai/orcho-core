@@ -138,12 +138,14 @@ orcho run \
   --model-repair-changes glm-5.3
 ```
 
-The per-phase command-line flags cover `plan`, `implement`, `repair-changes`
-and `review-changes`. `validate_plan` and `final_acceptance` have no flags, so
-a whole-pipeline vendor choice cannot be expressed on the command line — those
-two phases keep whatever the profile or configuration says. Route them in
-configuration, as below, rather than assuming a `--runtime-*` flag carried
-through the whole run.
+Four flags cover every phase, because two of them govern a group:
+`--runtime-repair-changes` also sets `repair_escalation`, and
+`--runtime-review-changes` also sets `validate_plan` and `final_acceptance`.
+Passing all four therefore routes a whole pipeline to this runtime. Passing
+only some leaves the rest on their configured defaults — a partial swap that
+looks like a whole one until a phase authenticates against the wrong endpoint.
+To set a grouped phase independently of its siblings, use the `phases.*`
+configuration block, which is per-phase.
 
 For a team-wide workspace policy, use `.orcho/config.json`; use
 `.orcho/config.local.json` for a personal override:
