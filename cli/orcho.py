@@ -1885,10 +1885,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_cleanup.set_defaults(func=cmd_workspace_cleanup)
 
     # ── web ───────────────────────────────────────────────────────────────────
-    # Hidden from help until the interface package ships on PyPI (advertising it
-    # would point users at an uninstallable ``pip install``). Still registered,
-    # so it remains callable for anyone who already has the package.
-    p_web = sub.add_parser("web", help=argparse.SUPPRESS)
+    # Kept out of the advertised help until the interface package ships on
+    # PyPI (advertising it would point users at an uninstallable
+    # ``pip install``). Still registered, so it remains callable for anyone
+    # who already has the package. No ``help=`` on purpose: argparse renders
+    # ``help=argparse.SUPPRESS`` literally as ``==SUPPRESS==`` for
+    # subparsers, and omitting the kwarg is the closest to hidden it offers.
+    p_web = sub.add_parser("web")
     p_web.add_argument(
         "--port", "-p", type=int, default=8501,
         help="Port for Streamlit (default: 8501)",
@@ -1900,9 +1903,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.set_defaults(func=cmd_web)
 
     # ── tui ───────────────────────────────────────────────────────────────────
-    # Hidden from help until the interface package ships on PyPI (see ``web``);
-    # still registered so an installed package stays callable.
-    p_tui = sub.add_parser("tui", help=argparse.SUPPRESS)
+    # Kept out of the advertised help until the interface package ships on
+    # PyPI (see ``web``); still registered so an installed package stays
+    # callable. No ``help=`` on purpose (see ``web``).
+    p_tui = sub.add_parser("tui")
     p_tui.add_argument(
         "--run-id", help="Run id to open (resolved against the workspace)."
     )
