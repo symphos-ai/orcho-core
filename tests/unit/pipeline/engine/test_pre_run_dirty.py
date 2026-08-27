@@ -1,8 +1,11 @@
 """Pre-run dirty intake engine tests (ADR 0044)."""
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from core.io.git_helpers import create_worktree
 from pipeline.engine import pre_run_dirty
@@ -530,3 +533,136 @@ def test_seed_rejects_unsafe_member_inside_untracked_directory(
 
     assert seeded.status == "seed_failed"
     assert seeded.error == "unsafe untracked path 'docs/../../escape.txt'"
+
+
+def test_seed_reports_a_failed_directory_expansion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A directory git cannot list fails the seed with git's own reason."""
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    (repo / "docs").mkdir(parents=True)
+    worktree.mkdir()
+    monkeypatch.setattr(
+        pre_run_dirty,
+        "_run_git",
+        lambda _cwd, _args: pre_run_dirty._GitResult(
+            ok=False, error="not a git repository",
+        ),
+    )
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("docs/",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == (
+        "could not expand untracked directory docs: not a git repository"
+    )
+
+
+def test_seed_reports_a_directory_git_declined_to_expand(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """An entry that expands back to itself is named as an unexpandable dir.
+
+    ``_unseedable_reason`` must not call a directory a missing file — the
+    wrong-diagnosis half of the original bug.
+    """
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    (repo / "docs").mkdir(parents=True)
+    worktree.mkdir()
+    monkeypatch.setattr(
+        pre_run_dirty,
+        "_expand_untracked_dir",
+        lambda _project_dir, rel: pre_run_dirty._UntrackedExpansion(
+            members=(rel,),
+        ),
+    )
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("docs/",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == (
+        "untracked source is a directory that git cannot expand: docs"
+    )
+
+
+def test_seed_reports_a_dangling_symlink_as_not_a_regular_file(
+    tmp_path: Path,
+) -> None:
+    """An entry that exists but is not a regular file is diagnosed as such."""
+    if os.name == "nt":
+        pytest.skip("symlinks require admin on Windows")
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    (repo / "dangling_link").symlink_to(tmp_path / "nonexistent")
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("dangling_link",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == "untracked source is not a regular file: dangling_link"
+
+
+def test_seed_copies_an_overlapping_member_once(tmp_path: Path) -> None:
+    """A member reachable through two selected entries is copied once.
+
+    Without the dedupe, the second visit would plan a copy whose
+    destination the first visit had not written yet — passing the
+    collision guard and copying the same file twice.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "a.md").write_text("alpha\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("docs/", "docs/a.md"),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seeded", seeded.error
+    assert (worktree / "docs" / "a.md").read_text(encoding="utf-8") == "alpha\n"
