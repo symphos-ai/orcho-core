@@ -183,3 +183,29 @@ def test_resume_hydrates_declared_child_sessions_in_request_order(tmp_path) -> N
 
     assert list(setup.session["phases"]["projects"]) == ["producer"]
     assert setup.session["phases"]["projects"]["producer"] == producer
+
+
+def test_read_plan_file_warns_and_regenerates_when_file_missing(
+    tmp_path, capsys,
+) -> None:
+    from pipeline.cross_project.run_setup import _read_plan_file
+
+    missing = tmp_path / "no_such_plan.md"
+    assert _read_plan_file(str(missing), terminal=True) is None
+
+    out = capsys.readouterr().out
+    assert "does not exist, regenerating the plan" in out
+
+
+def test_read_plan_file_warns_and_regenerates_when_file_unreadable(
+    tmp_path, capsys,
+) -> None:
+    from pipeline.cross_project.run_setup import _read_plan_file
+
+    unreadable = tmp_path / "plan_dir.md"
+    unreadable.mkdir()  # exists, but read_text raises OSError
+    assert _read_plan_file(str(unreadable), terminal=True) is None
+
+    out = capsys.readouterr().out
+    assert "regenerating the plan" in out
+    assert "failed" in out
