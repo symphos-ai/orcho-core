@@ -360,6 +360,66 @@ def test_pre_run_dirty_seed_failed_clears_stale_phase_handoff(
     assert "phase_handoff" not in session
 
 
+def test_pre_run_dirty_seed_failed_terminal_prints_actionable_message(
+    tmp_path: Path, capsys,
+) -> None:
+    """A seed failure must reach the terminal, not only ``meta.json``.
+
+    Both pre-run halts land before the first phase starts, so nothing
+    downstream renders them. Silence here is what made a failed seed look
+    like Orcho exiting cleanly to a bare shell prompt.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = {"status": "running"}
+    include_intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        changed_paths=("src/app.py",),
+        selected_untracked_paths=("docs/research/",),
+    )
+    seed_failed_intake = include_intake.with_status(
+        "seed_failed",
+        error="untracked source no longer exists: docs/research/notes.md",
+    )
+    worktree_ctx = SimpleNamespace(
+        is_isolated=True, degraded_reason=None, path=tmp_path,
+    )
+
+    with patch(
+        "pipeline.engine.pre_run_dirty.resolve_pre_run_dirty_intake",
+        return_value=include_intake,
+    ), patch(
+        "pipeline.engine.worktree.resolve_worktree_for_run",
+        return_value=worktree_ctx,
+    ), patch(
+        "pipeline.engine.pre_run_dirty.apply_pre_run_dirty_seed",
+        return_value=seed_failed_intake,
+    ):
+        result = setup_isolation(
+            **_setup_isolation_kwargs(
+                session=session,
+                output_dir=run_dir,
+                git_root=tmp_path,
+                presentation=PresentationPolicy.TERMINAL,
+            ),
+        )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    # Names the action, the failing path, and the next operator move.
+    assert "'include'" in captured.err
+    assert "docs/research/notes.md" in captured.err
+    assert "docs/research/" in captured.err
+    assert "src/app.py" in captured.err
+    assert "'exclude'" in captured.err
+    assert "checkout was not modified" in captured.err
+    assert result.halted is True
+    assert session["status"] == "halted"
+    assert session["halt_reason"] == "pre_run_dirty_seed_failed"
+
+
 def _retained_followup_decision(parent_worktree: dict[str, str]) -> SimpleNamespace:
     return SimpleNamespace(
         blocked=False,

@@ -351,3 +351,182 @@ def test_commit_failure_unstages_checkout_without_discarding_work(
     assert cached.stdout.strip() == ""
     assert status.stdout.splitlines() == [" M app.txt"]
     assert (repo / "app.txt").read_text(encoding="utf-8") == "dirty\n"
+
+
+def test_include_seeds_untracked_directory_members(tmp_path: Path) -> None:
+    """``git status`` collapses a wholly-untracked directory to one entry.
+
+    The selection therefore carries ``docs/`` (trailing slash), not the
+    files under it. Seeding must expand that entry instead of rejecting it.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "app.txt").write_text("dirty\n", encoding="utf-8")
+    (repo / "docs" / "research" / "deep").mkdir(parents=True)
+    (repo / "docs" / "research" / "a.md").write_text("alpha\n", encoding="utf-8")
+    (repo / "docs" / "research" / "deep" / "b.md").write_text("beta\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+
+    intake = resolve_pre_run_dirty_intake(
+        project_dir=repo,
+        run_dir=run_dir,
+        run_id="r1",
+        pre_run_config={
+            "enabled": True,
+            "non_interactive_default": "include",
+            "include_untracked": "all",
+        },
+        worktree_config={"enabled": True, "isolation": "per_run"},
+        profile_isolation=None,
+        resume_from=None,
+        no_interactive=True,
+    )
+    assert intake.selected_untracked_paths == ("docs/",)
+    worktree = _new_worktree(repo, run_dir)
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seeded", seeded.error
+    assert seeded.seed_tree_sha
+    assert (worktree / "docs" / "research" / "a.md").read_text(
+        encoding="utf-8",
+    ) == "alpha\n"
+    assert (worktree / "docs" / "research" / "deep" / "b.md").read_text(
+        encoding="utf-8",
+    ) == "beta\n"
+    assert (worktree / "app.txt").read_text(encoding="utf-8") == "dirty\n"
+
+
+def test_untracked_directory_expansion_honours_gitignore(tmp_path: Path) -> None:
+    """An ignored file inside an untracked directory is not part of the seed."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "ignore"], cwd=repo, check=True)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "keep.md").write_text("keep\n", encoding="utf-8")
+    (repo / "docs" / "noise.log").write_text("noise\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+
+    intake = resolve_pre_run_dirty_intake(
+        project_dir=repo,
+        run_dir=run_dir,
+        run_id="r1",
+        pre_run_config={
+            "enabled": True,
+            "non_interactive_default": "include",
+            "include_untracked": "all",
+        },
+        worktree_config={"enabled": True, "isolation": "per_run"},
+        profile_isolation=None,
+        resume_from=None,
+        no_interactive=True,
+    )
+    worktree = _new_worktree(repo, run_dir)
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seeded", seeded.error
+    assert (worktree / "docs" / "keep.md").exists()
+    assert not (worktree / "docs" / "noise.log").exists()
+
+
+def test_seed_rejects_directory_member_colliding_with_worktree(
+    tmp_path: Path,
+) -> None:
+    """The destination guard applies per expanded member, not per entry."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "a.md").write_text("alpha\n", encoding="utf-8")
+    (repo / "docs" / "b.md").write_text("beta\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    worktree = _new_worktree(repo, run_dir)
+    (worktree / "docs").mkdir()
+    (worktree / "docs" / "b.md").write_text("existing\n", encoding="utf-8")
+
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("docs/",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == "seed destination already exists: docs/b.md"
+    assert (worktree / "docs" / "b.md").read_text(encoding="utf-8") == "existing\n"
+    # A rejected member leaves the worktree untouched rather than half-seeded.
+    assert not (worktree / "docs" / "a.md").exists()
+
+
+def test_seed_reports_a_vanished_source_as_vanished_not_missing_type(
+    tmp_path: Path,
+) -> None:
+    """The remaining failure mode is a real disappearance, and says so."""
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("notes.txt",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == "untracked source no longer exists: notes.txt"
+
+
+def test_seed_rejects_unsafe_member_inside_untracked_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """``_safe_relative_path`` guards every expanded member, not just the entry."""
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    (repo / "docs").mkdir(parents=True)
+    worktree.mkdir()
+    monkeypatch.setattr(
+        pre_run_dirty,
+        "_expand_untracked_dir",
+        lambda _project_dir, _rel: pre_run_dirty._UntrackedExpansion(
+            members=("docs/../../escape.txt",),
+        ),
+    )
+    intake = PreRunDirtyIntake(
+        action="include",
+        status="seed_pending",
+        dirty=True,
+        selected_untracked_paths=("docs/",),
+    )
+
+    seeded = apply_pre_run_dirty_seed(
+        intake,
+        project_dir=repo,
+        worktree_path=worktree,
+    )
+
+    assert seeded.status == "seed_failed"
+    assert seeded.error == "unsafe untracked path 'docs/../../escape.txt'"
