@@ -469,18 +469,30 @@ def test_auto_detect_run_then_manual_run_does_not_inherit_mode(
 
 def test_mock_detector_carries_cross_topology_for_wire_task(
     _forbid_real_provider: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ``--mock`` CLI detector must merge the deterministic topology axis.
 
-    Regression for F3: a hermetic mock auto-detect run for a core SDK
-    wire/MCP-schema task must still resolve to a cross-recommended topology with
-    the projected sibling projects, exactly like the provider path — not a bare
-    ``mono`` / empty-projects projection. Exercises the real CLI helper so the
-    mock and provider topology projections cannot drift.
+    Regression for F3: a hermetic mock auto-detect run for a task matching a
+    configured topology signal must still resolve to a cross-recommended
+    topology with the projected sibling projects, exactly like the provider
+    path — not a bare ``mono`` / empty-projects projection. Exercises the real
+    CLI helper so the mock and provider topology projections cannot drift.
+    The shipped signal table is empty, so a workspace-configured table is
+    injected at the config-load seam.
     """
     from pipeline.project.cli import _build_mock_work_kind_detector
+    from pipeline.runtime import topology_detection
     from pipeline.runtime.run_shape import RunTopology
 
+    monkeypatch.setattr(
+        topology_detection,
+        "_default_signals",
+        lambda: {
+            "sdk wire": ["orcho-core", "orcho-mcp"],
+            "mcp tool": ["orcho-core", "orcho-mcp"],
+        },
+    )
     task = "Update the core SDK wire schema and the matching MCP tool output."
     detector = _build_mock_work_kind_detector(task)
     res = resolve_auto_detect(

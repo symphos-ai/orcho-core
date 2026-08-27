@@ -325,7 +325,7 @@ def render_cross_pipeline_header(
 def _read_plan_file(
     plan_file: str | None, *, terminal: bool = True,
 ) -> str | None:
-    """Прочитать pre-existing план из файла. None / отсутствующий файл → None.
+    """Read a pre-existing plan from a file. None / missing file → None.
 
     ADR 0047 Phase E — ``terminal=False`` suppresses the operator-
     facing warn lines when the file is missing or unreadable; the
@@ -337,13 +337,13 @@ def _read_plan_file(
     p = Path(plan_file)
     if not p.exists():
         if terminal:
-            warn(f"--plan-file: {plan_file} не существует, перегенерирую план")
+            warn(f"--plan-file: {plan_file} does not exist, regenerating the plan")
         return None
     try:
         return p.read_text(encoding="utf-8")
     except OSError as exc:
         if terminal:
-            warn(f"--plan-file: чтение {plan_file} провалилось ({exc}), перегенерирую план")
+            warn(f"--plan-file: reading {plan_file} failed ({exc}), regenerating the plan")
         return None
 
 
