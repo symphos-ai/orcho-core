@@ -329,8 +329,8 @@ def run_hypothesis_loop(
         }
         if _config.accounting_enabled():
             plan_usage["cost_usd"] = getattr(plan_agent, "last_cost_usd", None)
-        # Emit с полным текстом ДО валидации — UI сразу покажет hypothesis-card
-        # "in flight" (ещё без verdict).
+        # Emit with the full text BEFORE validation — the UI shows the
+        # hypothesis card "in flight" right away (no verdict yet).
         _events.emit(
             "hypothesis.proposed",
             attempt=attempt,
@@ -370,7 +370,7 @@ def run_hypothesis_loop(
             "plan_usage": plan_usage,
             "qa_usage":   qa_usage,
         })
-        # Verdict event — UI обновит badge/critique карточки гипотезы.
+        # Verdict event — the UI updates the hypothesis card's badge/critique.
         _events.emit(
             "hypothesis.verdict",
             attempt=attempt,

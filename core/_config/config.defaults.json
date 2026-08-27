@@ -57,14 +57,8 @@
       "on_low_confidence":    "fallback",
       "on_error":             "fallback",
       "topology_signals": {
-        "_comment": "Data-driven topology heuristic (Stage T1). Each phrase is lower-case substring-matched against the task text; a match recommends a cross topology over the union of the listed project aliases (orcho-core ordered first as primary). No model is involved. Override or extend per workspace.",
-        "mcp tool":        ["orcho-core", "orcho-mcp"],
-        "mcp schema":      ["orcho-core", "orcho-mcp"],
-        "sdk wire":        ["orcho-core", "orcho-mcp"],
-        "wire format":     ["orcho-core", "orcho-mcp"],
-        "wire schema":     ["orcho-core", "orcho-mcp"],
-        "schema snapshot": ["orcho-core", "orcho-mcp"],
-        "orcho-mcp":       ["orcho-core", "orcho-mcp"]
+        "_comment": "Data-driven topology heuristic (Stage T1). Each phrase is lower-case substring-matched against the task text; a match recommends a cross topology over the union of the listed project aliases. No model is involved. Ships empty (no phrases, no cross recommendation); add workspace-specific phrases in config.local.json. Keys starting with '_' are ignored by the matcher.",
+        "_example": "\"wire format\": [\"my-server\", \"my-client\"] — a task mentioning 'wire format' would recommend a cross run over those two registered project aliases."
       }
     }
   },
@@ -95,7 +89,7 @@
     "content_language": "English"
   },
   "artifacts": {
-    "_comment": "mirror_to_project: копировать ли семантические артефакты (план, diff, review, todo) из runspace/runs/<ts>/ в <project>/<mirror_dir>/ для git-трекинга. По умолчанию выкл — все артефакты живут в runspace.",
+    "_comment": "mirror_to_project: whether to copy semantic artifacts (plan, diff, review, todo) from runspace/runs/<ts>/ into <project>/<mirror_dir>/ for git tracking. Off by default — all artifacts live in the runspace.",
     "mirror_to_project": false,
     "mirror_patterns": ["plan.md", "todo.md", "review.md", "cross_plan.json", "cross_plan.md", "diff.patch"],
     "mirror_dir": ".orcho/artifacts"

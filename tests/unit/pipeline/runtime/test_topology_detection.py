@@ -68,14 +68,27 @@ def test_projects_are_deduplicated_and_primary_first() -> None:
     assert rec.projects == ("orcho-core", "orcho-mcp")
 
 
-def test_default_signal_table_loads_from_config() -> None:
-    # signals=None loads the shipped config.defaults.json table lazily.
+def test_shipped_signal_table_is_empty_and_recommends_mono() -> None:
+    # The shipped config.defaults.json table has no phrases (only
+    # "_"-prefixed comment keys), so even a wire/schema task stays mono
+    # until a workspace adds its own signals via config.local.json.
+    import json
+
+    from core.infra.paths import CONFIG_DIR
+
+    raw = json.loads(
+        (CONFIG_DIR / "config.defaults.json").read_text(encoding="utf-8")
+    )
+    table = raw["pipeline"]["auto_detect"]["topology_signals"]
+    assert all(key.startswith("_") for key in table)
+
     rec = recommend_topology(
-        "Update the orcho-mcp schema snapshot for the new wire format."
+        "Update the orcho-mcp schema snapshot for the new wire format.",
+        signals=table,
     )
 
-    assert rec.topology is RunTopology.CROSS_RECOMMENDED
-    assert set(rec.projects) == {"orcho-core", "orcho-mcp"}
+    assert rec.topology is RunTopology.MONO
+    assert rec.projects == ()
 
 
 def test_recommendation_validates_confidence_range() -> None:

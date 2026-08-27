@@ -428,6 +428,15 @@ class TestParser:
         assert "REA-" not in help_text
         assert "Phase " not in help_text
 
+    def test_top_level_help_never_renders_suppress_literal(self) -> None:
+        # argparse renders ``help=argparse.SUPPRESS`` literally as
+        # ``==SUPPRESS==`` for subparsers, so hidden subcommands (``web``,
+        # ``tui``) must omit ``help=`` instead of passing SUPPRESS.
+        parser = self.build_parser()
+        help_text = parser.format_help()
+
+        assert "==SUPPRESS==" not in help_text
+
     def test_command_groups_cover_every_subcommand(self) -> None:
         from cli._help import COMMAND_GROUPS
 

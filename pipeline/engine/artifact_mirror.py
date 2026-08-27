@@ -2,22 +2,23 @@
 pipeline/engine/artifact_mirror.py — Optional mirror of run artifacts into
 project repos for git-tracking.
 
-Контекст. Каждый run pipeline-а пишет всё в ``<workspace>/runspace/runs/<ts>/``
-— это canonical место. Опционально (по флагу config ``artifacts.mirror_to_project``)
-можно копировать ТОЛЬКО семантические артефакты (план, todo, review, diff) в
-``<project>/<mirror_dir>/``, чтобы их можно было закоммитить в репо проекта.
+Context. Every pipeline run writes everything to
+``<workspace>/runspace/runs/<ts>/`` — the canonical location. Optionally
+(via the ``artifacts.mirror_to_project`` config flag) ONLY semantic
+artifacts (plan, todo, review, diff) can be copied into
+``<project>/<mirror_dir>/`` so they can be committed to the project repo.
 
-Низкоуровневое (output.log, checkpoints.db, metrics.json, progress.log,
-meta.json) НИКОГДА не зеркалится — оно остаётся только в runspace/runs/.
+Low-level output (output.log, checkpoints.db, metrics.json, progress.log,
+meta.json) is NEVER mirrored — it stays in runspace/runs/ only.
 
-Публичный API:
+Public API:
     mirror_to_projects(run_dir, projects, cfg) -> list[Path]
 
 projects:
-    None или {} → single-mode: пишем в каждый зарегистрированный проект
-                  (caller передаёт {alias: project_dir}).
-    {alias: Path} → cross-mode: для каждого alias-а ищем артефакты сначала
-                    в ``run_dir/<alias>/``, потом fallback в ``run_dir/``.
+    None or {} → single-mode: write into every registered project
+                 (the caller passes {alias: project_dir}).
+    {alias: Path} → cross-mode: for each alias look for artifacts first
+                    in ``run_dir/<alias>/``, then fall back to ``run_dir/``.
 """
 
 from __future__ import annotations
@@ -34,15 +35,15 @@ _HEADER_TEMPLATE = (
 
 
 def _inject_header(content: str, source_rel: str) -> str:
-    """Префикс с указанием источника. Применяем только к markdown — для
-    бинарных или .patch файлов копируем как есть."""
+    """Prefix marking the source. Applied only to markdown — binary and
+    .patch files are copied verbatim."""
     iso = _dt.datetime.now().isoformat(timespec="seconds")
     return _HEADER_TEMPLATE.format(source_rel=source_rel, iso_ts=iso) + content
 
 
 def _copy_with_provenance(src: Path, dst: Path, source_rel: str) -> None:
-    """Атомарно скопировать src → dst. Markdown-файлы получают header,
-    остальное копируется как есть."""
+    """Copy src → dst atomically. Markdown files get a header, everything
+    else is copied verbatim."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.suffix.lower() in (".md", ".markdown"):
         try:
@@ -55,14 +56,14 @@ def _copy_with_provenance(src: Path, dst: Path, source_rel: str) -> None:
 
 
 def _resolve_sources(run_dir: Path, alias: str | None, patterns: Iterable[str]) -> list[Path]:
-    """Найти файлы которые надо зеркалить для конкретного project alias.
+    """Find the files to mirror for a specific project alias.
 
-    Для cross-режима сначала смотрим ``run_dir/<alias>/`` (per-project
-    артефакты), потом ``run_dir/`` (shared cross_plan.md, diff). Для
-    single-режима alias=None — только run_dir/.
+    In cross mode look at ``run_dir/<alias>/`` first (per-project
+    artifacts), then ``run_dir/`` (shared cross_plan.md, diff). In
+    single mode alias=None — only run_dir/.
 
-    Дедупликация по basename: если alias-specific plan.md уже найден,
-    одноимённый файл из shared run_dir/ игнорируется (per-project выигрывает).
+    Deduplicated by basename: once an alias-specific plan.md is found,
+    a same-named file in the shared run_dir/ is ignored (per-project wins).
     """
     search_dirs: list[Path] = []
     if alias:
@@ -88,19 +89,19 @@ def mirror_to_projects(
     projects: dict[str, Path] | None,
     cfg: dict,
 ) -> list[Path]:
-    """Скопировать matching-артефакты из run_dir в проектные mirror_dir-ы.
+    """Copy matching artifacts from run_dir into the projects' mirror dirs.
 
     Args:
-        run_dir: Path к ``<workspace>/runspace/runs/<ts>/``.
-        projects: ``{alias: project_dir}``. None / пустой dict → no-op
-            (нет проектов для зеркалирования). Single-mode caller передаёт
+        run_dir: Path to ``<workspace>/runspace/runs/<ts>/``.
+        projects: ``{alias: project_dir}``. None / empty dict → no-op
+            (no projects to mirror into). A single-mode caller passes
             ``{"<basename>": project_dir}``.
-        cfg: dict из ``AppConfig.artifacts``: keys mirror_to_project,
+        cfg: dict from ``AppConfig.artifacts``: keys mirror_to_project,
             mirror_patterns, mirror_dir.
 
     Returns:
-        Список путей куда были записаны копии. Пустой список если
-        mirror_to_project=False / нет источников / нет projects.
+        List of paths the copies were written to. Empty list when
+        mirror_to_project=False / no sources / no projects.
     """
     if not cfg.get("mirror_to_project", False):
         return []
@@ -130,6 +131,6 @@ def mirror_to_projects(
                 _copy_with_provenance(src, dst, source_rel)
                 written.append(dst)
             except OSError:
-                # Mirror — best-effort, не валим pipeline из-за readonly fs.
+                # Mirroring is best-effort; don't fail the pipeline over a readonly fs.
                 continue
     return written
