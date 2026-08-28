@@ -400,13 +400,34 @@ def _append_status_paths(
     )
 
 
+def _append_status_stall(out: list[str], reason: str | None) -> None:
+    """Print the stall verdict next to the status it contradicts.
+
+    A detached run whose process dies without writing a terminal event stays
+    ``running`` in ``meta.json`` forever — nothing is left alive to correct
+    the record. Printing the status alone would describe a run that ceased to
+    exist hours ago as working. The verdict and its wording are core's
+    (``sdk.run_control.run_diagnosis``); this only puts them where the
+    operator is already looking.
+    """
+    if not reason:
+        return
+    out.append(f"{_status_label('  Stalled:')} {_status_warning(reason)}")
+
+
 def format_status(
     status: RunStatus,
     *,
     verbose: bool = False,
     publish_gate: object | None = None,
+    stalled_reason: str | None = None,
 ) -> str:
-    """Render a human-readable status snapshot for one run."""
+    """Render a human-readable status snapshot for one run.
+
+    ``stalled_reason`` is core's ``run_diagnosis`` explanation for a run whose
+    recorded process is gone. The caller resolves it; this renderer never
+    decides whether a run is alive.
+    """
     out: list[str] = []
     sep = "─" * 60
     out.append("")
@@ -457,6 +478,7 @@ def format_status(
             f"{_status_muted(meta.timestamp or '?')}"
         )
 
+    _append_status_stall(out, stalled_reason)
     _append_status_usage(out, status)
     _append_status_phases(out, status=status, meta=meta)
     _append_status_gates(out, status, verbose=verbose)

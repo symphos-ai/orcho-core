@@ -53,8 +53,9 @@ fetching from a private registry) can register a factory there.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
+from core.observability.logging import get_verbose
 from pipeline.entry_points import discover_entry_points
 from pipeline.skills.loader import discover_skills_in_root
 from pipeline.skills.types import SkillPackage, SkillTrustPolicy
@@ -180,8 +181,10 @@ def discover_skills(
     if _trust_or_warn("packages", policy.trust_packages, include_untrusted):
         layers.append(("packages", _discover_entry_point_skills()))
 
+    shadowed: list[_ShadowedSkill] = []
     for label, registry in layers:
-        _apply_layer(merged, registry, label)
+        _apply_layer(merged, registry, label, shadowed)
+    _report_shadowing(shadowed)
 
     return merged
 
@@ -202,27 +205,78 @@ def _trust_or_warn(
     return bool(allowed or include_untrusted)
 
 
+class _ShadowedSkill(NamedTuple):
+    """One lower-priority skill a higher-priority source overrode."""
+
+    layer: str
+    winner: str
+    detail: str
+
+
 def _apply_layer(
     merged: dict[str, SkillPackage],
     registry: dict[str, SkillPackage],
     label: str,
+    shadowed: list[_ShadowedSkill],
 ) -> None:
     """Insert higher-priority layer entries into ``merged``.
 
     ``merged`` already holds the higher-priority layers. We only
-    insert names not yet present; collisions are reported as the
-    lower-priority entry being shadowed.
+    insert names not yet present; collisions are collected as the
+    lower-priority entry being shadowed. Collecting rather than
+    printing keeps the diagnostic one decision (:func:`_report_shadowing`)
+    instead of one line per skill.
     """
     for name, pkg in sorted(registry.items()):
         if name in merged:
             existing = merged[name]
-            print(
-                f"  ! skills: {label} skill {name!r} ({pkg.source}) "
-                f"shadowed by {existing.source} skill at "
-                f"{existing.root_dir!s}"
+            shadowed.append(
+                _ShadowedSkill(
+                    layer=label,
+                    winner=existing.source,
+                    detail=(
+                        f"{label} skill {name!r} ({pkg.source}) "
+                        f"shadowed by {existing.source} skill at "
+                        f"{existing.root_dir!s}"
+                    ),
+                )
             )
             continue
         merged[name] = pkg
+
+
+def _report_shadowing(shadowed: list[_ShadowedSkill]) -> None:
+    """Print the shadowing diagnostic: one aggregate line, or every line.
+
+    Shadowing is the expected, correct outcome whenever a project overlays
+    a shared catalogue, so per-skill detail is a debug concern: a project
+    that ships its own copy of a 26-skill workspace set would otherwise
+    print 26 unconditional lines ahead of every command's real output.
+    Verbose (``--output debug`` / ``--verbose``) keeps the historic
+    per-skill form, byte-identical, for anyone diagnosing resolution.
+    """
+    if not shadowed:
+        return
+    if get_verbose():
+        for note in shadowed:
+            print(f"  ! skills: {note.detail}")
+        return
+    counts: dict[tuple[str, str], int] = {}
+    for note in shadowed:
+        key = (note.layer, note.winner)
+        counts[key] = counts.get(key, 0) + 1
+    parts = [
+        (
+            f"1 {layer} skill shadowed by a {winner} skill"
+            if count == 1
+            else f"{count} {layer} skills shadowed by {winner} skills"
+        )
+        for (layer, winner), count in sorted(counts.items())
+    ]
+    print(
+        f"  ! skills: {'; '.join(parts)} "
+        "(--output debug for per-skill detail)"
+    )
 
 
 def _discover_entry_point_skills() -> dict[str, SkillPackage]:
