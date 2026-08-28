@@ -278,23 +278,16 @@ def apply_pre_run_dirty_seed(
         if not applied.ok:
             return intake.with_status("seed_failed", error=applied.error)
 
-    for rel in intake.selected_untracked_paths:
-        if not _safe_relative_path(rel):
-            return intake.with_status(
-                "seed_failed", error=f"unsafe untracked path {rel!r}",
-            )
-        src = project_dir / rel
-        dst = worktree_path / rel
-        if not src.is_file():
-            return intake.with_status(
-                "seed_failed", error=f"untracked source missing: {rel}",
-            )
-        if dst.exists():
-            return intake.with_status(
-                "seed_failed", error=f"seed destination already exists: {rel}",
-            )
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+    plan = _plan_untracked_seed(
+        project_dir=project_dir,
+        worktree_path=worktree_path,
+        selected=intake.selected_untracked_paths,
+    )
+    if plan.error is not None:
+        return intake.with_status("seed_failed", error=plan.error)
+    for member_src, member_dst in plan.copies:
+        member_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(member_src, member_dst)
 
     seed_tree = _write_current_tree(worktree_path)
     if not seed_tree.ok:
@@ -329,6 +322,102 @@ class _GitResult:
     ok: bool
     stdout: str = ""
     error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _UntrackedSeedPlan:
+    """Concrete ``(source, destination)`` copies for one ``include`` seed."""
+
+    copies: tuple[tuple[Path, Path], ...] = ()
+    error: str | None = None
+
+
+def _plan_untracked_seed(
+    *,
+    project_dir: Path,
+    worktree_path: Path,
+    selected: tuple[str, ...],
+) -> _UntrackedSeedPlan:
+    """Resolve selected untracked entries to the files the seed must copy.
+
+    ``git status --porcelain`` collapses a wholly-untracked directory to a
+    single trailing-slash entry (``?? docs/research/``), so a selection is
+    not a list of files. Directory entries are expanded to their members,
+    and every member — not just the top-level entry — is re-validated.
+
+    The whole plan is resolved before the first copy: a rejected entry must
+    leave the new worktree untouched rather than half-seeded.
+    """
+    copies: list[tuple[Path, Path]] = []
+    planned: set[str] = set()
+    for entry in selected:
+        rel = entry.rstrip("/")
+        if not rel or not _safe_relative_path(rel):
+            return _UntrackedSeedPlan(error=f"unsafe untracked path {entry!r}")
+        src = project_dir / rel
+        if src.is_symlink() or not src.is_dir():
+            members: tuple[str, ...] = (rel,)
+        else:
+            expanded = _expand_untracked_dir(project_dir, rel)
+            if expanded.error is not None:
+                return _UntrackedSeedPlan(error=expanded.error)
+            members = expanded.members
+        for member in members:
+            if member in planned:
+                continue
+            if not _safe_relative_path(member):
+                return _UntrackedSeedPlan(
+                    error=f"unsafe untracked path {member!r}",
+                )
+            member_src = project_dir / member
+            if not member_src.is_file():
+                return _UntrackedSeedPlan(error=_unseedable_reason(member_src, member))
+            dst = worktree_path / member
+            if dst.exists():
+                return _UntrackedSeedPlan(
+                    error=f"seed destination already exists: {member}",
+                )
+            planned.add(member)
+            copies.append((member_src, dst))
+    return _UntrackedSeedPlan(copies=tuple(copies))
+
+
+@dataclass(frozen=True, slots=True)
+class _UntrackedExpansion:
+    members: tuple[str, ...] = ()
+    error: str | None = None
+
+
+def _expand_untracked_dir(project_dir: Path, rel: str) -> _UntrackedExpansion:
+    """List the seedable files inside an untracked directory entry.
+
+    Git does the walking so the expansion honours the same ignore rules
+    that produced the ``??`` entry: an ignored file inside an untracked
+    directory is not part of the seed. An entry that expands to nothing
+    (ignored-only or emptied since intake) contributes no copies rather
+    than failing the seed — git cannot represent an empty directory, so
+    there is nothing the run would be missing.
+    """
+    listed = _run_git(
+        project_dir,
+        ["ls-files", "--others", "--exclude-standard", "-z", "--", f"{rel}/"],
+    )
+    if not listed.ok:
+        return _UntrackedExpansion(
+            error=f"could not expand untracked directory {rel}: {listed.error}",
+        )
+    return _UntrackedExpansion(
+        members=tuple(part for part in listed.stdout.split("\0") if part),
+    )
+
+
+def _unseedable_reason(src: Path, rel: str) -> str:
+    """Name why ``src`` cannot be copied into the seed, by failure mode."""
+    if src.is_dir():
+        return f"untracked source is a directory that git cannot expand: {rel}"
+    if src.exists() or src.is_symlink():
+        return f"untracked source is not a regular file: {rel}"
+    return f"untracked source no longer exists: {rel}"
 
 
 def _would_use_isolated_worktree(

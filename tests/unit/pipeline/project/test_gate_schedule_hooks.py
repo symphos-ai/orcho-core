@@ -65,6 +65,64 @@ def test_scheduled_gate_lifecycle_events_carry_full_identity(monkeypatch) -> Non
     ]
 
 
+def test_gate_end_distinguishes_a_failed_command_from_unusable_proof(
+    monkeypatch,
+) -> None:
+    """``outcome`` alone cannot say why a gate failed.
+
+    An exit-0 command whose verification subject cannot be compared is
+    ``failed`` by the same rollup as a command that exited 1. The durable
+    stream has to carry the classification too, or the operator reading
+    ``events.jsonl`` sees a test failure that never happened.
+    """
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.observability.events.emit",
+        lambda kind, **payload: emitted.append((kind, payload)),
+    )
+
+    gate_repair._emit_scheduled_gate_end(
+        SimpleNamespace(command="quant_tests"),
+        hook="after_phase",
+        phase="implement",
+        outcome="failed",
+        duration_s=25.7,
+        classification=SimpleNamespace(
+            status="unverifiable",
+            failure_kind="unverifiable",
+            reason="usable_subject_identity_unavailable",
+        ),
+    )
+
+    (_kind, payload), = emitted
+    assert payload["outcome"] == "failed"
+    assert payload["receipt_status"] == "unverifiable"
+    assert payload["failure_kind"] == "unverifiable"
+
+
+def test_gate_end_omits_classification_keys_when_it_closes_on_a_raise(
+    monkeypatch,
+) -> None:
+    """No classification exists when the boundary closes on an exception."""
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.observability.events.emit",
+        lambda kind, **payload: emitted.append((kind, payload)),
+    )
+
+    gate_repair._emit_scheduled_gate_end(
+        SimpleNamespace(command="test"),
+        hook="after_phase",
+        phase="implement",
+        outcome="failed",
+        duration_s=0.0,
+    )
+
+    (_kind, payload), = emitted
+    assert "receipt_status" not in payload
+    assert "failure_kind" not in payload
+
+
 def test_scheduled_gate_lifecycle_events_carry_project_alias(monkeypatch) -> None:
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(

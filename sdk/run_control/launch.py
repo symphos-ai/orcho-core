@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from core.io.process_tree import (
+    breakaway_spawn_kwargs,
     detached_spawn_kwargs,
     detached_tree_descriptor,
     pid_is_alive,
@@ -402,19 +403,35 @@ def _spawn_detached(
     a handle that does not answer a seek hangs the child before it runs
     a single line of Python — no events, no log bytes, nothing to
     diagnose. Raises :class:`LaunchError` on any spawn failure.
+
+    A run has to survive its launcher: the launcher is a CLI invocation or
+    an embedder's server process, and neither owns the run's lifetime. On
+    Windows that requires breaking out of the launcher's Job Object, and the
+    breakaway flag fails the spawn when the launcher's job forbids it — so
+    the first attempt asks for detachment and the second settles for the
+    plain detached flags rather than refusing to start the run. On POSIX the
+    two flag sets are identical and the retry never happens.
     """
-    try:
-        return subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log_fd,
-            stderr=subprocess.STDOUT,
-            cwd=project_dir,
-            env=env,
-            **detached_spawn_kwargs(),
-        )
-    except (OSError, FileNotFoundError) as e:
-        raise LaunchError(f"failed to spawn pipeline subprocess: {e}") from e
+    preferred = breakaway_spawn_kwargs()
+    fallback = detached_spawn_kwargs()
+    attempts = [preferred] + ([fallback] if fallback != preferred else [])
+    last_error: OSError | None = None
+    for spawn_kwargs in attempts:
+        try:
+            return subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=subprocess.STDOUT,
+                cwd=project_dir,
+                env=env,
+                **spawn_kwargs,
+            )
+        except (OSError, FileNotFoundError) as e:
+            last_error = e
+    raise LaunchError(
+        f"failed to spawn pipeline subprocess: {last_error}"
+    ) from last_error
 
 
 # ---------------------------------------------------------------------------

@@ -25,8 +25,8 @@ An explicit project-group directory keeps the shared multi-repository shape::
             orcho-env.sh
 
 It also detects child project repos one level deep, records them as
-workspace-local project aliases, and optionally prints an MCP-config
-snippet or merges it into a `.mcp.json` file.
+workspace-local project aliases, and returns an MCP-config snippet that a
+caller can merge into a `.mcp.json` file.
 
 Idempotent and safe:
 
@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -61,6 +60,13 @@ from sdk.runtimes import (
     assess_runtime_availability,
     detect_cli_runtimes,
     runtime_installed,
+)
+from sdk.workspace_mcp import (
+    apply_mcp_config,
+    build_mcp_snippet,
+    default_server_name,
+    persist_mcp_identity,
+    read_stored_mcp_identity,
 )
 from sdk.workspace_paths import (
     managed_workspace_dir,
@@ -165,6 +171,10 @@ class WorkspaceInitResult:
     executable was not found on PATH at init time (pre-switch view).
     ``runtime_override`` echoes the runtime the workspace config was
     switched to, or ``None`` when no switch was requested/needed.
+
+    ``mcp_identity_stored`` — True when the workspace-local config now
+    remembers the MCP server name and launcher command, so a bare
+    ``orcho workspace mcp`` reproduces this init's client setup.
     """
 
     group_root: str
@@ -190,6 +200,7 @@ class WorkspaceInitResult:
     runtime_override: str | None = None
     topology: str = "group"
     primary_project: DetectedProject | None = None
+    mcp_identity_stored: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +221,7 @@ def init_workspace(
     workspace_name: str | None = None,
     mcp_config: Path | str | None = None,
     mcp_server_name: str | None = None,
-    orcho_mcp_command: str = "orcho-mcp",
+    orcho_mcp_command: str | None = None,
     force: bool = False,
     dry_run: bool = False,
     extra_projects: Sequence[ExtraProject] = (),
@@ -297,22 +308,38 @@ def init_workspace(
         )
         skipped.append(local_config_file)
 
-    # MCP snippet — always computed, optionally written.
-    server_name = (
-        mcp_server_name
-        or _default_server_name(workspace_name or input_root.name)
-    )
-    snippet = _build_mcp_snippet(
+    # MCP snippet — always computed, optionally written. An explicit flag
+    # (or workspace name) decides the identity; otherwise a previously
+    # stored identity wins over the derived default so a repeat init does
+    # not silently rename the server. The resolved identity is persisted in
+    # the workspace-local config so a bare `orcho workspace mcp` replays it.
+    stored_identity = read_stored_mcp_identity(resolved_workspace)
+    if mcp_server_name:
+        server_name = mcp_server_name
+    elif workspace_name:
+        server_name = default_server_name(workspace_name)
+    else:
+        server_name = stored_identity.server_name or default_server_name(
+            input_root.name
+        )
+    resolved_command = orcho_mcp_command or stored_identity.command or "orcho-mcp"
+    snippet = build_mcp_snippet(
         server_name=server_name,
         workspace_dir=resolved_workspace,
-        orcho_mcp_command=orcho_mcp_command,
+        orcho_mcp_command=resolved_command,
+    )
+    mcp_identity_stored = persist_mcp_identity(
+        local_config_file,
+        server_name=server_name,
+        command=resolved_command,
+        dry_run=dry_run,
     )
 
     mcp_config_path: Path | None = None
     mcp_config_action = "printed"  # default: snippet on stdout only
     if mcp_config is not None:
         mcp_config_path = Path(mcp_config).expanduser()
-        mcp_config_action = _apply_mcp_config(
+        mcp_config_action = apply_mcp_config(
             mcp_config_path,
             server_name=server_name,
             server_entry=snippet["mcpServers"][server_name],
@@ -343,6 +370,7 @@ def init_workspace(
         runtime_override=runtime_override,
         topology=target.topology,
         primary_project=primary_project,
+        mcp_identity_stored=mcp_identity_stored,
     )
 
 
@@ -424,6 +452,7 @@ def _build_workspace_init_result(
     runtime_override: str | None,
     topology: str,
     primary_project: DetectedProject | None,
+    mcp_identity_stored: bool,
 ) -> WorkspaceInitResult:
     """Assemble the immutable public result after workspace materialisation."""
     return WorkspaceInitResult(
@@ -454,6 +483,7 @@ def _build_workspace_init_result(
         ),
         topology=topology,
         primary_project=primary_project,
+        mcp_identity_stored=mcp_identity_stored,
     )
 
 
@@ -825,130 +855,6 @@ def _merge_project_aliases(
             encoding="utf-8",
         )
     return "updated"
-
-
-# ─── Internals: MCP snippet + config merge ──────────────────────────────────
-
-
-_SLUG_RE: Final[re.Pattern[str]] = re.compile(r"[^a-zA-Z0-9]+")
-
-
-def _default_server_name(name: str) -> str:
-    """Derive ``orcho-<slug>`` from a human name.
-
-    Strips non-alphanumerics, lowercases, collapses runs. Empty
-    inputs fall back to ``orcho`` so the result is always a valid
-    JSON object key. If the slug already starts with ``orcho-`` or is
-    exactly ``orcho``, the prefix is not duplicated.
-    """
-    slug = _SLUG_RE.sub("-", name.strip()).strip("-").lower()
-    if not slug:
-        return "orcho"
-    if slug == "orcho" or slug.startswith("orcho-"):
-        return slug
-    return f"orcho-{slug}"
-
-
-def _build_mcp_snippet(
-    *,
-    server_name: str,
-    workspace_dir: Path,
-    orcho_mcp_command: str,
-) -> dict:
-    return {
-        "mcpServers": {
-            server_name: {
-                "command": orcho_mcp_command,
-                "args": [],
-                "env": {
-                    "ORCHO_WORKSPACE": str(workspace_dir),
-                },
-            },
-        },
-    }
-
-
-def _apply_mcp_config(
-    path: Path,
-    *,
-    server_name: str,
-    server_entry: dict,
-    force: bool,
-    dry_run: bool,
-) -> str:
-    """Merge ``server_entry`` into ``mcpServers[server_name]`` of ``path``.
-
-    Returns one of:
-
-    * ``"wrote"`` — new file created from scratch.
-    * ``"merged"`` — file existed, this server name was absent, entry
-      added alongside existing servers.
-    * ``"no-op"`` — file existed, the server entry was byte-identical.
-    * ``"replaced"`` — file existed, the server entry was different,
-      ``force=True``, only that entry was replaced.
-
-    Raises :class:`WorkspaceInitError` on parse failure, missing
-    parent directory, or a conflicting entry without ``force``.
-    """
-    if not path.exists():
-        parent = path.parent
-        if not parent.is_dir():
-            raise WorkspaceInitError(
-                f"parent directory does not exist: {parent}"
-            )
-        if not dry_run:
-            path.write_text(
-                json.dumps(
-                    {"mcpServers": {server_name: server_entry}},
-                    indent=2, ensure_ascii=False,
-                ) + "\n",
-                encoding="utf-8",
-            )
-        return "wrote"
-
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw) if raw.strip() else {}
-    except (OSError, json.JSONDecodeError) as e:
-        raise WorkspaceInitError(
-            f"could not parse existing MCP config {path}: {e}"
-        ) from e
-    if not isinstance(data, dict):
-        raise WorkspaceInitError(
-            f"existing MCP config {path} is not a JSON object"
-        )
-
-    servers = data.get("mcpServers")
-    if servers is None:
-        servers = {}
-        data["mcpServers"] = servers
-    elif not isinstance(servers, dict):
-        raise WorkspaceInitError(
-            f"existing 'mcpServers' in {path} is not a JSON object"
-        )
-
-    existing = servers.get(server_name)
-    if existing is None:
-        servers[server_name] = server_entry
-        action = "merged"
-    elif existing == server_entry:
-        return "no-op"
-    elif force:
-        servers[server_name] = server_entry
-        action = "replaced"
-    else:
-        raise WorkspaceInitError(
-            f"{path}: 'mcpServers.{server_name}' already exists with a "
-            "different value. Re-run with --force to replace just that "
-            "entry, or pick a different --mcp-server-name."
-        )
-
-    if not dry_run:
-        path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    return action
 
 
 # ─── Internals: project detection ───────────────────────────────────────────

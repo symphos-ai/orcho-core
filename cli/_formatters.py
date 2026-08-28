@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from cli._workspace_mcp import format_workspace_mcp_init_summary
 from core.io.ansi import C, paint
 from core.io.delivery_summary import project_degraded_publish
 from core.observability.accounting_display import (
@@ -27,7 +28,6 @@ from core.observability.accounting_display import (
 from pipeline.engine.worktree import is_worktree_reclaimed
 from sdk import (
     CostReport,
-    DetectedRuntime,
     EvidenceBundle,
     FineTuneResult,
     OrchoError,
@@ -46,6 +46,7 @@ from sdk import (
     VerifyRunResult,
     WorkspaceInitResult,
 )
+from sdk.workspace_project_plugin import ProjectPluginOutcome
 
 # ─────────────────────────────────────────────────────────────────────────────
 # status
@@ -399,13 +400,34 @@ def _append_status_paths(
     )
 
 
+def _append_status_stall(out: list[str], reason: str | None) -> None:
+    """Print the stall verdict next to the status it contradicts.
+
+    A detached run whose process dies without writing a terminal event stays
+    ``running`` in ``meta.json`` forever — nothing is left alive to correct
+    the record. Printing the status alone would describe a run that ceased to
+    exist hours ago as working. The verdict and its wording are core's
+    (``sdk.run_control.run_diagnosis``); this only puts them where the
+    operator is already looking.
+    """
+    if not reason:
+        return
+    out.append(f"{_status_label('  Stalled:')} {_status_warning(reason)}")
+
+
 def format_status(
     status: RunStatus,
     *,
     verbose: bool = False,
     publish_gate: object | None = None,
+    stalled_reason: str | None = None,
 ) -> str:
-    """Render a human-readable status snapshot for one run."""
+    """Render a human-readable status snapshot for one run.
+
+    ``stalled_reason`` is core's ``run_diagnosis`` explanation for a run whose
+    recorded process is gone. The caller resolves it; this renderer never
+    decides whether a run is alive.
+    """
     out: list[str] = []
     sep = "─" * 60
     out.append("")
@@ -456,6 +478,7 @@ def format_status(
             f"{_status_muted(meta.timestamp or '?')}"
         )
 
+    _append_status_stall(out, stalled_reason)
     _append_status_usage(out, status)
     _append_status_phases(out, status=status, meta=meta)
     _append_status_gates(out, status, verbose=verbose)
@@ -1726,7 +1749,9 @@ def format_prompts_resolution(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def format_workspace_init(result: WorkspaceInitResult) -> str:
+def format_workspace_init(
+    result: WorkspaceInitResult, *, verbose: bool = False,
+) -> str:
     """Render the `orcho workspace init` outcome for stdout.
 
     Shape:
@@ -1811,17 +1836,25 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
 
     extension_points = getattr(result, "extension_points", ())
     if extension_points:
-        out.append(_workspace_heading("Extension points:"))
-        labels = (
-            "Plugin template:",
-            "Prompt overrides:",
-            "Task files:",
-            "Agent rules template:",
-            "Claude shim template:",
-        )
-        for label, path in zip(labels, extension_points, strict=False):
+        if verbose:
+            out.append(_workspace_heading("Extension points:"))
+            labels = (
+                "Plugin template:",
+                "Prompt overrides:",
+                "Task files:",
+                "Agent rules template:",
+                "Claude shim template:",
+            )
+            for label, path in zip(labels, extension_points, strict=False):
+                out.append(
+                    f"    - {paint(label, C.CYAN)} {paint(str(path), C.GREEN)}"
+                )
+        else:
+            extensions_root = str(Path(result.workspace_dir) / ".orcho")
             out.append(
-                f"    - {paint(label, C.CYAN)} {paint(str(path), C.GREEN)}"
+                f"  {paint('Extension points:', C.CYAN)} "
+                f"{paint(extensions_root, C.GREEN)} "
+                f"{paint('(plugin template, prompt overrides, task files, agent rules — `--verbose` lists paths)', C.GREY)}"
             )
         out.append("")
 
@@ -1892,155 +1925,44 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             ))
     out.append("")
 
-    # MCP snippet — always shown. When a config file was touched, also
-    # report what happened to that file.
-    server_entry = result.mcp_snippet["mcpServers"][result.mcp_server_name]
-    mcp_command = str(server_entry["command"])
-    workspace_dir = str(server_entry["env"]["ORCHO_WORKSPACE"])
-    quoted_server = shlex.quote(result.mcp_server_name)
-    quoted_workspace = shlex.quote(workspace_dir)
-    quoted_command = shlex.quote(mcp_command)
-
-    out.append(_workspace_heading("MCP client setup — choose one path:"))
-    out.append(
-        f"    {paint('Note:', C.YELLOW)} "
-        f"{paint('for multiple workspaces, register one Orcho MCP server per workspace with a distinct name (for example orcho-demo-mcp, orcho-atas-mcp).', C.GREY)}"
-    )
-    if result.mcp_config_path is not None:
-        verb = {
-            "wrote": "Wrote",
-            "merged": "Merged into",
-            "no-op": "Already up to date in",
-            "replaced": "Replaced server entry in",
-        }.get(result.mcp_config_action, "Updated")
-        out.append(
-            f"    {paint(verb, C.GREEN)} "
-            f"{paint('MCP config file:', C.CYAN)} "
-            f"{paint(result.mcp_config_path, C.GREEN)} "
-            f"{paint(f'(server: {result.mcp_server_name})', C.GREY)}"
-        )
-        out.append(
-            f"    {paint('Use that file for JSON-based clients, or compare it with the reference shapes below.', C.GREY)}"
-        )
-    out.append("")
-    by_client = {r.client: r for r in result.detected_runtimes}
-    out.append(_workspace_subheading(
-        "Terminal clients — run one command in your shell:"
-    ))
-    if installed_runtimes:
-        out.append(
-            f"    {paint('Tip:', C.GREEN)} "
-            f"{paint('clients marked ✓ are installed on this machine — start with those.', C.GREY)}"
-        )
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Codex CLI / Codex app:", by_client.get("Codex CLI / Codex app")
-    ))
-    out.extend(_workspace_command_block([
-        f"codex mcp add {quoted_server} \\",
-        f"  --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  -- {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`codex mcp list` shows `{result.mcp_server_name}` as enabled; "
-        "restart the Codex session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Claude Code:", by_client.get("Claude Code")
-    ))
-    out.extend(_workspace_command_block([
-        f"claude mcp add {quoted_server} \\",
-        f"  --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  -- {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`claude mcp list` shows `{result.mcp_server_name}`; "
-        "restart the Claude Code session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Gemini CLI:", by_client.get("Gemini CLI")
-    ))
-    out.extend(_workspace_command_block([
-        f"gemini mcp add --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  {quoted_server} {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`gemini mcp list` shows `{result.mcp_server_name}`; "
-        "restart the Gemini session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_subheading(
-        "App config snippets — copy into the app config, do not run:"
-    ))
-    out.append("")
-    out.append(_workspace_subheading(
-        "Claude app / JSON clients — mcpServers shape:"
-    ))
-    snippet = json.dumps(result.mcp_snippet, indent=2, ensure_ascii=False)
-    out.extend(_workspace_json_block(snippet.splitlines()))
-    out.append(_workspace_done_when(
-        "the app config contains this server entry and the app has been restarted."
-    ))
-    out.append("")
-
-    out.append(_workspace_subheading(
-        "Antigravity app — User/mcp.json servers shape:"
-    ))
-    antigravity = {
-        "servers": {
-            result.mcp_server_name: {
-                "type": "stdio",
-                "command": mcp_command,
-                "args": list(server_entry.get("args", [])),
-                "env": {
-                    "ORCHO_WORKSPACE": workspace_dir,
-                },
-            },
-        },
-        "inputs": [],
-    }
-    out.extend(_workspace_json_block(json.dumps(
-        antigravity, indent=2, ensure_ascii=False,
-    ).splitlines()))
-    out.append(_workspace_done_when(
-        "`User/mcp.json` contains this server entry and Antigravity has been restarted."
-    ))
-    out.append("")
-    out.append(_workspace_subheading("After client restart — verify:"))
-    out.append(f"    {paint('orcho_workspace_info', C.GREEN)}")
-    out.append(
-        f"    {paint(f'Expected workspace: {workspace_dir}', C.GREY)}"
-    )
+    out.append(format_workspace_mcp_init_summary(result))
     out.append("")
 
     return "\n".join(out)
 
 
+def format_project_plugin_outcomes(
+    outcomes: Iterable[ProjectPluginOutcome],
+) -> str:
+    """Render explicit project-plugin materialisation outcomes for stdout."""
+    out = ["", _workspace_heading("Project plugin configuration:")]
+    any_created = False
+    for outcome in outcomes:
+        empty = outcome.status == "created" and getattr(outcome, "empty", False)
+        color = {
+            "created": C.YELLOW if empty else C.GREEN,
+            "skipped": C.YELLOW,
+            "failed": C.RED,
+        }[outcome.status]
+        detail_text = "empty — fill commands" if empty else outcome.detail
+        detail = f" ({detail_text})" if detail_text else ""
+        any_created = any_created or outcome.status == "created"
+        out.append(
+            f"    {paint(outcome.status, color, C.BOLD)} "
+            f"{paint(outcome.destination, color)}{paint(detail, C.GREY)}"
+        )
+    if any_created:
+        try_command = "orcho run --task '...' --mock"
+        out.append(
+            f"    {paint('Next:', C.CYAN)} "
+            f"{paint('review the plugin, then:', C.GREY)} "
+            f"{paint(try_command, C.GREEN)}"
+        )
+    return "\n".join(out)
+
+
 def _workspace_heading(text: str) -> str:
     return f"  {paint(text, C.CYAN, C.BOLD)}"
-
-
-def _workspace_subheading(text: str) -> str:
-    return f"  {paint(text, C.CYAN)}"
-
-
-def _workspace_client_subheading(
-    text: str, runtime: DetectedRuntime | None,
-) -> str:
-    """Subheading for a terminal client, annotated with PATH detection.
-
-    A ✓ marks a runtime found on PATH; a runtime probed but missing is
-    flagged so the user knows the block is informational only. Unknown
-    clients (no probe entry) render as a plain subheading.
-    """
-    base = _workspace_subheading(text)
-    if runtime is None:
-        return base
-    if runtime.installed:
-        return f"{base} {paint('✓ installed', C.GREEN, C.BOLD)}"
-    return f"{base} {paint(f'(not found — `{runtime.command}` not on PATH)', C.GREY)}"
 
 
 def _workspace_kv(label: str, value: str) -> str:
@@ -2049,24 +1971,6 @@ def _workspace_kv(label: str, value: str) -> str:
 
 def _workspace_command(command: str) -> str:
     return f"    {paint(command, C.GREEN)}"
-
-
-def _workspace_command_block(lines: list[str]) -> list[str]:
-    out = [f"    {paint('```bash', C.GREY)}"]
-    out.extend(f"    {paint(line, C.GREEN)}" for line in lines)
-    out.append(f"    {paint('```', C.GREY)}")
-    return out
-
-
-def _workspace_json_block(lines: list[str]) -> list[str]:
-    out = [f"    {paint('```json', C.GREY)}"]
-    out.extend(f"    {paint(line, C.GREY)}" for line in lines)
-    out.append(f"    {paint('```', C.GREY)}")
-    return out
-
-
-def _workspace_done_when(text: str) -> str:
-    return f"    {paint('Done when:', C.GREEN)} {paint(text, C.GREY)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2078,13 +1982,22 @@ def format_fine_tune(result: FineTuneResult) -> str:
     """Render the candidate verification contract from ``fine_tune_project``.
 
     Lists detected markers, each proposed ``verification_env`` with its
-    assertions, the proposed commands, and the deferred-materialisation note.
-    Stage 2 never writes, so the footer always states nothing was written.
+    assertions, optional worktree setup, proposed commands and scheduling,
+    and the deferred-materialisation note. Stage 2 never writes, so the footer
+    always states nothing was written.
     """
     candidate = result.candidate or {}
     verification = candidate.get("verification") or {}
     envs = candidate.get("verification_envs") or {}
     commands = verification.get("commands") or {}
+    bootstrap = candidate.get("worktree_bootstrap") or []
+    required = verification.get("required") or []
+    schedule = [
+        entry for entry in verification.get("schedule") or []
+        if isinstance(entry, dict)
+        and entry.get("commands")
+        and ("after_phase" in entry or entry.get("before_delivery"))
+    ]
 
     out: list[str] = [""]
     out.append(f"  fine-tune (dry-run) — {result.project}")
@@ -2106,13 +2019,29 @@ def format_fine_tune(result: FineTuneResult) -> str:
     out.append("  verification_envs:")
     for name, spec in envs.items():
         python = spec.get("python")
-        suffix = f"  (python: {python})" if python else ""
+        cwd = spec.get("cwd")
+        details = []
+        if python:
+            details.append(f"python: {python}")
+        if cwd:
+            details.append(f"cwd: {cwd}")
+        suffix = f"  ({'; '.join(details)})" if details else ""
         out.append(f"    [{name}]{suffix}")
         for a in spec.get("assertions", []):
             out.append(f"      - {a}")
     if not envs:
         out.append("    (none)")
     out.append("")
+
+    if bootstrap:
+        out.append("  worktree_bootstrap:")
+        for step in bootstrap:
+            run = step.get("run", [])
+            argv = shlex.join(str(part) for part in run) if isinstance(run, list) else str(run)
+            cwd = step.get("cwd")
+            suffix = f"  [cwd={cwd}]" if cwd else ""
+            out.append(f"    - {argv}{suffix}")
+        out.append("")
 
     out.append("  commands:")
     for name, cmd in commands.items():
@@ -2125,7 +2054,34 @@ def format_fine_tune(result: FineTuneResult) -> str:
         out.append(f"    {name}: {run}  [env={env_ref}]")
     if not commands:
         out.append("    (none)")
+    alternates = candidate.get("suggested_alternates") or []
+    if alternates:
+        out.append("    # alternate scripts detected (not proposed):")
+        for alt in alternates:
+            out.append(
+                f"    #   {alt.get('name', '')}: {alt.get('run', '')}"
+                f"  [env={alt.get('env', '')}]"
+            )
     out.append("")
+
+    if required:
+        out.append("  required:")
+        for name in required:
+            out.append(f"    - {name}")
+        out.append("")
+
+    if schedule:
+        out.append("  schedule:")
+        for entry in schedule:
+            policy = entry.get("policy")
+            policy_suffix = f"  [policy={policy}]" if policy else ""
+            command_names = ", ".join(str(name) for name in entry["commands"])
+            if "after_phase" in entry:
+                hook = f"after_phase({entry['after_phase']})"
+            else:
+                hook = "before_delivery"
+            out.append(f"    - {hook}: {command_names}{policy_suffix}")
+        out.append("")
 
     out.append(f"  {result.note}")
     out.append("  No files were written.")

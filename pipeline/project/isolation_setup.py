@@ -437,6 +437,14 @@ def setup_isolation(
             if output_dir is not None:
                 with contextlib.suppress(Exception):
                     save_session(output_dir, session)
+            # Both pre-run halts land before the first phase starts, so
+            # nothing downstream renders them: the halt reason reaches
+            # meta.json and the operator sees a bare shell prompt. Render
+            # this branch exactly like its intake-halt sibling above — a
+            # halt that prints nothing is indistinguishable from a crash.
+            if presentation is PresentationPolicy.TERMINAL:
+                from pipeline.project.app import print_error
+                print_error(_pre_run_dirty_seed_failed_message(_pre_run_dirty))
             return IsolationSetup(halted=True)
 
     if worktree_bootstrap_config:
@@ -588,6 +596,24 @@ def _pre_run_dirty_halt_message(intake: Any) -> str:
         f"Dirty working tree halted before worktree creation: {reason}."
         f"{path_details} Commit or stash your changes, then rerun; or rerun "
         "with --no-worktree-isolation."
+    )
+
+
+def _pre_run_dirty_seed_failed_message(intake: Any) -> str:
+    """Explain a failed ``include`` seed and the operator's way forward."""
+    error = getattr(intake, "error", None) or "seed could not be applied"
+    details = _format_pre_run_dirty_paths(
+        "changed", getattr(intake, "changed_paths", ()),
+    )
+    details += _format_pre_run_dirty_paths(
+        "selected untracked", getattr(intake, "selected_untracked_paths", ()),
+    )
+    path_details = f" Paths: {'; '.join(details)}." if details else ""
+    return (
+        f"Pre-run intake 'include' could not seed the run worktree: {error}."
+        f"{path_details} The run halted before any phase started and your "
+        "checkout was not modified. Rerun and choose 'exclude' to start from "
+        "HEAD, or commit the listed paths first."
     )
 
 

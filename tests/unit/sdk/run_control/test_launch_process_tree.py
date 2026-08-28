@@ -43,6 +43,14 @@ def test_spawn_detached_uses_adapter_flags(monkeypatch: pytest.MonkeyPatch, tmp_
     class Popen:
         pass
 
+    # The preferred flags are the breakaway set — a run has to survive the
+    # launcher's job, not just its console group. The plain detached set is
+    # only reached when a job forbids breakaway (see
+    # tests/unit/core/test_process_tree_breakaway.py).
+    monkeypatch.setattr(
+        "sdk.run_control.launch.breakaway_spawn_kwargs",
+        lambda: {"creationflags": 0x01000200},
+    )
     monkeypatch.setattr("sdk.run_control.launch.detached_spawn_kwargs", lambda: {"creationflags": 512})
     monkeypatch.setattr(
         "sdk.run_control.launch.subprocess.Popen",
@@ -51,7 +59,7 @@ def test_spawn_detached_uses_adapter_flags(monkeypatch: pytest.MonkeyPatch, tmp_
     with (tmp_path / "log").open("w") as log:
         _spawn_detached(["python"], project_dir=str(tmp_path), env={}, log_fd=log)
 
-    assert captured["creationflags"] == 512
+    assert captured["creationflags"] == 0x01000200
     assert "start_new_session" not in captured
 
 

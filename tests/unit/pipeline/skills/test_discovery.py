@@ -416,9 +416,8 @@ class TestEdgeCases:
             )
         assert result == {}
 
-    def test_shadow_logged(
-        self, tmp_path: Path, capsys,
-    ) -> None:
+    def _discover_with_one_shadowed_skill(self, tmp_path: Path) -> None:
+        """Discover a workspace skill the project overrides by the same name."""
         project = tmp_path / "project"
         workspace = tmp_path / "workspace"
         for d in (project, workspace):
@@ -440,9 +439,35 @@ class TestEdgeCases:
                 home_dir=tmp_path / "home",
                 trust_policy=SkillTrustPolicy(trust_project=True),
             )
-        captured = capsys.readouterr()
-        assert "shadowed" in captured.out
-        assert "shared" in captured.out
+
+    def test_shadow_logged_as_one_aggregate_line(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        """Default output is one counted line, not one line per skill.
+
+        Shadowing is expected whenever a project overlays a shared
+        catalogue; an unconditional per-skill line pushes the command's
+        real output off the screen once the catalogue is large.
+        """
+        self._discover_with_one_shadowed_skill(tmp_path)
+        out = capsys.readouterr().out
+        assert out.splitlines() == [
+            "  ! skills: 1 workspace skill shadowed by a project skill "
+            "(--output debug for per-skill detail)"
+        ]
+
+    def test_shadow_detail_kept_under_verbose(
+        self, tmp_path: Path, capsys, monkeypatch,
+    ) -> None:
+        """``--output debug`` restores the historic per-skill diagnostic."""
+        from core.observability import logging as core_logging
+
+        monkeypatch.setattr(core_logging, "_verbose", True)
+        self._discover_with_one_shadowed_skill(tmp_path)
+        out = capsys.readouterr().out
+        assert "shadowed" in out
+        assert "shared" in out
+        assert "--output debug" not in out
 
 
 class TestNestedGitDir:

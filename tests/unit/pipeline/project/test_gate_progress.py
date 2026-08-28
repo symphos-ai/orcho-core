@@ -83,11 +83,17 @@ def test_command_start_line_announces_running() -> None:
     assert lines == ["   ▶ broad-non-e2e   running…"]
 
 
+def _classified(status: str, *, reason: str = "", kind: str | None = None):
+    """Minimal stand-in for ``ReceiptClassification`` (status + reason only)."""
+    return SimpleNamespace(status=status, failure_kind=kind, reason=reason)
+
+
 def test_command_result_pass_shows_duration() -> None:
     lines = _cap(
         lambda: gate_repair._render_gate_command_result(
             "broad-non-e2e",
             {"exit_code": 0, "assertions": [], "detail": "", "duration_s": 134.0},
+            _classified("present"),
         ),
     )
     assert lines == ["   ✓ broad-non-e2e   passed  (2m14s)"]
@@ -97,12 +103,37 @@ def test_command_result_fail_shows_duration() -> None:
     lines = _cap(
         lambda: gate_repair._render_gate_command_result(
             "unit", {"exit_code": 1, "detail": "2 failed", "duration_s": 8.0},
+            _classified("failed", kind="test_failure", reason="command exited 1"),
         ),
     )
     assert lines == ["   ✗ unit   failed  (8s)"]
 
 
-# ── wiring: _run_gate_command renders around the blocking call ───────────
+def test_command_result_unverifiable_does_not_claim_the_tests_passed() -> None:
+    """An exit-0 command whose proof is unusable is neither ✓ nor ✗.
+
+    Reporting ``✓ passed`` and then parking the run on a REJECTED handoff
+    forces the operator to reverse-engineer which of the two happened.
+    """
+    lines = _cap(
+        lambda: gate_repair._render_gate_command_result(
+            "quant_tests",
+            {"exit_code": 0, "assertions": [], "detail": "", "duration_s": 25.7},
+            _classified(
+                "unverifiable",
+                kind="unverifiable",
+                reason="usable_subject_identity_unavailable",
+            ),
+        ),
+    )
+    assert lines == [
+        "   ⚠ quant_tests   unverifiable  (26s)",
+        "     command exited 0; its verification proof is unverifiable "
+        "(usable_subject_identity_unavailable)",
+    ]
+
+
+# ── wiring: _run_and_classify_gate renders around the blocking call ──────
 
 
 def _fake_run(*, terminal: bool) -> SimpleNamespace:
@@ -110,7 +141,7 @@ def _fake_run(*, terminal: bool) -> SimpleNamespace:
     return SimpleNamespace(_presentation=presentation)
 
 
-def test_run_gate_command_terminal_renders_start_and_result(monkeypatch) -> None:
+def _stub_gate_execution(monkeypatch, *, status: str = "present") -> None:
     monkeypatch.setattr(
         vc, "run_command",
         lambda *a, **k: {
@@ -121,8 +152,18 @@ def test_run_gate_command_terminal_renders_start_and_result(monkeypatch) -> None
     monkeypatch.setattr(
         gate_repair, "_persist_gate_receipt", lambda run, entry, receipt: None,
     )
+    monkeypatch.setattr(
+        gate_repair, "_classify_gate_receipt",
+        lambda receipt, ctx=None: _classified(status),
+    )
 
-    lines = _cap(lambda: gate_repair._run_gate_command(
+
+def test_run_and_classify_gate_terminal_renders_start_and_result(
+    monkeypatch,
+) -> None:
+    _stub_gate_execution(monkeypatch)
+
+    lines = _cap(lambda: gate_repair._run_and_classify_gate(
         _fake_run(terminal=True),
         SimpleNamespace(commands={"test": {}}),
         SimpleNamespace(command="test"),
@@ -134,17 +175,33 @@ def test_run_gate_command_terminal_renders_start_and_result(monkeypatch) -> None
     ]
 
 
-def test_run_gate_command_silent_run_prints_nothing(monkeypatch) -> None:
-    monkeypatch.setattr(
-        vc, "run_command",
-        lambda *a, **k: {"exit_code": 0, "assertions": [], "detail": ""},
-    )
-    monkeypatch.setattr(gate_repair, "_placeholders", lambda run: None)
-    monkeypatch.setattr(
-        gate_repair, "_persist_gate_receipt", lambda run, entry, receipt: None,
-    )
+def test_run_and_classify_gate_result_line_follows_the_classification(
+    monkeypatch,
+) -> None:
+    """The result line is rendered from the classification, not the exit code.
 
-    lines = _cap(lambda: gate_repair._run_gate_command(
+    Same exit-0 receipt as the passing case; only the classification differs,
+    and the operator must see that difference at the moment it is decided.
+    """
+    _stub_gate_execution(monkeypatch, status="stale")
+
+    lines = _cap(lambda: gate_repair._run_and_classify_gate(
+        _fake_run(terminal=True),
+        SimpleNamespace(commands={"test": {}}),
+        SimpleNamespace(command="test"),
+    ))
+
+    assert lines == [
+        "   ▶ test   running…",
+        "   ⚠ test   stale  (12s)",
+        "     command exited 0; its verification proof is stale",
+    ]
+
+
+def test_run_and_classify_gate_silent_run_prints_nothing(monkeypatch) -> None:
+    _stub_gate_execution(monkeypatch)
+
+    lines = _cap(lambda: gate_repair._run_and_classify_gate(
         _fake_run(terminal=False),
         SimpleNamespace(commands={"test": {}}),
         SimpleNamespace(command="test"),

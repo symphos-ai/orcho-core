@@ -70,7 +70,6 @@ from cli._formatters import (
     format_verify_list,
     format_verify_overview,
     format_verify_run,
-    format_workspace_init,
     format_written_paths,
     project_evidence_json,
 )
@@ -89,6 +88,7 @@ from cli._quality_gates import cmd_quality_gates
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
+from cli._workspace_mcp import format_workspace_mcp_setup
 from core.infra import config
 from core.infra.demo_assets import (
     DemoBootstrapError,
@@ -109,7 +109,6 @@ from sdk import (
     find_run,
     fine_tune_project,
     get_run_diff,
-    init_workspace,
     list_history,
     list_metrics,
     list_prompts,
@@ -128,6 +127,7 @@ from sdk import (
     write_evidence_bundle,
 )
 from sdk.errors import OrchoError, PromptNotFound
+from sdk.workspace_mcp import build_workspace_mcp_setup
 
 
 def _positive_int(value: str) -> int:
@@ -294,8 +294,34 @@ def cmd_status(args: argparse.Namespace) -> int:
         status,
         verbose=verbose,
         publish_gate=app_cfg.commit.get("publish"),
+        stalled_reason=_stalled_reason(status, workspace=workspace),
     ))
     return 0
+
+
+def _stalled_reason(status, *, workspace) -> str | None:
+    """Core's explanation for a ``running`` run whose process is gone, or None.
+
+    A run that dies without writing a terminal event keeps saying ``running``
+    forever, so the status line alone can describe a run that ceased to exist
+    hours ago as working. ``run_diagnosis`` already owns that verdict (and the
+    conservative predicate behind it); status asks rather than deciding, so
+    the two surfaces can never disagree.
+
+    Only a ``running`` record can be lying about it, so nothing else pays for
+    the probe. Diagnosis is an enrichment: a failure to reach a verdict must
+    leave the status output intact, never replace it with an error.
+    """
+    meta = getattr(status, "meta", None)
+    if getattr(meta, "status", None) != "running":
+        return None
+    try:
+        from sdk.run_control import run_diagnosis
+
+        diagnosis = run_diagnosis(status.run_ref.run_id, workspace=workspace)
+    except Exception:  # noqa: BLE001 — enrichment must never break status
+        return None
+    return diagnosis.reason if diagnosis.condition == "stalled" else None
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -758,122 +784,25 @@ def cmd_repair_state(args: argparse.Namespace) -> int:
     return 0
 
 
-def _emit_delivery_setup_hints(result, project_group_root: str) -> None:
-    """Best-effort: print one delivery setup hint after ``workspace init``.
-
-    Gathers candidate project directories from the init ``result`` (detected +
-    interactively-confirmed projects, plus the group root itself when it is a
-    git repo), asks the provider-neutral
-    :func:`~pipeline.engine.delivery_publish.collect_delivery_setup_hints`
-    helper for setup advice, and prints the first non-empty hint once.
-
-    The CLI carries no provider knowledge: all remote detection and hint
-    wording live behind the helper. Every step is wrapped so a detection
-    failure prints nothing and never disturbs the init exit code — this is a
-    courtesy nudge, not part of the init contract. It only reads, so it is safe
-    on ``--dry-run`` where it surfaces the same advice in the preview.
-    """
-    try:
-        from pipeline.engine.delivery_publish import collect_delivery_setup_hints
-
-        candidates: list[str] = []
-        seen: set[str] = set()
-
-        def _add(path: str) -> None:
-            if path and path not in seen:
-                seen.add(path)
-                candidates.append(path)
-
-        for proj in getattr(result, "detected_projects", ()):
-            _add(getattr(proj, "path", ""))
-        for proj in getattr(result, "extra_projects", ()):
-            _add(getattr(proj, "path", ""))
-        if project_group_root and (Path(project_group_root) / ".git").exists():
-            _add(project_group_root)
-
-        for path in candidates:
-            hints = collect_delivery_setup_hints(Path(path))
-            if hints:
-                print(f"\nDelivery setup:\n  {hints[0]}")
-                return
-    except Exception:  # noqa: BLE001 — a hint must never break workspace init
-        return
-
-
 def cmd_workspace_init(args: argparse.Namespace) -> int:
-    """Connect a project in place or bootstrap an explicit project group."""
-    from cli._workspace_runtime_gate import workspace_runtime_gate
-    from sdk.workspace import (
-        discover_undetected_candidates,
-        preflight_workspace_target,
-    )
-    from sdk.workspace_paths import project_repo_marker
+    """Delegate workspace-init workflow to its focused CLI module."""
+    from cli._workspace_init import run_workspace_init
 
-    project_group_root = args.project_group_root or os.getcwd()
-    workspace_dir = getattr(args, "workspace_dir", None)
-    no_interactive = bool(getattr(args, "no_interactive", False))
-    dry_run = bool(getattr(args, "dry_run", False))
-    force = bool(getattr(args, "force", False))
-    no_scaffold = bool(getattr(args, "no_scaffold", False))
+    return run_workspace_init(args)
 
-    # Phase 0 (read-only): reject invalid targets (filesystem root, $HOME,
-    # single repo-root) BEFORE any interactive discovery/prompt, so we never
-    # mutate a child (e.g. `git init`) on a target we would ultimately refuse.
-    # Then gate on CLI runtime availability: zero installed runtimes stops
-    # the init (unless --force / --dry-run); a partial gap offers a switch
-    # of the workspace config to an installed runtime.
+
+def cmd_workspace_mcp(args: argparse.Namespace) -> int:
+    """Print the complete, read-only MCP setup for an active workspace."""
     try:
-        preflight_workspace_target(project_group_root, force=force)
-        gate = workspace_runtime_gate(
-            project_group_root,
-            workspace_dir=workspace_dir,
-            no_interactive=no_interactive,
-            dry_run=dry_run,
-            force=force,
-        )
-    except OrchoError as exc:
-        print(format_error(exc), file=sys.stderr)
-        return exc.exit_code
-
-    # Phase 1 (read-only): discover undetected folders.
-    project_mode = project_repo_marker(project_group_root) is not None
-    candidates = (
-        []
-        if project_mode
-        else discover_undetected_candidates(project_group_root)
-    )
-
-    # Phase 2: interactive prompt (TTY + not --no-interactive + not dry-run).
-    extra_projects: list = []
-    interactive = False
-    if candidates and not no_interactive and not dry_run:
-        from pipeline.project.project_discovery_prompt import prompt_for_extra_projects
-
-        if getattr(sys.stdin, "isatty", lambda: False)():
-            interactive = True
-            extra_projects = prompt_for_extra_projects(candidates)
-
-    try:
-        result = init_workspace(
-            project_group_root,
-            workspace_dir=workspace_dir,
-            workspace_name=getattr(args, "workspace_name", None),
-            mcp_config=getattr(args, "mcp_config", None),
+        setup = build_workspace_mcp_setup(
+            workspace=getattr(args, "workspace", None),
             mcp_server_name=getattr(args, "mcp_server_name", None),
-            orcho_mcp_command=getattr(args, "orcho_mcp_command", "orcho-mcp"),
-            force=force,
-            dry_run=dry_run,
-            extra_projects=extra_projects,
-            undetected_count=len(candidates) - len(extra_projects),
-            interactive=interactive,
-            no_scaffold=no_scaffold,
-            runtime_override=gate.runtime_override,
+            orcho_mcp_command=getattr(args, "orcho_mcp_command", None),
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
-    print(format_workspace_init(result))
-    _emit_delivery_setup_hints(result, project_group_root)
+    print(format_workspace_mcp_setup(setup))
     return 0
 
 
@@ -1731,7 +1660,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manage Orcho workspaces",
         description=(
             "An Orcho workspace is a small folder that holds run state, "
-            "an env-script, and (optionally) an MCP config snippet. "
+            "an env-script, and a reproducible MCP client setup command. "
             "Subcommand `init` is the user-facing bootstrap."
         ),
     )
@@ -1745,7 +1674,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Run inside an existing project to connect it in place. Orcho "
             "stores run state in an external managed workspace and leaves the "
             "repository where it is. A non-project directory keeps the "
-            "advanced shared-workspace behavior and discovers child repos."
+            "advanced shared-workspace behavior and discovers child repos. In "
+            "an interactive terminal, init can also create reviewed starter "
+            "project plugin-configs for the projects registered in this run."
         ),
     )
     p_ws_init.add_argument(
@@ -1778,7 +1709,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--mcp-config", default=None, metavar="PATH",
         help=(
             "Optional path to a .mcp.json to create or merge into. When "
-            "omitted, only the snippet is printed."
+            "omitted, init prints a command to reproduce setup with `orcho "
+            "workspace mcp`."
         ),
     )
     p_ws_init.add_argument(
@@ -1789,10 +1721,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_ws_init.add_argument(
-        "--orcho-mcp-command", default="orcho-mcp", metavar="CMD",
+        "--orcho-mcp-command", default=None, metavar="CMD",
         help=(
             "Command/path the MCP host should run to launch the Orcho MCP "
-            "server. Default: orcho-mcp (resolved on PATH)."
+            "server. Default: the workspace's stored setting, else orcho-mcp "
+            "(resolved on PATH)."
         ),
     )
     p_ws_init.add_argument(
@@ -1809,7 +1742,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_init.add_argument(
         "--no-interactive", action="store_true",
         help=(
-            "Skip interactive prompts for undetected folders. "
+            "Skip interactive prompts for undetected folders and starter "
+            "project plugin-configs. "
             "Use in CI or non-TTY contexts; the output will list "
             "how many folders were not auto-registered."
         ),
@@ -1821,7 +1755,45 @@ def build_parser() -> argparse.ArgumentParser:
             "override README files and the plugin template."
         ),
     )
+    p_ws_init.add_argument(
+        "--verbose", action="store_true",
+        help=(
+            "List every workspace extension-point path instead of the "
+            "one-line pointer."
+        ),
+    )
     p_ws_init.set_defaults(func=cmd_workspace_init)
+
+    p_ws_mcp = p_ws_sub.add_parser(
+        "mcp",
+        help="Print complete MCP client setup for an active workspace",
+        description=(
+            "Resolve an active workspace without changing files and print "
+            "the complete MCP client setup block."
+        ),
+    )
+    p_ws_mcp.add_argument(
+        "--workspace", default=None, metavar="PATH",
+        help=(
+            "Workspace directory. Defaults to the workspace bound to the "
+            "current project/cwd, then $ORCHO_WORKSPACE."
+        ),
+    )
+    p_ws_mcp.add_argument(
+        "--mcp-server-name", default=None, metavar="NAME",
+        help=(
+            "Server name for the client entry (default: the workspace's "
+            "stored setting, else derived from context)."
+        ),
+    )
+    p_ws_mcp.add_argument(
+        "--orcho-mcp-command", default=None, metavar="CMD",
+        help=(
+            "Command/path the MCP host runs (default: the workspace's "
+            "stored setting, else orcho-mcp on PATH)."
+        ),
+    )
+    p_ws_mcp.set_defaults(func=cmd_workspace_mcp)
 
     p_ws_fine = p_ws_sub.add_parser(
         "fine-tune",
@@ -1885,10 +1857,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ws_cleanup.set_defaults(func=cmd_workspace_cleanup)
 
     # ── web ───────────────────────────────────────────────────────────────────
-    # Hidden from help until the interface package ships on PyPI (advertising it
-    # would point users at an uninstallable ``pip install``). Still registered,
-    # so it remains callable for anyone who already has the package.
-    p_web = sub.add_parser("web", help=argparse.SUPPRESS)
+    # Kept out of the advertised help until the interface package ships on
+    # PyPI (advertising it would point users at an uninstallable
+    # ``pip install``). Still registered, so it remains callable for anyone
+    # who already has the package. No ``help=`` on purpose: argparse renders
+    # ``help=argparse.SUPPRESS`` literally as ``==SUPPRESS==`` for
+    # subparsers, and omitting the kwarg is the closest to hidden it offers.
+    p_web = sub.add_parser("web")
     p_web.add_argument(
         "--port", "-p", type=int, default=8501,
         help="Port for Streamlit (default: 8501)",
@@ -1900,9 +1875,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.set_defaults(func=cmd_web)
 
     # ── tui ───────────────────────────────────────────────────────────────────
-    # Hidden from help until the interface package ships on PyPI (see ``web``);
-    # still registered so an installed package stays callable.
-    p_tui = sub.add_parser("tui", help=argparse.SUPPRESS)
+    # Kept out of the advertised help until the interface package ships on
+    # PyPI (see ``web``); still registered so an installed package stays
+    # callable. No ``help=`` on purpose (see ``web``).
+    p_tui = sub.add_parser("tui")
     p_tui.add_argument(
         "--run-id", help="Run id to open (resolved against the workspace)."
     )

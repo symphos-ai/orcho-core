@@ -40,7 +40,7 @@ class DetectedRuntime:
 #: Known CLI agentic runtimes, in display order. Each pair is
 #: ``(display name, executable probed via shutil.which)``. Keep this
 #: aligned with the per-client setup blocks rendered in
-#: ``cli/_formatters.format_workspace_init``.
+#: ``cli._workspace_mcp.format_workspace_mcp_setup``.
 CLI_RUNTIMES: Final[tuple[tuple[str, str], ...]] = (
     ("Codex CLI / Codex app", "codex"),
     ("Claude Code", "claude"),
