@@ -2007,6 +2007,14 @@ def format_fine_tune(result: FineTuneResult) -> str:
         out.append(f"    {name}: {run}  [env={env_ref}]")
     if not commands:
         out.append("    (none)")
+    alternates = candidate.get("suggested_alternates") or []
+    if alternates:
+        out.append("    # alternate scripts detected (not proposed):")
+        for alt in alternates:
+            out.append(
+                f"    #   {alt.get('name', '')}: {alt.get('run', '')}"
+                f"  [env={alt.get('env', '')}]"
+            )
     out.append("")
 
     out.append(f"  {result.note}")

@@ -10,10 +10,13 @@ plugin.py / pyproject.toml).
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+from typing import Any
 
 from core.infra.platform import venv_python_subpath
 from sdk.fine_tune import FineTuneResult, fine_tune_project
+from sdk.fine_tune_probes import EnvCandidate, register_marker_probe
 
 
 def _fingerprint(root: Path) -> dict[str, tuple[int, str]]:
@@ -48,6 +51,23 @@ def _python_project(root: Path, *, pkg: str = "proj_pkg", venv: bool = False) ->
     return project
 
 
+def _node_project(
+    root: Path,
+    *,
+    scripts: dict[str, str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    project = root / "node-proj"
+    project.mkdir()
+    manifest: dict[str, Any] = {"name": "node-proj", **(extra or {})}
+    if scripts is not None:
+        manifest["scripts"] = scripts
+    (project / "package.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    return project
+
+
 class TestCandidateContract:
     def test_python_project_yields_envs_and_commands(self, tmp_path: Path) -> None:
         project = _python_project(tmp_path)
@@ -79,6 +99,97 @@ class TestCandidateContract:
         result = fine_tune_project(str(project), dry_run=True)
         assert "node" in result.candidate["verification_envs"]
         assert result.candidate["verification"]["default_env"] == "node"
+
+    def test_node_scripts_drive_proposed_commands(self, tmp_path: Path) -> None:
+        project = _node_project(tmp_path, scripts={
+            "test": "vitest run",
+            "lint": "eslint .",
+            "typecheck": "tsc --noEmit",
+        })
+        result = fine_tune_project(str(project), dry_run=True)
+        commands = result.candidate["verification"]["commands"]
+        assert commands["node_test"] == {"run": "npm test", "env": "node"}
+        assert commands["node_lint"] == {"run": "npm run lint", "env": "node"}
+        assert commands["node_typecheck"] == {
+            "run": "npm run typecheck", "env": "node",
+        }
+
+    def test_node_absent_scripts_are_not_proposed(self, tmp_path: Path) -> None:
+        # Only a lint script: no dead-on-arrival npm test / npm run typecheck.
+        project = _node_project(tmp_path, scripts={"lint": "eslint ."})
+        result = fine_tune_project(str(project), dry_run=True)
+        commands = result.candidate["verification"]["commands"]
+        assert set(commands) == {"node_lint"}
+        assert "node" in result.candidate["verification_envs"]
+
+    def test_node_typescript_devdep_falls_back_to_npx_tsc(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _node_project(
+            tmp_path,
+            scripts={"test": "vitest run"},
+            extra={"devDependencies": {"typescript": "^5.4.0"}},
+        )
+        result = fine_tune_project(str(project), dry_run=True)
+        commands = result.candidate["verification"]["commands"]
+        assert commands["node_typecheck"] == {
+            "run": "npx tsc --noEmit", "env": "node",
+        }
+
+    def test_node_test_colon_scripts_surface_as_alternates(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = _node_project(tmp_path, scripts={
+            "test": "vitest run",
+            "test:unit": "vitest run --project unit",
+            "test:e2e": "playwright test",
+        })
+        result = fine_tune_project(str(project), dry_run=True)
+        assert result.candidate["suggested_alternates"] == [
+            {"name": "test:e2e", "run": "npm run test:e2e", "env": "node"},
+            {"name": "test:unit", "run": "npm run test:unit", "env": "node"},
+        ]
+
+    def test_node_unreadable_manifest_falls_back_to_npm_test(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        project = tmp_path / "broken"
+        project.mkdir()
+        (project / "package.json").write_text("{not json", encoding="utf-8")
+        result = fine_tune_project(str(project), dry_run=True)
+        commands = result.candidate["verification"]["commands"]
+        assert set(commands) == {"node_test"}
+        assert commands["node_test"]["run"] == "npm test"
+
+    def test_registered_marker_probe_extends_detection(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import sdk.fine_tune_probes as probes
+
+        def _probe_just(root: Path) -> EnvCandidate:
+            return EnvCandidate(
+                env="just",
+                spec={"assertions": [{"command_exists": "just"}]},
+                commands={"just_test": {"run": "just test", "env": "just"}},
+            )
+
+        monkeypatch.setitem(probes._MARKER_PROBES, "justfile", _probe_just)
+        register_marker_probe("justfile", _probe_just)
+
+        project = tmp_path / "j"
+        project.mkdir()
+        (project / "justfile").write_text("test:\n", encoding="utf-8")
+        result = fine_tune_project(str(project), dry_run=True)
+        assert result.markers == ["justfile"]
+        assert "just" in result.candidate["verification_envs"]
+        assert result.candidate["verification"]["commands"]["just_test"] == {
+            "run": "just test", "env": "just",
+        }
 
     def test_dotnet_solution_detected_with_libs_bootstrap_hint(
         self,

@@ -118,6 +118,7 @@ from sdk.evidence_slices import (
     list_subtask_receipts,
 )
 from sdk.fine_tune import FineTuneResult, fine_tune_project
+from sdk.fine_tune_probes import EnvCandidate, register_marker_probe
 from sdk.handoff_advice import (
     HandoffAdviceConflict,
     HandoffAdviceResult,
@@ -396,6 +397,8 @@ __all__ = [
     # Fine-tune
     "fine_tune_project",
     "FineTuneResult",
+    "EnvCandidate",
+    "register_marker_probe",
     # Types
     "ProfileSummary",
     "RunRef",
