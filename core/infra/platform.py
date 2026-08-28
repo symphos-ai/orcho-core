@@ -108,15 +108,16 @@ def engine_dev_home() -> Path | None:
 def workspace_dir() -> Path | None:
     """Return the current workspace root (prompt overrides and runspace).
 
-    Единственный источник: ``$ORCHO_WORKSPACE`` env var. Legacy embedded-mode
-    (когда orcho-engine сидит как sibling рядом с workspace и резолвит его
-    через walk-up) удалён намеренно: engine-репо сам имеет
-    ``.orcho/multiagent/`` и ``worktree/`` (он dogfood-ит себя), что делало
-    walk-up неотличимым между «engine» и «workspace» — pipeline молча писал
-    артефакты в репо движка.
+    The only source is the ``$ORCHO_WORKSPACE`` env var. The legacy
+    embedded mode (where the orcho engine sat as a sibling of the
+    workspace and resolved it via walk-up) was removed deliberately: the
+    engine repo itself has ``.orcho/multiagent/`` and ``worktree/`` (it
+    runs on itself), which made walk-up unable to tell "engine" from
+    "workspace" — the pipeline silently wrote artifacts into the engine
+    repo.
 
-    Caller обязан проверить None и упасть с понятной ошибкой
-    (см. ``runspace_dir`` → WorkspaceNotResolvedError).
+    Callers must check for None and fail with a clear error
+    (see ``runspace_dir`` → WorkspaceNotResolvedError).
 
     A workspace is a thin directory alongside the engine that holds:
       - ``.orcho/multiagent/prompts/``   — prompt overrides
@@ -154,10 +155,10 @@ def runspace_dir() -> Path:
       1. $ORCHO_RUNSPACE env var     (explicit override)
       2. $ORCHO_WORKSPACE/runspace   (workspace-local output)
 
-    Если ничего из перечисленного не сработало — raise
-    WorkspaceNotResolvedError. Раньше тут был fallback на
-    ``engine_home()/runspace``, который засорял репо движка артефактами; он
-    удалён намеренно.
+    When neither of the above resolves — raise
+    WorkspaceNotResolvedError. There used to be a fallback to
+    ``engine_home()/runspace`` that littered the engine repo with
+    artifacts; it was removed deliberately.
     """
     if env := os.environ.get("ORCHO_RUNSPACE"):
         return Path(env)

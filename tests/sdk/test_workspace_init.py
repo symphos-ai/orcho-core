@@ -323,7 +323,13 @@ def test_existing_workspace_local_config_is_not_overwritten(
 
     r = init_workspace(root)
 
-    assert json.loads(existing.read_text(encoding="utf-8")) == sentinel
+    # User content is preserved verbatim; init only adds its own additive
+    # MCP-identity record (same class as the project-alias merge).
+    data = json.loads(existing.read_text(encoding="utf-8"))
+    assert data["phases"] == sentinel["phases"]
+    assert data["mcp"] == {"server_name": "orcho-g", "command": "orcho-mcp"}
+    assert set(data) == {"phases", "mcp"}
+    assert r.mcp_identity_stored is True
     assert str(existing) in r.skipped_paths
 
 
@@ -668,7 +674,13 @@ def test_scaffold_preserves_custom_workspace_config_files(tmp_path: Path) -> Non
     second = init_workspace(tmp_path / "g")
 
     for path, body in expected.items():
-        assert path.read_text(encoding="utf-8") == body
+        if path is personal_config:
+            # Preserved except for init's additive MCP-identity record.
+            data = json.loads(path.read_text(encoding="utf-8"))
+            assert data["phases"] == {"implement": {"effort": "high"}}
+            assert set(data) == {"phases", "mcp"}
+        else:
+            assert path.read_text(encoding="utf-8") == body
         assert str(path) in second.skipped_paths
 
 

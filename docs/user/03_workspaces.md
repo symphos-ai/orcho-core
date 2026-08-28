@@ -14,26 +14,64 @@ orcho run --task "Add tests for auth module" --mock
 Orcho stores its run state outside the checkout in a deterministic managed
 workspace. The repository remains the canonical edit and delivery target.
 Later CLI calls use the current directory as the project and resolve its
-managed workspace automatically, while the MCP snippet printed by init carries
-the workspace path explicitly.
+managed workspace automatically. For a complete MCP client setup carrying that
+workspace identity, run `orcho workspace mcp` after init.
 
 ---
 
-## Configure the generated plugin scaffold
+## Print MCP client setup
 
-`workspace init` creates a language-neutral plugin scaffold in the control
-workspace and prints its exact path. It is intentionally inert because init
-does not guess project commands or policy. Generic mode can run immediately,
-but effective recurring use depends on adapting that scaffold to the project.
+`orcho workspace mcp` is read-only and prints the full setup block for the
+workspace associated with the current project or directory:
 
-Copy it into the project and configure it from repository evidence:
+```bash
+orcho workspace mcp
+```
+
+Use `--workspace PATH` when cwd cannot resolve the intended workspace.
+`workspace init` stores the resolved server name and launch command in the
+workspace-local config (`.orcho/config.local.json`, key `mcp`), so a bare
+`orcho workspace mcp` reproduces that init's setup. The optional
+`--mcp-server-name NAME` and `--orcho-mcp-command CMD` remain overrides for a
+custom server identity or launch command. The command does not create or
+modify files. Use `workspace init --mcp-config PATH` only when you want init to
+write or merge a client entry.
+
+---
+
+## Project plugin configuration
+
+`workspace init` always creates its empty, language-neutral workspace template
+unless `--no-scaffold` is set. When init is running on a real TTY, is not given
+`--no-interactive` or `--dry-run`, and registers at least one project, it also
+explains the benefits and asks one default-no question about creating starter
+project plugin-configs. Choosing yes writes an inspected candidate for each
+project registered by that invocation. Generic mode can run immediately;
+choosing no, EOF, or Ctrl-C leaves project trees unchanged.
+
+The project candidate belongs here and must be reviewed against repository
+evidence before it is relied on:
 
 ```
 your-project/
 └── .orcho/
     └── multiagent/
-        └── plugin.py    ← configured project copy of the generated scaffold
+        └── plugin.py    ← inspected starter candidate or reviewed project config
 ```
+
+When a registered project has no recognised repo markers, the prompt says so
+before asking: the candidate is an empty skeleton and you fill lint/test
+commands yourself. The outcome line reports such a plugin as
+`created … (empty — fill commands)` instead of an undifferentiated `created`.
+
+`--no-interactive`, non-TTY input, and `--dry-run` never ask the question or
+write a project plugin. An existing file, directory, or symlink at that path is
+listed as skipped and is never overwritten. You can also author a project
+plugin directly when that better fits your workflow.
+
+The ownership of this explicit write decision, the fine-tune pure-read rule,
+and the separate MCP setup command are recorded in
+[ADR 0184](../adr/0184-workspace-init-decision-surface.md).
 
 ### Why configure it when the project already has CI?
 
@@ -95,9 +133,10 @@ cd /path/to/project
 orcho workspace fine-tune --dry-run
 ```
 
-Fine-tune uses repository markers to propose environments and commands. It
-does not write `plugin.py`, infer a complete gate lifecycle, or approve the
-proposal.
+Fine-tune uses repository markers to propose environments and commands. It is
+pure-read: it does not write `plugin.py`, infer a complete gate lifecycle, or
+approve the proposal. Init’s explicit interactive opt-in is the separate owner
+of any project-plugin write.
 
 For deeper setup, adopt the generated agent-rule template alongside the
 plugin: merge its rules into the project's existing root `AGENTS.md`, preserve
@@ -186,7 +225,7 @@ convention: commit the shared file; keep the local file personal.
 are only created when missing and are never overwritten. Prompt overrides
 resolve project first, then workspace, then core. Project plugins still
 live at `project/.orcho/multiagent/plugin.py`; the workspace plugin file
-is a copyable template with `PLUGIN = {}`.
+is an empty template with `PLUGIN = {}`.
 
 The generated `AGENTS.md` and `CLAUDE.md` live beside the plugin because they
 form one project-configuration template. When a project adopts the plugin,
@@ -221,12 +260,14 @@ Useful `orcho workspace init` flags:
 - `--workspace-dir PATH` — override the managed control-workspace location
   when initialising a single existing repository.
 - `--mcp-config ~/www/my-workspace/.mcp.json` — also write the MCP
-  client snippet into `.mcp.json`. Existing entries for other servers
-  are preserved.
+  client entry into `.mcp.json`. Existing entries for other servers
+  are preserved. For the full commands and JSON shapes, use
+  `orcho workspace mcp`.
 - `--force` — continue scaffolding without an installed agent runtime or
   replace a conflicting MCP entry.
-- `--no-interactive` — skip interactive questions about unmarked
-  folders (CI / non-TTY).
+- `--no-interactive` — skip interactive questions about unmarked folders and
+  starter project plugin-configs (CI / non-TTY); it never writes a project
+  plugin.
 - `--no-scaffold` — skip extension-point templates, including the shared
   `config.json` and `.orcho/.gitignore` scaffold; the personal config snapshot
   is still created.

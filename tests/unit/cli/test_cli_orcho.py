@@ -428,6 +428,15 @@ class TestParser:
         assert "REA-" not in help_text
         assert "Phase " not in help_text
 
+    def test_top_level_help_never_renders_suppress_literal(self) -> None:
+        # argparse renders ``help=argparse.SUPPRESS`` literally as
+        # ``==SUPPRESS==`` for subparsers, so hidden subcommands (``web``,
+        # ``tui``) must omit ``help=`` instead of passing SUPPRESS.
+        parser = self.build_parser()
+        help_text = parser.format_help()
+
+        assert "==SUPPRESS==" not in help_text
+
     def test_command_groups_cover_every_subcommand(self) -> None:
         from cli._help import COMMAND_GROUPS
 
@@ -2202,10 +2211,11 @@ class TestWorkspaceInitParser:
         assert args.workspace_dir is None
         assert args.mcp_config is None
         assert args.mcp_server_name is None
-        assert args.orcho_mcp_command == "orcho-mcp"
+        assert args.orcho_mcp_command is None
         assert args.force is False
         assert args.dry_run is False
         assert args.no_scaffold is False
+        assert args.verbose is False
 
     def test_workspace_init_all_flags(self) -> None:
         parser = self.build_parser()
@@ -2292,6 +2302,90 @@ class TestWorkspaceInitParser:
         assert str(child) in out
         assert f"orcho workspace fine-tune {child}" in out
 
+    def test_workspace_fine_tune_formats_nested_candidate_sections(self) -> None:
+        from cli._formatters import format_fine_tune
+        from sdk.fine_tune import FineTuneResult
+
+        result = FineTuneResult(
+            project="/repo/sub/web",
+            dry_run=True,
+            wrote=False,
+            markers=["package.json"],
+            candidate={
+                "work_mode": "pro",
+                "verification_envs": {
+                    "node": {
+                        "cwd": "{checkout}/sub/web",
+                        "assertions": [{"command_exists": "node"}],
+                    },
+                },
+                "worktree_bootstrap": [
+                    {"run": ["npm", "ci"], "cwd": "sub/web"},
+                ],
+                "verification": {
+                    "default_env": "node",
+                    "commands": {
+                        "node_test": {"run": "npm test", "env": "node"},
+                    },
+                    "required": ["node_test"],
+                    "schedule": [
+                        {
+                            "before_delivery": True,
+                            "policy": "warn",
+                            "commands": ["node_test"],
+                        },
+                    ],
+                },
+                "suggested_alternates": [
+                    {"name": "test:unit", "run": "npm run test:unit", "env": "node"},
+                ],
+            },
+            note="Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself.",
+        )
+
+        output = format_fine_tune(result)
+
+        assert "[node]  (cwd: {checkout}/sub/web)" in output
+        assert "  worktree_bootstrap:" in output
+        assert "    - npm ci  [cwd=sub/web]" in output
+        assert "  required:\n    - node_test" in output
+        assert "  schedule:\n    - before_delivery: node_test  [policy=warn]" in output
+        assert "    # alternate scripts detected (not proposed):" in output
+        assert "    #   test:unit: npm run test:unit  [env=node]" in output
+        assert "  Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself." in output
+        assert "  No files were written." in output
+
+    def test_workspace_fine_tune_omits_toplevel_optional_sections(self) -> None:
+        from cli._formatters import format_fine_tune
+        from sdk.fine_tune import FineTuneResult
+
+        result = FineTuneResult(
+            project="/repo",
+            dry_run=True,
+            wrote=False,
+            markers=["pyproject.toml"],
+            candidate={
+                "work_mode": "pro",
+                "verification_envs": {
+                    "py": {"assertions": [{"command_exists": "pytest"}]},
+                },
+                "verification": {
+                    "default_env": "py",
+                    "commands": {"test": {"run": "pytest -q", "env": "py"}},
+                    "required": ["test"],
+                    "schedule": [],
+                },
+            },
+            note="Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself.",
+        )
+
+        output = format_fine_tune(result)
+
+        assert "[py]" in output
+        assert "cwd:" not in output
+        assert "worktree_bootstrap:" not in output
+        assert "  schedule:" not in output
+
 
 class TestCmdWorkspaceInit:
     @pytest.fixture(autouse=True)
@@ -2327,34 +2421,39 @@ class TestCmdWorkspaceInit:
         assert "Runs:" in out
         assert "Local config:" in out
         assert "Extension points:" in out
+        assert str(root / "workspace-orchestrator" / ".orcho") in out
+        assert "Plugin template:" not in out
+        assert "Prompt overrides:" not in out
+        assert "MCP client setup" in out
+        assert "Detected clients:" in out
+        assert "Full setup: orcho workspace mcp" in out
+        assert "--mcp-server-name" not in out
+        assert "--orcho-mcp-command" not in out
+        assert "Codex CLI / Codex app" in out
+        assert "Claude Code" in out
+        assert "Gemini CLI" in out
+        assert "```json" not in out
+        assert "mcpServers shape" not in out
+        assert "Antigravity" not in out
+        assert "After client restart" not in out
+
+    def test_verbose_lists_every_extension_point_path(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+        root = tmp_path / "group"
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            verbose=True,
+        ))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Extension points:" in out
         assert "Plugin template:" in out
         assert "Prompt overrides:" in out
         assert "Task files:" in out
         assert "Agent rules template:" in out
         assert "Claude shim template:" in out
-        assert "MCP client setup" in out
-        assert "choose one path" in out
-        assert "one Orcho MCP server per workspace" in out
-        assert "distinct name" in out
-        assert "Terminal clients" in out
-        assert "Codex CLI / Codex app" in out
-        assert "codex mcp add" in out
-        assert "Claude Code" in out
-        assert "claude mcp add" in out
-        assert "Gemini CLI" in out
-        assert "gemini mcp add" in out
-        assert "App config snippets" in out
-        assert "do not run" in out
-        assert out.count("Done when:") >= 5
-        assert "codex mcp list" in out
-        assert "claude mcp list" in out
-        assert "gemini mcp list" in out
-        assert "Claude app / JSON clients" in out
-        assert "mcpServers shape" in out
-        assert "Antigravity" in out
-        assert "User/mcp.json servers shape" in out
-        assert "After client restart" in out
-        assert "orcho_workspace_info" in out
 
     def test_dry_run_says_nothing_written(
         self, tmp_path: Path, capsys,
@@ -2383,7 +2482,8 @@ class TestCmdWorkspaceInit:
         assert rc == 0
         out = capsys.readouterr().out
         assert str(cfg) in out
-        assert "MCP config" in out
+        assert "--mcp-config:" in out
+        assert "Wrote" in out
         assert cfg.is_file()
 
     def test_existing_repo_is_connected_in_place(
@@ -2999,11 +3099,10 @@ class TestFormatWorkspaceInitRuntimeDetection:
         # Summary section lists only the installed runtime + its path.
         assert "Detected CLI runtimes:" in out
         assert "Codex CLI / Codex app (/usr/bin/codex)" in out
-        # Installed client's setup block is marked.
-        assert "Codex CLI / Codex app: ✓ installed" in out
-        # Missing clients are flagged, not hidden.
-        assert "Claude Code: (not found — `claude` not on PATH)" in out
-        assert "Gemini CLI: (not found — `gemini` not on PATH)" in out
+        # The compact MCP summary still exposes detection state.
+        assert "Codex CLI / Codex app ✓" in out
+        assert "Claude Code (not found)" in out
+        assert "Gemini CLI (not found)" in out
 
     def test_no_runtimes_installed_shows_none_hint(self) -> None:
         from cli._formatters import format_workspace_init

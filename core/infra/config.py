@@ -470,11 +470,11 @@ def get_gemini_bin() -> str:
 
 
 # ── Workspace / runspace (lazy resolution) ──────────────────────────────────
-# Раньше RUNSPACE_DIR / RUNS_DIR резолвились как module-level Path при import,
-# из-за чего dashboard'овский выбор workspace игнорировался pipeline-ом
-# (значения были зафиксированы при старте процесса). Теперь — функции,
-# которые читают env при каждом вызове. Module-level proxy сохранены для
-# тестов и dashboard.services.history (Wave 2 удалит).
+# RUNSPACE_DIR / RUNS_DIR used to resolve as module-level Paths at import
+# time, so a workspace selected from the dashboard was ignored by the
+# pipeline (the values were frozen at process start). They are now
+# functions that read the env on every call. The module-level proxies are
+# kept for tests and dashboard.services.history (Wave 2 removes them).
 from core.infra.platform import (  # noqa: E402  # late import: keeps the rationale comment grouped with the imports
     WorkspaceNotResolvedError,
     runspace_dir as _resolve_runspace,
@@ -502,9 +502,9 @@ def get_runs_dir() -> Path:
 
 
 class _LazyPath:
-    """Module-level Path proxy: вычисляется при каждом доступе, raise — при
-    отсутствии workspace. Сохраняет API ``config.RUNS_DIR / "20260504"`` для
-    обратной совместимости с тестами и dashboard.services.history."""
+    """Module-level Path proxy: resolved on every access, raising when no
+    workspace is set. Preserves the ``config.RUNS_DIR / "20260504"`` API for
+    backward compatibility with tests and dashboard.services.history."""
 
     def __init__(self, resolver):
         self._resolver = resolver
@@ -534,7 +534,7 @@ class _LazyPath:
             return False
 
     def __getattr__(self, name):
-        # Делегируем любые методы Path (mkdir, iterdir, parent, name, …).
+        # Delegate any Path method (mkdir, iterdir, parent, name, …).
         return getattr(self._path(), name)
 
 
@@ -690,7 +690,7 @@ class AppConfig:
         # Artifacts: defaults + JSON overlay + env override.
         artifacts = dict(_ARTIFACTS_DEFAULTS)
         artifacts.update(raw.get("artifacts", {}))
-        # ARTIFACTS_MIRROR=1/true включает зеркалирование без правки JSON.
+        # ARTIFACTS_MIRROR=1/true enables mirroring without editing JSON.
         if v := os.environ.get("ARTIFACTS_MIRROR"):
             artifacts["mirror_to_project"] = v.strip().lower() in ("1", "true", "yes", "on")
 

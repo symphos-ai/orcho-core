@@ -6,6 +6,12 @@ snapshot of ``run_supervisor.json`` and ``events.jsonl`` once; it neither polls
 nor writes files or starts background work.  Callers retain ownership of their
 status policy and any repair mutation.
 
+Event-stream timestamps are read under the machine-local convention the
+public event reader documents: a naive stamp keeps its wall-clock components
+and takes this machine's offset, because that is what the event writer has
+always emitted.  The launch artifact and a caller-injected clock are held to
+the stricter offset-aware rule.
+
 ``pid_is_alive`` can only establish that a PID currently exists.  Since an OS
 may reuse a PID, an ``alive`` result is deliberately not proof that it belongs
 to this run.  Conversely, a ``dead`` result must be combined with stale (or
@@ -136,6 +142,9 @@ def read_liveness_facts(
     grace = _resolve_grace_seconds(grace_seconds)
     launch_state, launch = _read_launch(path)
     pid = _positive_int(launch.get("pid")) if launch is not None else None
+    # The launch artifact is written by one writer that always stamps UTC, so
+    # a naive value there is foreign evidence, not the local-time convention:
+    # it stays strict, and cannot age absent history into a stall.
     started_at = _normalise_timestamp(launch.get("started_at")) if launch is not None else None
     probe_state = _probe_pid(pid, pid_probe)
     last_kind, last_at, terminal_kind, events_read = _read_event_facts(path)
@@ -188,7 +197,12 @@ def _read_event_facts(
         if event.kind in _TERMINAL_EVENT_KINDS:
             terminal_kind = event.kind
     latest = events[-1]
-    return latest.kind or None, _normalise_timestamp(latest.ts), terminal_kind, True
+    return (
+        latest.kind or None,
+        _normalise_durable_timestamp(latest.ts),
+        terminal_kind,
+        True,
+    )
 
 
 def _classify_progress(
@@ -260,6 +274,37 @@ def _usable_seconds(value: Any) -> float | None:
 def _positive_int(value: Any) -> int | None:
     """Accept a real positive integer PID, never bools or numeric strings."""
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _normalise_durable_timestamp(value: Any) -> datetime | None:
+    """Parse an event-stream timestamp into UTC, else unknown.
+
+    The event writer emits naive local wall-clock stamps
+    (``2026-08-28T18:44:46.234``), and always has. Rejecting those as
+    unusable made every time-based fact ``UNKNOWN`` on real runs, which made
+    :attr:`RunLivenessFacts.dead_process_with_stale_progress` unreachable
+    outside offset-aware fixtures — the detector was inert against its own
+    producer, so a run whose process had been gone for hours still aged as
+    "we cannot tell". Durable stamps therefore follow the same rule the
+    public event reader documents: keep the wall-clock components and attach
+    this machine's local offset.
+
+    This leniency is for the event stream only. A caller-injected clock and
+    the launch artifact stay strict (:func:`_normalise_timestamp`): the first
+    is an argument rather than evidence, and the second has exactly one
+    writer, which always stamps UTC.
+    """
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            try:
+                return parsed.astimezone().astimezone(UTC)
+            except (OverflowError, ValueError, OSError):
+                return None
+    return _normalise_timestamp(value)
 
 
 def _normalise_timestamp(value: Any) -> datetime | None:

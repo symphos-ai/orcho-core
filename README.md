@@ -43,10 +43,12 @@ Assign registered runtimes such as Claude, a Claude-compatible GLM wrapper,
 Codex, or Gemini to any phase via env vars, profiles, or `config.local.json`.
 
 No engine fork is required for project-specific context. Orcho starts with a
-safe generic fallback, and `workspace init` creates a language-neutral plugin
-scaffold. Completing that scaffold for the project is the recommended setup:
-it gives Orcho explicit architecture context, file hints, and authoritative
-verification policy instead of making every run rediscover them.
+safe generic fallback. In an interactive terminal, `workspace init` offers a
+default-no choice to create starter project plugin-configs for the projects it
+registers. Those candidates give Orcho explicit architecture context, file
+hints, and a starting verification policy; review them against repository
+evidence before relying on them. Non-interactive and dry-run init stay
+template-only and never write project plugins.
 
 ---
 
@@ -65,11 +67,21 @@ orcho run --mock --task "Describe and implement one small change"
 orcho status
 ```
 
-`workspace init` does not move, copy, or modify the repository layout. It
-registers the canonical project path and stores Orcho's control state in an
-external managed workspace. Later CLI commands resolve that workspace from
-the current project directory; no `--project` flag, environment script, or
-dedicated parent folder is required.
+![A real orcho workspace init on a fresh project: the compact summary, one plugin question answered yes, and the generated project plugin pre-filled with the lint and test commands discovered from the repository](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-workspace-init.gif)
+
+`workspace init` does not move or copy the repository. It registers the
+canonical project path and stores Orcho's control state in an external managed
+workspace. An eligible interactive terminal may separately offer an explicit
+project-plugin write; non-interactive and dry-run init do not write project
+plugins. Later CLI commands resolve the workspace from the current project
+directory; no `--project` flag, environment script, or dedicated parent folder
+is required.
+
+To print the complete, read-only MCP client setup for that workspace, run:
+
+```bash
+orcho workspace mcp
+```
 
 The mock run exercises the delivery pipeline without calling a model. For a
 real run, remove `--mock` and make sure at least one supported coding-agent CLI
@@ -309,17 +321,22 @@ orcho status | orcho history | orcho metrics
 
 ---
 
-## Configure the generated project plugin
+## Choose generic mode or a starter project plugin
 
-`workspace init` prints the path to a generated plugin scaffold and its matching
-agent-rule templates. The scaffold is deliberately inert: init has not
-inspected the repository deeply enough to invent commands, environments, or
-delivery policy safely.
+After registering one or more projects, an eligible interactive `workspace
+init` explains the benefits and asks one default-no question before creating
+starter plugin-configs. The candidates are derived from repository markers, but
+they are not a finished project contract. Declining, end-of-input, or an
+interrupted prompt keeps generic mode and leaves every project tree unchanged.
+`--no-interactive`, non-TTY input, and `--dry-run` do not ask or create project
+plugins.
 
-Generic mode is sufficient for the first smoke run. For sustained use, copy
-the generated scaffold to `your-project/.orcho/multiagent/plugin.py`, merge the
-generated agent rules into the project's root instructions, and complete the
-configuration from facts found in the repository:
+Generic mode is sufficient for the first smoke run. If you opt in, init writes
+the candidate to `your-project/.orcho/multiagent/plugin.py`; an existing file,
+directory, or symlink is reported as skipped and is never replaced. You can
+also author that file yourself. In either case, merge the generated agent rules
+into the project's root instructions and complete the configuration from facts
+found in the repository:
 
 If the project already has tests, linting, build checks, and CI, do not invent
 another quality system. Reuse those project-native commands in the plugin.
@@ -359,7 +376,7 @@ Without a configured project plugin, Orcho still runs, but it falls back to
 generic context and has no project-owned scheduled verification contract.
 For the full workflow—including read-only fine-tune suggestions,
 agent-assisted repository discovery, and the engineer approval boundary—see
-[Configure the generated plugin scaffold](docs/user/03_workspaces.md#configure-the-generated-plugin-scaffold).
+[Project plugin configuration](docs/user/03_workspaces.md#project-plugin-configuration).
 
 ---
 
