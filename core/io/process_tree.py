@@ -33,11 +33,40 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+#: ``CREATE_BREAKAWAY_FROM_JOB``. Not exposed by :mod:`subprocess`.
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
 def detached_spawn_kwargs() -> dict[str, bool | int]:
     """Platform launch flags for a detached, independently owned child."""
     if _is_windows():
         return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)}
     return {"start_new_session": True}
+
+
+def breakaway_spawn_kwargs() -> dict[str, bool | int]:
+    """Detached launch flags for a child that must outlive its launcher.
+
+    On Windows ``CREATE_NEW_PROCESS_GROUP`` only reroutes console control
+    events. It does **not** remove the child from the launcher's Job Object,
+    so a launcher that is itself supervised inside a kill-on-close job —
+    which is how a client commonly runs a long-lived server process — takes
+    every "detached" child down with it. The kernel terminates the whole job:
+    no traceback, no ``atexit``, no bytes in the child's log, nothing written
+    down anywhere. A run dies mid-phase and leaves no evidence that it did.
+
+    ``CREATE_BREAKAWAY_FROM_JOB`` is the flag that actually detaches. It
+    fails the spawn outright (``ERROR_ACCESS_DENIED``) when the launcher's
+    job forbids breakaway, so a caller MUST be able to fall back to
+    :func:`detached_spawn_kwargs` — see
+    :func:`sdk.run_control.launch._spawn_detached`. A POSIX session has no
+    equivalent containment to escape, so this is the same dict there and the
+    fallback is a no-op.
+    """
+    if _is_windows():
+        flags = int(detached_spawn_kwargs()["creationflags"])
+        return {"creationflags": flags | _CREATE_BREAKAWAY_FROM_JOB}
+    return detached_spawn_kwargs()
 
 
 def detached_tree_descriptor(pid: int) -> dict[str, str | int | bool]:
