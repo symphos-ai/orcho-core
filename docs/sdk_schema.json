@@ -1149,6 +1149,39 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "env",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "spec",
+          "type": "dict[str, Any]"
+        },
+        {
+          "default": null,
+          "default_factory": "dict",
+          "name": "commands",
+          "type": "dict[str, dict[str, Any]]"
+        },
+        {
+          "default": null,
+          "default_factory": "list",
+          "name": "alternates",
+          "type": "list[dict[str, str]]"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.fine_tune_probes",
+      "name": "EnvCandidate",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "status",
           "type": "str"
         },
@@ -5932,6 +5965,26 @@
         }
       ],
       "return": "RefreshResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.fine_tune_probes",
+      "name": "register_marker_probe",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "marker"
+        },
+        {
+          "annotation": "MarkerProbe",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "probe"
+        }
+      ],
+      "return": "None"
     },
     {
       "kind": "callable",

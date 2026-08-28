@@ -2302,6 +2302,90 @@ class TestWorkspaceInitParser:
         assert str(child) in out
         assert f"orcho workspace fine-tune {child}" in out
 
+    def test_workspace_fine_tune_formats_nested_candidate_sections(self) -> None:
+        from cli._formatters import format_fine_tune
+        from sdk.fine_tune import FineTuneResult
+
+        result = FineTuneResult(
+            project="/repo/sub/web",
+            dry_run=True,
+            wrote=False,
+            markers=["package.json"],
+            candidate={
+                "work_mode": "pro",
+                "verification_envs": {
+                    "node": {
+                        "cwd": "{checkout}/sub/web",
+                        "assertions": [{"command_exists": "node"}],
+                    },
+                },
+                "worktree_bootstrap": [
+                    {"run": ["npm", "ci"], "cwd": "sub/web"},
+                ],
+                "verification": {
+                    "default_env": "node",
+                    "commands": {
+                        "node_test": {"run": "npm test", "env": "node"},
+                    },
+                    "required": ["node_test"],
+                    "schedule": [
+                        {
+                            "before_delivery": True,
+                            "policy": "warn",
+                            "commands": ["node_test"],
+                        },
+                    ],
+                },
+                "suggested_alternates": [
+                    {"name": "test:unit", "run": "npm run test:unit", "env": "node"},
+                ],
+            },
+            note="Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself.",
+        )
+
+        output = format_fine_tune(result)
+
+        assert "[node]  (cwd: {checkout}/sub/web)" in output
+        assert "  worktree_bootstrap:" in output
+        assert "    - npm ci  [cwd=sub/web]" in output
+        assert "  required:\n    - node_test" in output
+        assert "  schedule:\n    - before_delivery: node_test  [policy=warn]" in output
+        assert "    # alternate scripts detected (not proposed):" in output
+        assert "    #   test:unit: npm run test:unit  [env=node]" in output
+        assert "  Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself." in output
+        assert "  No files were written." in output
+
+    def test_workspace_fine_tune_omits_toplevel_optional_sections(self) -> None:
+        from cli._formatters import format_fine_tune
+        from sdk.fine_tune import FineTuneResult
+
+        result = FineTuneResult(
+            project="/repo",
+            dry_run=True,
+            wrote=False,
+            markers=["pyproject.toml"],
+            candidate={
+                "work_mode": "pro",
+                "verification_envs": {
+                    "py": {"assertions": [{"command_exists": "pytest"}]},
+                },
+                "verification": {
+                    "default_env": "py",
+                    "commands": {"test": {"run": "pytest -q", "env": "py"}},
+                    "required": ["test"],
+                    "schedule": [],
+                },
+            },
+            note="Candidate only — Stage 2 does not write plugin.py. Review and materialise the contract yourself.",
+        )
+
+        output = format_fine_tune(result)
+
+        assert "[py]" in output
+        assert "cwd:" not in output
+        assert "worktree_bootstrap:" not in output
+        assert "  schedule:" not in output
+
 
 class TestCmdWorkspaceInit:
     @pytest.fixture(autouse=True)
