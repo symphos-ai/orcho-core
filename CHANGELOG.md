@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.9.0 - 2026-08-29
+
+Onboarding stops producing something inert, and a run that has ceased to exist
+stops being reported as working. Both came out of walking the paths as a user
+rather than as an author: the first from a first-run of `workspace init`, the
+second from a field report of four runs that died mid-`implement` and were
+still described as live work 23 hours later.
+
+### Added
+
+- `orcho workspace mcp` prints the workspace's resolved MCP server identity
+  with no flags, from what `init` persisted, so an agent client can be pointed
+  at the right server without reconstructing the command by hand
+  (ADR 0185).
+- Fine-tune proposes verification commands that can actually run. Per-language
+  marker probes are an ordered registry any third-party module can extend
+  through `register_marker_probe`, and the Node probe reads the marker
+  `package.json` instead of proposing a fixed pair — it offers only scripts
+  that exist, falls back to `npx tsc --noEmit` when TypeScript is a dependency
+  without a typecheck script, and says when it found nothing.
+
+### Changed
+
+- `orcho workspace init` is a decision surface rather than a scaffolder
+  (ADR 0184). It no longer writes a `plugin.py` under the workspace root,
+  where nothing reads it: the reader is `<project>/.orcho/multiagent/plugin.py`,
+  and those two paths coincide only when the workspace root *is* the project
+  root, which managed workspaces no longer produce. Every such run reported
+  `no plugin — generic mode`, recorded gates as `skipped`, and delivered
+  anyway. Init now asks about the project plugin, discloses a project with no
+  repo markers before asking, and reports a skeleton as
+  `created (empty — fill commands)` instead of an undifferentiated success.
+  Its output is also considerably shorter.
+- The shipped `config.defaults.json` no longer carries this project's own
+  topology signals. They were hardcoded, so a user's task that merely
+  mentioned "wire format" drew a cross-repo recommendation over two
+  repositories they had never heard of. The table ships empty, with the
+  mechanism documented and an ignored `_example` showing the shape; empty
+  signals mean no cross recommendation.
+- Skill shadowing reports one counted line instead of one per skill. Shadowing
+  is the expected outcome when a project overlays a shared catalogue, and on a
+  host with its own 26-skill set the diagnostic pushed every command's real
+  output off the screen. `--output debug` keeps the per-skill detail.
+
+### Fixed
+
+- A run whose process is gone is no longer reported as working. The event
+  writer emits naive local timestamps; the liveness reader accepted only
+  offset-aware values and aged everything else to unknown, so the predicate
+  behind both `run_diagnosis`'s `stalled` verdict and `repair-state`'s
+  `running_without_live_process` repair could never become true on a real run.
+  Both branches existed and neither could fire. `orcho status` now reports such
+  a run and names the command that finalises it.
+- A verification gate that ran clean but cannot be proven against the current
+  checkout no longer reads as a failing test suite. An exit-0 receipt whose
+  subject cannot be compared classifies `unverifiable`, and routing refuses it
+  — correctly — but the operator saw `✓ passed` followed by a REJECTED handoff,
+  with `outcome: "failed"` the only explanation on record. The result line now
+  follows the classification, and `gate.end` carries `receipt_status` /
+  `failure_kind` beside the unchanged rollup.
+- `pre_run_dirty` intake seeds untracked directories. `git status --porcelain`
+  collapses a wholly-untracked directory to one trailing-slash entry, which the
+  seed loop treated as a file: any project with an untracked folder could not
+  use the intake default, and the loop aborted mid-copy leaving a partially
+  seeded worktree. The resulting halt also printed nothing at all.
+- The argparse `==SUPPRESS==` placeholder no longer leaks into help output.
+- On Windows, a launched run asks to break out of the launcher's job object.
+  `CREATE_NEW_PROCESS_GROUP` only reroutes console control events, so a client
+  that supervises the launcher inside a kill-on-close job took every detached
+  run down with it — terminated by the kernel with no traceback, no log bytes,
+  and no terminal event. A job that forbids breakaway falls back to the
+  previous behaviour rather than refusing to start the run.
+
+### Known Notes
+
+- The Windows job-object change addresses the most probable mechanism for a
+  reported signature — runs dying mid-phase with zero diagnostics of any kind —
+  but that report could not be reproduced in CI, and neither can the fix be
+  exercised there. CI confirms only that the launch path still works on
+  Windows. Field confirmation is still outstanding.
+
 ## 0.8.6 - 2026-08-26
 
 Three defects that share one shape: a value is written, accepted, and then
