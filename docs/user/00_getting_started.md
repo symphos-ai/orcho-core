@@ -142,25 +142,27 @@ orcho workspace init ~/www/my-project
 ```
 
 Orcho registers exactly that repository and creates a deterministic managed
-control workspace outside the checkout. The output shows both paths. It also
-includes workspace settings, prompt override guides, a copyable plugin
-template, and a task-file guide. Re-running `workspace init` is idempotent and
-leaves existing scaffold files untouched.
+control workspace outside the checkout. The output shows both paths, workspace
+settings, prompt override guides, a workspace plugin template, and a task-file
+guide. Re-running `workspace init` is idempotent and leaves existing scaffold
+files untouched.
 
-The generated plugin is a safe, language-neutral starting point rather than a
-finished project contract. A generic smoke run works immediately, but the
-recommended next step is to adapt the scaffold into
-`<project>/.orcho/multiagent/plugin.py` using the repository's real
-architecture, commands, and environments. That configured plugin is where
-Orcho gains durable project context and authoritative scheduled verification.
-Existing tests and CI make this setup more grounded, not less necessary: reuse
-their project-native commands rather than defining a second quality system.
+In an interactive terminal, init also offers one default-no choice to create a
+starter plugin-config for every project registered in that invocation. The
+candidate uses repository markers but is only a starting point: review its
+commands and environments against the repository before scheduling them. A
+generic smoke run works immediately. Declining, EOF, or Ctrl-C keeps generic
+mode without writing project files; `--no-interactive`, non-TTY input, and
+`--dry-run` likewise do not prompt or create project plugins. Existing plugin
+paths are skipped without alteration. Existing tests and CI make configuration
+more grounded, not less necessary: reuse their project-native commands rather
+than defining a second quality system.
 CI remains an independent repository control, while Orcho gains in-run
 selection, repair or handoff routing, durable receipts, and readiness evidence
 before delivery.
 
 For the complete setup path, including agent-assisted discovery, see
-[Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold).
+[Project plugin configuration](03_workspaces.md#project-plugin-configuration).
 The read-only `orcho workspace fine-tune --dry-run` command can propose an
 initial contract from repository markers, and the generated agent rules tell a
 coding agent how to inspect manifests, CI, and developer documentation before
@@ -182,9 +184,15 @@ Use MCP if you want to drive Orcho from an MCP-aware client: start a
 run, check status/evidence, make a QA gate decision, and resume a task
 without reading raw logs.
 
-Add the Orcho server to the MCP config of your project context.
-`orcho workspace init` prints the exact command and JSON shape with the managed
-workspace already filled in. To write a JSON client config during init:
+Add the Orcho server to the MCP config of your project context. After init,
+print the complete client-specific commands and JSON shapes with the resolved
+workspace identity:
+
+```bash
+orcho workspace mcp
+```
+
+To write a JSON client config during init instead, pass `--mcp-config`:
 
 ```bash
 ORCHO_MCP_COMMAND="$(command -v orcho-mcp)"
@@ -199,11 +207,10 @@ orcho workspace init \
 After restarting the MCP client, open the `orcho_getting_started` prompt
 or the `orcho://docs/getting-started` resource.
 
-Different MCP clients register servers differently. Codex CLI/app uses
-`codex mcp add`; Claude Code uses `claude mcp add`; Gemini CLI uses
-`gemini mcp add`; the Claude app and Antigravity read their own JSON
-config files. Copy-paste instructions live in
-`orcho-mcp/docs/mcp_client_setup.md`.
+Different MCP clients register servers differently. `orcho workspace mcp`
+prints the appropriate Codex, Claude Code, Gemini, Claude app, and Antigravity
+setup block without changing files. Re-run it with `--workspace`,
+`--mcp-server-name`, or `--orcho-mcp-command` to specify the setup identity.
 
 ### CLI — the terminal path
 

@@ -2342,28 +2342,18 @@ class TestCmdWorkspaceInit:
         assert "Agent rules template:" in out
         assert "Claude shim template:" in out
         assert "MCP client setup" in out
-        assert "choose one path" in out
-        assert "one Orcho MCP server per workspace" in out
-        assert "distinct name" in out
-        assert "Terminal clients" in out
+        assert "Detected clients:" in out
+        assert "Full setup: orcho workspace mcp" in out
+        assert "--workspace" in out
+        assert "--mcp-server-name orcho-group" in out
+        assert "--orcho-mcp-command orcho-mcp" in out
         assert "Codex CLI / Codex app" in out
-        assert "codex mcp add" in out
         assert "Claude Code" in out
-        assert "claude mcp add" in out
         assert "Gemini CLI" in out
-        assert "gemini mcp add" in out
-        assert "App config snippets" in out
-        assert "do not run" in out
-        assert out.count("Done when:") >= 5
-        assert "codex mcp list" in out
-        assert "claude mcp list" in out
-        assert "gemini mcp list" in out
-        assert "Claude app / JSON clients" in out
-        assert "mcpServers shape" in out
-        assert "Antigravity" in out
-        assert "User/mcp.json servers shape" in out
-        assert "After client restart" in out
-        assert "orcho_workspace_info" in out
+        assert "```json" not in out
+        assert "mcpServers shape" not in out
+        assert "Antigravity" not in out
+        assert "After client restart" not in out
 
     def test_dry_run_says_nothing_written(
         self, tmp_path: Path, capsys,
@@ -2392,7 +2382,8 @@ class TestCmdWorkspaceInit:
         assert rc == 0
         out = capsys.readouterr().out
         assert str(cfg) in out
-        assert "MCP config" in out
+        assert "--mcp-config:" in out
+        assert "Wrote" in out
         assert cfg.is_file()
 
     def test_existing_repo_is_connected_in_place(
@@ -3008,11 +2999,10 @@ class TestFormatWorkspaceInitRuntimeDetection:
         # Summary section lists only the installed runtime + its path.
         assert "Detected CLI runtimes:" in out
         assert "Codex CLI / Codex app (/usr/bin/codex)" in out
-        # Installed client's setup block is marked.
-        assert "Codex CLI / Codex app: ✓ installed" in out
-        # Missing clients are flagged, not hidden.
-        assert "Claude Code: (not found — `claude` not on PATH)" in out
-        assert "Gemini CLI: (not found — `gemini` not on PATH)" in out
+        # The compact MCP summary still exposes detection state.
+        assert "Codex CLI / Codex app ✓" in out
+        assert "Claude Code (not found)" in out
+        assert "Gemini CLI (not found)" in out
 
     def test_no_runtimes_installed_shows_none_hint(self) -> None:
         from cli._formatters import format_workspace_init

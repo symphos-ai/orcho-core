@@ -1,9 +1,11 @@
 """Workspace extension-point scaffolding for ``orcho workspace init``."""
 from __future__ import annotations
 
+import pprint
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,32 @@ PLUGIN = {
     #     # "trust_workspace": True,
     # },
 }
+'''
+
+
+def render_plugin_template(candidate: Mapping[str, Any] | None = None) -> str:
+    """Render the shared workspace or project plugin template.
+
+    The no-candidate branch is the established workspace scaffold verbatim.
+    A project candidate is rendered as deterministic Python so the same
+    authoring surface can start with the inspector's concrete observations.
+    """
+    if candidate is None:
+        return _PLUGIN_BODY
+
+    plugin = pprint.pformat(dict(candidate), sort_dicts=True, width=88)
+    return f'''\
+"""Project plugin generated from inspected repository markers.
+
+The declaration below is a starting point, not proof that every proposed
+command is ready for scheduling. Keep the discovered environments and commands
+that apply, then add selection, schedules, and policy after project-specific
+validation. See the adjacent workspace plugin template for detailed authoring
+comments.
+"""
+
+# Candidate derived by `orcho workspace fine-tune`; review before scheduling.
+PLUGIN = {plugin}
 '''
 
 _AGENTS_BODY: Final[str] = """\
@@ -316,7 +344,7 @@ def scaffold_workspace_extensions(
         root / ".gitignore": _WORKSPACE_GITIGNORE_BODY,
         agents_file: _AGENTS_BODY,
         claude_file: _CLAUDE_BODY,
-        multiagent / "plugin.py": _PLUGIN_BODY,
+        multiagent / "plugin.py": render_plugin_template(),
         prompts / "roles" / "README.md": _PROMPT_README_BODY.format(
             title="Roles", layer="roles",
         ),

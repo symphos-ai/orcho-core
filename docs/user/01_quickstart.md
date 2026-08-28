@@ -118,25 +118,30 @@ orcho workspace init
 ```
 
 The repository is not moved or copied. Orcho registers its absolute path and
-creates a managed control workspace outside the checkout. The command prints
-that workspace path and MCP client setup, but later CLI commands resolve it
-from the current project directory automatically.
+creates a managed control workspace outside the checkout. Later CLI commands
+resolve it from the current project directory automatically. For the complete,
+read-only MCP client setup after init, run:
 
-Init also prints a generated plugin scaffold and matching agent-rule
-templates. The safe scaffold is enough for a generic smoke run; adapting it
-into `<project>/.orcho/multiagent/plugin.py` from the repository's real
-architecture, commands, and environments is the recommended next step before
-relying on Orcho for project readiness.
+```bash
+orcho workspace mcp
+```
 
-See [Configure the generated plugin scaffold](03_workspaces.md#configure-the-generated-plugin-scaffold)
+In an interactive terminal, init offers a default-no choice to create a starter
+`<project>/.orcho/multiagent/plugin.py` from repository markers. It is enough
+to begin configuration, not proof of readiness: an engineer must review the
+candidate’s environments, commands, selection, schedule, and routing. Generic
+mode remains available on decline; existing plugins are skipped unchanged.
+`--no-interactive`, non-TTY input, and `--dry-run` never prompt or write a
+project plugin.
+
+See [Project plugin configuration](03_workspaces.md#project-plugin-configuration)
 for the deterministic fine-tune candidate, the agent-assisted setup workflow,
 and the engineer approval boundary.
 
 If you connect Orcho to an MCP client, do not run `orcho_workspace_info`
-from the shell: it is an MCP tool, not a terminal command. Add the
-server to the client config first. For Codex CLI/app, Claude Code,
-Gemini CLI, the Claude app, and Antigravity see
-`orcho-mcp/docs/mcp_client_setup.md`.
+from the shell: it is an MCP tool, not a terminal command. Run
+`orcho workspace mcp` first to print the client-specific setup for Codex,
+Claude Code, Gemini, Claude app, or Antigravity.
 
 ---
 
