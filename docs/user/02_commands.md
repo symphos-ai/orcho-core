@@ -42,7 +42,8 @@ the full argparse dump for every subcommand.
 | `orcho prompts` | Inspect the resolution chain for a prompt template |
 | `orcho pricing` | Inspect / refresh the pricing data used by `cost` |
 | `orcho verify` | Execute declared verification-contract checks for a run |
-| `orcho workspace` | Initialise and manage Orcho workspaces |
+| `orcho workspace init` | Connect a project or initialise a shared workspace; interactive terminals may offer starter project plugin-configs |
+| `orcho workspace mcp` | Print the complete read-only MCP client setup for a resolved workspace |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
 
 ---

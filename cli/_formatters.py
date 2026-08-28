@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from cli._workspace_mcp import format_workspace_mcp_init_summary
 from core.io.ansi import C, paint
 from core.io.delivery_summary import project_degraded_publish
 from core.observability.accounting_display import (
@@ -27,7 +28,6 @@ from core.observability.accounting_display import (
 from pipeline.engine.worktree import is_worktree_reclaimed
 from sdk import (
     CostReport,
-    DetectedRuntime,
     EvidenceBundle,
     FineTuneResult,
     OrchoError,
@@ -46,6 +46,7 @@ from sdk import (
     VerifyRunResult,
     WorkspaceInitResult,
 )
+from sdk.workspace_project_plugin import ProjectPluginOutcome
 
 # ─────────────────────────────────────────────────────────────────────────────
 # status
@@ -1892,155 +1893,33 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
             ))
     out.append("")
 
-    # MCP snippet — always shown. When a config file was touched, also
-    # report what happened to that file.
-    server_entry = result.mcp_snippet["mcpServers"][result.mcp_server_name]
-    mcp_command = str(server_entry["command"])
-    workspace_dir = str(server_entry["env"]["ORCHO_WORKSPACE"])
-    quoted_server = shlex.quote(result.mcp_server_name)
-    quoted_workspace = shlex.quote(workspace_dir)
-    quoted_command = shlex.quote(mcp_command)
-
-    out.append(_workspace_heading("MCP client setup — choose one path:"))
-    out.append(
-        f"    {paint('Note:', C.YELLOW)} "
-        f"{paint('for multiple workspaces, register one Orcho MCP server per workspace with a distinct name (for example orcho-demo-mcp, orcho-atas-mcp).', C.GREY)}"
-    )
-    if result.mcp_config_path is not None:
-        verb = {
-            "wrote": "Wrote",
-            "merged": "Merged into",
-            "no-op": "Already up to date in",
-            "replaced": "Replaced server entry in",
-        }.get(result.mcp_config_action, "Updated")
-        out.append(
-            f"    {paint(verb, C.GREEN)} "
-            f"{paint('MCP config file:', C.CYAN)} "
-            f"{paint(result.mcp_config_path, C.GREEN)} "
-            f"{paint(f'(server: {result.mcp_server_name})', C.GREY)}"
-        )
-        out.append(
-            f"    {paint('Use that file for JSON-based clients, or compare it with the reference shapes below.', C.GREY)}"
-        )
-    out.append("")
-    by_client = {r.client: r for r in result.detected_runtimes}
-    out.append(_workspace_subheading(
-        "Terminal clients — run one command in your shell:"
-    ))
-    if installed_runtimes:
-        out.append(
-            f"    {paint('Tip:', C.GREEN)} "
-            f"{paint('clients marked ✓ are installed on this machine — start with those.', C.GREY)}"
-        )
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Codex CLI / Codex app:", by_client.get("Codex CLI / Codex app")
-    ))
-    out.extend(_workspace_command_block([
-        f"codex mcp add {quoted_server} \\",
-        f"  --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  -- {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`codex mcp list` shows `{result.mcp_server_name}` as enabled; "
-        "restart the Codex session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Claude Code:", by_client.get("Claude Code")
-    ))
-    out.extend(_workspace_command_block([
-        f"claude mcp add {quoted_server} \\",
-        f"  --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  -- {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`claude mcp list` shows `{result.mcp_server_name}`; "
-        "restart the Claude Code session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_client_subheading(
-        "Gemini CLI:", by_client.get("Gemini CLI")
-    ))
-    out.extend(_workspace_command_block([
-        f"gemini mcp add --env ORCHO_WORKSPACE={quoted_workspace} \\",
-        f"  {quoted_server} {quoted_command}",
-    ]))
-    out.append(_workspace_done_when(
-        f"`gemini mcp list` shows `{result.mcp_server_name}`; "
-        "restart the Gemini session before using tools."
-    ))
-    out.append("")
-    out.append(_workspace_subheading(
-        "App config snippets — copy into the app config, do not run:"
-    ))
-    out.append("")
-    out.append(_workspace_subheading(
-        "Claude app / JSON clients — mcpServers shape:"
-    ))
-    snippet = json.dumps(result.mcp_snippet, indent=2, ensure_ascii=False)
-    out.extend(_workspace_json_block(snippet.splitlines()))
-    out.append(_workspace_done_when(
-        "the app config contains this server entry and the app has been restarted."
-    ))
-    out.append("")
-
-    out.append(_workspace_subheading(
-        "Antigravity app — User/mcp.json servers shape:"
-    ))
-    antigravity = {
-        "servers": {
-            result.mcp_server_name: {
-                "type": "stdio",
-                "command": mcp_command,
-                "args": list(server_entry.get("args", [])),
-                "env": {
-                    "ORCHO_WORKSPACE": workspace_dir,
-                },
-            },
-        },
-        "inputs": [],
-    }
-    out.extend(_workspace_json_block(json.dumps(
-        antigravity, indent=2, ensure_ascii=False,
-    ).splitlines()))
-    out.append(_workspace_done_when(
-        "`User/mcp.json` contains this server entry and Antigravity has been restarted."
-    ))
-    out.append("")
-    out.append(_workspace_subheading("After client restart — verify:"))
-    out.append(f"    {paint('orcho_workspace_info', C.GREEN)}")
-    out.append(
-        f"    {paint(f'Expected workspace: {workspace_dir}', C.GREY)}"
-    )
+    out.append(format_workspace_mcp_init_summary(result))
     out.append("")
 
     return "\n".join(out)
 
 
+def format_project_plugin_outcomes(
+    outcomes: Iterable[ProjectPluginOutcome],
+) -> str:
+    """Render explicit project-plugin materialisation outcomes for stdout."""
+    out = ["", _workspace_heading("Project plugin configuration:")]
+    for outcome in outcomes:
+        color = {
+            "created": C.GREEN,
+            "skipped": C.YELLOW,
+            "failed": C.RED,
+        }[outcome.status]
+        detail = f" ({outcome.detail})" if outcome.detail else ""
+        out.append(
+            f"    {paint(outcome.status, color, C.BOLD)} "
+            f"{paint(outcome.destination, color)}{paint(detail, C.GREY)}"
+        )
+    return "\n".join(out)
+
+
 def _workspace_heading(text: str) -> str:
     return f"  {paint(text, C.CYAN, C.BOLD)}"
-
-
-def _workspace_subheading(text: str) -> str:
-    return f"  {paint(text, C.CYAN)}"
-
-
-def _workspace_client_subheading(
-    text: str, runtime: DetectedRuntime | None,
-) -> str:
-    """Subheading for a terminal client, annotated with PATH detection.
-
-    A ✓ marks a runtime found on PATH; a runtime probed but missing is
-    flagged so the user knows the block is informational only. Unknown
-    clients (no probe entry) render as a plain subheading.
-    """
-    base = _workspace_subheading(text)
-    if runtime is None:
-        return base
-    if runtime.installed:
-        return f"{base} {paint('✓ installed', C.GREEN, C.BOLD)}"
-    return f"{base} {paint(f'(not found — `{runtime.command}` not on PATH)', C.GREY)}"
 
 
 def _workspace_kv(label: str, value: str) -> str:
@@ -2049,24 +1928,6 @@ def _workspace_kv(label: str, value: str) -> str:
 
 def _workspace_command(command: str) -> str:
     return f"    {paint(command, C.GREEN)}"
-
-
-def _workspace_command_block(lines: list[str]) -> list[str]:
-    out = [f"    {paint('```bash', C.GREY)}"]
-    out.extend(f"    {paint(line, C.GREEN)}" for line in lines)
-    out.append(f"    {paint('```', C.GREY)}")
-    return out
-
-
-def _workspace_json_block(lines: list[str]) -> list[str]:
-    out = [f"    {paint('```json', C.GREY)}"]
-    out.extend(f"    {paint(line, C.GREY)}" for line in lines)
-    out.append(f"    {paint('```', C.GREY)}")
-    return out
-
-
-def _workspace_done_when(text: str) -> str:
-    return f"    {paint('Done when:', C.GREEN)} {paint(text, C.GREY)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
