@@ -65,6 +65,8 @@ from sdk.workspace_mcp import (
     apply_mcp_config,
     build_mcp_snippet,
     default_server_name,
+    persist_mcp_identity,
+    read_stored_mcp_identity,
 )
 from sdk.workspace_paths import (
     managed_workspace_dir,
@@ -169,6 +171,10 @@ class WorkspaceInitResult:
     executable was not found on PATH at init time (pre-switch view).
     ``runtime_override`` echoes the runtime the workspace config was
     switched to, or ``None`` when no switch was requested/needed.
+
+    ``mcp_identity_stored`` — True when the workspace-local config now
+    remembers the MCP server name and launcher command, so a bare
+    ``orcho workspace mcp`` reproduces this init's client setup.
     """
 
     group_root: str
@@ -194,6 +200,7 @@ class WorkspaceInitResult:
     runtime_override: str | None = None
     topology: str = "group"
     primary_project: DetectedProject | None = None
+    mcp_identity_stored: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,7 +221,7 @@ def init_workspace(
     workspace_name: str | None = None,
     mcp_config: Path | str | None = None,
     mcp_server_name: str | None = None,
-    orcho_mcp_command: str = "orcho-mcp",
+    orcho_mcp_command: str | None = None,
     force: bool = False,
     dry_run: bool = False,
     extra_projects: Sequence[ExtraProject] = (),
@@ -301,15 +308,31 @@ def init_workspace(
         )
         skipped.append(local_config_file)
 
-    # MCP snippet — always computed, optionally written.
-    server_name = (
-        mcp_server_name
-        or default_server_name(workspace_name or input_root.name)
-    )
+    # MCP snippet — always computed, optionally written. An explicit flag
+    # (or workspace name) decides the identity; otherwise a previously
+    # stored identity wins over the derived default so a repeat init does
+    # not silently rename the server. The resolved identity is persisted in
+    # the workspace-local config so a bare `orcho workspace mcp` replays it.
+    stored_identity = read_stored_mcp_identity(resolved_workspace)
+    if mcp_server_name:
+        server_name = mcp_server_name
+    elif workspace_name:
+        server_name = default_server_name(workspace_name)
+    else:
+        server_name = stored_identity.server_name or default_server_name(
+            input_root.name
+        )
+    resolved_command = orcho_mcp_command or stored_identity.command or "orcho-mcp"
     snippet = build_mcp_snippet(
         server_name=server_name,
         workspace_dir=resolved_workspace,
-        orcho_mcp_command=orcho_mcp_command,
+        orcho_mcp_command=resolved_command,
+    )
+    mcp_identity_stored = persist_mcp_identity(
+        local_config_file,
+        server_name=server_name,
+        command=resolved_command,
+        dry_run=dry_run,
     )
 
     mcp_config_path: Path | None = None
@@ -347,6 +370,7 @@ def init_workspace(
         runtime_override=runtime_override,
         topology=target.topology,
         primary_project=primary_project,
+        mcp_identity_stored=mcp_identity_stored,
     )
 
 
@@ -428,6 +452,7 @@ def _build_workspace_init_result(
     runtime_override: str | None,
     topology: str,
     primary_project: DetectedProject | None,
+    mcp_identity_stored: bool,
 ) -> WorkspaceInitResult:
     """Assemble the immutable public result after workspace materialisation."""
     return WorkspaceInitResult(
@@ -458,6 +483,7 @@ def _build_workspace_init_result(
         ),
         topology=topology,
         primary_project=primary_project,
+        mcp_identity_stored=mcp_identity_stored,
     )
 
 

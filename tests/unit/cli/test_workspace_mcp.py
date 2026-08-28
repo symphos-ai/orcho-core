@@ -128,7 +128,7 @@ def test_missing_workspace_returns_typed_error(
     assert "Could not resolve an active workspace" in capsys.readouterr().err
 
 
-def test_init_summary_is_short_and_replays_custom_identity(tmp_path: Path) -> None:
+def test_init_summary_is_short_when_identity_is_stored(tmp_path: Path) -> None:
     from cli._formatters import format_workspace_init
 
     result = init_workspace(
@@ -138,9 +138,98 @@ def test_init_summary_is_short_and_replays_custom_identity(tmp_path: Path) -> No
     )
     out = format_workspace_init(result)
 
+    assert result.mcp_identity_stored is True
     assert "Full setup: orcho workspace mcp" in out
-    assert "--mcp-server-name orcho-custom" in out
-    assert "--orcho-mcp-command /opt/orcho-mcp" in out
+    assert "Full setup: orcho workspace mcp --workspace" not in out
+    assert "--mcp-server-name" not in out
+    assert "--orcho-mcp-command" not in out
     assert "```json" not in out
     assert "mcpServers shape" not in out
     assert "Antigravity app" not in out
+
+
+def test_dry_run_init_summary_keeps_explicit_replay_flags(tmp_path: Path) -> None:
+    from cli._formatters import format_workspace_init
+
+    result = init_workspace(
+        tmp_path / "group",
+        mcp_server_name="orcho-custom",
+        orcho_mcp_command="/opt/orcho-mcp",
+        dry_run=True,
+    )
+    out = format_workspace_init(result)
+
+    assert result.mcp_identity_stored is False
+    assert "Full setup: orcho workspace mcp --workspace" in out
+    assert "--mcp-server-name orcho-custom" in out
+    assert "--orcho-mcp-command /opt/orcho-mcp" in out
+
+
+def test_bare_workspace_mcp_replays_identity_stored_at_init(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    group = tmp_path / "group"
+    project = group / "project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname='project'\n")
+    init_workspace(
+        group,
+        mcp_server_name="orcho-custom",
+        orcho_mcp_command="/opt/orcho-mcp",
+    )
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.chdir(group)
+
+    assert _run_cli(["workspace", "mcp"]) == 0
+    out = capsys.readouterr().out
+    assert "codex mcp add orcho-custom" in out
+    assert "/opt/orcho-mcp" in out
+
+
+def test_workspace_mcp_flags_override_stored_identity(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    group = tmp_path / "group"
+    init_workspace(
+        group,
+        mcp_server_name="orcho-custom",
+        orcho_mcp_command="/opt/orcho-mcp",
+    )
+    monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
+    monkeypatch.chdir(group)
+
+    rc = _run_cli(
+        [
+            "workspace",
+            "mcp",
+            "--mcp-server-name",
+            "orcho-override",
+            "--orcho-mcp-command",
+            "/override/orcho-mcp",
+        ]
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "codex mcp add orcho-override" in out
+    assert "/override/orcho-mcp" in out
+    assert "orcho-custom" not in out
+
+
+def test_repeat_init_without_flags_keeps_stored_identity(tmp_path: Path) -> None:
+    group = tmp_path / "group"
+    init_workspace(
+        group,
+        mcp_server_name="orcho-custom",
+        orcho_mcp_command="/opt/orcho-mcp",
+    )
+
+    repeat = init_workspace(group)
+
+    assert repeat.mcp_server_name == "orcho-custom"
+    entry = repeat.mcp_snippet["mcpServers"]["orcho-custom"]
+    assert entry["command"] == "/opt/orcho-mcp"

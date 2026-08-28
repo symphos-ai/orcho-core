@@ -4155,6 +4155,12 @@
           "default_factory": null,
           "name": "primary_project",
           "type": "DetectedProject | None"
+        },
+        {
+          "default": "False",
+          "default_factory": null,
+          "name": "mcp_identity_stored",
+          "type": "bool"
         }
       ],
       "frozen": true,
@@ -4971,8 +4977,8 @@
           "name": "mcp_server_name"
         },
         {
-          "annotation": "str",
-          "default": "'orcho-mcp'",
+          "annotation": "str | None",
+          "default": "None",
           "kind": "KEYWORD_ONLY",
           "name": "orcho_mcp_command"
         },

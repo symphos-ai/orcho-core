@@ -80,6 +80,16 @@ def test_tty_yes_materializes_each_registered_project(
     assert "https://docs.orcho.dev/extend/project-instructions/" in out
     assert f"created {destination}" in out
     assert f"created {confirmed_destination}" in out
+    # The markerless project is disclosed before the question and its
+    # created line is differentiated; the marker-backed project stays green.
+    assert (
+        "no repo markers detected in confirmed — a skeleton will be created; "
+        "fill lint/test commands yourself" in out
+    )
+    assert "no repo markers detected in project" not in out
+    assert f"created {confirmed_destination} (empty — fill commands)" in out
+    assert f"created {destination} (empty" not in out
+    assert "Next: review the plugin, then: orcho run --task '...' --mock" in out
     assert "generic mode" not in describe_plugin(load_plugin(str(project)))
 
 
