@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from core.infra.platform import venv_python_subpath
+from pipeline.plugins import PLUGIN_RELATIVE_PATH, load_plugin
+from pipeline.verification_contract import VerificationContract
 from sdk.fine_tune import FineTuneResult, fine_tune_project
 from sdk.fine_tune_probes import EnvCandidate, register_marker_probe
+from sdk.workspace_scaffold import render_plugin_template
 
 
 def _fingerprint(root: Path) -> dict[str, tuple[int, str]]:
@@ -66,6 +72,38 @@ def _node_project(
         json.dumps(manifest), encoding="utf-8",
     )
     return project
+
+
+def _git_project(root: Path, relative: str) -> tuple[Path, Path]:
+    """Create a Git worktree and return it with its nested project directory."""
+    repository = root / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", str(repository)], check=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    project = repository / relative
+    project.mkdir(parents=True, exist_ok=True)
+    return repository, project
+
+
+def _git_add(repository: Path, path: Path) -> None:
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "--", str(path.relative_to(repository))],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _assert_round_trip_candidate(project: Path, candidate: dict[str, Any]) -> None:
+    plugin_path = project / PLUGIN_RELATIVE_PATH
+    plugin_path.parent.mkdir(parents=True)
+    plugin_path.write_text(render_plugin_template(candidate), encoding="utf-8")
+
+    plugin = load_plugin(str(project))
+    assert plugin.loaded_plugin_path == str(plugin_path)
+    assert VerificationContract.from_plugin(plugin) is not None
 
 
 class TestCandidateContract:
@@ -246,6 +284,156 @@ class TestCandidateContract:
         assert result.candidate["verification_envs"] == {}
         assert result.candidate["verification"]["default_env"] == ""
         assert result.suggested_projects == []
+
+    def test_nested_node_sets_checkout_cwd_and_bootstraps_untracked_modules(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        repository, project = _git_project(tmp_path, "sub/web")
+        (project / "package.json").write_text(
+            json.dumps({"name": "web", "scripts": {"test": "vitest run"}}),
+            encoding="utf-8",
+        )
+        (project / "package-lock.json").write_text("{}\n", encoding="utf-8")
+        # An ignored/untracked install directory is not evidence a fresh
+        # worktree has dependencies available.
+        (project / "node_modules").mkdir()
+        (project / "node_modules" / "local.js").write_text("// local\n", encoding="utf-8")
+        _git_add(repository, project / "package.json")
+        _git_add(repository, project / "package-lock.json")
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        assert result.candidate["verification_envs"]["node"]["cwd"] == (
+            "{checkout}/sub/web"
+        )
+        assert result.candidate["worktree_bootstrap"] == [
+            {"run": ["npm", "ci"], "cwd": "sub/web"},
+        ]
+        _assert_round_trip_candidate(project, result.candidate)
+
+    def test_toplevel_python_has_no_cwd_or_bootstrap(self, tmp_path: Path) -> None:
+        repository, project = _git_project(tmp_path, ".")
+        (project / "pyproject.toml").write_text(
+            "[project]\nname = 'top'\n", encoding="utf-8",
+        )
+        (project / "poetry.lock").write_text("# lock\n", encoding="utf-8")
+        _git_add(repository, project / "pyproject.toml")
+        _git_add(repository, project / "poetry.lock")
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        assert "cwd" not in result.candidate["verification_envs"]["py"]
+        assert "worktree_bootstrap" not in result.candidate
+        _assert_round_trip_candidate(project, result.candidate)
+
+    @pytest.mark.parametrize(
+        ("lockfile", "artifact", "expected"),
+        [
+            ("package-lock.json", "node_modules", ["npm", "ci"]),
+            ("poetry.lock", ".venv", ["poetry", "install"]),
+            ("composer.lock", "vendor", ["composer", "install", "--no-interaction"]),
+            ("Cargo.lock", "target", None),
+        ],
+    )
+    def test_nested_lockfiles_propose_only_missing_bootstrap(
+        self,
+        tmp_path: Path,
+        lockfile: str,
+        artifact: str,
+        expected: list[str] | None,
+    ) -> None:
+        repository, project = _git_project(tmp_path, "sub/project")
+        (project / lockfile).write_text("lock\n", encoding="utf-8")
+        if expected is not None:
+            untracked = project / artifact / "local-state"
+            untracked.parent.mkdir(parents=True)
+            untracked.write_text("untracked\n", encoding="utf-8")
+        _git_add(repository, project / lockfile)
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        if expected is None:
+            assert "worktree_bootstrap" not in result.candidate
+        else:
+            assert result.candidate["worktree_bootstrap"] == [
+                {"run": expected, "cwd": "sub/project"},
+            ]
+
+    @pytest.mark.parametrize(
+        ("lockfile", "artifact"),
+        [
+            ("package-lock.json", "node_modules"),
+            ("poetry.lock", ".venv"),
+            ("composer.lock", "vendor"),
+        ],
+    )
+    def test_tracked_install_artifacts_suppress_bootstrap(
+        self,
+        tmp_path: Path,
+        lockfile: str,
+        artifact: str,
+    ) -> None:
+        repository, project = _git_project(tmp_path, "sub/project")
+        (project / lockfile).write_text("lock\n", encoding="utf-8")
+        tracked = project / artifact / ".keep"
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text("tracked\n", encoding="utf-8")
+        _git_add(repository, project / lockfile)
+        _git_add(repository, tracked)
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        assert "worktree_bootstrap" not in result.candidate
+
+    def test_schedule_uses_explicit_fast_and_unknown_costs_in_command_order(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        import sdk.fine_tune_probes as probes
+
+        def _probe_costs(root: Path) -> EnvCandidate:
+            return EnvCandidate(
+                env="costs",
+                spec={"assertions": [{"command_exists": "python"}]},
+                commands={
+                    "fast_check": {"run": "python -m compileall .", "env": "costs", "cost": "fast"},
+                    "unknown_check": {"run": "python -m pytest", "env": "costs"},
+                },
+            )
+
+        monkeypatch.setitem(probes._MARKER_PROBES, "cost.marker", _probe_costs)
+        repository, project = _git_project(tmp_path, "sub/web")
+        (project / "cost.marker").write_text("\n", encoding="utf-8")
+        _git_add(repository, project / "cost.marker")
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        verification = result.candidate["verification"]
+        assert verification["required"] == ["fast_check", "unknown_check"]
+        assert verification["schedule"] == [
+            {
+                "after_phase": "implement",
+                "policy": "warn",
+                "commands": ["fast_check"],
+            },
+            {
+                "before_delivery": True,
+                "policy": "warn",
+                "commands": ["unknown_check"],
+            },
+        ]
+        assert "cost" not in verification["commands"]["unknown_check"]
+
+    def test_non_git_project_is_its_own_root(self, tmp_path: Path) -> None:
+        project = _node_project(tmp_path, scripts={"test": "vitest run"})
+        (project / "package-lock.json").write_text("{}\n", encoding="utf-8")
+
+        result = fine_tune_project(str(project), dry_run=True)
+
+        assert "cwd" not in result.candidate["verification_envs"]["node"]
+        assert "worktree_bootstrap" not in result.candidate
 
 
 class TestNoWrite:

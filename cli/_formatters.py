@@ -1960,13 +1960,22 @@ def format_fine_tune(result: FineTuneResult) -> str:
     """Render the candidate verification contract from ``fine_tune_project``.
 
     Lists detected markers, each proposed ``verification_env`` with its
-    assertions, the proposed commands, and the deferred-materialisation note.
-    Stage 2 never writes, so the footer always states nothing was written.
+    assertions, optional worktree setup, proposed commands and scheduling,
+    and the deferred-materialisation note. Stage 2 never writes, so the footer
+    always states nothing was written.
     """
     candidate = result.candidate or {}
     verification = candidate.get("verification") or {}
     envs = candidate.get("verification_envs") or {}
     commands = verification.get("commands") or {}
+    bootstrap = candidate.get("worktree_bootstrap") or []
+    required = verification.get("required") or []
+    schedule = [
+        entry for entry in verification.get("schedule") or []
+        if isinstance(entry, dict)
+        and entry.get("commands")
+        and ("after_phase" in entry or entry.get("before_delivery"))
+    ]
 
     out: list[str] = [""]
     out.append(f"  fine-tune (dry-run) — {result.project}")
@@ -1988,13 +1997,29 @@ def format_fine_tune(result: FineTuneResult) -> str:
     out.append("  verification_envs:")
     for name, spec in envs.items():
         python = spec.get("python")
-        suffix = f"  (python: {python})" if python else ""
+        cwd = spec.get("cwd")
+        details = []
+        if python:
+            details.append(f"python: {python}")
+        if cwd:
+            details.append(f"cwd: {cwd}")
+        suffix = f"  ({'; '.join(details)})" if details else ""
         out.append(f"    [{name}]{suffix}")
         for a in spec.get("assertions", []):
             out.append(f"      - {a}")
     if not envs:
         out.append("    (none)")
     out.append("")
+
+    if bootstrap:
+        out.append("  worktree_bootstrap:")
+        for step in bootstrap:
+            run = step.get("run", [])
+            argv = shlex.join(str(part) for part in run) if isinstance(run, list) else str(run)
+            cwd = step.get("cwd")
+            suffix = f"  [cwd={cwd}]" if cwd else ""
+            out.append(f"    - {argv}{suffix}")
+        out.append("")
 
     out.append("  commands:")
     for name, cmd in commands.items():
@@ -2016,6 +2041,25 @@ def format_fine_tune(result: FineTuneResult) -> str:
                 f"  [env={alt.get('env', '')}]"
             )
     out.append("")
+
+    if required:
+        out.append("  required:")
+        for name in required:
+            out.append(f"    - {name}")
+        out.append("")
+
+    if schedule:
+        out.append("  schedule:")
+        for entry in schedule:
+            policy = entry.get("policy")
+            policy_suffix = f"  [policy={policy}]" if policy else ""
+            command_names = ", ".join(str(name) for name in entry["commands"])
+            if "after_phase" in entry:
+                hook = f"after_phase({entry['after_phase']})"
+            else:
+                hook = "before_delivery"
+            out.append(f"    - {hook}: {command_names}{policy_suffix}")
+        out.append("")
 
     out.append(f"  {result.note}")
     out.append("  No files were written.")
