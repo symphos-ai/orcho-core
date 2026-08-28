@@ -142,7 +142,14 @@ class EventKind(StrEnum):
     ``name`` + ``kind`` (computational/behavioral); ``gate.end``
     carries ``name`` + ``outcome`` (passed/failed/skipped) + ``duration_s``.
     Allows evidence to reconstruct the gate timeline without parsing
-    handler-internal state."""
+    handler-internal state.
+
+    A scheduled ``gate.end`` additionally carries the optional
+    ``receipt_status`` / ``failure_kind`` pair when the receipt was
+    classified: ``outcome`` is the pass/fail rollup routing acted on, and
+    those two say why, so a command that exited clean but could not be
+    proven against the current checkout is not read back as a test
+    failure. Both are absent when the boundary closes on a raise."""
 
     COMMAND_START = "command.start"
     COMMAND_END = "command.end"

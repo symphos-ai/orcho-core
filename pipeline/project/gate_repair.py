@@ -161,7 +161,7 @@ def run_gate_hook(
             project_alias=getattr(run, "project_alias", None),
         )
         try:
-            receipt = _run_gate_command(run, contract, entry)
+            receipt, classification = _run_and_classify_gate(run, contract, entry)
         except BaseException:
             _emit_scheduled_gate_end(
                 entry,
@@ -172,7 +172,6 @@ def run_gate_hook(
                 project_alias=getattr(run, "project_alias", None),
             )
             raise
-        classification = _classify_gate_receipt(receipt, _placeholders(run))
         _emit_scheduled_gate_end(
             entry,
             hook=hook,
@@ -180,6 +179,7 @@ def run_gate_hook(
             outcome="passed" if classification.status == "present" else "failed",
             duration_s=_gate_duration(receipt),
             project_alias=getattr(run, "project_alias", None),
+            classification=classification,
         )
         executed.add(identity)
         _record_executed_gate_event(
@@ -647,8 +647,7 @@ def _repair_loop(
         if getattr(run.state, "halt", False):
             return GateRepairOutcome(active=True, halted=True, rounds=round_n)
 
-        receipt = _run_gate_command(run, contract, entry)
-        classification = _classify_gate_receipt(receipt, _placeholders(run))
+        receipt, classification = _run_and_classify_gate(run, contract, entry)
         # Append-only: a repair-round recheck is a real execution of the official
         # gate command on this hook, so its executed_pass/executed_fail must land
         # in the durable trail too (the recheck pass is what flips the outcome).
@@ -821,18 +820,39 @@ def _render_gate_command_start(command: str) -> None:
     )
 
 
-def _render_gate_command_result(command: str, receipt: dict) -> None:
+def _render_gate_command_result(
+    command: str, receipt: dict, classification: Any,
+) -> None:
+    """Print the ✓ / ⚠ / ✗ result line for one executed gate command.
+
+    A gate can fail without its command failing. An exit-0 receipt whose
+    verification subject cannot be compared classifies ``unverifiable`` (or
+    ``stale``), and routing refuses it — correctly, fail-closed, because an
+    unusable proof is not proof. Reporting that as ``✓ passed`` and then
+    parking the run on a REJECTED handoff is a contradiction the operator
+    has to reverse-engineer from the receipt; the third form says which of
+    the two things actually happened.
+    """
     from core.io.ansi import C, is_color_active, paint
     from pipeline.evidence.verification_receipt import command_receipt_passed
 
     color = is_color_active()
     dur = _fmt_gate_duration(receipt.get("duration_s"))
     dur_s = f"  ({dur})" if dur else ""
-    if command_receipt_passed(receipt):
+    status = str(getattr(classification, "status", "") or "")
+    if status == "present":
         glyph = paint(f"✓ {command}", C.GREEN, color=color)
         print(f"   {glyph}   {paint(f'passed{dur_s}', C.GREY, color=color)}")
-    else:
-        print(f"   {paint(f'✗ {command}   failed{dur_s}', C.RED, color=color)}")
+        return
+    if command_receipt_passed(receipt):
+        print(f"   {paint(f'⚠ {command}   {status}{dur_s}', C.YELLOW, color=color)}")
+        reason = str(getattr(classification, "reason", "") or "").strip()
+        detail = f"command exited 0; its verification proof is {status}"
+        if reason:
+            detail = f"{detail} ({reason})"
+        print(f"     {paint(detail, C.GREY, color=color)}")
+        return
+    print(f"   {paint(f'✗ {command}   failed{dur_s}', C.RED, color=color)}")
 
 
 # ── command execution + critique ───────────────────────────────────────────
@@ -853,8 +873,7 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
     """
     from pipeline.verification_command import run_command
 
-    show_progress = _gate_progress_on(run)
-    if show_progress:
+    if _gate_progress_on(run):
         _render_gate_command_start(entry.command)
 
     spec = contract.commands.get(entry.command, {})
@@ -866,9 +885,23 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
         required=True,
     )
     _persist_gate_receipt(run, entry, receipt)
-    if show_progress:
-        _render_gate_command_result(entry.command, receipt)
     return receipt
+
+
+def _run_and_classify_gate(run: Any, contract: Any, entry: Any) -> tuple[dict, Any]:
+    """Execute one gate command and classify its receipt as one step.
+
+    Routing never wants one without the other: the receipt records what the
+    command did, the classification decides whether that is usable proof of
+    the current checkout. Pairing them here means the operator's result line
+    is rendered from both facts at every call site instead of from the
+    receipt alone.
+    """
+    receipt = _run_gate_command(run, contract, entry)
+    classification = _classify_gate_receipt(receipt, _placeholders(run))
+    if _gate_progress_on(run):
+        _render_gate_command_result(entry.command, receipt, classification)
+    return receipt, classification
 
 
 def _emit_scheduled_gate_start(
@@ -897,10 +930,20 @@ def _emit_scheduled_gate_end(
     outcome: str,
     duration_s: float,
     project_alias: str | None = None,
+    classification: Any = None,
 ) -> None:
-    """Close the typed gate boundary after the command returns or raises."""
+    """Close the typed gate boundary after the command returns or raises.
+
+    ``outcome`` stays the historic pass/fail rollup. ``receipt_status`` /
+    ``failure_kind`` carry the classification alongside it, so the durable
+    stream distinguishes a command that failed from one that ran clean but
+    could not be proven against the current checkout. Both are omitted when
+    the boundary closes on a raise, where no classification exists.
+    """
     from core.observability.events import emit
 
+    status = str(getattr(classification, "status", "") or "")
+    failure_kind = str(getattr(classification, "failure_kind", "") or "")
     emit(
         "gate.end",
         name=entry.command,
@@ -911,6 +954,8 @@ def _emit_scheduled_gate_end(
         phase=phase,
         ownership="engine",
         **({"project_alias": project_alias} if project_alias else {}),
+        **({"receipt_status": status} if status else {}),
+        **({"failure_kind": failure_kind} if failure_kind else {}),
     )
 
 
@@ -1595,8 +1640,7 @@ def rerun_verification_handoff_gate(
     if len(matches) != 1:
         raise RuntimeError("verification retry gate identity is missing or ambiguous")
     entry = matches[0]
-    receipt = _run_gate_command(run, contract, entry)
-    classification = _classify_gate_receipt(receipt, _placeholders(run))
+    receipt, classification = _run_and_classify_gate(run, contract, entry)
     _record_executed_gate_event(
         run, entry, receipt, classification, hook=hook, phase=phase, rerun=True,
     )
