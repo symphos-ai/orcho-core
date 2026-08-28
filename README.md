@@ -67,6 +67,8 @@ orcho run --mock --task "Describe and implement one small change"
 orcho status
 ```
 
+![A real orcho workspace init on a fresh project: the compact summary, one plugin question answered yes, and the generated project plugin pre-filled with the lint and test commands discovered from the repository](https://raw.githubusercontent.com/symphos-ai/orcho-core/main/docs/assets/orcho-workspace-init.gif)
+
 `workspace init` does not move or copy the repository. It registers the
 canonical project path and stores Orcho's control state in an external managed
 workspace. An eligible interactive terminal may separately offer an explicit
