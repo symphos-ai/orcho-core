@@ -17,7 +17,11 @@ from sdk import init_workspace
 from sdk.errors import OrchoError
 from sdk.workspace import discover_undetected_candidates, preflight_workspace_target
 from sdk.workspace_paths import project_repo_marker
-from sdk.workspace_project_plugin import materialize_project_plugins
+from sdk.workspace_project_plugin import (
+    ProjectPluginCandidate,
+    derive_project_plugin_candidates,
+    materialize_project_plugins,
+)
 
 
 def run_workspace_init(args: argparse.Namespace) -> int:
@@ -59,7 +63,7 @@ def run_workspace_init(args: argparse.Namespace) -> int:
             workspace_name=getattr(args, "workspace_name", None),
             mcp_config=getattr(args, "mcp_config", None),
             mcp_server_name=getattr(args, "mcp_server_name", None),
-            orcho_mcp_command=(getattr(args, "orcho_mcp_command", None) or "orcho-mcp"),
+            orcho_mcp_command=getattr(args, "orcho_mcp_command", None),
             force=force,
             dry_run=dry_run,
             extra_projects=extra_projects,
@@ -72,14 +76,16 @@ def run_workspace_init(args: argparse.Namespace) -> int:
         print(format_error(exc), file=sys.stderr)
         return exc.exit_code
 
-    print(format_workspace_init(result))
+    print(format_workspace_init(result, verbose=bool(getattr(args, "verbose", False))))
     project_paths = _registered_project_paths(result)
-    if (
-        project_paths
-        and _interactive_eligible(no_interactive=no_interactive, dry_run=dry_run)
-        and _confirm_project_plugin_materialization(len(project_paths))
+    if project_paths and _interactive_eligible(
+        no_interactive=no_interactive, dry_run=dry_run
     ):
-        print(format_project_plugin_outcomes(materialize_project_plugins(project_paths)))
+        # Derived once, read-only: the prompt can disclose empty candidates
+        # up front and materialisation reuses the same inspection results.
+        candidates = derive_project_plugin_candidates(project_paths)
+        if _confirm_project_plugin_materialization(candidates):
+            print(format_project_plugin_outcomes(materialize_project_plugins(candidates)))
     _emit_delivery_setup_hints(result, project_group_root)
     return 0
 
@@ -103,9 +109,16 @@ def _registered_project_paths(result) -> tuple[str, ...]:
     return tuple(paths)
 
 
-def _confirm_project_plugin_materialization(project_count: int) -> bool:
-    """Ask the one opt-in question that permits writes into project trees."""
+def _confirm_project_plugin_materialization(
+    candidates: tuple[ProjectPluginCandidate, ...],
+) -> bool:
+    """Ask the one opt-in question that permits writes into project trees.
+
+    Projects whose inspection found no repo markers are disclosed before the
+    question so an empty skeleton is a stated outcome, not a silent one.
+    """
     color = is_color_active(sys.stdout)
+    project_count = len(candidates)
     noun = "project" if project_count == 1 else "projects"
     sys.stdout.write("\n" + title("Project plugin configuration", color=color) + "\n")
     sys.stdout.write(
@@ -116,6 +129,18 @@ def _confirm_project_plugin_materialization(project_count: int) -> bool:
         )
         + "\n"
     )
+    for candidate in candidates:
+        if not candidate.empty:
+            continue
+        name = Path(candidate.project_path).name
+        sys.stdout.write(
+            help_line(
+                f"Note: no repo markers detected in {name} — a skeleton will "
+                "be created; fill lint/test commands yourself.",
+                color=color,
+            )
+            + "\n"
+        )
     sys.stdout.write(
         help_line(
             "Learn more: https://docs.orcho.dev/extend/project-instructions/",

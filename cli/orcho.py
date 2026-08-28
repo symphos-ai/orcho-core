@@ -771,9 +771,7 @@ def cmd_workspace_mcp(args: argparse.Namespace) -> int:
         setup = build_workspace_mcp_setup(
             workspace=getattr(args, "workspace", None),
             mcp_server_name=getattr(args, "mcp_server_name", None),
-            orcho_mcp_command=(
-                getattr(args, "orcho_mcp_command", None) or "orcho-mcp"
-            ),
+            orcho_mcp_command=getattr(args, "orcho_mcp_command", None),
         )
     except OrchoError as exc:
         print(format_error(exc), file=sys.stderr)
@@ -1697,10 +1695,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_ws_init.add_argument(
-        "--orcho-mcp-command", default="orcho-mcp", metavar="CMD",
+        "--orcho-mcp-command", default=None, metavar="CMD",
         help=(
             "Command/path the MCP host should run to launch the Orcho MCP "
-            "server. Default: orcho-mcp (resolved on PATH)."
+            "server. Default: the workspace's stored setting, else orcho-mcp "
+            "(resolved on PATH)."
         ),
     )
     p_ws_init.add_argument(
@@ -1730,6 +1729,13 @@ def build_parser() -> argparse.ArgumentParser:
             "override README files and the plugin template."
         ),
     )
+    p_ws_init.add_argument(
+        "--verbose", action="store_true",
+        help=(
+            "List every workspace extension-point path instead of the "
+            "one-line pointer."
+        ),
+    )
     p_ws_init.set_defaults(func=cmd_workspace_init)
 
     p_ws_mcp = p_ws_sub.add_parser(
@@ -1749,11 +1755,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ws_mcp.add_argument(
         "--mcp-server-name", default=None, metavar="NAME",
-        help="Server name for the client entry (default: derived from context).",
+        help=(
+            "Server name for the client entry (default: the workspace's "
+            "stored setting, else derived from context)."
+        ),
     )
     p_ws_mcp.add_argument(
-        "--orcho-mcp-command", default="orcho-mcp", metavar="CMD",
-        help="Command/path the MCP host runs (default: orcho-mcp on PATH).",
+        "--orcho-mcp-command", default=None, metavar="CMD",
+        help=(
+            "Command/path the MCP host runs (default: the workspace's "
+            "stored setting, else orcho-mcp on PATH)."
+        ),
     )
     p_ws_mcp.set_defaults(func=cmd_workspace_mcp)
 

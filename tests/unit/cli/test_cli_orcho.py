@@ -2211,10 +2211,11 @@ class TestWorkspaceInitParser:
         assert args.workspace_dir is None
         assert args.mcp_config is None
         assert args.mcp_server_name is None
-        assert args.orcho_mcp_command == "orcho-mcp"
+        assert args.orcho_mcp_command is None
         assert args.force is False
         assert args.dry_run is False
         assert args.no_scaffold is False
+        assert args.verbose is False
 
     def test_workspace_init_all_flags(self) -> None:
         parser = self.build_parser()
@@ -2336,17 +2337,14 @@ class TestCmdWorkspaceInit:
         assert "Runs:" in out
         assert "Local config:" in out
         assert "Extension points:" in out
-        assert "Plugin template:" in out
-        assert "Prompt overrides:" in out
-        assert "Task files:" in out
-        assert "Agent rules template:" in out
-        assert "Claude shim template:" in out
+        assert str(root / "workspace-orchestrator" / ".orcho") in out
+        assert "Plugin template:" not in out
+        assert "Prompt overrides:" not in out
         assert "MCP client setup" in out
         assert "Detected clients:" in out
         assert "Full setup: orcho workspace mcp" in out
-        assert "--workspace" in out
-        assert "--mcp-server-name orcho-group" in out
-        assert "--orcho-mcp-command orcho-mcp" in out
+        assert "--mcp-server-name" not in out
+        assert "--orcho-mcp-command" not in out
         assert "Codex CLI / Codex app" in out
         assert "Claude Code" in out
         assert "Gemini CLI" in out
@@ -2354,6 +2352,24 @@ class TestCmdWorkspaceInit:
         assert "mcpServers shape" not in out
         assert "Antigravity" not in out
         assert "After client restart" not in out
+
+    def test_verbose_lists_every_extension_point_path(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_workspace_init
+        root = tmp_path / "group"
+        rc = cmd_workspace_init(_make_args(
+            project_group_root=str(root),
+            verbose=True,
+        ))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Extension points:" in out
+        assert "Plugin template:" in out
+        assert "Prompt overrides:" in out
+        assert "Task files:" in out
+        assert "Agent rules template:" in out
+        assert "Claude shim template:" in out
 
     def test_dry_run_says_nothing_written(
         self, tmp_path: Path, capsys,

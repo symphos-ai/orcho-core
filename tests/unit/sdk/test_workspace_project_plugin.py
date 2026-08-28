@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from pipeline.plugins import PLUGIN_RELATIVE_PATH, describe_plugin, load_plugin
-from sdk.workspace_project_plugin import materialize_project_plugins
+from sdk.workspace_project_plugin import (
+    derive_project_plugin_candidates,
+    materialize_project_plugins,
+)
 from sdk.workspace_scaffold import render_plugin_template, scaffold_workspace_extensions
 
 
@@ -45,6 +48,44 @@ def test_workspace_scaffold_uses_empty_shared_template(tmp_path: Path) -> None:
     assert plugin.verification == {}
 
 
+def test_derive_candidates_flags_markerless_projects_as_empty(
+    tmp_path: Path,
+) -> None:
+    python_project = _python_project(tmp_path)
+    markerless_project = _markerless_project(tmp_path)
+
+    python_candidate, markerless_candidate, missing_candidate = (
+        derive_project_plugin_candidates(
+            [python_project, markerless_project, tmp_path / "absent"]
+        )
+    )
+
+    assert python_candidate.empty is False
+    assert markerless_candidate.empty is True
+    assert missing_candidate.candidate is None
+    assert missing_candidate.error == "project path is not a directory"
+    assert missing_candidate.empty is False
+    # Derivation is pure read — no plugin was written anywhere.
+    assert not (python_project / PLUGIN_RELATIVE_PATH).exists()
+    assert not (markerless_project / PLUGIN_RELATIVE_PATH).exists()
+
+
+def test_materialize_reuses_pre_derived_candidates(tmp_path: Path) -> None:
+    python_project = _python_project(tmp_path)
+    markerless_project = _markerless_project(tmp_path)
+    candidates = derive_project_plugin_candidates(
+        [python_project, markerless_project]
+    )
+
+    python_outcome, markerless_outcome = materialize_project_plugins(candidates)
+
+    assert python_outcome.status == "created"
+    assert python_outcome.empty is False
+    assert markerless_outcome.status == "created"
+    assert markerless_outcome.empty is True
+    assert load_plugin(str(markerless_project)).verification["commands"] == {}
+
+
 def test_python_candidate_materializes_as_loadable_plugin(tmp_path: Path) -> None:
     project = _python_project(tmp_path)
 
@@ -52,6 +93,7 @@ def test_python_candidate_materializes_as_loadable_plugin(tmp_path: Path) -> Non
 
     plugin_path = project / PLUGIN_RELATIVE_PATH
     assert outcome.status == "created"
+    assert outcome.empty is False
     ast.parse(plugin_path.read_text(encoding="utf-8"))
     plugin = load_plugin(str(project))
     assert plugin.loaded_plugin_path == str(plugin_path)
@@ -69,6 +111,7 @@ def test_markerless_project_materializes_a_loadable_plugin(tmp_path: Path) -> No
     (outcome,) = materialize_project_plugins([project])
 
     assert outcome.status == "created"
+    assert outcome.empty is True
     plugin = load_plugin(str(project))
     assert plugin.loaded_plugin_path.endswith(PLUGIN_RELATIVE_PATH)
     assert plugin.verification["commands"] == {}

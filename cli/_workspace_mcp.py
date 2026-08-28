@@ -145,7 +145,12 @@ def format_workspace_mcp_setup(setup: WorkspaceMcpSetup) -> str:
 
 
 def format_workspace_mcp_init_summary(result: WorkspaceInitResult) -> str:
-    """Render init's concise, reproducible pointer to the full setup."""
+    """Render init's concise, reproducible pointer to the full setup.
+
+    When the workspace config stores the MCP identity, the bare command
+    reproduces this init's setup; the explicit-flag replay is rendered only
+    when the identity could not be stored (e.g. dry run).
+    """
     server_entry = result.mcp_snippet["mcpServers"][result.mcp_server_name]
     workspace_dir = str(server_entry["env"]["ORCHO_WORKSPACE"])
     command = str(server_entry["command"])
@@ -156,14 +161,17 @@ def format_workspace_mcp_init_summary(result: WorkspaceInitResult) -> str:
         )
         or "none on PATH"
     )
-    replay = " ".join(
-        (
-            "orcho workspace mcp",
-            f"--workspace {shlex.quote(workspace_dir)}",
-            f"--mcp-server-name {shlex.quote(result.mcp_server_name)}",
-            f"--orcho-mcp-command {shlex.quote(command)}",
+    if getattr(result, "mcp_identity_stored", False):
+        replay = "orcho workspace mcp"
+    else:
+        replay = " ".join(
+            (
+                "orcho workspace mcp",
+                f"--workspace {shlex.quote(workspace_dir)}",
+                f"--mcp-server-name {shlex.quote(result.mcp_server_name)}",
+                f"--orcho-mcp-command {shlex.quote(command)}",
+            )
         )
-    )
     out = [
         _heading(f"MCP client setup: {paint(f'Detected clients: {detected}', C.GREY)}"),
     ]

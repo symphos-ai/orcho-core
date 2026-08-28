@@ -28,8 +28,11 @@ workspace associated with the current project or directory:
 orcho workspace mcp
 ```
 
-Use `--workspace PATH` when cwd cannot resolve the intended workspace. The
-optional `--mcp-server-name NAME` and `--orcho-mcp-command CMD` reproduce a
+Use `--workspace PATH` when cwd cannot resolve the intended workspace.
+`workspace init` stores the resolved server name and launch command in the
+workspace-local config (`.orcho/config.local.json`, key `mcp`), so a bare
+`orcho workspace mcp` reproduces that init's setup. The optional
+`--mcp-server-name NAME` and `--orcho-mcp-command CMD` remain overrides for a
 custom server identity or launch command. The command does not create or
 modify files. Use `workspace init --mcp-config PATH` only when you want init to
 write or merge a client entry.
@@ -55,6 +58,11 @@ your-project/
     └── multiagent/
         └── plugin.py    ← inspected starter candidate or reviewed project config
 ```
+
+When a registered project has no recognised repo markers, the prompt says so
+before asking: the candidate is an empty skeleton and you fill lint/test
+commands yourself. The outcome line reports such a plugin as
+`created … (empty — fill commands)` instead of an undifferentiated `created`.
 
 `--no-interactive`, non-TTY input, and `--dry-run` never ask the question or
 write a project plugin. An existing file, directory, or symlink at that path is

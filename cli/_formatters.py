@@ -1727,7 +1727,9 @@ def format_prompts_resolution(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def format_workspace_init(result: WorkspaceInitResult) -> str:
+def format_workspace_init(
+    result: WorkspaceInitResult, *, verbose: bool = False,
+) -> str:
     """Render the `orcho workspace init` outcome for stdout.
 
     Shape:
@@ -1812,17 +1814,25 @@ def format_workspace_init(result: WorkspaceInitResult) -> str:
 
     extension_points = getattr(result, "extension_points", ())
     if extension_points:
-        out.append(_workspace_heading("Extension points:"))
-        labels = (
-            "Plugin template:",
-            "Prompt overrides:",
-            "Task files:",
-            "Agent rules template:",
-            "Claude shim template:",
-        )
-        for label, path in zip(labels, extension_points, strict=False):
+        if verbose:
+            out.append(_workspace_heading("Extension points:"))
+            labels = (
+                "Plugin template:",
+                "Prompt overrides:",
+                "Task files:",
+                "Agent rules template:",
+                "Claude shim template:",
+            )
+            for label, path in zip(labels, extension_points, strict=False):
+                out.append(
+                    f"    - {paint(label, C.CYAN)} {paint(str(path), C.GREEN)}"
+                )
+        else:
+            extensions_root = str(Path(result.workspace_dir) / ".orcho")
             out.append(
-                f"    - {paint(label, C.CYAN)} {paint(str(path), C.GREEN)}"
+                f"  {paint('Extension points:', C.CYAN)} "
+                f"{paint(extensions_root, C.GREEN)} "
+                f"{paint('(plugin template, prompt overrides, task files, agent rules — `--verbose` lists paths)', C.GREY)}"
             )
         out.append("")
 
@@ -1904,16 +1914,27 @@ def format_project_plugin_outcomes(
 ) -> str:
     """Render explicit project-plugin materialisation outcomes for stdout."""
     out = ["", _workspace_heading("Project plugin configuration:")]
+    any_created = False
     for outcome in outcomes:
+        empty = outcome.status == "created" and getattr(outcome, "empty", False)
         color = {
-            "created": C.GREEN,
+            "created": C.YELLOW if empty else C.GREEN,
             "skipped": C.YELLOW,
             "failed": C.RED,
         }[outcome.status]
-        detail = f" ({outcome.detail})" if outcome.detail else ""
+        detail_text = "empty — fill commands" if empty else outcome.detail
+        detail = f" ({detail_text})" if detail_text else ""
+        any_created = any_created or outcome.status == "created"
         out.append(
             f"    {paint(outcome.status, color, C.BOLD)} "
             f"{paint(outcome.destination, color)}{paint(detail, C.GREY)}"
+        )
+    if any_created:
+        try_command = "orcho run --task '...' --mock"
+        out.append(
+            f"    {paint('Next:', C.CYAN)} "
+            f"{paint('review the plugin, then:', C.GREY)} "
+            f"{paint(try_command, C.GREEN)}"
         )
     return "\n".join(out)
 
