@@ -294,8 +294,34 @@ def cmd_status(args: argparse.Namespace) -> int:
         status,
         verbose=verbose,
         publish_gate=app_cfg.commit.get("publish"),
+        stalled_reason=_stalled_reason(status, workspace=workspace),
     ))
     return 0
+
+
+def _stalled_reason(status, *, workspace) -> str | None:
+    """Core's explanation for a ``running`` run whose process is gone, or None.
+
+    A run that dies without writing a terminal event keeps saying ``running``
+    forever, so the status line alone can describe a run that ceased to exist
+    hours ago as working. ``run_diagnosis`` already owns that verdict (and the
+    conservative predicate behind it); status asks rather than deciding, so
+    the two surfaces can never disagree.
+
+    Only a ``running`` record can be lying about it, so nothing else pays for
+    the probe. Diagnosis is an enrichment: a failure to reach a verdict must
+    leave the status output intact, never replace it with an error.
+    """
+    meta = getattr(status, "meta", None)
+    if getattr(meta, "status", None) != "running":
+        return None
+    try:
+        from sdk.run_control import run_diagnosis
+
+        diagnosis = run_diagnosis(status.run_ref.run_id, workspace=workspace)
+    except Exception:  # noqa: BLE001 — enrichment must never break status
+        return None
+    return diagnosis.reason if diagnosis.condition == "stalled" else None
 
 
 def cmd_history(args: argparse.Namespace) -> int:
