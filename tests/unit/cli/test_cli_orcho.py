@@ -2537,7 +2537,8 @@ class TestWorkspaceInitRuntimeGate:
 
         assert rc == 2
         err = capsys.readouterr().err
-        assert "no CLI agent runtime found on PATH" in err
+        assert err.count("no CLI agent runtime found on PATH") == 1, \
+            "the refusal must reach stderr exactly once, not per emit site"
         assert "codex" in err and "claude" in err and "gemini" in err
         assert not (root / "workspace-orchestrator").exists(), \
             "a refused init must not scaffold anything"
