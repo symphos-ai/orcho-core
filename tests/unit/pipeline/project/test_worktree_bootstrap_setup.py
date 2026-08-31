@@ -572,3 +572,109 @@ def test_correction_followup_rejects_unreadable_retained_worktree(
                 parent_worktree=parent_worktree,
             ),
         )
+
+
+# ── a bootstrap halt must leave the failing step's output in the run dir ────
+
+
+def _bootstrap_failure(**overrides) -> WorktreeBootstrapError:
+    failure = {
+        "index": 2, "action": "run", "status": "failed", "reason": "exit_code",
+        "cmd": ["npx", "nuxt", "prepare"], "cwd": "/wt", "exit_code": 1,
+        "stdout_tail": "preparing app", "stderr_tail": "ENOENT: nuxt.config",
+    }
+    failure.update(overrides)
+    return WorktreeBootstrapError(
+        "worktree_bootstrap run step 2 failed with exit code 1", failure=failure,
+    )
+
+
+def test_bootstrap_failure_persists_step_output_into_the_run_dir(
+    tmp_path: Path,
+) -> None:
+    """The reported gap: runner.log carried one exit-code line and output.log
+    was empty, so the halt was undiagnosable once the process was gone."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(WorktreeBootstrapError):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.SILENT,
+        )
+
+    evidence = run_dir / "worktree_bootstrap" / "step-0002-run.json"
+    assert evidence.is_file()
+    record = json.loads(evidence.read_text(encoding="utf-8"))
+    assert record["exit_code"] == 1
+    assert record["cmd"] == ["npx", "nuxt", "prepare"]
+    assert record["stdout_tail"] == "preparing app"
+    assert record["stderr_tail"] == "ENOENT: nuxt.config"
+    assert record["error"] == "worktree_bootstrap run step 2 failed with exit code 1"
+
+    # The durable session/meta record carries it too, next to the halt reason.
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["halt_reason"] == "worktree_bootstrap_failed"
+    assert meta["worktree_bootstrap"]["failed_step"]["stderr_tail"] == (
+        "ENOENT: nuxt.config"
+    )
+
+
+def test_bootstrap_failure_terminal_quotes_the_step_output(
+    tmp_path: Path, capsys,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(SystemExit):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.TERMINAL,
+        )
+
+    err = capsys.readouterr().err
+    assert "step 2 (run)" in err
+    assert "preparing app" in err
+    assert "ENOENT: nuxt.config" in err
+
+
+def test_bootstrap_failure_without_output_dir_still_records_the_step(
+    tmp_path: Path, capsys,
+) -> None:
+    """No run dir is not a reason to lose the diagnosis."""
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(SystemExit):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=None,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.TERMINAL,
+        )
+
+    assert session["worktree_bootstrap"]["failed_step"]["exit_code"] == 1
+    assert "ENOENT: nuxt.config" in capsys.readouterr().err

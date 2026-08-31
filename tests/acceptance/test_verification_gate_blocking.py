@@ -345,6 +345,7 @@ def test_verification_retry_feedback_preserves_human_directed_round_context(
     assert result.paused is True
     expected = VerificationHandoffRetryContext(
         identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+        identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
         prior_round=2, fresh_round=3, loop_max_rounds=2,
         human_retry_ordinal=1,
     )

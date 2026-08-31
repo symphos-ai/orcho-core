@@ -22,11 +22,16 @@ class VerificationHandoffRetryBlocked(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class VerificationHandoffRetryContext:
-    """Canonical identity and round accounting for one human gate retry.
+    """Canonical identities and round accounting for one human gate retry.
 
     The active handoff, rather than the fresh retry round, remains the source
     of the automatic loop maximum.  This makes the one-shot retry structurally
     human-directed even when it produces another gate handoff.
+
+    ``identity`` is the primary (route-classifying) gate; ``identities`` is the
+    complete blocking set the handoff was raised for.  A retry must recheck all
+    of them — rechecking only the primary would close the pause while another
+    required command of the same gate set is still red.
     """
 
     identity: GateIdentity
@@ -34,6 +39,7 @@ class VerificationHandoffRetryContext:
     fresh_round: int
     loop_max_rounds: int
     human_retry_ordinal: int
+    identities: tuple[GateIdentity, ...]
 
     @classmethod
     def from_active(
@@ -50,7 +56,40 @@ class VerificationHandoffRetryContext:
             fresh_round=fresh_round,
             loop_max_rounds=loop_max_rounds,
             human_retry_ordinal=max(1, fresh_round - loop_max_rounds),
+            identities=_blocking_identities(active, identity),
         )
+
+
+def _blocking_identities(
+    active: Mapping[str, object], identity: GateIdentity,
+) -> tuple[GateIdentity, ...]:
+    """Every gate identity the persisted handoff blocked on, primary first.
+
+    Falls back to the primary identity alone for a handoff written before the
+    set was durable, or for any record whose ``gate_identities`` entry is not a
+    complete identity — a malformed entry must not silently widen or narrow
+    what the retry rechecks.
+    """
+    artifacts = active.get("artifacts")
+    raw = artifacts.get("gate_identities") if isinstance(artifacts, Mapping) else None
+    if not isinstance(raw, list | tuple) or not raw:
+        return (identity,)
+    resolved: list[GateIdentity] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            return (identity,)
+        command, hook, phase = item.get("command"), item.get("hook"), item.get("phase")
+        if not (
+            isinstance(command, str) and command
+            and isinstance(hook, str) and hook
+            and isinstance(phase, str)
+        ):
+            return (identity,)
+        resolved.append(GateIdentity(command, hook, phase))
+    if identity not in resolved:
+        return (identity,)
+    # Primary first: it names the re-parked handoff and its phase.
+    return (identity, *[item for item in resolved if item != identity])
 
 
 def apply_verification_handoff_resume(

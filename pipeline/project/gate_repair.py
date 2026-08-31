@@ -28,6 +28,15 @@ FINAL_PHASES delivery boundary; blocks delivery only on a require gate whose
 receipt is failed/missing/stale), ``on_resume`` (resume path). ``manual_only`` is
 never auto-planned.
 
+A hook selects a *set* of required commands, so one firing can end with more
+than one of them red. The hook executes every selected gate before it routes,
+and routes the whole failure set as one unit (see
+:mod:`pipeline.project.gate_failure_set`): under ``policy: require`` the phase
+passes only when EVERY required command is green, the repair critique carries
+every failing command's output, and an escalation names every failing command
+rather than the first one. ``abort`` is the one early exit — it ends the run, so
+there is no aggregate decision surface left to complete.
+
 ``dispatch_via_v2_profile`` calls the hook entry points as contract-gated hooks;
 with no declared contract every entry point is a pure no-op so the no-contract
 dispatch path stays byte-identical. Subprocess / FSM boundaries live behind the
@@ -41,6 +50,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline.project import gate_failure_set
+from pipeline.project.gate_failure_set import GateFailure
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -91,7 +102,12 @@ def run_gate_hook(
     Returns a no-op (``active=False``) when no contract is declared, the hook is
     ``manual_only`` (never auto-planned), or no required gate is scheduled for
     this hook. ``costs`` limits execution without changing identity; ``rerun``
-    marks ledger events. Otherwise returns the first blocking disposition.
+    marks ledger events.
+
+    Otherwise EVERY selected gate is executed first and the resulting failure
+    set is routed as one unit, so a second failing required command can neither
+    escape the repair loop nor be dropped from the operator's decision surface.
+    An ``abort`` gate is the one early exit: it halts the run outright.
     """
     contract = _contract(run)
     if contract is None or hook == "manual_only":
@@ -116,6 +132,10 @@ def run_gate_hook(
     existing_receipts = (
         _delivery_receipt_statuses(run, contract) if hook == "before_delivery" else {}
     )
+    # Every selected gate executes before anything is routed: a required command
+    # that never ran can never be repaired, and a failure that never entered this
+    # list can never reach the operator.
+    failures: list[GateFailure] = []
     for entry in gates:
         identity = _entry_identity(entry)
         existing = existing_receipts.get(entry.command)
@@ -132,27 +152,16 @@ def run_gate_hook(
             # hook consequence instead of issuing a second subprocess call.
             classification, receipt = existing
             executed.add(identity)
-            disposition = _route_failed_gate(
-                run,
-                profile,
-                ctx,
-                contract,
-                entry,
-                receipt,
-                classification,
-                hook=hook,
-                phase=phase,
-            )
-            if disposition is not None:
+            failure = _blocking_failure(run, entry, receipt, classification)
+            if failure is None:
+                continue
+            if failure.entry.action == "abort":
+                _abort(run, entry, receipt)
                 _reconcile_skipped_gate_events(
-                    run,
-                    contract,
-                    plan,
-                    hook=hook,
-                    phase=phase,
-                    executed=executed,
+                    run, contract, plan, hook=hook, phase=phase, executed=executed,
                 )
-                return disposition
+                return GateRepairOutcome(active=True, halted=True)
+            failures.append(failure)
             continue
         _emit_scheduled_gate_start(
             entry,
@@ -193,27 +202,19 @@ def run_gate_hook(
         )
         if classification.status == "present":
             continue
-        disposition = _route_failed_gate(
-            run,
-            profile,
-            ctx,
-            contract,
-            entry,
-            receipt,
-            classification,
-            hook=hook,
-            phase=phase,
-        )
-        if disposition is not None:
+        failure = _blocking_failure(run, entry, receipt, classification)
+        if failure is None:
+            continue
+        if failure.entry.action == "abort":
+            # The only early exit: the run is over, so there is no aggregate
+            # decision surface left to complete and no reason to spend the
+            # remaining gates' wall-clock.
+            _abort(run, entry, receipt)
             _reconcile_skipped_gate_events(
-                run,
-                contract,
-                plan,
-                hook=hook,
-                phase=phase,
-                executed=executed,
+                run, contract, plan, hook=hook, phase=phase, executed=executed,
             )
-            return disposition
+            return GateRepairOutcome(active=True, halted=True)
+        failures.append(failure)
 
     _reconcile_skipped_gate_events(
         run,
@@ -225,6 +226,16 @@ def run_gate_hook(
     )
     if not gates:
         return GateRepairOutcome(active=False)
+    if failures:
+        return _route_failed_gates(
+            run,
+            profile,
+            ctx,
+            contract,
+            tuple(failures),
+            hook=hook,
+            phase=phase,
+        )
     return GateRepairOutcome(active=True, passed=True)
 
 
@@ -517,96 +528,91 @@ def disarm_gate_context(run: Any) -> None:
 # ── routing ─────────────────────────────────────────────────────────────────
 
 
-def _route_failed_gate(
+def _blocking_failure(
     run: Any,
-    profile: Any,
-    ctx: Any,
-    contract: Any,
     entry: Any,
     receipt: dict,
     classification: Any,
-    *,
-    hook: str,
-    phase: str,
-) -> GateRepairOutcome | None:
-    """Route one failed required gate; ``None`` means non-blocking (warned)."""
+) -> GateFailure | None:
+    """Classify one failed gate as blocking, or warn and return ``None``.
+
+    Non-blocking outcomes are consumed here (they carry no consequence beyond
+    the warning), so the caller's failure list holds exactly the failures that
+    must be repaired or escalated.
+    """
     resolved = _resolve_entry(entry)
     if resolved.consequence == "warning":
         _warn_gate(run, entry, receipt, note="warning consequence")
         return None
-
     action = entry.action
     if action == "continue_warn":
         _warn_gate(run, entry, receipt, note="continue_warn")
         return None
-    if action == "abort":
-        _abort(run, entry, receipt)
-        return GateRepairOutcome(active=True, halted=True)
-    if action == "handoff":
-        _synthesize_critique(run.state, entry, receipt, classification)
-        _request_handoff(
-            run,
-            entry,
-            receipt,
-            classification,
-            1,
-            1,
-            profile=profile,
-            phase=_handoff_phase(hook, phase),
-            hook=hook,
-            gate_phase=phase,
-        )
-        return GateRepairOutcome(active=True, paused=True)
-    if action == "repair_loop":
-        if _is_hygiene_failure(classification):
-            _synthesize_critique(run.state, entry, receipt, classification)
-            _request_handoff(
-                run,
-                entry,
-                receipt,
-                classification,
-                1,
-                1,
-                profile=profile,
-                phase=_handoff_phase(hook, phase),
-                hook=hook,
-                gate_phase=phase,
-            )
-            return GateRepairOutcome(active=True, paused=True)
-        if repair_loop_target(hook, phase) == "repair" and _repair_step(profile) is not None:
-            return _repair_loop(
-                run,
-                profile,
-                ctx,
-                contract,
-                entry,
-                receipt,
-                classification,
-                hook=hook,
-                phase=phase,
-            )
-        # Deterministic degradation: repair_loop is unsupported off the
-        # after_phase(implement) critical path (or no repair_changes step) — fall
-        # back to handoff with a logged note.
-        _record_repair_fallback(run, entry, hook, phase)
-        _synthesize_critique(run.state, entry, receipt, classification)
-        _request_handoff(
-            run,
-            entry,
-            receipt,
-            classification,
-            1,
-            1,
-            profile=profile,
-            phase=_handoff_phase(hook, phase),
-            hook=hook,
-            gate_phase=phase,
-        )
-        return GateRepairOutcome(active=True, paused=True)
+    if action not in ("abort", "handoff", "repair_loop"):
+        # Unknown action — treat as non-blocking warning.
+        _warn_gate(run, entry, receipt, note=f"unknown action {action!r}")
+        return None
+    return GateFailure(entry=entry, receipt=receipt, classification=classification)
 
-    # Unknown action — treat as non-blocking warning.
-    _warn_gate(run, entry, receipt, note=f"unknown action {action!r}")
-    return None
+
+def _route_failed_gates(
+    run: Any,
+    profile: Any,
+    ctx: Any,
+    contract: Any,
+    failures: tuple[GateFailure, ...],
+    *,
+    hook: str,
+    phase: str,
+) -> GateRepairOutcome:
+    """Route the whole set of blocking failures for one hook firing.
+
+    ``policy: require`` is a property of the SET, not of its first member: the
+    hook may only report ``passed`` once every required command is green. The
+    set enters the repair loop only when every failure in it is repairable —
+    one agent-unfixable member escalates the whole set rather than burning
+    repair rounds on the fixable part and then showing the operator a strict
+    subset of what is blocking.
+    """
+    routes = [
+        (failure, _is_repairable(failure, profile, hook=hook, phase=phase))
+        for failure in failures
+    ]
+    if all(repairable for _failure, repairable in routes):
+        return _repair_loop(
+            run, profile, ctx, contract, failures, hook=hook, phase=phase,
+        )
+    for failure, repairable in routes:
+        if repairable or failure.entry.action != "repair_loop" or failure.hygiene:
+            continue
+        # Deterministic degradation: repair_loop is unsupported off the
+        # after_phase(implement) critical path (or no repair_changes step) —
+        # fall back to handoff with a logged note.
+        _record_repair_fallback(run, failure.entry, hook, phase)
+    _synthesize_critique(run.state, failures)
+    _request_handoff(
+        run,
+        failures,
+        1,
+        1,
+        profile=profile,
+        phase=_handoff_phase(hook, phase),
+        hook=hook,
+        gate_phase=phase,
+    )
+    return GateRepairOutcome(active=True, paused=True)
+
+
+def _is_repairable(
+    failure: GateFailure, profile: Any, *, hook: str, phase: str,
+) -> bool:
+    """Whether an agent repair round can plausibly resolve this failure."""
+    return (
+        failure.entry.action == "repair_loop"
+        and not failure.hygiene
+        and repair_loop_target(hook, phase) == "repair"
+        and _repair_step(profile) is not None
+    )
 
 
 def _repair_loop(
@@ -614,26 +620,38 @@ def _repair_loop(
     profile: Any,
     ctx: Any,
     contract: Any,
-    entry: Any,
-    receipt: dict,
-    classification: Any,
+    failures: tuple[GateFailure, ...],
     *,
     hook: str,
     phase: str,
 ) -> GateRepairOutcome:
-    """Drive repair_changes -> gate re-check rounds up to the repair budget."""
+    """Drive repair_changes -> gate re-check rounds up to the repair budget.
+
+    The critique carries EVERY still-failing command (ADR 0081: the failed
+    command output *is* the critique), and the exit condition is that every one
+    of them rechecks green — a round that fixes one of two red commands is not
+    a passed gate.
+    """
     repair_step = _repair_step(profile)
     max_rounds = _repair_budget(run, profile)
+    pending = failures
     round_n = 0
     while True:
         round_n += 1
-        _synthesize_critique(run.state, entry, receipt, classification)
-        if repair_step is None:
+        _synthesize_critique(run.state, pending)
+
+        _dispatch_repair(run, repair_step, ctx, round_n=round_n, max_rounds=max_rounds)
+        if getattr(run.state, "halt", False):
+            return GateRepairOutcome(active=True, halted=True, rounds=round_n)
+
+        pending = _recheck_failures(run, contract, pending, hook=hook, phase=phase)
+        if not pending:
+            return GateRepairOutcome(active=True, passed=True, rounds=round_n)
+        if any(failure.hygiene for failure in pending) or round_n >= max_rounds:
+            _synthesize_critique(run.state, pending)
             _request_handoff(
                 run,
-                entry,
-                receipt,
-                classification,
+                pending,
                 round_n,
                 max_rounds,
                 profile=profile,
@@ -643,17 +661,27 @@ def _repair_loop(
             )
             return GateRepairOutcome(active=True, paused=True, rounds=round_n)
 
-        _dispatch_repair(run, repair_step, ctx, round_n=round_n, max_rounds=max_rounds)
-        if getattr(run.state, "halt", False):
-            return GateRepairOutcome(active=True, halted=True, rounds=round_n)
 
-        receipt, classification = _run_and_classify_gate(run, contract, entry)
-        # Append-only: a repair-round recheck is a real execution of the official
-        # gate command on this hook, so its executed_pass/executed_fail must land
-        # in the durable trail too (the recheck pass is what flips the outcome).
+def _recheck_failures(
+    run: Any,
+    contract: Any,
+    pending: tuple[GateFailure, ...],
+    *,
+    hook: str,
+    phase: str,
+) -> tuple[GateFailure, ...]:
+    """Re-execute every pending gate; return the ones that are still red.
+
+    Append-only: a repair-round recheck is a real execution of the official gate
+    command on this hook, so each ``executed_pass`` / ``executed_fail`` lands in
+    the durable trail too (the recheck pass is what flips the outcome).
+    """
+    still_failing: list[GateFailure] = []
+    for failure in pending:
+        receipt, classification = _run_and_classify_gate(run, contract, failure.entry)
         _record_executed_gate_event(
             run,
-            entry,
+            failure.entry,
             receipt,
             classification,
             hook=hook,
@@ -661,37 +689,13 @@ def _repair_loop(
             rerun=True,
         )
         if classification.status == "present":
-            return GateRepairOutcome(active=True, passed=True, rounds=round_n)
-        if _is_hygiene_failure(classification):
-            _synthesize_critique(run.state, entry, receipt, classification)
-            _request_handoff(
-                run,
-                entry,
-                receipt,
-                classification,
-                round_n,
-                max_rounds,
-                profile=profile,
-                phase=_handoff_phase(hook, phase),
-                hook=hook,
-                gate_phase=phase,
-            )
-            return GateRepairOutcome(active=True, paused=True, rounds=round_n)
-        if round_n >= max_rounds:
-            _synthesize_critique(run.state, entry, receipt, classification)
-            _request_handoff(
-                run,
-                entry,
-                receipt,
-                classification,
-                round_n,
-                max_rounds,
-                profile=profile,
-                phase=_handoff_phase(hook, phase),
-                hook=hook,
-                gate_phase=phase,
-            )
-            return GateRepairOutcome(active=True, paused=True, rounds=round_n)
+            continue
+        still_failing.append(
+            GateFailure(
+                entry=failure.entry, receipt=receipt, classification=classification,
+            ),
+        )
+    return tuple(still_failing)
 
 
 # ── gate selection (consume the plan; never recompute) ──────────────────────
@@ -1006,59 +1010,6 @@ def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
     )
 
 
-# Failure kinds no repair agent can resolve from inside the run: the fix lives
-# in the environment, the declared contract, or the operator's judgment. They
-# route straight to the operator handoff instead of burning repair rounds.
-_AGENT_UNFIXABLE_KINDS = frozenset({
-    "provenance_failure",
-    "env_failure",
-    # A repair agent cannot establish a missing or unavailable Git subject
-    # identity.  Keep this fail-closed, but route it to the same operator
-    # handoff path as other execution-environment failures rather than
-    # spending repair-loop rounds on an external precondition.
-    "unverifiable",
-    # A command that ran out of wall-clock is not a failing test to repair: the
-    # budget is declared in the plugin contract, and a genuine hang is a
-    # diagnosis, not a code edit. Routed to the operator, but NOT as hygiene —
-    # see _finding_severity.
-    "timeout",
-})
-
-
-def _is_hygiene_failure(classification: Any) -> bool:
-    return getattr(classification, "failure_kind", None) in _AGENT_UNFIXABLE_KINDS
-
-
-# Hygiene, in the severity sense, means "the proof machinery is broken, not the
-# change". A timeout is agent-unfixable too, but it leaves the required gate
-# with NO verdict at all — that is a P1 blocker, not a P3 note.
-_HYGIENE_SEVERITY_KINDS = _AGENT_UNFIXABLE_KINDS - {"timeout"}
-
-
-def _finding_severity(failure_kind: str) -> str:
-    return "P3" if failure_kind in _HYGIENE_SEVERITY_KINDS else "P1"
-
-
-def _required_fix(failure_kind: str, command: str) -> str:
-    """The one action that resolves this failure, addressed to whoever can act."""
-    if failure_kind == "timeout":
-        return (
-            f"The {command!r} gate produced no result: it did not finish within "
-            "its wall-clock budget. Either raise "
-            f"verification.commands[{command!r}].timeout in the project plugin "
-            "if the command is honestly that long, or diagnose the hang — an "
-            "empty output tail with the duration pinned to the budget means it "
-            "never started producing work. Then rerun the gate, or choose an "
-            "explicit waiver."
-        )
-    if failure_kind in _HYGIENE_SEVERITY_KINDS:
-        return (
-            "Fix the verification environment outside the agent or choose an "
-            "explicit waiver."
-        )
-    return "Fix the failing verification command and rerun it."
-
-
 def _passed(receipt: dict) -> bool:
     """Authoritative pass rollup for a scheduled gate's receipt.
 
@@ -1278,37 +1229,16 @@ def _reconcile_skipped_gate_events(
         _append_gate_event(run, _gate_event(hook, phase, entry, decision=decision))
 
 
-def _synthesize_critique(
-    state: Any,
-    entry: Any,
-    receipt: dict,
-    classification: Any,
-) -> str:
-    """Write the failed command output into ``state.last_critique`` / output."""
-    from pipeline.verification_failure import format_receipt_failure
+def _synthesize_critique(state: Any, failures: tuple[GateFailure, ...]) -> None:
+    """Write EVERY failed command's output into ``state.last_critique`` / output.
 
-    evidence = format_receipt_failure(classification, receipt)
-    parts = [
-        "Required verification gate failed.",
-        f"Gate set: {entry.primary_gate_set}",
-        f"Command: {entry.command}",
-        evidence,
-    ]
-    if getattr(classification, "failure_kind", None) == "test_failure":
-        stdout = receipt.get("stdout_tail") or ""
-        stderr = receipt.get("stderr_tail") or ""
-        detail = receipt.get("detail") or ""
-        state.last_test_output = "\n".join(part for part in (evidence, stdout, stderr) if part)
-        if detail:
-            parts.append(f"Detail: {detail}")
-        if stderr:
-            parts.append(f"stderr:\n{stderr}")
-        if stdout:
-            parts.append(f"stdout:\n{stdout}")
-    else:
-        state.last_test_output = evidence
-    state.last_critique = "\n".join(parts)
-    return evidence
+    ADR 0081 makes the failed command output the repair critique, so a critique
+    built from one member of a multi-command failure set would send the repair
+    agent after one command and leave the rest of the required set red.
+    """
+    critique, test_output = gate_failure_set.critique(failures)
+    state.last_critique = critique
+    state.last_test_output = test_output
 
 
 def _warn_gate(run: Any, entry: Any, receipt: dict, *, note: str) -> None:
@@ -1369,9 +1299,7 @@ def _handoff_phase(hook: str, phase: str) -> str:
 
 def _request_handoff(
     run: Any,
-    entry: Any,
-    receipt: dict,
-    classification: Any,
+    failures: tuple[GateFailure, ...],
     round_n: int,
     max_rounds: int,
     *,
@@ -1380,26 +1308,26 @@ def _request_handoff(
     hook: str,
     gate_phase: str,
 ) -> None:
-    """Stash a phase-handoff signal so the caller persists the pause."""
+    """Stash a phase-handoff signal so the caller persists the pause.
+
+    The payload carries the WHOLE blocking set: one finding per failing command
+    plus ``gate_commands`` / ``gate_identities``. An operator decision surface
+    that showed a strict subset of the blocking failures would collect a
+    ``continue`` taken on an incomplete picture.
+    """
     from pipeline.runtime.handoff import PhaseHandoffRequested
     from pipeline.runtime.roles import PhaseHandoffType
-    from pipeline.verification_failure import format_receipt_failure
 
-    evidence = format_receipt_failure(classification, receipt)
-    hygiene = _is_hygiene_failure(classification)
-    failure_kind = getattr(classification, "failure_kind", "test_failure") or "test_failure"
-    finding = {
-        "id": f"verification_gate_{failure_kind}",
-        "severity": _finding_severity(failure_kind),
-        "title": f"Verification gate {failure_kind}",
-        "body": evidence,
-        "required_fix": _required_fix(failure_kind, entry.command),
-        "failure_kind": failure_kind,
-    }
-    last_output = getattr(run.state, "last_critique", "") or evidence
-    available_actions = _handoff_actions(profile, hygiene=hygiene)
+    artifacts = gate_failure_set.handoff_artifacts(
+        failures, hook=hook, gate_phase=gate_phase,
+    )
+    hygiene = gate_failure_set.all_hygiene(failures)
+    last_output = getattr(run.state, "last_critique", "") or artifacts["short_summary"]
     signal = PhaseHandoffRequested(
-        handoff_id=f"gate:{entry.command}:{round_n}",
+        # The id stays the single-identity ``gate:<command>:<round>`` shape the
+        # waiver reader and the SDK decision store parse; the primary command
+        # names it, while the artifacts carry the full set.
+        handoff_id=f"gate:{failures[0].command}:{round_n}",
         phase=phase,
         type=PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT,
         trigger="verification_gate_failed",
@@ -1408,18 +1336,37 @@ def _request_handoff(
         round_extras_key="repair_round",
         round=max(1, round_n),
         loop_max_rounds=max(1, max_rounds),
-        available_actions=available_actions,
-        artifacts={
-            "gate_command": entry.command,
-            "gate_set": entry.primary_gate_set,
-            "gate_identity": {"command": entry.command, "hook": hook, "phase": gate_phase},
-            "findings": [finding],
-            "short_summary": evidence,
-        },
+        available_actions=_handoff_actions(profile, hygiene=hygiene),
+        artifacts=artifacts,
         last_output=last_output,
     )
     run.state.phase_handoff_request = signal
     run.state.stop(f"phase handoff requested: {signal.handoff_id}")
+
+
+def _persisted_findings_are_hygiene(findings: Any) -> bool:
+    """Whether EVERY persisted finding is agent-unfixable.
+
+    Which actions to offer follows from what the failures ARE, so read each
+    persisted ``failure_kind`` rather than inferring it from severity: a timeout
+    is agent-unfixable (waiver / halt only) yet carries P1, so the severity
+    proxy would silently offer it a repair retry. Read over the whole list, not
+    its first member — a handoff can block on several commands, and one still
+    agent-fixable failure keeps a repair retry a real option.
+    """
+    if not isinstance(findings, list | tuple) or not findings:
+        return False
+    verdicts: list[bool] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            return False
+        kind = str(finding.get("failure_kind") or "")
+        verdicts.append(
+            kind in gate_failure_set.AGENT_UNFIXABLE_KINDS
+            if kind
+            else finding.get("severity") == "P3"
+        )
+    return all(verdicts)
 
 
 def _handoff_actions(profile: Any, *, hygiene: bool) -> tuple[str, ...]:
@@ -1459,18 +1406,7 @@ def repark_verification_handoff_retry_blocked(
     from pipeline.runtime.roles import PhaseHandoffType
 
     artifacts = dict(active.get("artifacts") or {})
-    findings = artifacts.get("findings")
-    # Which actions to offer follows from what the failure IS, so read the
-    # persisted ``failure_kind`` rather than inferring it from severity: a
-    # timeout is agent-unfixable (waiver / halt only) yet carries P1, so the
-    # severity proxy would silently offer it a repair retry.
-    first = findings[0] if isinstance(findings, list) and findings else None
-    first = first if isinstance(first, dict) else {}
-    hygiene = (
-        str(first.get("failure_kind") or "") in _AGENT_UNFIXABLE_KINDS
-        if first.get("failure_kind")
-        else first.get("severity") == "P3"
-    )
+    hygiene = _persisted_findings_are_hygiene(artifacts.get("findings"))
     prior_id = str(active.get("id") or "gate:verification")
     prior_summary = artifacts.get("short_summary")
     artifacts["retry_blocked_reason"] = reason
@@ -1621,39 +1557,60 @@ def _repair_budget(run: Any, profile: Any) -> int:
 def rerun_verification_handoff_gate(
     run: Any, *, retry_context: Any, profile: Any,
 ) -> bool:
-    """Re-execute exactly one durable selected gate after a human repair.
+    """Re-execute EVERY durable selected gate the handoff blocked on.
 
-    The lookup is identity-based; a missing or duplicate match is a control
-    failure, not permission to run a similarly named command.
+    A gate handoff can block on more than one required command, so a retry that
+    rechecked only the first would close the pause with the rest still red —
+    the same escape the hook router is fixed against. Every identity is
+    resolved before any command runs; the lookup is identity-based, and a
+    missing or duplicate match is a control failure, not permission to run a
+    similarly named command.
     """
-    command = retry_context.identity.command
-    hook = retry_context.identity.hook
-    phase = retry_context.identity.phase
     contract = _contract(run)
     if contract is None:
         raise RuntimeError("verification retry has no persisted verification contract")
-    plan = _plan(run, contract, epoch=_selection_epoch(hook, phase))
+    identities = tuple(retry_context.identities)
+    entries = [_retry_gate_entry(run, contract, identity) for identity in identities]
+
+    failures: list[GateFailure] = []
+    for identity, entry in zip(identities, entries, strict=True):
+        receipt, classification = _run_and_classify_gate(run, contract, entry)
+        _record_executed_gate_event(
+            run, entry, receipt, classification,
+            hook=identity.hook, phase=identity.phase, rerun=True,
+        )
+        if classification.status == "present":
+            continue
+        failures.append(
+            GateFailure(entry=entry, receipt=receipt, classification=classification),
+        )
+    if not failures:
+        return True
+
+    primary = identities[0]
+    blocking = tuple(failures)
+    _synthesize_critique(run.state, blocking)
+    _request_handoff(
+        run, blocking,
+        retry_context.fresh_round, retry_context.loop_max_rounds,
+        profile=profile,
+        phase=_handoff_phase(primary.hook, primary.phase),
+        hook=primary.hook, gate_phase=primary.phase,
+    )
+    return False
+
+
+def _retry_gate_entry(run: Any, contract: Any, identity: Any) -> Any:
+    """Resolve the one plan entry a persisted gate identity names."""
+    plan = _plan(run, contract, epoch=_selection_epoch(identity.hook, identity.phase))
     matches = [
-        entry for entry in _gates_for_hook(plan, hook=hook, phase=phase)
-        if _entry_identity(entry) == (command, hook, phase)
+        entry
+        for entry in _gates_for_hook(plan, hook=identity.hook, phase=identity.phase)
+        if _entry_identity(entry) == (identity.command, identity.hook, identity.phase)
     ]
     if len(matches) != 1:
         raise RuntimeError("verification retry gate identity is missing or ambiguous")
-    entry = matches[0]
-    receipt, classification = _run_and_classify_gate(run, contract, entry)
-    _record_executed_gate_event(
-        run, entry, receipt, classification, hook=hook, phase=phase, rerun=True,
-    )
-    if classification.status == "present":
-        return True
-    _synthesize_critique(run.state, entry, receipt, classification)
-    _request_handoff(
-        run, entry, receipt, classification,
-        retry_context.fresh_round, retry_context.loop_max_rounds,
-        profile=profile,
-        phase=_handoff_phase(hook, phase), hook=hook, gate_phase=phase,
-    )
-    return False
+    return matches[0]
 
 
 __all__ = [
