@@ -178,6 +178,7 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
     assert calls[0] == {"repair": {
             "retry_context": VerificationHandoffRetryContext(
                 identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+                identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
                 prior_round=1, fresh_round=2, loop_max_rounds=1,
                 human_retry_ordinal=1,
             ),
@@ -447,6 +448,7 @@ def test_dispatch_exposes_explicit_human_retry_round_to_lifecycle() -> None:
         ctx,
         retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=1, fresh_round=2, loop_max_rounds=1,
             human_retry_ordinal=1,
         ),
@@ -520,6 +522,7 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
     passed = gate_repair.rerun_verification_handoff_gate(
         run, retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=2, fresh_round=3, loop_max_rounds=2,
             human_retry_ordinal=1,
         ), profile=object(),
@@ -600,6 +603,7 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
         run,
         retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=2,
             fresh_round=3,
             loop_max_rounds=2,
@@ -645,6 +649,7 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
     assert gate_repair.rerun_verification_handoff_gate(
         run, retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=1, fresh_round=2, loop_max_rounds=1,
             human_retry_ordinal=1,
         ), profile=object(),
@@ -682,3 +687,117 @@ def test_legacy_gate_identity_is_loaded_from_the_parent_ledger(tmp_path) -> None
     assert _scheduled_gate_identities(SimpleNamespace(output_dir=tmp_path)) == (
         GateIdentity("pytest-unit", "after_phase", "implement"),
     )
+
+
+# ── a handoff can block on more than one command ────────────────────────────
+
+
+def test_blocking_identities_come_from_the_persisted_set() -> None:
+    """``gate_identities`` is the durable blocking set; the primary leads it."""
+    primary = GateIdentity("lint", "after_phase", "implement")
+    context = VerificationHandoffRetryContext.from_active(
+        {
+            "round": 1,
+            "artifacts": {"gate_identities": [
+                {"command": "lint", "hook": "after_phase", "phase": "implement"},
+                {"command": "typecheck", "hook": "after_phase", "phase": "implement"},
+            ]},
+        },
+        primary,
+    )
+
+    assert context.identities == (
+        primary, GateIdentity("typecheck", "after_phase", "implement"),
+    )
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        {},
+        {"gate_identities": []},
+        {"gate_identities": [{"command": "lint", "hook": "after_phase"}]},
+        {"gate_identities": ["lint"]},
+        # A set that does not contain the routed primary is not this handoff's.
+        {"gate_identities": [
+            {"command": "typecheck", "hook": "after_phase", "phase": "implement"},
+        ]},
+    ],
+)
+def test_blocking_identities_fall_back_to_the_primary(artifacts) -> None:
+    """A record written before the set was durable — or one whose entry is not
+    a complete identity — must not silently widen or narrow the recheck."""
+    primary = GateIdentity("lint", "after_phase", "implement")
+
+    context = VerificationHandoffRetryContext.from_active(
+        {"round": 1, "artifacts": artifacts}, primary,
+    )
+
+    assert context.identities == (primary,)
+
+
+def test_rerun_rechecks_every_blocking_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry that rechecked only the primary would close the pause with the
+    other required command of the same gate set still red."""
+    from pipeline.project import gate_repair
+
+    entries = [
+        SimpleNamespace(
+            command=command, hook="after_phase", phase="implement",
+            policy="require", action="repair_loop", primary_gate_set="smoke",
+        )
+        for command in ("lint", "typecheck")
+    ]
+    state = SimpleNamespace(
+        extras={}, last_critique="", last_test_output="",
+        halt=False, phase_handoff_request=None,
+    )
+    state.stop = lambda reason: setattr(state, "halt", True)
+    run = SimpleNamespace(state=state)
+    ran: list[str] = []
+    monkeypatch.setattr(gate_repair, "_contract", lambda _run: object())
+    monkeypatch.setattr(
+        gate_repair, "_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(entries=entries),
+    )
+    monkeypatch.setattr(
+        gate_repair, "_run_gate_command",
+        lambda _run, _contract, selected: ran.append(selected.command) or {
+            "exit_code": 0 if selected.command == "lint" else 1,
+        },
+    )
+    monkeypatch.setattr(gate_repair, "_placeholders", lambda _run: object())
+    monkeypatch.setattr(
+        gate_repair, "_classify_gate_receipt",
+        lambda receipt, _ctx: SimpleNamespace(
+            status="present" if receipt["exit_code"] == 0 else "absent",
+            failure_kind="test_failure", exit_code=receipt["exit_code"],
+            assertions_passed=0, assertions_total=0, failed_assertions=(),
+            reason="",
+        ),
+    )
+    monkeypatch.setattr(
+        gate_repair, "_record_executed_gate_event", lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(gate_repair, "_repair_step", lambda _profile: object())
+
+    passed = gate_repair.rerun_verification_handoff_gate(
+        run,
+        retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("lint", "after_phase", "implement"),
+            identities=(
+                GateIdentity("lint", "after_phase", "implement"),
+                GateIdentity("typecheck", "after_phase", "implement"),
+            ),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
+        profile=object(),
+    )
+
+    assert ran == ["lint", "typecheck"]
+    assert passed is False
+    findings = run.state.phase_handoff_request.artifacts["findings"]
+    assert [f["command"] for f in findings] == ["typecheck"]

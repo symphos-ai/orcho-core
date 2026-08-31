@@ -671,9 +671,11 @@ def _apply_worktree_bootstrap(
                 worktree_path=worktree_ctx.path,
             )
     except WorktreeBootstrapError as exc:
+        failure = _persist_bootstrap_failure(output_dir, exc)
         session["worktree_bootstrap"] = {
             "status": "failed",
             "error": str(exc),
+            **({"failed_step": failure} if failure else {}),
         }
         mark_run_halted(session, halt_reason="worktree_bootstrap_failed")
         _save_session_quietly(output_dir, session)
@@ -681,12 +683,63 @@ def _apply_worktree_bootstrap(
             raise
         from pipeline.project.app import print_error
         print_error(f"Worktree bootstrap failed: {exc}")
+        for line in _bootstrap_failure_lines(failure):
+            print_error(line)
         sys.exit(2)
     if bootstrap_result.get("status") != "skipped":
         if presentation is PresentationPolicy.TERMINAL:
             reporter.finish()
         session["worktree_bootstrap"] = bootstrap_result
         _save_session_quietly(output_dir, session)
+
+
+#: Run-dir home for bootstrap step evidence, sibling to the verification
+#: command receipts. A bootstrap halt whose only trace is an exit code is
+#: undiagnosable once the process is gone.
+BOOTSTRAP_EVIDENCE_DIR = "worktree_bootstrap"
+
+
+def _persist_bootstrap_failure(
+    output_dir: Path | None, exc: Any,
+) -> dict[str, Any] | None:
+    """Write the failing step's captured output into the run dir.
+
+    Returns the record so the caller can also embed it in the durable session
+    and surface it on the terminal. Never raises: a failure to persist evidence
+    must not replace the bootstrap failure the operator actually needs to see.
+    """
+    failure = dict(getattr(exc, "failure", None) or {})
+    if not failure:
+        return None
+    failure["error"] = str(exc)
+    if output_dir is None:
+        return failure
+    from contextlib import suppress
+
+    with suppress(Exception):
+        target = Path(output_dir) / BOOTSTRAP_EVIDENCE_DIR
+        target.mkdir(parents=True, exist_ok=True)
+        index = int(failure.get("index") or 0)
+        action = str(failure.get("action") or "step")
+        (target / f"step-{index:04d}-{action}.json").write_text(
+            json.dumps(failure, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return failure
+
+
+def _bootstrap_failure_lines(failure: dict[str, Any] | None) -> list[str]:
+    """Terminal/runner.log lines quoting the failing step's own output."""
+    if not failure:
+        return []
+    lines = [f"  step {failure.get('index')} ({failure.get('action')}): "
+             f"{failure.get('cmd')!r} in {failure.get('cwd')}"]
+    for label in ("stdout_tail", "stderr_tail"):
+        tail = str(failure.get(label) or "").strip()
+        if tail:
+            lines.append(f"  {label.removesuffix('_tail')}:")
+            lines.extend(f"    {line}" for line in tail.splitlines()[-40:])
+    return lines
 
 
 @dataclasses.dataclass

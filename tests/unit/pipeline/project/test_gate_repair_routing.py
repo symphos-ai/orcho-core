@@ -309,6 +309,9 @@ def test_exit0_import_assertion_handoff_has_provenance_evidence(monkeypatch) -> 
             "body": signal.artifacts["short_summary"],
             "required_fix": "Fix the verification environment outside the agent or choose an explicit waiver.",
             "failure_kind": "provenance_failure",
+            # Every finding names its command: a set-valued payload whose
+            # findings only carried receipt evidence would be unreadable.
+            "command": "test",
         }
     ]
     assert "expected='/work/pipeline/__init__.py'" in signal.last_output

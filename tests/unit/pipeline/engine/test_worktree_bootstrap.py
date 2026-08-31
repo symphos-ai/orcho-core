@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.engine.worktree_bootstrap import (
+    OUTPUT_TAIL_CHARS,
     WorktreeBootstrapError,
     run_worktree_bootstrap,
     run_worktree_teardown,
@@ -804,3 +805,92 @@ def test_run_step_timeout_raises(tmp_path: Path) -> None:
             source_root=source,
             worktree_path=worktree,
         )
+
+
+# ── a failing step's own output is the diagnosis ────────────────────────────
+
+
+def test_failed_run_step_carries_its_captured_output(tmp_path: Path) -> None:
+    """A halt whose only trace is "step N failed with exit code 1" is
+    undiagnosable. The step's stdout/stderr must survive the raise."""
+    source = tmp_path / "src"
+    source.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    with pytest.raises(WorktreeBootstrapError) as exc_info:
+        run_worktree_bootstrap(
+            [{"run": [
+                sys.executable, "-c",
+                "import sys; print('preparing'); "
+                "print('ENOENT: nuxt.config', file=sys.stderr); sys.exit(1)",
+            ]}],
+            source_root=source,
+            worktree_path=worktree,
+        )
+
+    failure = exc_info.value.failure
+    assert failure["index"] == 1
+    assert failure["action"] == "run"
+    assert failure["status"] == "failed"
+    assert failure["reason"] == "exit_code"
+    assert failure["exit_code"] == 1
+    assert failure["cwd"] == str(worktree.resolve())
+    assert "preparing" in failure["stdout_tail"]
+    assert "ENOENT: nuxt.config" in failure["stderr_tail"]
+
+
+def test_failed_shell_step_carries_its_captured_output(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    with pytest.raises(WorktreeBootstrapError) as exc_info:
+        run_worktree_bootstrap(
+            [{"shell": "echo preparing; echo boom >&2; exit 3"}],
+            source_root=source,
+            worktree_path=worktree,
+        )
+
+    failure = exc_info.value.failure
+    assert failure["action"] == "shell"
+    assert failure["exit_code"] == 3
+    assert "preparing" in failure["stdout_tail"]
+    assert "boom" in failure["stderr_tail"]
+
+
+def test_missing_binary_step_records_a_typed_failure(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    with pytest.raises(WorktreeBootstrapError) as exc_info:
+        run_worktree_bootstrap(
+            [{"run": ["orcho-no-such-binary-xyz"]}],
+            source_root=source,
+            worktree_path=worktree,
+        )
+
+    assert exc_info.value.failure["reason"] == "command_not_found"
+
+
+def test_captured_output_is_bounded(tmp_path: Path) -> None:
+    """A runaway build log must not grow the durable run record without limit."""
+    source = tmp_path / "src"
+    source.mkdir()
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+
+    with pytest.raises(WorktreeBootstrapError) as exc_info:
+        run_worktree_bootstrap(
+            [{"run": [
+                sys.executable, "-c",
+                "import sys; sys.stdout.write('x' * 50000); sys.exit(1)",
+            ]}],
+            source_root=source,
+            worktree_path=worktree,
+        )
+
+    assert len(exc_info.value.failure["stdout_tail"]) == OUTPUT_TAIL_CHARS

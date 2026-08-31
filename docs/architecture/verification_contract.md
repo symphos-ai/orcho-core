@@ -785,20 +785,41 @@ non-implement phase — `repair_loop` **deterministically degrades to `handoff`*
 with a logged note. This degradation is intentional, user-visible behavior: a
 gate cannot "repair" where there is no implement→repair pair to drive.
 
+### One hook, one failure set (ADR 0186)
+
+A hook selects a **set** of required commands, so one firing can end with more
+than one of them red. The hook **executes every selected gate before it routes
+anything**, then routes the whole failure set as one unit:
+
+- `policy: require` is a property of the set — the hook reports `passed` only
+  when **every** required command of that hook is green;
+- the repair critique carries **every** failing command's output, and the repair
+  loop closes only when **every** pending command rechecks green;
+- an escalation names **every** failing command (see
+  [the handoff payload](#the-gate-handoff-payload-adr-0186));
+- a set enters the repair loop only when **every** member is repairable — one
+  agent-unfixable member (`provenance_failure`, `env_failure`, `unverifiable`,
+  `timeout`) escalates the whole set instead of spending rounds on the fixable
+  half and then showing the operator only that half.
+
+`abort` is the one early exit: it ends the run, so the remaining gates' commands
+are not spent.
+
 ### The critical flow: implement → repair, minus review
 
-A failed required `after_phase(implement)` gate whose effective action is
+Failed required `after_phase(implement)` gates whose effective action is
 `repair_loop`:
 
-1. synthesizes the critique from the failed command receipt
+1. synthesize the critique from the failed command receipts
    (`state.last_critique` / `state.last_test_output`) — the failing command
-   output *is* the critique;
-2. dispatches `repair_changes` through the lifecycle FSM **without** a preceding
+   output *is* the critique, and **all** failing commands contribute theirs;
+2. dispatch `repair_changes` through the lifecycle FSM **without** a preceding
    `review_changes` pass (token economy — no reviewer turn);
-3. **re-executes the same gate command** as the exit condition;
-4. repeats up to the repair budget (`--max-rounds` / the profile's
-   `repair_round` loop); a passing re-check closes the flow, budget exhaustion
-   escalates to a handoff.
+3. **re-execute every still-failing gate command** as the exit condition; each
+   round re-narrows to the commands that are still red;
+4. repeat up to the repair budget (`--max-rounds` / the profile's
+   `repair_round` loop); a round in which every re-check passes closes the flow,
+   budget exhaustion escalates to a handoff naming what is still red.
 
 When an ordinary reviewer-requested `repair_changes` phase mutates the subject
 after this flow, the engine eagerly reruns every selected fast identity from
@@ -818,6 +839,25 @@ so Stage 5 readiness, the Stage 6 delivery gate, and the evidence bundle see
 the same proof routing acted on (ADR 0090 — the silent-skip incident ran gates
 against the original project directory and dropped the receipts).
 
+### The gate handoff payload (ADR 0186)
+
+A `trigger="verification_gate_failed"` handoff carries the **whole** blocking
+set, so the operator never decides on a strict subset of what is red:
+
+| artifact key | meaning |
+|---|---|
+| `findings` | one entry per failing command, each naming its `command` |
+| `gate_commands` | every failing command, primary first |
+| `gate_identities` | every failing `(command, hook, phase)`, primary first |
+| `gate_command` / `gate_identity` | the **primary** (first) failure only |
+| `short_summary` | one `command: evidence` line per failure |
+
+The singular keys stay single-identity on purpose: waiver identity and
+handoff-route classification are single-identity contracts, and `handoff_id`
+keeps its parsed `gate:<command>:<round>` shape. Consequently a
+`continue_with_waiver` waives the primary command's identity only — a second red
+required receipt still blocks delivery.
+
 ### Handoff retry: fresh subject, exact identity (ADR 0149)
 
 When a required verification gate publishes a
@@ -830,8 +870,10 @@ unambiguous scheduled-gate ledger record.
 
 After all preconditions succeed, the owner consumes the active decision once,
 runs exactly one `repair_changes` step against the retained worktree, and
-reruns only the identified gate against that freshly repaired subject.  A
-passing rerun continues; a failing rerun creates a new handoff.  Missing
+reruns **every** gate identity the handoff blocked on (`gate_identities`,
+falling back to the primary alone) against that freshly repaired subject.  A
+rerun in which every identity passes continues; any still-failing identity
+creates a new handoff naming all of them.  Missing
 feedback, ambiguous identity, stale handoff id, unproven repair subject, or a
 missing repair step is a **blocker**: the original handoff remains available
 and no decision is consumed.  A provider/process exception is a **crash** and
