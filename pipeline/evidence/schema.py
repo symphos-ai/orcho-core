@@ -182,6 +182,31 @@ REQUIRED_COMMAND_STALLED_ERROR_KEYS: Final[frozenset[str]] = frozenset(
     {"kind", "phase", "reason", "elapsed_s", "terminal", "recovery_actions"}
 )
 
+#: Required keys on each row of the additive ``criterion_matrix`` (ADR 0188).
+REQUIRED_CRITERION_ROW_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "criterion_id",
+        "intent",
+        "verify",
+        "executors",
+        "method",
+        "proof_refs",
+        "state",
+        "reason",
+        "blocking",
+    }
+)
+
+#: Required keys on ``criterion_matrix.summary``.
+REQUIRED_CRITERION_SUMMARY_KEYS: Final[frozenset[str]] = frozenset(
+    {"total", "blocking_open", "ready", "counts_by_state", "pending_human_ids"}
+)
+
+#: The proof-reference kinds a criterion row may cite.
+CRITERION_PROOF_KINDS: Final[frozenset[str]] = frozenset(
+    {"receipt", "finding", "claim", "human_decision"}
+)
+
 #: Required keys on the ``metrics`` rollup.
 REQUIRED_METRICS_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -270,6 +295,401 @@ def validate_bundle(bundle: Any) -> None:
     # writer is caught without freezing the per-call field set.
     if "handoff_advice" in bundle:
         _validate_handoff_advice(bundle["handoff_advice"])
+
+    # ADR 0188: ``criterion_matrix`` is additive and OPTIONAL. An absent key is
+    # a legacy bundle; ``null`` is never valid; a present value is validated
+    # strictly, including the explicit empty matrix.
+    if "criterion_matrix" in bundle:
+        _validate_criterion_matrix(bundle["criterion_matrix"], plan)
+
+
+def _validate_criterion_matrix(matrix: Any, plan: Any = None) -> None:
+    """Strict shape check for the criterion matrix (ADR 0188 §3-§4)."""
+    from pipeline.criterion_matrix import CRITERION_STATE_ORDER
+
+    if not isinstance(matrix, dict):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix must be an object (null is never written)"
+        )
+    missing = sorted({"rows", "summary"} - matrix.keys())
+    if missing:
+        raise EvidenceSchemaError(
+            f"bundle.criterion_matrix missing required keys: {missing}"
+        )
+    rows = matrix["rows"]
+    if not isinstance(rows, list):
+        raise EvidenceSchemaError("bundle.criterion_matrix.rows must be a list")
+    for i, row in enumerate(rows):
+        _validate_criterion_row(row, f"bundle.criterion_matrix.rows[{i}]")
+
+    summary = matrix["summary"]
+    if not isinstance(summary, dict):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary must be an object"
+        )
+    summary_missing = sorted(REQUIRED_CRITERION_SUMMARY_KEYS - summary.keys())
+    if summary_missing:
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary missing required keys: "
+            f"{summary_missing}"
+        )
+    _require_count(summary, "total", "bundle.criterion_matrix.summary")
+    _require_count(summary, "blocking_open", "bundle.criterion_matrix.summary")
+    if not isinstance(summary["ready"], bool):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.ready must be a bool"
+        )
+
+    counts = summary["counts_by_state"]
+    if not isinstance(counts, dict):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.counts_by_state must be an object"
+        )
+    order = [s for s in CRITERION_STATE_ORDER if s in counts]
+    if list(counts) != order:
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.counts_by_state keys must follow "
+            f"the canonical state order {order}, got {list(counts)}"
+        )
+    for state, count in counts.items():
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise EvidenceSchemaError(
+                "bundle.criterion_matrix.summary.counts_by_state values must "
+                f"be positive integers; {state!r} is {count!r}"
+            )
+
+    # Every summary number is a fact about ``rows``; a summary that disagrees
+    # with the rows it summarises is worse than no summary, because readiness
+    # consumes it directly.
+    if summary["total"] != len(rows):
+        raise EvidenceSchemaError(
+            f"bundle.criterion_matrix.summary.total is {summary['total']} but "
+            f"there are {len(rows)} rows"
+        )
+    tallied: dict[str, int] = {}
+    for row in rows:
+        tallied[row["state"]] = tallied.get(row["state"], 0) + 1
+    if dict(counts) != tallied:
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.counts_by_state does not match "
+            f"the rows: {dict(counts)} vs {tallied}"
+        )
+    blocking = sum(1 for row in rows if row["blocking"])
+    if summary["blocking_open"] != blocking:
+        raise EvidenceSchemaError(
+            f"bundle.criterion_matrix.summary.blocking_open is "
+            f"{summary['blocking_open']} but {blocking} rows are blocking"
+        )
+    if summary["ready"] is not (summary["blocking_open"] == 0):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.ready must equal "
+            "blocking_open == 0"
+        )
+
+    pending = summary["pending_human_ids"]
+    if not isinstance(pending, list):
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.pending_human_ids must be a list"
+        )
+    expected_pending = [
+        row["criterion_id"] for row in rows
+        if row["verify"] == "human" and row["state"] == "pending"
+    ]
+    if pending != expected_pending:
+        raise EvidenceSchemaError(
+            "bundle.criterion_matrix.summary.pending_human_ids must be the "
+            f"pending human criteria in plan order; expected "
+            f"{expected_pending}, got {pending}"
+        )
+
+    _validate_criterion_rows_against_plan(rows, plan)
+
+
+def _validate_criterion_rows_against_plan(rows: list, plan: Any) -> None:
+    """Cross-check the matrix against the accepted plan it claims to describe.
+
+    ADR 0188: *exactly one row per criterion, in plan order*. Validating the
+    rows only against themselves lets a bundle drop a blocking criterion and
+    still report ``ready`` — the persisted evidence, the SDK, and MCP would all
+    inherit that false readiness without recomputing anything.
+
+    ``plan.source`` is the authority signal, not the criteria list itself. A
+    projected plan record (``"json"`` / ``"markdown"``) states the accepted
+    contract, so an explicitly empty ``acceptance_criteria`` is a real claim —
+    "this plan declares no criteria" — and the matrix must then be the explicit
+    empty matrix. Only ``source == "absent"`` means the bundle carries no plan
+    projection to check against (no ``plan.parsed`` event), and only that case
+    is skipped. A malformed criteria list is treated the same way: a projection
+    that cannot be read asserts nothing.
+    """
+    if not isinstance(plan, dict):
+        return
+    if plan.get("source") == "absent":
+        return
+    criteria = plan.get("acceptance_criteria")
+    if not isinstance(criteria, list):
+        return
+    if not all(isinstance(c, dict) for c in criteria):
+        return
+
+    loc = "bundle.criterion_matrix.rows"
+    if len(rows) != len(criteria):
+        raise EvidenceSchemaError(
+            f"{loc} must have exactly one row per accepted-plan criterion; "
+            f"the plan declares {len(criteria)} "
+            f"({[c.get('id') for c in criteria]}) but the matrix has "
+            f"{len(rows)} ({[r.get('criterion_id') for r in rows]})"
+        )
+    if not criteria:
+        return
+    seen: set[str] = set()
+    for i, (row, criterion) in enumerate(zip(rows, criteria, strict=True)):
+        if row["criterion_id"] in seen:
+            raise EvidenceSchemaError(
+                f"{loc}[{i}] repeats criterion_id {row['criterion_id']!r}"
+            )
+        seen.add(row["criterion_id"])
+        if row["criterion_id"] != criterion.get("id"):
+            raise EvidenceSchemaError(
+                f"{loc}[{i}].criterion_id is {row['criterion_id']!r} but the "
+                f"accepted plan has {criterion.get('id')!r} at that position; "
+                "rows follow plan order"
+            )
+        for key, plan_key in (("intent", "intent"), ("verify", "verify")):
+            if row[key] != criterion.get(plan_key):
+                raise EvidenceSchemaError(
+                    f"{loc}[{i}].{key} is {row[key]!r} but the accepted plan "
+                    f"criterion {row['criterion_id']} declares "
+                    f"{criterion.get(plan_key)!r}"
+                )
+        expected_method = _expected_method(criterion)
+        if row["method"] != expected_method:
+            raise EvidenceSchemaError(
+                f"{loc}[{i}].method does not project the accepted plan "
+                f"criterion {row['criterion_id']}; expected {expected_method}, "
+                f"got {row['method']}"
+            )
+
+
+def _expected_method(criterion: dict) -> dict:
+    """The one method projection a plan criterion admits (ADR 0188 §4)."""
+    verify = criterion.get("verify")
+    if verify == "executable":
+        return {
+            "kind": "gates",
+            "gate_refs": list(criterion.get("gate_refs") or ()),
+        }
+    if verify == "human":
+        return {
+            "kind": "manual",
+            "instructions": criterion.get("human_instructions"),
+        }
+    return {"kind": "inspection"}
+
+
+def _require_count(summary: dict, key: str, loc: str) -> None:
+    value = summary[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise EvidenceSchemaError(
+            f"{loc}.{key} must be a non-negative integer, got {value!r}"
+        )
+
+
+def _validate_criterion_row(row: Any, loc: str) -> None:
+    from core.contracts.criteria import VERIFY_CLASSES
+    from pipeline.criterion_matrix import (
+        AGENT_STATES,
+        CRITERION_STATES,
+        EXECUTABLE_STATES,
+        HUMAN_STATES,
+    )
+
+    if not isinstance(row, dict):
+        raise EvidenceSchemaError(f"{loc} must be an object")
+    missing = sorted(REQUIRED_CRITERION_ROW_KEYS - row.keys())
+    if missing:
+        raise EvidenceSchemaError(f"{loc} missing required keys: {missing}")
+
+    for key in ("criterion_id", "intent"):
+        if not isinstance(row[key], str) or not row[key].strip():
+            raise EvidenceSchemaError(f"{loc}.{key} must be a non-empty string")
+    if not isinstance(row["reason"], str):
+        raise EvidenceSchemaError(f"{loc}.reason must be a string")
+    if not isinstance(row["blocking"], bool):
+        raise EvidenceSchemaError(f"{loc}.blocking must be a bool")
+
+    if row["verify"] not in VERIFY_CLASSES:
+        raise EvidenceSchemaError(
+            f"{loc}.verify must be one of {list(VERIFY_CLASSES)}, got "
+            f"{row['verify']!r}"
+        )
+    executors = row["executors"]
+    if not isinstance(executors, list) or not executors:
+        raise EvidenceSchemaError(f"{loc}.executors must be a non-empty list")
+    if any(not isinstance(x, str) or not x.strip() for x in executors):
+        raise EvidenceSchemaError(
+            f"{loc}.executors must contain only non-empty strings"
+        )
+    if row["state"] not in CRITERION_STATES:
+        raise EvidenceSchemaError(f"{loc}.state is not a known state")
+
+    # The verification class fixes which method shape, which states, and which
+    # blocking rule a row may carry. Anything else is a contradictory row.
+    allowed_states, allowed_kind = {
+        "executable": (EXECUTABLE_STATES, "gates"),
+        "agent_assertion": (AGENT_STATES, "inspection"),
+        "human": (HUMAN_STATES, "manual"),
+    }[row["verify"]]
+    if row["state"] not in allowed_states:
+        raise EvidenceSchemaError(
+            f"{loc}.state {row['state']!r} is not valid for verify "
+            f"{row['verify']!r} (allowed: {sorted(allowed_states)})"
+        )
+
+    method = row["method"]
+    if not isinstance(method, dict):
+        raise EvidenceSchemaError(f"{loc}.method must be an object")
+    kind = method.get("kind")
+    expected = {
+        "gates": {"kind", "gate_refs"},
+        "inspection": {"kind"},
+        "manual": {"kind", "instructions"},
+    }.get(kind)
+    if expected is None:
+        raise EvidenceSchemaError(
+            f"{loc}.method.kind must be gates|inspection|manual, got {kind!r}"
+        )
+    if kind != allowed_kind:
+        raise EvidenceSchemaError(
+            f"{loc}.method.kind must be {allowed_kind!r} for verify "
+            f"{row['verify']!r}, got {kind!r}"
+        )
+    if set(method) != expected:
+        raise EvidenceSchemaError(
+            f"{loc}.method for kind {kind!r} must have exactly keys "
+            f"{sorted(expected)}, got {sorted(method)}"
+        )
+    if kind == "gates":
+        _validate_criterion_gate_refs(method["gate_refs"], f"{loc}.method")
+    if kind == "manual" and (
+        not isinstance(method["instructions"], str)
+        or not method["instructions"].strip()
+    ):
+        raise EvidenceSchemaError(
+            f"{loc}.method.instructions must be a non-empty string"
+        )
+
+    expected_blocking = {
+        "executable": row["state"] != "proven",
+        "agent_assertion": False,
+        "human": row["state"] != "accepted",
+    }[row["verify"]]
+    if row["blocking"] is not expected_blocking:
+        raise EvidenceSchemaError(
+            f"{loc}.blocking must be {expected_blocking} for verify "
+            f"{row['verify']!r} in state {row['state']!r}"
+        )
+
+    proof_refs = row["proof_refs"]
+    if not isinstance(proof_refs, list):
+        raise EvidenceSchemaError(f"{loc}.proof_refs must be a list")
+    for j, ref in enumerate(proof_refs):
+        if not isinstance(ref, dict) or set(ref) != {"kind", "id"}:
+            raise EvidenceSchemaError(
+                f"{loc}.proof_refs[{j}] must have exactly keys ['id', 'kind']"
+            )
+        if ref["kind"] not in CRITERION_PROOF_KINDS:
+            raise EvidenceSchemaError(
+                f"{loc}.proof_refs[{j}].kind is not a known proof kind"
+            )
+        if not isinstance(ref["id"], str) or not ref["id"].strip():
+            raise EvidenceSchemaError(
+                f"{loc}.proof_refs[{j}].id must be a non-empty string"
+            )
+    _validate_criterion_proof(row, loc)
+
+
+def _validate_criterion_proof(row: dict, loc: str) -> None:
+    """Pin which proof a row's ``(verify, state)`` pair may and must carry.
+
+    A global "kind is one of four" check is not enough: it lets a ``proven``
+    executable row ship with no receipt at all, and lets a ``pending`` human
+    row cite proof it does not have. ADR 0188 fixes the pairing — receipts
+    prove executables, claims/findings are advisory only, and a human decision
+    is exactly the validated chain head.
+    """
+    verify, state = row["verify"], row["state"]
+    kinds = [ref["kind"] for ref in row["proof_refs"]]
+
+    if verify == "executable":
+        if any(kind != "receipt" for kind in kinds):
+            raise EvidenceSchemaError(
+                f"{loc}.proof_refs for an executable criterion may only cite "
+                f"receipts, got {sorted(set(kinds))}"
+            )
+        if state == "proven":
+            gate_refs = row["method"]["gate_refs"]
+            if len(kinds) != len(gate_refs):
+                raise EvidenceSchemaError(
+                    f"{loc} is proven but cites {len(kinds)} receipt(s) for "
+                    f"{len(gate_refs)} gate identity(ies); a passing gate "
+                    "without a canonical receipt is not proof"
+                )
+        return
+
+    if verify == "agent_assertion":
+        if any(kind not in {"claim", "finding"} for kind in kinds):
+            raise EvidenceSchemaError(
+                f"{loc}.proof_refs for an agent assertion may only cite "
+                f"claims or findings, got {sorted(set(kinds))}"
+            )
+        if state == "advisory" and not kinds:
+            raise EvidenceSchemaError(
+                f"{loc} is advisory but cites no claim or finding"
+            )
+        if state == "pending" and kinds:
+            raise EvidenceSchemaError(
+                f"{loc} is pending but cites proof {kinds}"
+            )
+        return
+
+    # human
+    if state == "pending":
+        if kinds:
+            raise EvidenceSchemaError(
+                f"{loc} is pending but cites proof {kinds}"
+            )
+        return
+    if kinds != ["human_decision"]:
+        raise EvidenceSchemaError(
+            f"{loc} is {state} and must cite exactly one human_decision "
+            f"(the validated chain head), got {kinds}"
+        )
+
+
+def _validate_criterion_gate_refs(gate_refs: Any, loc: str) -> None:
+    """Validate a row's gate identities through the criterion schema itself."""
+    from core.contracts.criteria import (
+        CriterionSchemaError,
+        validate_acceptance_criteria,
+    )
+
+    if not isinstance(gate_refs, list) or not gate_refs:
+        raise EvidenceSchemaError(f"{loc}.gate_refs must be a non-empty list")
+    # Reuse the plan-contract validator so the row can never carry an identity
+    # shape the plan schema would have rejected.
+    try:
+        validate_acceptance_criteria(
+            [{
+                "id": "C1",
+                "intent": "gate identity shape check",
+                "verify": "executable",
+                "gate_refs": gate_refs,
+            }],
+            where=loc,
+        )
+    except CriterionSchemaError as e:
+        raise EvidenceSchemaError(f"{loc}.gate_refs is invalid: {e}") from e
 
 
 def _validate_command_stalled_errors(errors: list) -> None:

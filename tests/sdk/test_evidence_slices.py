@@ -350,6 +350,10 @@ def test_get_plan_summary_projects_canonical_cross_plan(tmp_path: Path) -> None:
         has_contract=True,
         goal=None,
         acceptance_criteria=(),
+        # A cross plan projects no per-task reference edges (its canonical
+        # artifact carries no mono subtasks), so the graph is empty rather
+        # than partial.
+        task_acceptance_refs=(),
         owned_files=(),
         commands_to_run=(),
         risks=(),

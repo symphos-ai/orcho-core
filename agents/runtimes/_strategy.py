@@ -1247,6 +1247,7 @@ def _mock_plan_content(
                 "Relevant code path identified",
                 "Expected behaviour stated before edit",
             ],
+            "acceptance_refs": ["C1"],
         },
         {
             "id": "apply-fix",
@@ -1263,6 +1264,7 @@ def _mock_plan_content(
                 "Bug is fixed in the target implementation",
                 "No unrelated files are changed",
             ],
+            "acceptance_refs": ["C1", "C3"],
         },
         {
             "id": "verify",
@@ -1279,6 +1281,7 @@ def _mock_plan_content(
                 "Targeted verification passes",
                 "Failure output is captured for the fix loop if tests fail",
             ],
+            "acceptance_refs": ["C2"],
         },
     ]
     plan_json = {
@@ -1289,10 +1292,26 @@ def _mock_plan_content(
         # REA-1 typed plan contract — mock emits every field so the
         # golden scenario exercises the full propagation chain.
         "goal": f"Deliver a focused, verified change for: {task}",
+        # ADR 0188 typed criteria. The mock has no project verification
+        # contract to name official gate identities against, so every criterion
+        # is the advisory ``agent_assertion`` class — never a fabricated
+        # executable gate ref.
         "acceptance_criteria": [
-            "Implementation changes are limited to the planned files",
-            "Tests or equivalent verification are run before final QA",
-            "No regressions in adjacent modules",
+            {
+                "id": "C1",
+                "intent": "Implementation changes are limited to the planned files",
+                "verify": "agent_assertion",
+            },
+            {
+                "id": "C2",
+                "intent": "Tests or equivalent verification are run before final QA",
+                "verify": "agent_assertion",
+            },
+            {
+                "id": "C3",
+                "intent": "No regressions in adjacent modules",
+                "verify": "agent_assertion",
+            },
         ],
         "owned_files": list(files),
         "commands_to_run": [

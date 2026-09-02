@@ -2028,9 +2028,21 @@ class TestCmdEvidenceDiff:
         assert "api/payload.py" in file_paths
 
     def test_json_with_diff_preserves_evidence_body(
-        self, runs_dir: Path, capsys,
+        self, runs_dir: Path, capsys, monkeypatch,
     ) -> None:
         from cli.orcho import cmd_evidence
+
+        # Each ``cmd_evidence`` call composes its own bundle and stamps
+        # ``created_at`` at second precision. The two invocations below are
+        # compared key-for-key, so pin the clock: without it the assertion
+        # fails whenever the pair straddles a second boundary (which a loaded
+        # full-suite run does), for a reason that has nothing to do with the
+        # wrapper contract under test.
+        from pipeline.evidence import collector as _collector
+
+        monkeypatch.setattr(
+            _collector, "_now_iso", lambda: "2026-05-19T20:00:02+00:00",
+        )
         self._write_evidence_run(runs_dir, "20260519_200002")
         baseline = _make_args(
             run_id="20260519_200002", format="json", diff=None,

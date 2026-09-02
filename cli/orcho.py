@@ -1345,6 +1345,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_evid.set_defaults(func=cmd_evidence)
 
+    # ── criterion (ADR 0188) ────────────────────────────────────────────────
+    from cli._criterion_cli import register_criterion_cli
+
+    register_criterion_cli(sub)
+
     # ── repair-state ────────────────────────────────────────────────────────────
     p_repair = sub.add_parser(
         "repair-state",

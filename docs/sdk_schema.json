@@ -100,6 +100,30 @@
       "slots": true
     },
     {
+      "kind": "value",
+      "name": "CRITERION_EXAMPLES_VERSION",
+      "repr": "'1'",
+      "type": "str"
+    },
+    {
+      "kind": "value",
+      "name": "CRITERION_EXAMPLE_NAMES",
+      "repr": "('three_class', 'multi_gate', 'explicit_empty', 'absent_matrix', 'mixed_state')",
+      "type": "tuple"
+    },
+    {
+      "kind": "value",
+      "name": "CRITERION_MATRIX_KEY",
+      "repr": "'criterion_matrix'",
+      "type": "str"
+    },
+    {
+      "kind": "value",
+      "name": "CRITERION_STATE_ORDER",
+      "repr": "('proven', 'failed', 'stale', 'missing', 'not_selected', 'advisory', 'accepted', 'rejected', 'pending')",
+      "type": "tuple"
+    },
+    {
       "kind": "class",
       "module": "pipeline.run_state.cross_parent",
       "name": "ChildExecution",
@@ -539,6 +563,15 @@
       "module": "sdk.types",
       "name": "CostReport",
       "slots": true
+    },
+    {
+      "bases": [
+        "OrchoError"
+      ],
+      "exit_code": 2,
+      "kind": "exception",
+      "module": "sdk.errors",
+      "name": "CriterionDecisionRejected"
     },
     {
       "fields": [
@@ -1143,6 +1176,12 @@
       "module": "sdk.runtimes",
       "name": "DetectedRuntime",
       "slots": true
+    },
+    {
+      "kind": "value",
+      "name": "EXECUTABLE_STATE_PRECEDENCE",
+      "repr": "('failed', 'stale', 'missing', 'not_selected', 'proven')",
+      "type": "tuple"
     },
     {
       "fields": [
@@ -2218,7 +2257,13 @@
           "default": null,
           "default_factory": null,
           "name": "acceptance_criteria",
-          "type": "tuple[str, ...]"
+          "type": "tuple[dict[str, Any], ...]"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "task_acceptance_refs",
+          "type": "tuple[dict[str, Any], ...]"
         },
         {
           "default": null,
@@ -4460,6 +4505,20 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.criterion_matrix",
+      "name": "canonical_criterion_json",
+      "params": [
+        {
+          "annotation": "Any",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "value"
+        }
+      ],
+      "return": "str"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.profiles",
       "name": "catalogue_path",
       "params": [],
@@ -4496,6 +4555,20 @@
         }
       ],
       "return": "EvidenceBundle"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.criterion_examples",
+      "name": "criterion_matrix_example",
+      "params": [
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "name"
+        }
+      ],
+      "return": "dict[str, Any] | None"
     },
     {
       "kind": "callable",
@@ -4766,6 +4839,38 @@
     },
     {
       "kind": "callable",
+      "module": "sdk.criterion_matrix",
+      "name": "get_criterion_matrix",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "dict[str, Any] | None"
+    },
+    {
+      "kind": "callable",
       "module": "sdk.evidence_slices",
       "name": "get_errors_halt",
       "params": [
@@ -4973,6 +5078,13 @@
         }
       ],
       "return": "VerificationTimelineProjection"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.criterion_examples",
+      "name": "human_decision_chain_example",
+      "params": [],
+      "return": "list[dict[str, Any]]"
     },
     {
       "kind": "callable",
@@ -5191,6 +5303,38 @@
         }
       ],
       "return": "LaunchResult"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.criterion_decisions",
+      "name": "list_criterion_decisions",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "list[dict[str, Any]]"
     },
     {
       "kind": "callable",
@@ -5901,6 +6045,68 @@
         }
       ],
       "return": "WorkspaceCleanupReceipt"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.criterion_decisions",
+      "name": "record_criterion_decision",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "criterion_id"
+        },
+        {
+          "annotation": "str",
+          "default": null,
+          "kind": "KEYWORD_ONLY",
+          "name": "decision"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "note"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "actor"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "supersedes"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "Path | str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "dict[str, Any]"
     },
     {
       "kind": "callable",

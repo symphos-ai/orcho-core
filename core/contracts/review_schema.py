@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.contracts.criteria import CRITERION_ID_RE
+
 REVIEW_SUMMARY_MAX_CHARS = 280
 REVIEW_VERDICTS = ("APPROVED", "REJECTED")
 REVIEW_SEVERITIES = ("P0", "P1", "P2", "P3")
@@ -21,7 +23,7 @@ REVIEW_REQUIRED_KEYS = ("verdict", "short_summary", "findings")
 REVIEW_OPTIONAL_KEYS = ("risks", "checks")
 
 FINDING_REQUIRED_KEYS = ("id", "severity", "title", "body")
-FINDING_OPTIONAL_KEYS = ("required_fix", "file", "line")
+FINDING_OPTIONAL_KEYS = ("required_fix", "file", "line", "criterion_id")
 
 
 class ReviewSchemaError(ValueError):
@@ -123,6 +125,31 @@ def _validate_finding(f: Any, index: int, verdict: str) -> None:
                 f"{where}.line must be a positive integer or null"
             )
 
+    validate_finding_criterion_id(f, where)
+
+
+def validate_finding_criterion_id(f: dict[str, Any], where: str) -> None:
+    """Validate the optional ADR 0188 criterion link on a finding / blocker.
+
+    The link is a *reference*: it must be a criterion id in the declared
+    grammar, so a reviewer can never invent a free-text link. Whether the id
+    names a criterion of *this* run's plan is decided where the plan is known —
+    the criterion reducer, which ignores a reference no declared criterion
+    matches rather than fabricating a row for it.
+    """
+    if "criterion_id" not in f or f["criterion_id"] is None:
+        return
+    value = f["criterion_id"]
+    if not isinstance(value, str) or not value.strip():
+        raise ReviewSchemaError(
+            f"{where}.criterion_id must be a non-empty string or null"
+        )
+    if not CRITERION_ID_RE.fullmatch(value.strip()):
+        raise ReviewSchemaError(
+            f"{where}.criterion_id must be a plan criterion id matching "
+            f"{CRITERION_ID_RE.pattern} (e.g. 'C2'), got {value!r}"
+        )
+
 
 REVIEW_SCHEMA_DOC = """
 Emit exactly one JSON object with this shape:
@@ -138,7 +165,8 @@ Emit exactly one JSON object with this shape:
       "file": "path/to/file.py",
       "line": 123,
       "body": "<concrete issue and why it matters>",
-      "required_fix": "<what must change before approval>"
+      "required_fix": "<what must change before approval>",
+      "criterion_id": "C2"
     }
   ],
   "risks": ["<residual risk or test gap>"],
@@ -150,4 +178,5 @@ Rules:
 - `short_summary`, finding `id` / `title` / `body` are non-empty strings; keep summary <=280 chars.
 - APPROVED requires `findings=[]`; REJECTED requires findings and each finding needs `required_fix`.
 - `severity` is P0, P1, P2, or P3; optional `file` is a string path and optional `line` is a positive integer.
+- Optional `criterion_id` links the finding to ONE plan acceptance criterion by its id (`C1`, `C2`, ...). Set it only when the finding is evidence about that criterion; omit the key otherwise. It is a reference, never a restatement of the criterion text, and it records inspection evidence only — a finding never proves an `executable` criterion.
 """.strip()

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from pipeline.criterion_matrix import CRITERION_MATRIX_ORDERED_PATHS
 from pipeline.evidence.collector import collect_evidence
 from pipeline.evidence.render_md import render_evidence_md
 from pipeline.evidence.schema import (
@@ -29,6 +30,44 @@ from pipeline.evidence.schema import (
     EvidenceSchemaError,
     validate_bundle,
 )
+
+
+def dumps_bundle(bundle: dict) -> str:
+    """Serialize an evidence bundle to its canonical on-disk JSON text.
+
+    Historically this was ``json.dumps(..., sort_keys=True)``: a stable
+    lexicographic order everywhere. That is still what every section gets —
+    except the ADR 0188 ``criterion_matrix``, whose ``counts_by_state`` key
+    order *is data*. Sorting it would silently rewrite
+    ``CRITERION_STATE_ORDER`` into alphabetical order in the persisted file
+    and break byte-equivalence with the SDK's canonical JSON.
+
+    Implemented by pre-sorting every other mapping and dumping with
+    ``sort_keys=False``, so the output stays byte-identical to the previous
+    writer for every bundle that carries no criterion matrix.
+    """
+    return json.dumps(
+        _sorted_except_ordered(bundle, ()),
+        indent=2,
+        sort_keys=False,
+        ensure_ascii=False,
+    ) + "\n"
+
+
+def _sorted_except_ordered(value, path: tuple[str, ...]):
+    """Recursively sort mapping keys, preserving insertion order inside the
+    subtrees named by :data:`CRITERION_MATRIX_ORDERED_PATHS`."""
+    if isinstance(value, dict):
+        if path in CRITERION_MATRIX_ORDERED_PATHS:
+            return dict(value)
+        return {
+            k: _sorted_except_ordered(value[k], (*path, k))
+            for k in sorted(value)
+        }
+    if isinstance(value, list):
+        return [_sorted_except_ordered(v, (*path, "[]")) for v in value]
+    return value
+
 
 #: File name written into the run dir. Locked: REA-3 keeps this name
 #: across schema versions; consumers route on the JSON ``schema_version``.
@@ -94,10 +133,7 @@ def write_bundle(run_dir: Path | str) -> tuple[Path, Path]:
     json_path = target / EVIDENCE_FILE_NAME
     md_path = target / EVIDENCE_MD_FILE_NAME
 
-    json_path.write_text(
-        json.dumps(bundle, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    json_path.write_text(dumps_bundle(bundle), encoding="utf-8")
     md_path.write_text(render_evidence_md(bundle), encoding="utf-8")
 
     _emit_artifact_event(json_path)
@@ -149,6 +185,7 @@ def _emit_artifact_event(path: Path) -> None:
 # ── Public re-exports for backwards compat with REA-0 callers ──────────────
 
 __all__ = [
+    "dumps_bundle",
     "EVIDENCE_FILE_NAME",
     "EVIDENCE_MD_FILE_NAME",
     "EVIDENCE_SCHEMA_VERSION_PLACEHOLDER",

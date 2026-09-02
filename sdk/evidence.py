@@ -12,7 +12,6 @@ Three concerns separated:
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from pipeline import evidence as _evidence
@@ -20,6 +19,7 @@ from pipeline.evidence import (
     collect_evidence as _collect_evidence,
     render_evidence_md as _render_md,
 )
+from pipeline.evidence.bundle import dumps_bundle
 from pipeline.evidence.schema import EvidenceSchemaError, validate_bundle
 from sdk.errors import EvidenceInvalid
 from sdk.runs import _CWD_DEFAULT, find_run
@@ -87,10 +87,9 @@ def write_evidence_bundle(
     target.mkdir(parents=True, exist_ok=True)
     json_path = target / "evidence.json"
     md_path = target / "evidence.md"
-    json_path.write_text(
-        json.dumps(bundle.body, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    # Same canonical serializer the engine writer uses: every section is
+    # key-sorted except the ADR 0188 criterion matrix, whose key order is data.
+    json_path.write_text(dumps_bundle(bundle.body), encoding="utf-8")
     md_path.write_text(bundle.markdown, encoding="utf-8")
     return [json_path, md_path]
 

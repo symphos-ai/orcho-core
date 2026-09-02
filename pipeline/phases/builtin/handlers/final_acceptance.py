@@ -8,7 +8,7 @@ facade) so there is no import cycle through the builtin __init__.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.infra.config import AppConfig
 from core.io.transcript import render_parse_failure as _render_parse_failure
@@ -30,9 +30,11 @@ from pipeline.phases.builtin.prompt_parts import (
 )
 from pipeline.phases.builtin.registry import _require_agent
 from pipeline.phases.builtin.review_support import (
+    _criterion_backstop,
     _operator_waiver_text,
     _print_review_preview,
     _raise_scope_expansion_handoff,
+    _record_criterion_finding_links,
     _render_scope_expansion,
     _required_receipt_backstop,
     _route_scope_expansion_sanction,
@@ -105,37 +107,57 @@ def _implement_evidence_complete(state: PipelineState) -> bool:
 
 
 def _write_no_diff_final_acceptance(
-    state: PipelineState, *, approved: bool,
+    state: PipelineState,
+    *,
+    approved: bool,
+    criterion_gaps: list[dict[str, Any]] | None = None,
 ) -> PipelineState:
+    criterion_gaps = list(criterion_gaps or ())
     verdict = "APPROVED" if approved else "REJECTED"
-    summary = (
-        "No file changes were produced; final acceptance is not applicable "
-        "to the diff surface and implement evidence is complete or not part "
-        "of this profile."
-        if approved
-        else (
+    if approved:
+        summary = (
+            "No file changes were produced; final acceptance is not applicable "
+            "to the diff surface and implement evidence is complete or not part "
+            "of this profile."
+        )
+    elif criterion_gaps:
+        summary = (
+            "No file changes were produced, but the accepted plan still has "
+            "open acceptance criteria, so final acceptance cannot approve "
+            "the verification-only run."
+        )
+    else:
+        summary = (
             "No file changes were produced, but implement evidence is "
             "missing or incomplete, so final acceptance cannot approve "
             "the verification-only run."
         )
-    )
     body = (
         "# Release gate\n\n"
         f"**Verdict:** {verdict}\n\n"
         f"**Ship ready:** {'yes' if approved else 'no'}\n\n"
         f"**Summary:** {summary}\n"
     )
-    verification_gaps = [] if approved else [{
-        "risk": "No diff target and no complete implement evidence.",
-        "missing_evidence": (
-            "final_acceptance had no uncommitted diff to review and could "
-            "not find a complete implement phase evidence entry."
-        ),
-        "required_check": (
-            "Run or resume the implementation phase so it records complete "
-            "evidence, or provide a real diff target for review."
-        ),
-    }]
+    if criterion_gaps:
+        body += (
+            "\n## Engine backstop — acceptance criteria open\n\n"
+            + "\n".join(f"- {g['risk']}" for g in criterion_gaps)
+            + "\n"
+        )
+    verification_gaps: list[dict[str, Any]] = []
+    if not approved and not _implement_evidence_complete(state):
+        verification_gaps.append({
+            "risk": "No diff target and no complete implement evidence.",
+            "missing_evidence": (
+                "final_acceptance had no uncommitted diff to review and could "
+                "not find a complete implement phase evidence entry."
+            ),
+            "required_check": (
+                "Run or resume the implementation phase so it records complete "
+                "evidence, or provide a real diff target for review."
+            ),
+        })
+    verification_gaps.extend(criterion_gaps)
     skipped_reason = (
         _NO_UNCOMMITTED_CHANGES if approved else _IMPLEMENT_DELIVERY_INCOMPLETE
     )
@@ -207,9 +229,15 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
 
     cwd = _agent_project_dir(state)
     if _no_uncommitted_review_target(state, cwd=cwd):
+        # ADR 0188: "no diff to review" is not "nothing left to prove". A
+        # pending human criterion or an unproven executable one still blocks,
+        # so the no-diff shortcut consults the criterion matrix before it can
+        # auto-approve on implement evidence alone.
+        criterion_gaps = _criterion_backstop(state)
         return _write_no_diff_final_acceptance(
             state,
-            approved=_implement_evidence_complete(state),
+            approved=_implement_evidence_complete(state) and not criterion_gaps,
+            criterion_gaps=criterion_gaps,
         )
 
     agent = _require_agent(state, "final_acceptance_agent")
@@ -290,6 +318,11 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
     # helper is empty under dry-run, without a contract, or when an operator
     # waiver is active, so every other run is byte-identical.
     engine_gaps = _required_receipt_backstop(state, language=task_language)
+    # ADR 0188 criterion backstop: a separate authority with separate gating.
+    # It applies without a declared verification contract and is NOT waived by
+    # an operator waiver — a general "continue" never satisfies a per-criterion
+    # human decision or an unproven executable criterion.
+    criterion_gaps = _criterion_backstop(state)
     # Scope expansion is evidence, not a release gap: fast continues silently,
     # pro continues with a disclosure, and governed opens a delivery handoff.
     # The sanction decision lives in the central projection + focused routing
@@ -299,7 +332,7 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
         operating_mode=_operating_mode_for_state(state),
         has_active_waiver=bool(_operator_waiver_text(state)),
     )
-    all_engine_gaps = engine_gaps
+    all_engine_gaps = engine_gaps + criterion_gaps
     if all_engine_gaps:
         reviewed_checks = {
             str(g.get("required_check", "")) for g in verification_gaps
@@ -317,11 +350,19 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
                 "\n\n## Engine backstop — required verification unproven\n\n"
                 + "\n".join(f"- {g['risk']}" for g in engine_gaps)
             )
+        if criterion_gaps:
+            body += (
+                "\n\n## Engine backstop — acceptance criteria open\n\n"
+                + "\n".join(f"- {g['risk']}" for g in criterion_gaps)
+            )
 
     # Dual-shape phase_log entry (ADR 0025):
     #   * Review-shape mirror — preserved for existing consumers.
     #   * Release fields — first-class new surface.
     findings_mirror = [b.to_finding_dict() for b in parsed.release_blockers]
+    _record_criterion_finding_links(
+        state, findings_mirror, actor="final_acceptance",
+    )
     state.phase_log["final_acceptance"] = {
         # Review-shape mirror.
         "output":         body,
@@ -339,10 +380,17 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
         # Book-keeping.
         "meta":           dict(result.meta),
     }
-    if engine_gaps:
+    if all_engine_gaps:
+        # One durable backstop record. ``reason`` names the receipt authority
+        # when it fired, otherwise the criterion authority, so a run blocked
+        # only by an open acceptance criterion is not reported as an unproven
+        # receipt.
         state.phase_log["final_acceptance"]["engine_backstop"] = {
-            "reason": "required_receipts_unproven",
-            "gaps": engine_gaps,
+            "reason": (
+                "required_receipts_unproven" if engine_gaps
+                else "acceptance_criteria_open"
+            ),
+            "gaps": all_engine_gaps,
         }
     # F2 canonical durable evidence: the single source of truth is
     # ``phase_log['final_acceptance']['scope_expansion']`` — the phase-end /

@@ -20,6 +20,7 @@ import pytest
 
 from agents.entities import SubTask
 from agents.runtimes._strategy import MockAgentProvider
+from core.contracts.criteria import AcceptanceCriterion
 from pipeline.plan_artifacts import write_parsed_plan_artifact
 from pipeline.plan_parser import ParsedPlan
 from sdk import (
@@ -105,7 +106,13 @@ def _seed_paused_run(
                 short_summary="Repair the rejected handoff",
                 planning_context="The review finding requires a focused retry.",
                 goal="Return the rejected handoff to a verified state.",
-                acceptance_criteria=("The handoff advice retry is contract-bound.",),
+                acceptance_criteria=(
+                    AcceptanceCriterion(
+                        id="C1",
+                        intent="The handoff advice retry is contract-bound.",
+                        verify="agent_assertion",
+                    ),
+                ),
                 owned_files=("tests/sdk/test_request_handoff_advice.py",),
             ),
             attempt=1,

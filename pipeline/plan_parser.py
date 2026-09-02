@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agents.entities import SubTask
+from core.contracts.criteria import (
+    AcceptanceCriterion,
+    coerce_acceptance_criteria,
+)
 from core.contracts.plan_schema import (
     PLAN_SHORT_SUMMARY_MAX_CHARS,
     PlanSchemaError,
@@ -56,7 +60,8 @@ class ParsedPlan:
     planning_context: str = ""
     # REA-1 typed contract — optional, default empty for backcompat.
     goal: str | None = None
-    acceptance_criteria: tuple[str, ...] = ()
+    # ADR 0188: typed criteria with stable IDs and one verification class each.
+    acceptance_criteria: tuple[AcceptanceCriterion, ...] = ()
     owned_files: tuple[str, ...] = ()
     # Plan-level companion modifications allowed beyond ``owned_files`` in
     # every task — lockfiles, regenerated snapshots, derived artifacts.
@@ -288,7 +293,9 @@ def _plan_from_dict(
         subtasks=subtasks,
         source=source,
         goal=(data.get("goal") or None),
-        acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
+        acceptance_criteria=coerce_acceptance_criteria(
+            data.get("acceptance_criteria"),
+        ),
         owned_files=tuple(data.get("owned_files") or ()),
         allowed_modifications=tuple(data.get("allowed_modifications") or ()),
         commands_to_run=tuple(data.get("commands_to_run") or ()),
@@ -309,6 +316,7 @@ def _subtask_from_dict(t: dict) -> SubTask:
         model=(t.get("model") or None),
         depends_on=tuple(t.get("depends_on") or ()),
         done_criteria=tuple(t.get("done_criteria") or ()),
+        acceptance_refs=tuple(t.get("acceptance_refs") or ()),
         owned_files=tuple(t.get("owned_files") or ()),
         allowed_modifications=tuple(t.get("allowed_modifications") or ()),
     )
