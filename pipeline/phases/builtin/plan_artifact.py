@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from core.contracts.criteria import criteria_to_wire
 from core.io.transcript import render_plan_block as _render_plan_block
 from pipeline.phases.builtin.prompt_parts import _multimodal_attachments
 
@@ -38,13 +39,14 @@ def _parsed_plan_to_render_dict(parsed_plan) -> dict:
             "model":         st.model,
             "depends_on":    list(st.depends_on),
             "done_criteria": list(st.done_criteria),
+            "acceptance_refs": list(getattr(st, "acceptance_refs", ()) or ()),
             "owned_files":   list(getattr(st, "owned_files", ()) or ()),
         })
     return {
         "short_summary":       parsed_plan.short_summary,
         "planning_context":    parsed_plan.planning_context,
         "goal":                parsed_plan.goal or "",
-        "acceptance_criteria": list(parsed_plan.acceptance_criteria),
+        "acceptance_criteria": criteria_to_wire(parsed_plan.acceptance_criteria),
         "owned_files":         list(parsed_plan.owned_files),
         "commands_to_run":     list(parsed_plan.commands_to_run),
         "risks":               list(parsed_plan.risks),
@@ -52,6 +54,20 @@ def _parsed_plan_to_render_dict(parsed_plan) -> dict:
         "mcp_context":         list(parsed_plan.mcp_context),
         "tasks":               tasks,
     }
+
+
+def _validate_plan_criterion_gate_refs(state: PipelineState, parsed_plan) -> None:
+    """Reject a plan whose executable criteria name non-official gates.
+
+    Runs before implement so an unresolvable ``gate_ref`` routes to plan repair
+    exactly like a schema violation. Resolution reads the run's durable
+    scheduled-gate ledger; a run with no verification contract has no ledger
+    and asserts nothing (ADR 0188 §2).
+    """
+    from pipeline.criterion_gate_refs import validate_plan_gate_refs
+
+    run_dir = getattr(state, "output_dir", None)
+    validate_plan_gate_refs(parsed_plan, run_dir)
 
 
 def _print_plan_preview(state: PipelineState) -> None:
@@ -99,7 +115,7 @@ def _emit_plan_parsed_event(parsed_plan) -> None:
         subtask_count=len(parsed_plan.subtasks),
         has_contract=parsed_plan.has_contract,
         goal=parsed_plan.goal or "",
-        acceptance_criteria=list(parsed_plan.acceptance_criteria),
+        acceptance_criteria=criteria_to_wire(parsed_plan.acceptance_criteria),
         acceptance_criteria_count=len(parsed_plan.acceptance_criteria),
         owned_files=list(parsed_plan.owned_files),
         owned_files_count=len(parsed_plan.owned_files),

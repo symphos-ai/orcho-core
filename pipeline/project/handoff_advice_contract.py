@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
+from core.contracts.criteria import criterion_display
 from core.infra.paths import PROMPTS_DIR
 
 
@@ -88,7 +89,10 @@ def build_advice_contract_snapshot(run: Any, signal: Any) -> AdviceContractSnaps
     )
 
     acceptance = tuple(
-        ContractInvariant(f"acceptance:{index}", str(text))
+        # ADR 0188: a typed criterion renders as "<id> [<class>] <intent>", so
+        # the correction/handoff snapshot preserves both the stable criterion
+        # id and its intent — and never a value-object repr.
+        ContractInvariant(f"acceptance:{index}", criterion_display(text))
         for index, text in enumerate(getattr(plan, "acceptance_criteria", ()) or (), 1)
     )
     subtasks = tuple(

@@ -51,6 +51,23 @@ from sdk.cleanup import (
     report_workspace_cleanup,
 )
 from sdk.cost import aggregate_cost
+from sdk.criterion_decisions import (
+    list_criterion_decisions,
+    record_criterion_decision,
+)
+from sdk.criterion_examples import (
+    CRITERION_EXAMPLES_VERSION,
+    EXAMPLE_NAMES as CRITERION_EXAMPLE_NAMES,
+    criterion_matrix_example,
+    human_decision_chain_example,
+)
+from sdk.criterion_matrix import (
+    CRITERION_MATRIX_KEY,
+    CRITERION_STATE_ORDER,
+    EXECUTABLE_STATE_PRECEDENCE,
+    canonical_criterion_json,
+    get_criterion_matrix,
+)
 from sdk.cross_execution_graph import (
     CrossExecutionGraph,
     CrossExecutionGraphCompileIdentity,
@@ -76,6 +93,7 @@ from sdk.cross_parent_state import load_cross_parent_state
 
 # Errors
 from sdk.errors import (
+    CriterionDecisionRejected,
     CrossExecutionGraphInvalid,
     EvidenceInvalid,
     InvalidPhaseHandoffState,
@@ -354,6 +372,19 @@ __all__ = [
     "get_errors_halt",
     "list_sub_runs",
     "list_subtask_receipts",
+    # Criterion matrix / typed acceptance criteria (ADR 0188)
+    "CRITERION_MATRIX_KEY",
+    "CRITERION_STATE_ORDER",
+    "EXECUTABLE_STATE_PRECEDENCE",
+    "canonical_criterion_json",
+    "get_criterion_matrix",
+    "CriterionDecisionRejected",
+    "list_criterion_decisions",
+    "record_criterion_decision",
+    "CRITERION_EXAMPLES_VERSION",
+    "CRITERION_EXAMPLE_NAMES",
+    "criterion_matrix_example",
+    "human_decision_chain_example",
     # Handoff-advice evidence projection (Stage 0/1 advisor surface)
     "list_handoff_advice",
     "HandoffAdviceEvidence",

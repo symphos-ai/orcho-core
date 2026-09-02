@@ -246,9 +246,12 @@ class TestCollector:
         assert plan["subtask_count"] == 3
         assert plan["has_contract"] is True
         assert plan["goal"] == "Reject invalid payloads"
+        # ADR 0188: the legacy fixture's ``list[str]`` is normalized once at
+        # ingress into the typed criterion shape every evidence reader sees.
         assert plan["acceptance_criteria"] == [
-            "invalid payload is rejected",
-            "tests pass",
+            {"id": "C1", "intent": "invalid payload is rejected",
+             "verify": "agent_assertion"},
+            {"id": "C2", "intent": "tests pass", "verify": "agent_assertion"},
         ]
         assert plan["owned_files"] == ["calc.py"]
         assert plan["commands_to_run"] == ["pytest -q"]

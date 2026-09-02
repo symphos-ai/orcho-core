@@ -11,6 +11,7 @@ from pipeline.cross_project.plan_parser import (
     write_cross_plan_artifacts,
 )
 from pipeline.evidence import collect_evidence
+from pipeline.evidence.schema import validate_bundle
 
 ALIASES = ["api", "web"]
 
@@ -88,6 +89,28 @@ def test_cross_plan_record_projects_valid_canonical_artifact(tmp_path: Path) -> 
     }
 
 
+def test_a_cross_plan_record_never_ships_with_a_criterion_matrix(
+    tmp_path: Path,
+) -> None:
+    """The cross projection reports ``source="json"`` with no criteria.
+
+    ADR 0188's plan cross-check treats a projected source as authoritative, so
+    this combination would demand an empty matrix. It is unreachable by
+    construction and this pins it: the cross branch is chosen only when there
+    is no mono ``plan.parsed`` event, and the matrix is built only from a
+    ``parsed_plan.json`` that a cross parent never writes.
+    """
+    _write_run(tmp_path)
+    _write_canonical_cross_plan(tmp_path)
+
+    bundle = collect_evidence(tmp_path)
+
+    assert bundle["plan"]["source"] == "json"
+    assert bundle["plan"]["acceptance_criteria"] == []
+    assert "criterion_matrix" not in bundle
+    validate_bundle(bundle)
+
+
 def test_cross_plan_record_uses_run_start_aliases_for_single_project(
     tmp_path: Path,
 ) -> None:
@@ -152,7 +175,9 @@ def test_mono_plan_event_takes_precedence_over_cross_artifact(tmp_path: Path) ->
         "subtask_count": 1,
         "has_contract": False,
         "goal": "Preserve mono behavior",
-        "acceptance_criteria": ["event wins"],
+        "acceptance_criteria": [
+            {"id": "C1", "intent": "event wins", "verify": "agent_assertion"},
+        ],
         "owned_files": ["mono.py"],
         "commands_to_run": ["pytest -q mono"],
         "risks": ["cross override"],

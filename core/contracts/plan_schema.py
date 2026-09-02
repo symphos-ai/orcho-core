@@ -31,6 +31,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.contracts.criteria import (
+    AcceptanceCriterion,
+    CriterionSchemaError,
+    coerce_acceptance_criteria,
+    criteria_to_wire,
+    validate_acceptance_refs,
+)
+
 PLAN_SHORT_SUMMARY_MAX_CHARS = 280
 
 # Top-level keys expected in the JSON plan object.
@@ -48,8 +56,11 @@ PLAN_OPTIONAL_KEYS = (
 )
 
 # Top-level fields that, when present, must be ``list[str]``.
+# ``acceptance_criteria`` is deliberately absent: since ADR 0188 it is a list
+# of typed criterion objects, validated by
+# :mod:`core.contracts.criteria` (which also owns the single legacy
+# ``list[str]`` ingress normalizer).
 _PLAN_LIST_OF_STR_FIELDS = (
-    "acceptance_criteria",
     "owned_files",
     "allowed_modifications",
     "commands_to_run",
@@ -66,6 +77,9 @@ TASK_OPTIONAL_KEYS = (
     "model",
     "depends_on",
     "done_criteria",
+    # ADR 0188: references to plan-level criterion IDs, never copies of the
+    # criterion body.
+    "acceptance_refs",
     # Additive subtask fields the SubTask dataclass already carries.
     # Validating them here keeps the durable parsed_plan.json artefact
     # (which serialises every SubTask field) honest end-to-end — see
@@ -163,6 +177,13 @@ def _validate_task(t: Any, index: int) -> None:
                 (not isinstance(t[k], list) or not all(isinstance(x, str) for x in t[k]))):
             raise PlanSchemaError(f"{where}.{k} must be a list of strings")
 
+    try:
+        validate_acceptance_refs(
+            t.get("acceptance_refs"), where=f"{where}.acceptance_refs",
+        )
+    except CriterionSchemaError as e:
+        raise PlanSchemaError(str(e)) from e
+
     # ``architectural_decision`` is a strict bool (no truthy-coercion
     # of e.g. ``"false"`` → ``True``). The reader in plan_artifacts
     # used to call ``bool(...)`` on whatever came through, which would
@@ -203,6 +224,55 @@ def _validate_plan_contract(data: dict[str, Any]) -> None:
         if not isinstance(ctx, list) or not all(isinstance(x, dict) for x in ctx):
             raise PlanSchemaError("mcp_context must be a list of objects")
 
+    _validate_acceptance_contract(data)
+
+
+def _validate_acceptance_contract(data: dict[str, Any]) -> None:
+    """Validate typed criteria, task references, and executor coverage (ADR 0188).
+
+    Legacy ``list[str]`` payloads are routed through the single ingress
+    normalizer and rewritten in place to the typed wire shape, so every
+    downstream reader of a validated plan dict sees exactly one form.
+    """
+    try:
+        criteria = coerce_acceptance_criteria(data.get("acceptance_criteria"))
+    except CriterionSchemaError as e:
+        raise PlanSchemaError(str(e)) from e
+
+    if "acceptance_criteria" in data and data["acceptance_criteria"] is not None:
+        data["acceptance_criteria"] = criteria_to_wire(criteria)
+
+    known = {c.id: c for c in criteria}
+    referenced: set[str] = set()
+    for i, task in enumerate(data["tasks"]):
+        for ref in task.get("acceptance_refs") or ():
+            ref = str(ref).strip()
+            if ref not in known:
+                raise PlanSchemaError(
+                    f"tasks[{i}].acceptance_refs references unknown criterion "
+                    f"{ref!r}; known ids: {sorted(known)}"
+                )
+            referenced.add(ref)
+
+    unowned = [
+        c.id
+        for c in criteria
+        if c.verify == "executable" and c.id not in referenced
+    ]
+    if unowned:
+        raise PlanSchemaError(
+            "every executable acceptance criterion needs at least one task "
+            f"reference; unowned: {unowned}"
+        )
+
+
+def plan_acceptance_criteria(data: dict[str, Any]) -> tuple[AcceptanceCriterion, ...]:
+    """Typed criteria for a plan dict, routing legacy payloads through ingress."""
+    try:
+        return coerce_acceptance_criteria(data.get("acceptance_criteria"))
+    except CriterionSchemaError as e:
+        raise PlanSchemaError(str(e)) from e
+
 
 # Human-readable schema description embedded into the PLAN prompt so the
 # architect knows what shape to emit.
@@ -214,7 +284,13 @@ Emit exactly one JSON object with this shape:
   "planning_context": "<why this plan has this shape; discovery notes, constraints, current state>",
 
   "goal": "<one-sentence machine-readable target>",
-  "acceptance_criteria": ["<checkable condition>"],
+  "acceptance_criteria": [
+    {"id": "C1", "intent": "<checkable condition>", "verify": "executable",
+     "gate_refs": [{"command": "<declared gate command>", "hook": "after_phase", "phase": "implement"}]},
+    {"id": "C2", "intent": "<condition an agent can only inspect>", "verify": "agent_assertion"},
+    {"id": "C3", "intent": "<condition only an operator can judge>", "verify": "human",
+     "human_instructions": "<what the operator should exercise and record>"}
+  ],
   "owned_files": ["path/to/file"],
   "allowed_modifications": ["<glob — reason; companion change allowed in any task>"],
   "commands_to_run": ["<command that verifies the change in this project>"],
@@ -232,6 +308,7 @@ Emit exactly one JSON object with this shape:
       "model": "<optional model override, or null>",
       "depends_on": ["<id of another task>"],
       "done_criteria": ["<checkable condition>"],
+      "acceptance_refs": ["C1"],
       "allowed_modifications": ["<companion change allowed for THIS task beyond the project list>"]
     }
   ]
@@ -242,6 +319,11 @@ Rules:
 - Required: `short_summary`, `planning_context`, `tasks`; never emit `plan_summary`.
 - Keep `short_summary` <=280 chars and put discovery/constraints in `planning_context`.
 - Optional list fields are arrays of strings; `mcp_context` is a list of objects.
+- `acceptance_criteria` is a list of typed criterion objects, never a list of strings. Each has a unique `id` matching `C1`, `C2`, ... , a one-sentence `intent`, and exactly one `verify` class:
+  - `executable` — requires a non-empty `gate_refs`; each ref is the COMPLETE scheduled gate identity `{"command", "hook", "phase"}` naming a gate the project's verification contract already declares and selects. A command name alone, an unknown gate, or raw shell text is invalid. Never turn `commands_to_run` into a gate ref.
+  - `agent_assertion` — no `gate_refs`, no `human_instructions`; advisory evidence only, it can never prove a blocking condition.
+  - `human` — non-empty `human_instructions`, no `gate_refs`; stays pending until an operator records a decision.
+- `acceptance_refs` on a task lists plan criterion ids only; never copy or restate the criterion text. Every `executable` criterion must be referenced by at least one task.
 - `allowed_modifications` (top-level and per-task) lists companion changes allowed beyond the owned files — lockfiles, regenerated snapshots, derived artifacts — that a reviewer must not treat as a scope violation; their content is still reviewed.
 - Task ids are unique; `depends_on` references known ids only; dependency graph is acyclic.
 - Use [] for empty lists and null for absent optional `skill` / `model`.

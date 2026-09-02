@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -279,6 +280,58 @@ def _required_receipt_backstop(
     return required_receipt_gaps(
         contract, output_dir, ctx, extras=state.extras, language=language,
     )
+
+
+def _record_criterion_finding_links(
+    state: PipelineState, findings: list[dict[str, Any]], *, actor: str,
+) -> None:
+    """Persist any ADR 0188 criterion link a reviewer typed on its findings.
+
+    Inert unless a finding actually carries ``criterion_id``, so a run whose
+    reviewer never links a criterion writes no artifact. Never raises: the
+    link is redundant with the evidence findings rollup, so failing to mirror
+    it must not fail the phase.
+    """
+    if getattr(state, "dry_run", False):
+        return
+    from pipeline.criterion_claims import record_finding_links
+
+    run_id = str(state.extras.get("run_id") or "") or None
+    output_dir = getattr(state, "output_dir", None)
+    if output_dir is None or run_id is None:
+        return
+    with suppress(Exception):
+        record_finding_links(
+            output_dir, run_id=run_id, findings=findings, actor=actor,
+        )
+
+
+def _criterion_backstop(state: PipelineState) -> list[dict[str, Any]]:
+    """Engine gaps for blocking acceptance criteria (ADR 0188 §3).
+
+    Deliberately **not** the same backstop as
+    :func:`_required_receipt_backstop`, and gated on strictly less:
+
+    * it does not require a declared verification contract — a project without
+      one still has plan criteria, and a ``human`` or unproven ``executable``
+      criterion must still block;
+    * it does not honour an operator waiver — ``continue_with_waiver`` is a
+      decision about *continuing the phase*, not the per-criterion human
+      decision an ADR 0188 ``human`` criterion requires. Letting a general
+      waiver satisfy a criterion is exactly the implicit approval the contract
+      forbids.
+
+    Empty under dry-run, without a run dir, and for a run whose plan artifact
+    is absent. Unreadable durable facts produce a blocking integrity gap.
+    """
+    if getattr(state, "dry_run", False):
+        return []
+    output_dir = getattr(state, "output_dir", None)
+    if output_dir is None:
+        return []
+    from pipeline.verification_readiness import criterion_release_gaps
+
+    return criterion_release_gaps(output_dir)
 
 
 def _scope_expansion_assessment(state: PipelineState):

@@ -29,6 +29,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from core.contracts.criteria import criterion_display
 from core.io import summary_lines
 from core.io.ansi import C, paint
 
@@ -1412,7 +1413,7 @@ def render_plan_block(plan: Mapping[str, Any], *, title: str = "Plan") -> str:
     summary = str(plan.get("short_summary") or plan.get("plan_summary") or "")
     planning_context = str(plan.get("planning_context") or "")
     goal = str(plan.get("goal") or "")
-    acceptance = list(plan.get("acceptance_criteria") or ())
+    acceptance = [criterion_display(c) for c in (plan.get("acceptance_criteria") or ())]
     owned_files = list(plan.get("owned_files") or ())
     commands = list(plan.get("commands_to_run") or ())
     risks = list(plan.get("risks") or ())
@@ -1507,6 +1508,7 @@ def _render_task_lines(task: Mapping[str, Any]) -> list[str]:
     goal = str(task.get("goal") or "")
     files = list(task.get("files") or ())
     deps = list(task.get("depends_on") or ())
+    acceptance_refs = list(task.get("acceptance_refs") or ())
     skill = task.get("skill")
     model = task.get("model")
     spec = str(task.get("spec") or "")
@@ -1517,6 +1519,10 @@ def _render_task_lines(task: Mapping[str, Any]) -> list[str]:
         out.append(f"      {_dim('files ' + ', '.join(files))}")
     if deps:
         out.append(f"      {_dim('depends_on ' + ', '.join(deps))}")
+    if acceptance_refs:
+        out.append(
+            f"      {_dim('acceptance ' + ', '.join(str(r) for r in acceptance_refs))}"
+        )
     extras: list[str] = []
     if skill:
         extras.append(f"skill {skill}")

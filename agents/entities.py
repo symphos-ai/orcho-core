@@ -37,6 +37,9 @@ class SubTask:
     model: str | None = None
     depends_on: tuple[str, ...] = field(default_factory=tuple)
     done_criteria: tuple[str, ...] = field(default_factory=tuple)
+    # ADR 0188: plan-level acceptance criterion IDs this subtask is
+    # responsible for. References only — never a copy of the criterion body.
+    acceptance_refs: tuple[str, ...] = field(default_factory=tuple)
     owned_files: tuple[str, ...] = field(default_factory=tuple)
     # Companion modifications the reviewer may accept for THIS task beyond
     # the project-wide ``allowed_modifications`` (lockfiles, regenerated

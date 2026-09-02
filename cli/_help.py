@@ -30,6 +30,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("cost", "how much did it consume? cost-reference report"),
         ("evidence", "what happened / what proves it?"),
         ("diff", "what changed? captured diff.patch artifact"),
+        ("criterion", "which acceptance criterion is proven, advisory, or open?"),
     ]),
     ("Workspace & config", [
         ("workspace", "initialise and manage Orcho workspaces"),
