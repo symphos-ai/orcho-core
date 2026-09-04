@@ -409,6 +409,36 @@ class TestInvokeWrite:
         assert out.startswith(ORCHO_GUARDRAIL_BLOCKED)
         assert "destructive_git" in out
 
+    def test_destructive_git_command_execution_aborts_stream(
+        self, codex: CodexAgent, mock_stream_run: MagicMock,
+    ) -> None:
+        """A Codex ``command_execution`` JSONL record carrying destructive git
+        must trip the guard from ``_on_line`` (structured path; the record
+        never starts with ``git `` so the text path cannot see it)."""
+        from agents.command_guard import ORCHO_GUARDRAIL_BLOCKED
+        from agents.stream import StreamAbort
+
+        line = (
+            '{"type":"item.started","item":{"id":"item_0",'
+            '"type":"command_execution","command":"git reset --hard HEAD"}}\n'
+        )
+
+        def fake_stream(_cmd, **kwargs):
+            try:
+                kwargs["on_line"](line)
+            except StreamAbort as exc:
+                return _stream_result(
+                    "", returncode=1, stderr=f"[ABORTED by stream guard: {exc}]",
+                )
+            raise AssertionError("expected StreamAbort from command guard")
+
+        mock_stream_run.side_effect = fake_stream
+
+        out = codex.invoke("task", "/project", mutates_artifacts=True)
+
+        assert out.startswith(ORCHO_GUARDRAIL_BLOCKED)
+        assert "git reset --hard HEAD" in out
+
     def test_empty_last_message_falls_back_to_agent_message_text(
         self, codex: CodexAgent, mock_stream_run: MagicMock,
     ) -> None:
