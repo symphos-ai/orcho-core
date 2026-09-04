@@ -256,32 +256,39 @@ def test_bootstrap_silent_is_quiet_even_when_steps_report(
 def test_bootstrap_longer_than_the_startup_budget_is_not_retro_halted(
     tmp_path: Path,
 ) -> None:
-    """A successful bootstrap emits no event and writes no output.log, so the
-    startup watchdog's ambient progress check cannot see it. The bootstrap
-    path must report its own progress: after a bootstrap that outlives the
-    budget, the next checkpoint keeps the run alive and the durable window in
-    ``startup_command.json`` is refreshed, while the watchdog stays armed for
-    a later hang before the first phase."""
+    """A successful bootstrap emits no event and writes no ``output.log``, so
+    the startup watchdog's ambient progress check cannot see it. The bootstrap
+    path must report its own progress: a step that outlives the whole startup
+    budget leaves an expired window, and the heartbeat that follows the step
+    revives it instead of letting the next checkpoint halt a run that just
+    finished real work. The watchdog stays armed, so a hang after bootstrap
+    and before the first phase still halts.
+
+    Expiry is forced, not slept for. Racing a small budget against the
+    session-save I/O between the last heartbeat and the checkpoint is exactly
+    what made the first version of this test flake on a loaded CI runner.
+    """
     from pipeline.project.startup_watchdog import startup_watchdog_scope
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     session = {"status": "running", "phases": {}}
     worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
-    step_beats: list[str] = []
+    revived_after_step: list[bool] = []
 
     def bootstrap(*args, on_step, **kwargs):
         for index in (1, 2):
             on_step("start", index, "run", {"run": ["npm", "ci"]})
-            time.sleep(0.02)
+            # The step outlived the entire startup budget.
+            watchdog.deadline = 0.0
             on_step("complete", index, "run", {"index": index, "action": "run", "status": "ok"})
-            step_beats.append(json.loads((run_dir / "startup_command.json").read_text())["armed_at"])
+            revived_after_step.append(watchdog.deadline > time.monotonic())
         return {"status": "ok", "steps": []}
 
     with startup_watchdog_scope(run_dir) as watchdog, patch(
         "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
     ):
-        watchdog.budget_s = 0.01
+        watchdog.budget_s = 30.0
         watchdog.arm()
         armed_at = json.loads((run_dir / "startup_command.json").read_text())["armed_at"]
         _apply_worktree_bootstrap(
@@ -292,15 +299,17 @@ def test_bootstrap_longer_than_the_startup_budget_is_not_retro_halted(
             worktree_ctx=worktree_ctx,
             presentation=PresentationPolicy.SILENT,
         )
+
+        # Every completed step revived the expired window.
+        assert revived_after_step == [True, True]
         assert watchdog.checkpoint(session) is False
         assert watchdog.armed is True and watchdog.disarmed is False
         refreshed = json.loads((run_dir / "startup_command.json").read_text())
-        assert (
-            _iso(refreshed["armed_at"]) > _iso(step_beats[-1]) > _iso(step_beats[0]) > _iso(armed_at)
-        )
-        assert refreshed["budget_s"] == 0.01
+        assert _iso(refreshed["armed_at"]) >= _iso(armed_at)
+        assert refreshed["budget_s"] == 30.0
 
-        time.sleep(0.02)
+        # Still armed: a hang before the first phase is caught as before.
+        watchdog.deadline = 0.0
         assert watchdog.checkpoint(session) is True
 
     assert session["worktree_bootstrap"]["status"] == "ok"
