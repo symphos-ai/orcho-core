@@ -196,7 +196,8 @@ The retry system in `core/io/retry.py` classifies errors automatically:
 
 | Error class | Trigger | Default retries |
 |---|---|---|
-| `RateLimitError` | "429", "rate_limit_exceeded" | 4 |
+| `RateLimitError` | "api error: 429", "rate_limit_exceeded" | 4 |
+| `ApiConnectionError` | "connection refused", "api error: 529", "overloaded", "internal server error" | 2 |
 | `ApiTimeoutError` | subprocess timeout, "timed out" | 2 |
 | `ContextOverflowError` | "context_length_exceeded" | 1 |
 | `AgentCallError` | any other failure | 2 |

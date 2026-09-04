@@ -10,9 +10,13 @@ Design principles:
 Error taxonomy:
   AgentAuthenticationError — invalid or missing CLI credentials
   AgentAccessError   — account/subscription/org policy blocks model access
-  RateLimitError     — HTTP 429 / "rate_limit_exceeded" in stderr
+  RateLimitError     — HTTP 429 ("api error: 429", "http 429") /
+                       "rate_limit_exceeded" in stderr
   ApiConnectionError — transport failure reaching the model API
-                       (connection refused, DNS failure, stream disconnect)
+                       (connection refused, DNS failure, stream disconnect),
+                       or a transient HTTP 5xx from the API itself
+                       (529 "overloaded", 500 "internal server error",
+                       502/503/504, "server_error")
   ApiTimeoutError    — subprocess.TimeoutExpired / "timed out" in stderr
   ContextOverflowError — "context_length_exceeded" / prompt too long
   SystemResourceError — local OS resource blocker, e.g. exhausted PTY pool
@@ -92,7 +96,13 @@ class AgentAccessError(AgentCallError):
 
 
 class RateLimitError(AgentCallError):
-    """HTTP 429 / rate_limit_exceeded from Anthropic or OpenAI."""
+    """HTTP 429 / rate_limit_exceeded from Anthropic or OpenAI.
+
+    The bare status number is only matched in anchored forms (``api error:
+    429``, ``http 429``, ``status 429``): a bare ``429`` also appears inside
+    UUIDs, hashes, and token counts in provider output and mis-typed a 500
+    failure as a rate limit in the field.
+    """
 
 
 class ApiConnectionError(AgentCallError):
@@ -101,7 +111,11 @@ class ApiConnectionError(AgentCallError):
     Covers connection refused, DNS resolution failures, and mid-stream
     disconnects — i.e. the runtime could not complete a request because the
     API was unreachable, not because the prompt or credentials were bad.
-    Transient, so retried a few times before the run halts.
+    Also covers a transient server-side HTTP 5xx (529 overloaded, 500
+    internal server error, 502/503/504, ``server_error``): the API was
+    reached but could not serve the request right now. Both shapes clear on
+    their own, so they share the bounded connection retry budget before the
+    run halts.
     """
 
 
@@ -148,11 +162,16 @@ class AgentCancelledError(AgentCallError):
 # Error classifier
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Patterns that indicate rate limiting
+# Patterns that indicate rate limiting. The 429 status is matched only in
+# anchored forms: a bare "429" also occurs inside UUIDs, hashes, and token
+# counts that provider stream output routinely carries, and in the field it
+# turned a 500 failure into a spurious [rate_limit] retry.
 _RATE_LIMIT_PATTERNS = (
     "rate_limit_exceeded",
     "rate limit",
-    "429",
+    "api error: 429",
+    "http 429",
+    "status 429",
     "too many requests",
     "retry after",
     "quota exceeded",
@@ -238,6 +257,24 @@ _CONNECTION_PATTERNS = (
     "reconnecting",
 )
 
+# Patterns that indicate a transient server-side failure from the model API:
+# the request reached the provider but it could not serve it right now (529
+# overloaded, 500 internal server error, 502/503/504, OpenAI "server_error").
+# Provider CLIs surface these as "API Error: <status> <reason>" in the reply
+# stream and exit non-zero. Same recovery shape as a transport failure —
+# wait briefly and retry — so they classify to ApiConnectionError and share
+# its bounded retry budget instead of falling into the never-retried bucket.
+_SERVER_ERROR_PATTERNS = (
+    "api error: 529",
+    "overloaded",
+    "api error: 500",
+    "internal server error",
+    "api error: 502",
+    "api error: 503",
+    "api error: 504",
+    "server_error",
+)
+
 _SYSTEM_RESOURCE_PATTERNS = (
     "orcho_system_pty_exhausted",
     "pty pool exhausted",
@@ -298,6 +335,15 @@ def classify_error(
         if pattern in combined:
             return ApiConnectionError(
                 f"API unreachable: {stderr[:200] or stdout[:200] or str(exc)[:200]}",
+                exit_code=getattr(exc, "returncode", -1),
+                stderr=stderr,
+            )
+
+    for pattern in _SERVER_ERROR_PATTERNS:
+        if pattern in combined:
+            return ApiConnectionError(
+                f"API server error: "
+                f"{_server_error_detail(stderr=stderr, stdout=stdout, exc=exc)}",
                 exit_code=getattr(exc, "returncode", -1),
                 stderr=stderr,
             )
@@ -554,6 +600,28 @@ def _provider_access_detail(
     return _with_access_next_step("provider access is unavailable")
 
 
+def _server_error_detail(
+    *,
+    stderr: str,
+    stdout: str,
+    exc: Exception,
+) -> str:
+    """Return the provider's own server-error line, skipping JSONL plumbing.
+
+    The status text usually lives inside a stream-json assistant event on
+    stdout (``API Error: 529 Overloaded …``) while stderr is empty, so a raw
+    ``stdout[:200]`` would show the init payload and ``str(exc)`` only
+    ``exit=1``. Surface the line that actually names the failure.
+    """
+    lines = _readable_error_lines(stderr, stdout, str(exc))
+    for line in lines:
+        if _contains_any(line.lower(), _SERVER_ERROR_PATTERNS):
+            return line
+    if lines:
+        return lines[0]
+    return "the model API returned a transient server error"
+
+
 def _readable_error_lines(*parts: str) -> list[str]:
     """Extract human-readable error lines, skipping provider JSONL plumbing."""
     lines: list[str] = []
@@ -603,7 +671,10 @@ def _looks_like_human_error_text(text: str) -> bool:
     norm = text.strip().lower()
     if not norm:
         return False
-    return _contains_any(norm, (*_ACCESS_PATTERNS, *_AUTH_PATTERNS, *_RATE_LIMIT_PATTERNS))
+    return _contains_any(
+        norm,
+        (*_ACCESS_PATTERNS, *_AUTH_PATTERNS, *_RATE_LIMIT_PATTERNS, *_SERVER_ERROR_PATTERNS),
+    )
 
 
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
