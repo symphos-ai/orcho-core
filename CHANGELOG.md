@@ -51,6 +51,27 @@
   entirely when the profile is unresolved. Behaviour is unchanged — this was
   a labelling defect, not a scheduling one.
 
+- `orcho run --resume <run_id>` no longer resets the round budget either.
+  The entry directly below covers the SDK launcher that *builds* a resume
+  argv; the CLI an operator types is the other half. Both `orcho run
+  --max-rounds` and the orchestrator's own `--max-rounds` carried an argparse
+  `default=1`, so neither could tell "the operator did not pass the flag" from
+  "the operator asked for one round": `orcho run` re-materialised
+  `--max-rounds 1` on every
+  resume, and the orchestrator then fed that into the run config and wrote it
+  back over the run's persisted `checkpoints.db` `run_meta.config_json`. Both
+  defaults are now `None`, and the resume resolves explicit flag → the budget
+  persisted for the resumed run → 1, announcing an inherited value so a
+  changed budget is never silent. An explicit `--max-rounds` on the resume
+  command line still wins, including `--max-rounds 1` against a larger
+  persisted budget — re-passing the flag is how an operator deliberately
+  narrows the remaining loop. A run with nothing persisted, or with a
+  degenerate recorded value, resumes exactly as before.
+  `pipeline.control.resume_budget` is the single owner of that rule; the SDK
+  launcher now reads through it too, so the two resume frontends cannot drift
+  on what counts as "nothing to inherit". Follow-up runs (a *new* run) and
+  fresh runs inherit nothing, as before.
+
 - Resuming a run no longer discards the operator's `max_rounds` budget. A run
   started with `max_rounds=4` reached its first subprocess correctly, but the
   resume argv carried no `--max-rounds`, so the orchestrator's argparse default

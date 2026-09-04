@@ -79,7 +79,8 @@ orcho run --task "Task description" --project /path/to/project
 --mock                # simulation without API calls; can create a mock artifact for the review loop
 --mock-review-reject 1 # mock-only: reject one review, then repair and approve
 --dry-run             # print what would happen, change nothing
---max-rounds 2        # how many implement/review/repair rounds (default: 1)
+--max-rounds 2        # how many implement/review/repair rounds (default: 1;
+                      #   inherited from the run on --resume, see below)
 --workspace /path     # explicit workspace (default: $ORCHO_WORKSPACE / cwd discovery)
 --output summary      # summary (default) | live | debug — transcript mode
 --stream-output       # alias for --output live
@@ -122,6 +123,11 @@ orcho run --from-run-plan 20260610_144938 --project ./api
 
 - `--resume` continues an interrupted or paused run from its checkpoint,
   skipping phases that already completed.
+- A resume continues the run you started; it does not re-negotiate it. If
+  you omit `--max-rounds`, the resumed run keeps the budget it was
+  started with (Orcho prints the inherited value). Pass `--max-rounds`
+  explicitly to change the budget for the rest of the run — an explicit
+  value always wins over the inherited one.
 - `--from-run-plan` starts a **new** run that inherits the parsed plan
   of a parent run: the profile skips its leading plan + validate_plan
   block and starts at implement. Mutually exclusive with `--resume`.
