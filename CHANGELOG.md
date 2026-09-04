@@ -38,6 +38,17 @@
   `elapsed_s` is documented as time since the agent subprocess spawned, not
   the command's own runtime.
 
+- The destructive-git guardrail now covers the Codex runtime. `codex exec
+  --json` streams each shell command as a `command_execution` JSON record,
+  which never starts with `git `, so the shared guard's human-readable text
+  path never saw it and a Codex `git reset --hard HEAD` streamed straight
+  through while the runtime docstring assumed coverage. The guard now
+  inspects the `item.started` / `item.completed` records directly, mirroring
+  the Claude and Gemini structured paths; `worktree_cwd_path` relaxes it the
+  same way. Codex emits those records only after launching the command, so
+  the verdict is a run halt (abort, `agent.guardrail` diagnostic,
+  `ORCHO_GUARDRAIL_BLOCKED` sentinel), not a prevention.
+
 - `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source
   run that the launch preflight would refuse. A terminal recovery child whose
   source had a finalized `scheduled_gate_ledger.json` (written at every
