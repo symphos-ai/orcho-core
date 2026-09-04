@@ -61,6 +61,17 @@
   persisted plan, the diagnosis recommends `plan_artifact_continuation` with
   the source as `recommended_run_id` — the exit operators were already using
   by hand. Source-candidate facts moved to `sdk/run_control/recovery_source.py`.
+
+- A provider-side HTTP 5xx (`API Error: 529 Overloaded`, `500 Internal
+  server error`, 502/503/504, `server_error`) now classifies as the transient
+  `ApiConnectionError` and gets the bounded connection retry budget. It used
+  to fall into the never-retried "unrecognized error" bucket and halt the run
+  with a bare `exit=1`; the failure line now carries the provider's own
+  status text.
+- The rate-limit classifier no longer matches a bare `429`, which also occurs
+  inside UUIDs and hashes in provider stream output and mis-typed a 500
+  failure as a rate limit. Only anchored forms (`api error: 429`, `http 429`,
+  `status 429`) count.
 - A plan (or any assistant reply) larger than the 96 KiB per-line model
   output cap no longer halts the run with `plan rejected before implement:
   raw JSON parse failed: Extra data: line 2 column 1`. The stdout line cap

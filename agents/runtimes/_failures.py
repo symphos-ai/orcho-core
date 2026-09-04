@@ -17,9 +17,10 @@ otherwise-unexplained non-zero exits) classifies here.
 Two failure shapes are handled:
 
   * ``returncode != 0`` — the CLI itself reported failure. Classified through
-    ``classify_from_exit`` (stderr + stdout) so connection/rate-limit/timeout
-    signatures map to the right retry budget and a bare non-zero exit becomes a
-    generic ``AgentCallError`` that halts at once.
+    ``classify_from_exit`` (stderr + stdout) so connection/server-error
+    (5xx, e.g. ``API Error: 529 Overloaded``)/rate-limit/timeout signatures
+    map to the right retry budget and a bare non-zero exit becomes a generic
+    ``AgentCallError`` that halts at once.
   * ``returncode == 0`` but the model's *own reply* is a transport-error
     message — the CLI's reconnect loop gave up and emitted the error as its
     final reply, either as plain text or as a structured
@@ -53,12 +54,14 @@ from core.io.retry import (
 # Generic CLI failures surface immediately (max_retries=0): an unexplained
 # non-zero exit is not something a blind retry fixes, and the user asked for a
 # controlled halt rather than a continued run. Only the transient transport
-# shapes — connection drops, rate limits, timeouts — get a bounded retry
-# before the typed error propagates and the FSM records the halt. A kill-shaped
-# process death (SIGKILL/SIGSEGV/SIGABRT, e.g. the OOM killer) is likewise
-# transient: it gets one bounded retry via process_killed_max_retries while
-# generic exits stay 0. Cancel-shaped death (SIGINT/SIGTERM) is never retried
-# by construction (AgentCancelledError pins its budget to 0 under any config).
+# shapes — connection drops, provider 5xx/overloaded (typed as
+# ApiConnectionError, so they share connection_max_retries), rate limits,
+# timeouts — get a bounded retry before the typed error propagates and the
+# FSM records the halt. A kill-shaped process death (SIGKILL/SIGSEGV/SIGABRT,
+# e.g. the OOM killer) is likewise transient: it gets one bounded retry via
+# process_killed_max_retries while generic exits stay 0. Cancel-shaped death
+# (SIGINT/SIGTERM) is never retried by construction (AgentCancelledError pins
+# its budget to 0 under any config).
 RUNTIME_RETRY_CONFIG = RetryConfig(
     max_retries=0,
     connection_max_retries=2,
