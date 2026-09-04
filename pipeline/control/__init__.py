@@ -43,6 +43,11 @@ from pipeline.control.operator_decisions import (
     OperatorDecisionOverride,
     parse_operator_decisions,
 )
+from pipeline.control.resume_budget import (
+    ResolvedMaxRounds,
+    persisted_max_rounds,
+    resolve_resume_max_rounds,
+)
 from pipeline.control.resume_context import (
     ActiveFollowupChild,
     CheckpointFollowupLineage,
@@ -109,6 +114,7 @@ __all__ = [
     "OperatorDecisionError",
     "OperatorDecisionOverride",
     "PromptedResumeIntent",
+    "ResolvedMaxRounds",
     "ResolvedResumeContext",
     "ResumeContextError",
     "ResumeIntentOptions",
@@ -146,6 +152,7 @@ __all__ = [
     "load_resume_meta",
     "meta_run_kind",
     "parse_operator_decisions",
+    "persisted_max_rounds",
     "print_retry_feedback_banner",
     "print_retry_outcome_banner",
     "prompt_resume_intent",
@@ -159,6 +166,7 @@ __all__ = [
     "resolve_latest_run",
     "resolve_project",
     "resolve_projects_argv",
+    "resolve_resume_max_rounds",
     "resolve_resume_profile",
     "resolve_task",
     "run_reviewed_loop",

@@ -179,7 +179,14 @@ class TestParser:
     def test_run_defaults(self) -> None:
         parser = self.build_parser()
         args = parser.parse_args(["run", "--task", "x", "--project", "/p"])
-        assert args.max_rounds == 1
+        # ``--max-rounds`` defaults to None for the same inherit
+        # semantics as ``--profile`` below: the orchestrator resolves it
+        # to 1 for fresh runs and to the resumed run's persisted budget
+        # on ``--resume``. A ``default=1`` here would re-materialise the
+        # flag on every resume, which is exactly what silently shrank
+        # multi-round repair loops. See
+        # pipeline.control.resume_budget.resolve_resume_max_rounds.
+        assert args.max_rounds is None
         assert args.mock is False
         assert args.dry_run is False
         # Default transcript mode comes from ``config.cli_output_mode()``

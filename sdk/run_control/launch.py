@@ -46,8 +46,8 @@ from core.io.process_tree import (
 )
 from core.observability.logging import normalize_output_mode
 from pipeline.argv import build_orch_argv
-from pipeline.checkpoint import read_run_config
 from pipeline.control.continuation import ContinuationRequest
+from pipeline.control.resume_budget import persisted_max_rounds
 from pipeline.project.correction_followup import (
     compose_correction_context,
     compose_correction_task,
@@ -291,31 +291,6 @@ def read_meta_profile(run_dir: Path) -> str | None:
         return None
     profile = meta.get("profile")
     return profile if isinstance(profile, str) and profile.strip() else None
-
-
-def read_checkpoint_max_rounds(run_dir: Path, run_id: str) -> int | None:
-    """Return the ``max_rounds`` budget ``run_id`` was launched with, or None.
-
-    The pipeline persists the effective budget into ``checkpoints.db``
-    ``run_meta.config_json`` at bootstrap, so the store is the run's own
-    record of what the operator asked for. Resume reads it back rather
-    than re-deriving it, which keeps a single owner for the value: a
-    resume that omitted ``--max-rounds`` fell through to the
-    orchestrator's argparse default of 1 and silently shrank a
-    multi-round repair budget to one round.
-
-    Returns None for a missing store, a run with no recorded config, or a
-    non-positive / non-integer value — every one of which means "nothing
-    persisted to inherit", so the caller omits the flag and behaves
-    exactly as it did before.
-    """
-    config = read_run_config(run_dir / "checkpoints.db", run_id)
-    if not config:
-        return None
-    value = config.get("max_rounds")
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value if value >= 1 else None
 
 
 def meta_status_is_terminal(run_dir: Path) -> bool:
@@ -600,7 +575,7 @@ def resume_run(
     # re-negotiate the run's own budget. ``build_orch_argv`` omits the
     # flag for None, so a run with nothing persisted keeps the previous
     # behaviour (the orchestrator's own default).
-    original_max_rounds = read_checkpoint_max_rounds(run_dir, run_id)
+    original_max_rounds = persisted_max_rounds(run_dir, run_id)
 
     argv = build_orch_argv(
         project=project_dir,
@@ -823,7 +798,6 @@ __all__ = [
     "launch_from_run_plan",
     "meta_status_is_terminal",
     "now_iso",
-    "read_checkpoint_max_rounds",
     "read_launch_state",
     "read_meta_profile",
     "read_meta_task",

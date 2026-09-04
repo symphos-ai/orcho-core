@@ -2108,8 +2108,12 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
 
     control = p.add_argument_group("Run control")
     control.add_argument(
-        "--max-rounds", type=int, default=1,
-        help="Maximum implement/review/repair rounds per project (default: 1).",
+        "--max-rounds", type=int, default=None,
+        help=(
+            "Maximum implement/review/repair rounds per project (default: 1). "
+            "On --resume, omitting this inherits the budget the run was "
+            "started with; passing it explicitly overrides that."
+        ),
     )
     control.add_argument(
         "--session-split",
