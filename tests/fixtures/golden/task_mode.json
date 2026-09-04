@@ -408,6 +408,7 @@
   "status": "done",
   "task": "snapshot regression task",
   "timestamp": "<TIMESTAMP>",
+  "versions": "<HOST_SPECIFIC>",
   "worktree": {
     "base_ref": "<VOLATILE>",
     "branch_ref": null,

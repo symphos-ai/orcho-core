@@ -65,6 +65,10 @@ _HOST_SPECIFIC_PATHS: frozenset[tuple[str, ...]] = frozenset({
     ("sandbox", "env_allowlist_effective"),
     # Number of stripped vars — same reason.
     ("sandbox", "env_stripped_count"),
+    # Installed Orcho distribution versions — change with every release
+    # and with the developer's environment; only the key's presence is
+    # part of the meta.json shape.
+    ("versions",),
 })
 
 # Token counts are useful metrics but poor session-shape snapshot material:

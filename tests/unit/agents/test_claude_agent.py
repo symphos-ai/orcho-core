@@ -34,9 +34,12 @@ from agents.runtimes.claude import (
     _extract_assistant_text,
     _extract_last_result,
     _extract_session_id,
+    _is_stream_json_output,
+    _raw_reply_fallback,
 )
 from agents.runtimes.claude_glm import ClaudeGlmAgent
-from core.io.retry import AgentAuthenticationError
+from core.io.output_elision import MODEL_TOOL_OUTPUT_MAX_BYTES, utf8_len
+from core.io.retry import AgentAuthenticationError, AgentCallError
 
 # ── helpers / fixtures ─────────────────────────────────────────────────────
 
@@ -185,6 +188,70 @@ class TestExtractAssistantText:
         odd = json.dumps({"type": "assistant", "message": "not a dict"})
         out = odd + "\n" + _assistant_event("good one")
         assert _extract_assistant_text(out) == "good one"
+
+    def test_extracts_plan_text_larger_than_model_output_cap(self) -> None:
+        plan = "# Plan\n" + ("- step with detail\n" * 8000)
+        line = _assistant_event(plan)
+        assert utf8_len(line) > MODEL_TOOL_OUTPUT_MAX_BYTES
+        assert _extract_assistant_text(line) == plan
+
+    def test_byte_cut_assistant_line_yields_empty_not_garbage(self) -> None:
+        """A middle-cut assistant line is malformed JSON: the extractor
+        must skip it cleanly (returning "") rather than raise or return
+        a fragment. The runtime's fallback guard turns that "" into a
+        typed failure instead of leaking raw NDJSON to the phase."""
+        line = _assistant_event("X" * 1000)
+        cut = line[:400] + "\n[… 0.2 KB / 0 lines omitted …]\n" + line[-400:]
+        assert _extract_assistant_text(cut) == ""
+
+
+# ── _is_stream_json_output / _raw_reply_fallback ───────────────────────────
+
+
+_INIT_LINE = json.dumps({"type": "system", "subtype": "init", "session_id": "s"})
+
+
+class TestRawReplyFallback:
+    def test_stream_json_detection_requires_leading_init_event(self) -> None:
+        assert _is_stream_json_output(_INIT_LINE + "\n" + _assistant_event("x"))
+        assert _is_stream_json_output("\n  " + _INIT_LINE + "\n")
+        assert not _is_stream_json_output("")
+        assert not _is_stream_json_output("plain reply text")
+        assert not _is_stream_json_output(_assistant_event("no init first"))
+        assert not _is_stream_json_output("{not json}\n" + _INIT_LINE)
+
+    def test_non_stream_output_is_returned_raw(self) -> None:
+        assert _raw_reply_fallback("raw blob", runtime="claude") == "raw blob"
+
+    def test_stream_without_assistant_text_raises_typed_failure(self) -> None:
+        stdout = _INIT_LINE + "\n" + _result_event() + "\n"
+        with pytest.raises(AgentCallError) as exc_info:
+            _raw_reply_fallback(stdout, runtime="claude")
+        msg = str(exc_info.value)
+        assert "claude returned no assistant text" in msg
+        assert "no assistant text in stream-json output" in msg
+        assert exc_info.value.exit_code == 0
+
+    def test_failure_names_result_subtype_and_errors(self) -> None:
+        result = json.dumps({
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": True,
+            "errors": ["turn budget exhausted"],
+        })
+        stdout = _INIT_LINE + "\n" + result + "\n"
+        with pytest.raises(AgentCallError) as exc_info:
+            _raw_reply_fallback(stdout, runtime="claude")
+        msg = str(exc_info.value)
+        assert "subtype=error_max_turns" in msg
+        assert "turn budget exhausted" in msg
+        assert "is_error=true" in msg
+
+    def test_failure_notes_missing_result_event(self) -> None:
+        stdout = _INIT_LINE + "\n"
+        with pytest.raises(AgentCallError) as exc_info:
+            _raw_reply_fallback(stdout, runtime="claude")
+        assert "no result event" in str(exc_info.value)
 
 
 # ── _extract_last_result ───────────────────────────────────────────────────
@@ -355,6 +422,53 @@ class TestInvokeOutput:
     ) -> None:
         mock_stream_run.return_value = _stream_result("raw blob, no events")
         assert claude.invoke("hi", "/project") == "raw blob, no events"
+
+    def test_stream_json_without_assistant_text_raises_instead_of_raw_ndjson(
+        self, claude: ClaudeAgent, mock_stream_run: MagicMock,
+    ) -> None:
+        """Exit 0, stream-json, but no assistant text: never hand the raw
+        NDJSON to the phase (that surfaces as a misleading plan parse error
+        two hops later). Halt with a typed failure naming the real cause."""
+        mock_stream_run.return_value = _stream_result(
+            _INIT_LINE + "\n" + _result_event() + "\n",
+        )
+        with pytest.raises(AgentCallError, match="no assistant text"):
+            claude.invoke("hi", "/project")
+
+    def test_plan_larger_than_model_output_cap_survives_return_filter(
+        self, claude: ClaudeAgent, mock_stream_run: MagicMock,
+    ) -> None:
+        """End-to-end shape of the field defect: the plan text exceeds the
+        per-line model output cap. ``return_filter`` runs on every stdout
+        line before ``invoke()`` sees it, so simulate that here and require
+        the full plan to come back intact rather than raw NDJSON."""
+        plan = "# Plan\n" + ("- step with detail\n" * 8000)
+        raw = "\n".join([
+            _INIT_LINE,
+            _assistant_event(plan),
+            json.dumps({
+                "type": "result",
+                "subtype": "success",
+                "result": plan,
+                "total_cost_usd": 0.5,
+                "usage": {"input_tokens": 10, "output_tokens": 20},
+            }),
+        ]) + "\n"
+        assert utf8_len(_assistant_event(plan)) > MODEL_TOOL_OUTPUT_MAX_BYTES
+
+        def _run(cmd, **kwargs):
+            line_filter = kwargs["return_filter"]
+            filtered = "".join(
+                line_filter(line) for line in raw.splitlines(keepends=True)
+            )
+            return _stream_result(filtered)
+
+        mock_stream_run.side_effect = _run
+        out = claude.invoke("hi", "/project")
+
+        assert out == plan
+        assert claude.session_id == "s"
+        assert claude.last_cost_usd == 0.5
 
     def test_stderr_surfaced_on_nonzero_returncode(
         self,

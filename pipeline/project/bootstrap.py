@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.protocols import SessionMode
+from core.infra.versions import installed_orcho_versions
 from core.observability import events as _events, logging as _logging
 from core.observability.logging import success
 from pipeline.checkpoint import CheckpointStore
@@ -429,6 +430,9 @@ def init_session_with_atexit(
         "timestamp": datetime.now().isoformat(),
         "status": "running",
         "phases": {},
+        # Which Orcho packages wrote this run: the only way an artifact can
+        # later be matched to an engine version.
+        "versions": installed_orcho_versions(),
     }
     if projected_profile:
         session["projected_profile"] = projected_profile

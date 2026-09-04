@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `meta.json` records `versions`: every installed distribution whose name
+  starts with `orcho`, mapped to its version, as seen by the interpreter that
+  wrote the run (`orcho-core` always present). Until now a run artifact
+  carried no record of which engine produced it, so a behaviour observed in a
+  run could not be matched to a release. Cross-project parent runs carry the
+  same key; golden session snapshots mask its value.
+
+### Fixed
+
+- The unsafe-process-polling guardrail no longer re-flags a command from the
+  stream records that merely echo it. Claude stream-json `system`
+  `task_started` / `task_notification` lines repeat an issued Bash command in
+  `description` / `summary`; the shared guard treated every line's raw text as
+  a command candidate, so one `pkill -f` produced extra `agent.guardrail`
+  warns and non-terminal `agent.command_stalled` events. A JSON record now
+  contributes only its structured tool-use commands (Claude `Bash`, Gemini
+  `run_shell_command`, and Codex `command_execution` `item.command`, which the
+  guard previously matched only through the raw JSON text); raw text is a
+  candidate only for non-JSON lines. The non-terminal `command_preview` keeps
+  the tail of an over-long command so a trailing poll stays visible, and
+  `elapsed_s` is documented as time since the agent subprocess spawned, not
+  the command's own runtime.
+
+- `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source
+  run that the launch preflight would refuse. A terminal recovery child whose
+  source had a finalized `scheduled_gate_ledger.json` (written at every
+  runner-side `run.end`) was diagnosed `recover_via_source_run` / "resume the
+  source", and `orcho run resume` then rejected exactly that with "same-run
+  resume is blocked: parent has a finalized scheduled-gate ledger". Source
+  resumability is now the canonical `preflight_continuation` answer (a
+  paused or live source is refused the same way); when the source cannot be
+  resumed in place but preflight accepts a `from_run_plan` launch off its
+  persisted plan, the diagnosis recommends `plan_artifact_continuation` with
+  the source as `recommended_run_id` — the exit operators were already using
+  by hand. Source-candidate facts moved to `sdk/run_control/recovery_source.py`.
+- A plan (or any assistant reply) larger than the 96 KiB per-line model
+  output cap no longer halts the run with `plan rejected before implement:
+  raw JSON parse failed: Extra data: line 2 column 1`. The stdout line cap
+  was byte-middle-cutting every oversized line that was JSON but not a
+  tool-result envelope, which destroyed the stream-json `assistant` and
+  `result` events carrying the reply; the text extractor then skipped the
+  malformed lines and the phase received raw NDJSON. Non-tool JSON lines now
+  pass through unchanged; tool-result lines and non-JSON blobs keep the cap.
+  As defense in depth, the Claude runtime now raises a typed
+  `AgentCallError` naming the real cause when a stream-json reply carries no
+  assistant text at all, instead of silently returning the raw stream.
+
 ## 0.9.0 - 2026-08-29
 
 Onboarding stops producing something inert, and a run that has ceased to exist

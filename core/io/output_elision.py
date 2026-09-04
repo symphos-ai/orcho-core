@@ -67,7 +67,16 @@ def elide_tool_result_line_for_model(
     *,
     max_bytes: int = MODEL_TOOL_OUTPUT_MAX_BYTES,
 ) -> str:
-    """Cap one provider stdout line before retaining it for runtime consumers."""
+    """Cap one provider stdout line before retaining it for runtime consumers.
+
+    The cap targets tool noise, never the model's deliverable. A line that
+    parses as JSON but is not a tool-result envelope (a stream-json
+    ``assistant`` or ``result`` event carrying a long plan, for example) is
+    returned unchanged: a byte-middle cut would leave malformed JSON that the
+    runtime's text extractor silently skips, and the phase would then receive
+    raw NDJSON instead of the reply. Tool-result lines get their output fields
+    capped; non-JSON blobs get the byte cap directly.
+    """
     if utf8_len(line) <= max_bytes:
         return line
 
@@ -76,14 +85,14 @@ def elide_tool_result_line_for_model(
     if decoded is None:
         return elide_middle_by_bytes(body, max_bytes=max_bytes) + newline
 
-    if _looks_like_tool_result(decoded):
-        capped = _cap_tool_output_fields(decoded, max_bytes=max(1024, max_bytes // 2))
-        rendered = json.dumps(capped, ensure_ascii=False, separators=(",", ":"))
-        if utf8_len(rendered) <= max_bytes:
-            return rendered + newline
-        return elide_middle_by_bytes(rendered, max_bytes=max_bytes) + newline
+    if not _looks_like_tool_result(decoded):
+        return line
 
-    return elide_middle_by_bytes(body, max_bytes=max_bytes) + newline
+    capped = _cap_tool_output_fields(decoded, max_bytes=max(1024, max_bytes // 2))
+    rendered = json.dumps(capped, ensure_ascii=False, separators=(",", ":"))
+    if utf8_len(rendered) <= max_bytes:
+        return rendered + newline
+    return elide_middle_by_bytes(rendered, max_bytes=max_bytes) + newline
 
 
 def elide_tool_result_stream_for_model(

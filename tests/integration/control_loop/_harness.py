@@ -50,6 +50,13 @@ from agents.runtimes import MockAgentProvider
 from pipeline.control.resume_context import load_resume_meta
 from pipeline.plugins import PluginConfig
 from pipeline.project_orchestrator import run_pipeline
+from pipeline.verification_ledger_store import (
+    ScheduledGateLedger,
+    ledger_path,
+    load_ledger,
+    write_ledger,
+)
+from sdk.run_control import decide_delivery
 
 # ── Fixed identifiers (determinism) ──────────────────────────────────────────
 
@@ -749,20 +756,28 @@ class SupersededResult:
 
 @dataclass(frozen=True)
 class RecoverResult:
-    """Terminal child whose source run is resumable (drives
+    """Terminal child whose durable lineage points at a source run (drives
     ``recover_via_source_run``).
 
-    ``child_run_id`` is the terminal run to diagnose; ``source_running_meta`` is
-    the parent's real captured running-meta, supplied through the
-    ``run_diagnosis(source_meta=...)`` supervisor seam so the source reads as a
-    live, resumable checkpoint.
+    ``child_run_id`` is the terminal dead-end to diagnose (an operator halt at
+    its delivery gate → ``halted`` / ``commit_decision_halt``). The source is a
+    real non-terminal stop (``halted`` / ``commit_delivery_pending``) that
+    persisted ``parsed_plan.json`` and retained its worktree; ``source_meta``
+    is its settled on-disk meta and ``source_running_meta`` the real
+    running-meta captured mid-run (for the ``run_diagnosis(source_meta=...)``
+    supervisor seam). ``source_ledger_finalized`` says whether the source's
+    ``scheduled_gate_ledger.json`` was closed the way finalization closes it
+    at ``run.end`` — the durable fact that blocks a same-run resume in the
+    canonical launch preflight.
     """
 
     runs_dir: Path
     child_run_id: str
     child_meta: dict[str, Any]
     source_run_id: str
+    source_meta: dict[str, Any]
     source_running_meta: dict[str, Any]
+    source_ledger_finalized: bool
 
 
 def drive_superseded_by_child(base: Path) -> SupersededResult:
@@ -813,16 +828,49 @@ def drive_superseded_by_child(base: Path) -> SupersededResult:
     )
 
 
-def drive_recover_via_source_run(base: Path) -> RecoverResult:
-    """Real terminal child whose source run is resumable via the source seam.
+def repark_delivery_gate(meta_path: Path) -> None:
+    """Model the lifecycle's resume tail that restores a live delivery pause."""
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["status"] = "awaiting_commit_decision"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
-    The parent is a ``planning`` run: it persists ``parsed_plan.json`` (so the
-    child can hydrate via ``from_run_plan``) and its real running-meta is
-    captured mid-run. The child is a ``from_run_plan`` ``feature`` run that
-    reaches a clean terminal ``done`` and stamps ``plan_source_run_id`` →
-    parent. Diagnosing the child with ``source_meta={parent: running_meta}``
-    resolves the source as a live, resumable checkpoint →
-    ``recover_via_source_run``.
+
+def finalize_scheduled_gate_ledger(run_dir: Path) -> None:
+    """Close a run's scheduled-gate ledger the way finalization does at run.end.
+
+    ``pipeline/project/finalization.py`` finalizes the ledger at every
+    runner-side ``run.end`` — but only when the project's verification contract
+    initialized one, and the harness project declares no contract. This writes
+    the same durable artifact through the store API (an existing ledger is
+    finalized in place; a missing one is closed empty) so the launch preflight
+    sees exactly the finalized ledger a contract-bearing run leaves behind.
+    """
+    existing = load_ledger(run_dir) if ledger_path(run_dir).exists() else ScheduledGateLedger(())
+    write_ledger(run_dir, existing.finalize())
+
+
+def drive_recover_via_source_run(
+    base: Path, *, finalize_source_ledger: bool = False,
+) -> RecoverResult:
+    """Real terminal dead-end child whose source is a real non-terminal stop.
+
+    The source is a ``feature`` run with non-interactive deferred delivery
+    (ADR 0099/0100): it plans (persisting ``parsed_plan.json``), implements in
+    a retained worktree, and parks at ``halted`` / ``commit_delivery_pending``
+    — a checkpoint-resumable stop the launch preflight accepts. Its real
+    running-meta is captured mid-run for the ``source_meta`` seam.
+
+    The child is a ``from_run_plan`` ``feature`` run hydrated off the source
+    (stamping ``plan_source_run_id`` → source) that parks at the same deferred
+    gate; the operator then halts it through the real SDK
+    (``decide_delivery(halt)``) → ``halted`` / ``commit_decision_halt``, a
+    terminal-resume-parent dead-end that is neither a clean success nor a
+    correction candidate, so the recovery ladder resolves via the source.
+
+    With ``finalize_source_ledger`` the source's scheduled-gate ledger is
+    closed as finalization closes it at ``run.end`` — the field shape where
+    "resume the source" is refused by preflight and the only durable exit is
+    a new ``from_run_plan`` run off the source's plan artifact.
     """
     runs_dir = base / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -834,14 +882,18 @@ def drive_recover_via_source_run(base: Path) -> RecoverResult:
     captor = _RunningMetaCaptor(build_clean_provider(), parent_dir)
     _run_pipeline_isolated(
         provider=captor,
-        task="Parent plan",
+        task="Add structured logging",
         project_dir=str(project),
         output_dir=parent_dir,
-        profile_name="planning",
+        profile_name="feature",
+        max_rounds=1,
         no_interactive=True,
+        extra_patches=(_defer_delivery_config(), _stub_delivery_diff()),
     )
     if captor.captured is None:
         raise AssertionError("source running-meta was never captured")
+    if finalize_source_ledger:
+        finalize_scheduled_gate_ledger(parent_dir)
 
     child_dir = runs_dir / LINEAGE_CHILD_RUN_ID
     child_dir.mkdir()
@@ -852,15 +904,23 @@ def drive_recover_via_source_run(base: Path) -> RecoverResult:
         output_dir=child_dir,
         profile_name="feature",
         max_rounds=1,
+        no_interactive=True,
         from_run_plan_parent_dir=parent_dir,
+        extra_patches=(_defer_delivery_config(), _stub_delivery_diff()),
     )
+    repark_delivery_gate(child_dir / "meta.json")
+    halted = decide_delivery(LINEAGE_CHILD_RUN_ID, "halt", runs_dir=runs_dir, cwd=None)
+    if halted.terminal_outcome != "halted":
+        raise AssertionError(f"child operator halt did not settle: {halted!r}")
 
     return RecoverResult(
         runs_dir=runs_dir,
         child_run_id=LINEAGE_CHILD_RUN_ID,
         child_meta=_read_settled_meta(child_dir),
         source_run_id=LINEAGE_PARENT_RUN_ID,
+        source_meta=_read_settled_meta(parent_dir),
         source_running_meta=captor.captured,
+        source_ledger_finalized=finalize_source_ledger,
     )
 
 

@@ -39,7 +39,6 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +62,7 @@ from pipeline.run_state.terminal import (
     evict_transient_settle_keys,
 )
 from pipeline.run_state.terminal_outcome import settle_delivery_terminal
+from pipeline.verification_ledger_store import load_ledger
 from sdk.phase_handoff import phase_handoff_decide
 from sdk.run_control import (
     RunService,
@@ -167,13 +167,6 @@ def _views(res: H.DriverResult, *, use_captured_meta: bool):
     rl = recovery_lineage(res.run_id, runs_dir=runs_dir, cwd=None, **meta_kw)
     dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None, **meta_kw)
     return diag, rl, dds
-
-
-def _repark_delivery_gate(meta_path: Path) -> None:
-    """Model the lifecycle's resume tail that restores a live delivery pause."""
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["status"] = "awaiting_commit_decision"
-    meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
 
 # ── (a)+(b) core→SDK consistency for every state ─────────────────────────────
@@ -603,7 +596,7 @@ def test_delivery_skip_roundtrip_transitions_consistently(fresh_base) -> None:
     refused = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert refused.blocker == "delivery_decision_requires_resume"
 
-    _repark_delivery_gate(res.run_dir / "meta.json")
+    H.repark_delivery_gate(res.run_dir / "meta.json")
     live_dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None)
     assert live_dds.decidable is True
 
@@ -747,7 +740,7 @@ def test_sdk_settle_matches_finalization_terminal_for_approved(fresh_base) -> No
         is False
     )
 
-    _repark_delivery_gate(meta_path)
+    H.repark_delivery_gate(meta_path)
     result = decide_delivery(sdk_res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True
     assert result.terminal_outcome == "done"
@@ -803,7 +796,7 @@ def test_sdk_refuses_rejected_release_leaving_finalization_terminal(
     # release guard can refuse shipping (still before ``_finalize``).
     stopped = decide_delivery(res.run_id, "approve", runs_dir=runs_dir, cwd=None)
     assert stopped.blocker == "delivery_decision_requires_resume"
-    _repark_delivery_gate(meta_path)
+    H.repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "approve", runs_dir=runs_dir, cwd=None)
     assert result.accepted is False
     assert result.blocker == "release_blocked"
@@ -839,7 +832,7 @@ def test_sdk_settle_halts_via_operator_halt_matching_reducer(fresh_base) -> None
     runs_dir = res.run_dir.parent
     meta_path = res.run_dir / "meta.json"
 
-    _repark_delivery_gate(meta_path)
+    H.repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "halt", runs_dir=runs_dir, cwd=None)
     assert result.terminal_outcome == "halted"
     settled = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -859,11 +852,12 @@ def test_sdk_settle_halts_via_operator_halt_matching_reducer(fresh_base) -> None
 
 
 # ── Lineage states (T3): real parent+child runs ──────────────────────────────
-# These two conditions need two sibling runs in one runs_dir, so they use the
-# T3 lineage drivers (parent + follow-up / from-run-plan child) rather than the
-# single-run state matrix above. Both were verified reachable by real mock runs
-# with NO production changes; the captured running parent-meta fed via the
-# ``source_meta`` seam is a real artifact, not a hand-authored dict.
+# These conditions need two sibling runs in one runs_dir, so they use the T3
+# lineage drivers (parent + follow-up / from-run-plan child) rather than the
+# single-run state matrix above. All were verified reachable by real mock runs
+# with NO production changes; the settled source meta, the captured running
+# parent-meta fed via the ``source_meta`` seam, and the finalized scheduled-gate
+# ledger are real artifacts, not hand-authored dicts.
 
 
 def test_superseded_by_child_consistency_and_drift(fresh_base) -> None:
@@ -915,31 +909,40 @@ def test_superseded_by_child_consistency_and_drift(fresh_base) -> None:
     assert is_terminal_resume_parent(res.child_meta) is False
 
 
+def _source_preflight(res: H.RecoverResult, intent: str):
+    """The canonical launch preflight's answer for the source, per intent."""
+    return preflight_continuation(
+        ContinuationRequest(run_id=res.source_run_id, intent=intent),
+        parent_run_dir=res.runs_dir / res.source_run_id,
+    ).resolution
+
+
 def test_recover_via_source_run_consistency_and_drift(fresh_base) -> None:
     """``recover_via_source_run`` — a terminal child whose source is resumable.
 
-    Consistency: the terminal ``from_run_plan`` child diagnoses as
-    ``recover_via_source_run`` when its source (parent) running-meta is supplied
-    via the ``source_meta`` supervisor seam; the attached recovery (and an
-    independent ``recovery_lineage`` call) name the source as the resume target
-    (``continuation_subject='source_run_checkpoint'``,
-    ``recommended_next_action='resume_source_run'``, ``source_run_id`` = parent).
+    Consistency: the terminal (operator-halted) ``from_run_plan`` child
+    diagnoses as ``recover_via_source_run`` from the settled on-disk artifacts;
+    the attached recovery (and an independent ``recovery_lineage`` call) name
+    the source as the resume target (``continuation_subject=
+    'source_run_checkpoint'``, ``recommended_next_action='resume_source_run'``,
+    ``source_run_id`` = parent).
 
-    DRIFT: independently of the SDK, the child meta IS a terminal-resume-parent
-    while the source running-meta is NOT — so the only forward motion is to
-    resume the live source, not the dead child. This fails if the SDK ever
-    pointed recovery at the terminal child itself, or treated the live source as
-    terminal.
+    DRIFT (single owner): the recommendation is exactly what the canonical
+    launch preflight accepts — ``resume_run`` would select ``resume_checkpoint``
+    for this source. Independently, the child meta IS a terminal-resume-parent
+    (not a clean success) while the settled source meta is NOT. This fails if
+    the SDK ever pointed recovery at the terminal child itself, or recommended a
+    source resume the preflight refuses.
+
+    Seam: the real running-meta captured mid-run, fed via ``source_meta``, is a
+    *live* source — preflight refuses a same-run resume of a running run, so
+    the seam must NOT route to ``resume_source_run``; with the source's plan
+    persisted it routes to a new ``from_run_plan`` run off the source instead.
     """
     res = H.drive_recover_via_source_run(fresh_base)
-    source_meta = {res.source_run_id: res.source_running_meta}
 
-    diag = run_diagnosis(
-        res.child_run_id, runs_dir=res.runs_dir, cwd=None, source_meta=source_meta,
-    )
-    rl = recovery_lineage(
-        res.child_run_id, runs_dir=res.runs_dir, cwd=None, source_meta=source_meta,
-    )
+    diag = run_diagnosis(res.child_run_id, runs_dir=res.runs_dir, cwd=None)
+    rl = recovery_lineage(res.child_run_id, runs_dir=res.runs_dir, cwd=None)
     dds = delivery_decision_state(res.child_run_id, runs_dir=res.runs_dir, cwd=None)
 
     assert diag.condition == "recover_via_source_run"
@@ -958,14 +961,90 @@ def test_recover_via_source_run_consistency_and_drift(fresh_base) -> None:
     )
     assert diag.recovery.source_run_id == rl.source_run_id == res.source_run_id
     assert diag.recommended_run_id == res.source_run_id
+    assert rl.source_resumable is True
     # A terminal dead-end child carries no live delivery gate of its own.
     assert dds.decidable is False
 
-    # DRIFT: independent terminality — dead child, live source.
+    # DRIFT: the launch preflight accepts exactly the recommended operation.
+    assert _source_preflight(res, "resume").operation == "resume_checkpoint"
+    # DRIFT: independent terminality — dead (not clean) child, stopped source.
     assert is_terminal_resume_parent(res.child_meta) is True
-    assert is_terminal_success(res.child_meta) is True
-    assert is_terminal_resume_parent(res.source_running_meta) is False
+    assert is_terminal_success(res.child_meta) is False
+    assert res.child_meta.get("halt_reason") == "commit_decision_halt"
+    assert is_terminal_resume_parent(res.source_meta) is False
+    assert res.source_meta.get("status") == "halted"
+
+    # Seam: a live running source is not a resume target.
+    live = {res.source_run_id: res.source_running_meta}
     assert res.source_running_meta.get("status") == "running"
+    seamed = run_diagnosis(
+        res.child_run_id, runs_dir=res.runs_dir, cwd=None, source_meta=live,
+    )
+    assert seamed.recommended_next_action != "resume_source_run"
+    assert seamed.condition == "recover_via_source_run"
+    assert seamed.continuation_subject == "plan_artifact"
+    assert seamed.recommended_next_action == "plan_artifact_continuation"
+    assert seamed.recommended_run_id == res.source_run_id
+    assert seamed.recovery is not None
+    assert seamed.recovery.source_resumable is False
+
+
+def test_recover_via_finalized_source_ledger_recommends_from_run_plan(
+    fresh_base,
+) -> None:
+    """``recover_via_source_run`` when the source's ledger is finalized.
+
+    The field shape: the source is a checkpoint-looking non-terminal stop with
+    a retained worktree and a persisted plan, but its ``scheduled_gate_ledger
+    .json`` was closed at ``run.end`` — the launch preflight refuses a same-run
+    resume ("same-run resume is blocked: parent has a finalized scheduled-gate
+    ledger"). Recommending "resume the source" would send the operator into
+    that refusal. The diagnosis and both recovery read-models must instead
+    route to a NEW run off the source's plan artifact
+    (``plan_artifact`` / ``plan_artifact_continuation`` with the SOURCE as
+    ``recommended_run_id``, i.e. ``from_run_plan=<source>``), and report the
+    source as not resumable.
+
+    DRIFT: independently of the SDK, the on-disk ledger IS finalized, the
+    ``resume`` preflight IS blocked on it, and the ``from_run_plan`` preflight
+    DOES select ``launch_from_run_plan`` — so the recommended operation is the
+    one preflight accepts and the refused one is never recommended.
+    """
+    res = H.drive_recover_via_source_run(fresh_base, finalize_source_ledger=True)
+
+    diag = run_diagnosis(res.child_run_id, runs_dir=res.runs_dir, cwd=None)
+    rl = recovery_lineage(res.child_run_id, runs_dir=res.runs_dir, cwd=None)
+
+    assert diag.condition == "recover_via_source_run"
+    assert diag.recovery is not None
+    assert (
+        diag.continuation_subject
+        == diag.recovery.continuation_subject
+        == rl.continuation_subject
+        == "plan_artifact"
+    )
+    assert (
+        diag.recommended_next_action
+        == diag.recovery.recommended_next_action
+        == rl.recommended_next_action
+        == "plan_artifact_continuation"
+    )
+    assert diag.recommended_run_id == rl.recommended_run_id == res.source_run_id
+    assert diag.source_run_id == rl.source_run_id == res.source_run_id
+    assert rl.source_resumable is False
+    assert rl.source_worktree_preserved is True
+    assert "finalized scheduled-gate ledger" in diag.reason
+    assert f"from_run_plan={res.source_run_id}" in diag.reason
+    assert diag.recovery.reason == rl.reason == diag.reason
+
+    # DRIFT: the durable facts behind the routing, read independently.
+    assert load_ledger(res.runs_dir / res.source_run_id).finalized is True
+    resume = _source_preflight(res, "resume")
+    assert resume.operation == "blocked"
+    assert "finalized scheduled-gate ledger" in (resume.blocker or "")
+    assert _source_preflight(res, "from_run_plan").operation == "launch_from_run_plan"
+    assert is_terminal_resume_parent(res.source_meta) is False
+    assert is_terminal_resume_parent(res.child_meta) is True
 
 
 # ── Cross-run parent supersede: the migrated site-B reducer (ADR 0115 slice 3b-1)
@@ -1344,7 +1423,7 @@ def test_eviction_sdk_delivery_settle_path(fresh_base) -> None:
     )
     meta_path.write_text(json.dumps(parked), encoding="utf-8")
 
-    _repark_delivery_gate(meta_path)
+    H.repark_delivery_gate(meta_path)
     result = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True
     assert result.terminal_outcome == "done"

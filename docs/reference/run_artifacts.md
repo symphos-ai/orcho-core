@@ -197,9 +197,18 @@ in-flight runs (the pipeline subprocess) and one out-of-band writer
   "session_mode_requested": "stateless",
   "timestamp": "2026-05-24T01:23:45.678901",
   "status": "running",
-  "phases": { }
+  "phases": { },
+  "versions": { "orcho-core": "0.9.1", "orcho-mcp": "0.8.3" }
 }
 ```
+
+`versions` maps every installed distribution whose name starts with
+`orcho` to its version, as seen by the interpreter that wrote the run.
+`orcho-core` is always present (`"0+unknown"` when the engine runs from an
+uninstalled source checkout); other entries appear only when that package
+is installed alongside the engine. Cross-project parent runs carry the
+same key. This is the only artifact-side record of which engine wrote the
+run — use it before attributing a behaviour to a release.
 
 ### Status field semantics
 
