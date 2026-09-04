@@ -13,6 +13,20 @@
 
 ### Fixed
 
+- The unsafe-process-polling guardrail no longer re-flags a command from the
+  stream records that merely echo it. Claude stream-json `system`
+  `task_started` / `task_notification` lines repeat an issued Bash command in
+  `description` / `summary`; the shared guard treated every line's raw text as
+  a command candidate, so one `pkill -f` produced extra `agent.guardrail`
+  warns and non-terminal `agent.command_stalled` events. A JSON record now
+  contributes only its structured tool-use commands (Claude `Bash`, Gemini
+  `run_shell_command`, and Codex `command_execution` `item.command`, which the
+  guard previously matched only through the raw JSON text); raw text is a
+  candidate only for non-JSON lines. The non-terminal `command_preview` keeps
+  the tail of an over-long command so a trailing poll stays visible, and
+  `elapsed_s` is documented as time since the agent subprocess spawned, not
+  the command's own runtime.
+
 - `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source
   run that the launch preflight would refuse. A terminal recovery child whose
   source had a finalized `scheduled_gate_ledger.json` (written at every
