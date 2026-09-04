@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `meta.json` records `versions`: every installed distribution whose name
+  starts with `orcho`, mapped to its version, as seen by the interpreter that
+  wrote the run (`orcho-core` always present). Until now a run artifact
+  carried no record of which engine produced it, so a behaviour observed in a
+  run could not be matched to a release. Cross-project parent runs carry the
+  same key; golden session snapshots mask its value.
+
 ### Fixed
 
 - `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source

@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.infra.versions import installed_orcho_versions
 from core.observability import events as _events
 from pipeline.cross_project.checkpoint import read_cross_checkpoint
 from pipeline.cross_project.profile_setup import CrossProfileSetup, _gate_will_run
@@ -136,7 +137,8 @@ def setup_cross_run(
         "projected_profile": projected_profile_name,
         "timestamp": datetime.now().isoformat(),
         "status": "running",
-        "phases": {}
+        "phases": {},
+        "versions": installed_orcho_versions(),
     }
     if resume_mode:
         session["resume_mode"] = resume_mode

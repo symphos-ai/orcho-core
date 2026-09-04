@@ -209,3 +209,41 @@ def test_read_plan_file_warns_and_regenerates_when_file_unreadable(
     out = capsys.readouterr().out
     assert "regenerating the plan" in out
     assert "failed" in out
+
+
+def test_setup_cross_run_records_installed_orcho_versions(
+    tmp_path, monkeypatch,
+) -> None:
+    from pipeline.cross_project import run_setup
+
+    monkeypatch.setattr(
+        run_setup, "installed_orcho_versions", lambda: {"orcho-core": "1.2.3"},
+    )
+    run_dir = tmp_path / "runs" / "20260623_090354"
+    core = tmp_path / "orcho-core"
+    core.mkdir()
+    profile_setup = SimpleNamespace(
+        requested_profile=SimpleNamespace(name="feature"),
+        projected_profile_name="feature#project",
+    )
+
+    setup_cross_run(
+        task="cross run stamped with versions",
+        projects={"core": core},
+        model="fake-model",
+        mock=True,
+        output_dir=run_dir,
+        cross_mode="full",
+        resume_from=None,
+        resume_mode=None,
+        followup_parent_run_id=None,
+        followup_parent_run_dir=None,
+        followup_parent_status=None,
+        followup_base_task=None,
+        resumed_meta=None,
+        profile_setup=profile_setup,
+        terminal=False,
+    )
+
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["versions"] == {"orcho-core": "1.2.3"}
