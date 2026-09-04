@@ -4,6 +4,17 @@
 
 ### Added
 
+- `orcho update` upgrades the CLI through the package manager that installed
+  it. Orcho ships as an ordinary Python distribution, so the correct upgrade
+  command depends on the installer that owns the environment; the command
+  resolves that from on-disk evidence (pipx venv metadata, a `uv tool`
+  receipt, virtualenv layout, PEP 610 `direct_url.json`) and delegates.
+  A pip install is upgraded with its own interpreter, never with whatever
+  `python` is first on `PATH`. Source checkouts, editable installs, a missing
+  manager binary, and installs built from a local path rather than an index
+  are reported with the command rather than upgraded, because upgrading would
+  discard or fight the code actually running. `--dry-run` reports only.
+
 - `meta.json` records `versions`: every installed distribution whose name
   starts with `orcho`, mapped to its version, as seen by the interpreter that
   wrote the run (`orcho-core` always present). Until now a run artifact

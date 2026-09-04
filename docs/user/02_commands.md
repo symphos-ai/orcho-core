@@ -45,6 +45,7 @@ the full argparse dump for every subcommand.
 | `orcho workspace init` | Connect a project or initialise a shared workspace; interactive terminals may offer starter project plugin-configs |
 | `orcho workspace mcp` | Print the complete read-only MCP client setup for a resolved workspace |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
+| `orcho update` | Upgrade Orcho via the manager that installed it |
 
 ---
 
@@ -476,3 +477,41 @@ orcho prompts tasks/plan --verbose
 Inspect and safely apply known repairs to run state (for example after
 an interrupted process). Read `orcho repair-state --help` before using
 it; repairs are explicit and listed, never guessed.
+
+---
+
+## `orcho update` — upgrade the installed CLI
+
+Orcho ships as an ordinary Python distribution, so the correct upgrade command
+depends on which installer owns the environment the CLI runs from. `orcho
+update` resolves that ownership from on-disk evidence and delegates to the
+detected manager.
+
+```bash
+orcho update            # detect the install, then upgrade through its manager
+orcho update --dry-run  # report the install and the command, change nothing
+```
+
+| Detected install | Upgrade command |
+|---|---|
+| pipx venv | `pipx upgrade <package>` |
+| `uv tool` venv | `uv tool upgrade <package>` |
+| virtualenv or system pip | `<that venv's python> -m pip install --upgrade <package>` |
+
+A pip install is always upgraded with its **own** interpreter, never with
+whatever `python` happens to be first on `PATH`.
+
+Three cases are reported instead of upgraded, because upgrading would be the
+wrong action:
+
+- **Source checkout** — no installed distribution owns the running code; update
+  the checkout itself.
+- **Editable install** (`pip install -e`) — the checkout is the upgrade unit, so
+  a package-manager upgrade would fight it.
+- **Locally built install** — the environment was built from a local path rather
+  than a package index, so an upgrade would silently replace that code with the
+  published release. The command is printed so you can do it deliberately.
+
+A missing manager binary is also reported rather than run. In every reported
+case the command is printed and the exit code is `0`: the report is the
+deliverable.

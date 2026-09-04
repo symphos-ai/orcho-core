@@ -20,6 +20,7 @@ Subcommands:
   orcho cost    — cost-reference usage report
   orcho pricing — Show / refresh pricing table
   orcho prompts — Show prompt resolution chain
+  orcho update  — Upgrade Orcho via its install manager
 """
 from __future__ import annotations
 
@@ -88,6 +89,7 @@ from cli._quality_gates import cmd_quality_gates
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
+from cli._update_cli import cmd_update
 from cli._workspace_mcp import format_workspace_mcp_setup
 from core.infra import config
 from core.infra.demo_assets import (
@@ -1375,6 +1377,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
     )
     p_repair.set_defaults(func=cmd_repair_state)
+
+    # ── update ────────────────────────────────────────────────────────────────
+    p_update = sub.add_parser(
+        "update",
+        help="Upgrade Orcho with the package manager that installed it",
+        description=(
+            "Resolve how this Orcho CLI was installed (pipx, uv tool, pip in a "
+            "virtual environment, plain pip, editable install, or a source "
+            "checkout), print that provenance, and run the matching upgrade "
+            "command. Orcho delegates to the detected manager and never "
+            "reimplements it. When upgrading would be the wrong action — an "
+            "editable install, a source checkout, a missing manager binary, or "
+            "an install built from a local path rather than a package index — "
+            "the command is printed instead of run."
+        ),
+    )
+    p_update.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Report the detected install and upgrade command without running it",
+    )
+    p_update.set_defaults(func=cmd_update)
 
     # ── diff ──────────────────────────────────────────────────────────────────
     p_diff = sub.add_parser(
