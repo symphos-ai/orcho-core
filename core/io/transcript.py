@@ -129,8 +129,9 @@ def render_run_header(
     agents: Iterable[Mapping[str, str]],
     profile: str,
     session_mode: str,
-    rounds: int,
+    repair_rounds: int,
     plan: bool,
+    plan_rounds: int | None = None,
     output_log: str | None = None,
     events_log: str | None = None,
     plugin_line: str | None = None,
@@ -152,9 +153,20 @@ def render_run_header(
     each optionally carrying a sanitized ``account`` diagnostic hint
     (``account=<label> / <email>``) rendered after the effort column.
     The block keeps every field the legacy header carried — model names,
-    effort levels, profile, session mode, max rounds, plan toggle,
+    effort levels, profile, session mode, retry budgets, plan toggle,
     plugin line, resume notice, output / event log paths — but lays
     them out as a scannable table instead of a single dense line.
+
+    The two retry budgets are separate and are labelled as such.
+    ``repair_rounds`` is the implement/review/repair cap the caller set
+    per run (``--max-rounds`` / ``max_rounds``). ``plan_rounds`` is the
+    plan/validate_plan budget declared by the active profile's plan
+    ``LoopStep.max_rounds``; it is not settable per run (ADR 0031
+    rejected global round overrides). Rendering a single unlabelled
+    ``rounds=`` next to ``plan=`` made operators read the repair cap as
+    the planning budget. Pass ``plan_rounds=None`` when the profile is
+    unresolved — the plan budget is then simply omitted rather than
+    guessed.
 
     ``parent_run_id`` + ``project_alias`` mark sub-pipeline runs spawned
     by ``orcho cross``. When set, the title carries a "sub-pipeline
@@ -267,6 +279,11 @@ def render_run_header(
     # they don't go hunting for an error.
     if plan:
         plan_label = "yes"
+        # Name the plan budget on the plan row itself so it can't be
+        # confused with the repair cap next to it.
+        if plan_rounds is not None:
+            unit = "round" if plan_rounds == 1 else "rounds"
+            plan_label = f"yes  ({plan_rounds} {unit})"
     elif is_subpipeline:
         plan_label = "skip  (cross-plan already supplied)"
     elif profile in ("task", "review"):
@@ -276,7 +293,7 @@ def render_run_header(
     parts.append(
         _kv(
             "session",
-            f"{session_mode}  rounds={rounds}  plan={plan_label}",
+            f"{session_mode}  plan={plan_label}  repair_rounds={repair_rounds}",
             C.CYAN, indent=2,
         )
     )

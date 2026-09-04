@@ -24,6 +24,19 @@
 
 ### Fixed
 
+- The run header no longer reports the repair budget as if it were the
+  planning budget. The State line rendered a bare `rounds=<max_rounds>`
+  immediately next to `plan=yes`, so an operator who passed `--max-rounds 4`
+  read the planning budget as 4 and was then surprised when the run paused at
+  `validate_plan automatic round 2/2`. `--max-rounds` caps only the
+  implement/review/repair loop; the plan/validate_plan budget is the active
+  profile's plan `LoopStep.max_rounds` and has no per-run override (ADR 0031
+  rejected global round overrides). The line now names both budgets and reads
+  `plan=yes  (2 rounds)  repair_rounds=4`, with the plan budget read off the
+  resolved profile through the existing `find_plan_loop` owner and omitted
+  entirely when the profile is unresolved. Behaviour is unchanged — this was
+  a labelling defect, not a scheduling one.
+
 - The unsafe-process-polling guardrail no longer re-flags a command from the
   stream records that merely echo it. Claude stream-json `system`
   `task_started` / `task_notification` lines repeat an issued Bash command in

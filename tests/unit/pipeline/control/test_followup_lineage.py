@@ -153,7 +153,7 @@ class TestFollowupHeaderRender:
         hdr = render_run_header(
             run_id="20260102_000000",
             project="/p", task="t", agents=[], profile="advanced",
-            session_mode="auto", rounds=1, plan=True,
+            session_mode="auto", repair_rounds=1, plan=True,
             followup_parent_run_id="20260101_000000",
             followup_parent_status="awaiting_phase_handoff",
             followup_child_status="interrupted",
@@ -173,7 +173,7 @@ class TestFollowupHeaderRender:
     def test_non_followup_has_no_lineage_rows(self) -> None:
         hdr = render_run_header(
             run_id="r", project="/p", task="t", agents=[],
-            profile="advanced", session_mode="auto", rounds=1, plan=True,
+            profile="advanced", session_mode="auto", repair_rounds=1, plan=True,
         )
         assert "Parent status" not in hdr
         assert "Active handoff" not in hdr
