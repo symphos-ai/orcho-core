@@ -46,6 +46,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Maintenance", [
         ("command", "run long agent commands with duplicate admission"),
         ("repair-state", "inspect and safely apply known run-state repairs"),
+        ("update", "upgrade Orcho via the manager that installed it"),
     ]),
     # NOTE: the ``tui`` and ``web`` interface commands are intentionally
     # omitted from the advertised listing until their packages ship on PyPI —
