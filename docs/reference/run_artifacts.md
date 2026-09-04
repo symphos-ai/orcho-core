@@ -238,6 +238,21 @@ the wire for runs spawned via MCP; raw `meta.status` does not.
 The ceiling writes canonical `halt_reason="startup_stalled"` and
 `meta.halt={phase:"startup",cause,budget_s,elapsed_s,command}`.
 
+`armed_at` is the start of the **current idle window**, not necessarily the
+moment of `run.start`. The watchdog's ambient progress signals are growth of
+`events.jsonl` and `output.log`; setup work that produces neither is reported
+to the watchdog explicitly as a heartbeat. Today the only heartbeat source is
+worktree bootstrap: each completed step and the successful bootstrap as a
+whole rewrite the artifact with a fresh `armed_at` and re-snapshotted
+baselines, so a dependency install longer than `startup_stall_seconds` is
+not retro-halted at the next checkpoint. The watchdog stays armed across a
+heartbeat: a hang after bootstrap and before the first `phase.start` still
+halts, and `halt.elapsed_s` then measures the idle window since the last
+heartbeat. A recorded service-command timeout is not cleared by a heartbeat.
+Out-of-process diagnosis (`orcho_run_diagnose`) classifies a `running` run
+from the same artifact, so it measures idleness from the refreshed
+`armed_at` as well.
+
 Stamped on every terminal status except `done` and (for now)
 `awaiting_*` states. Canonical values that the SDK + parsers
 recognise:

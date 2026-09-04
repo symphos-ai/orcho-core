@@ -655,21 +655,20 @@ def _apply_worktree_bootstrap(
         WorktreeBootstrapError,
         run_worktree_bootstrap,
     )
+    from pipeline.project.startup_watchdog import heartbeat_startup_watchdog
+
+    reporter = (
+        _WorktreeBootstrapReporter(clock=time.monotonic)
+        if presentation is PresentationPolicy.TERMINAL
+        else None
+    )
     try:
-        if presentation is PresentationPolicy.TERMINAL:
-            reporter = _WorktreeBootstrapReporter(clock=time.monotonic)
-            bootstrap_result = run_worktree_bootstrap(
-                config,
-                source_root=git_root,
-                worktree_path=worktree_ctx.path,
-                on_step=reporter.on_step,
-            )
-        else:
-            bootstrap_result = run_worktree_bootstrap(
-                config,
-                source_root=git_root,
-                worktree_path=worktree_ctx.path,
-            )
+        bootstrap_result = run_worktree_bootstrap(
+            config,
+            source_root=git_root,
+            worktree_path=worktree_ctx.path,
+            on_step=_bootstrap_step_observer(reporter, heartbeat_startup_watchdog),
+        )
     except WorktreeBootstrapError as exc:
         failure = _persist_bootstrap_failure(output_dir, exc)
         session["worktree_bootstrap"] = {
@@ -687,10 +686,34 @@ def _apply_worktree_bootstrap(
             print_error(line)
         sys.exit(2)
     if bootstrap_result.get("status") != "skipped":
-        if presentation is PresentationPolicy.TERMINAL:
+        if reporter is not None:
             reporter.finish()
+        # Bootstrap steps write neither an event nor output.log, so the
+        # startup watchdog cannot see them as progress. Report the completed
+        # work before the next checkpoint measures the idle window.
+        heartbeat_startup_watchdog()
         session["worktree_bootstrap"] = bootstrap_result
         _save_session_quietly(output_dir, session)
+
+
+def _bootstrap_step_observer(
+    reporter: _WorktreeBootstrapReporter | None,
+    heartbeat: Callable[[], None],
+) -> Callable[[str, int, str, Mapping[str, Any]], None]:
+    """Forward step callbacks to the terminal reporter and the startup watchdog.
+
+    Each completed step is progress the watchdog cannot otherwise observe; a
+    heartbeat per step keeps the durable ``startup_command.json`` window
+    honest for out-of-process diagnosis while a multi-step bootstrap runs.
+    """
+
+    def on_step(stage: str, index: int, action: str, payload: Mapping[str, Any]) -> None:
+        if reporter is not None:
+            reporter.on_step(stage, index, action, payload)
+        if stage == "complete":
+            heartbeat()
+
+    return on_step
 
 
 #: Run-dir home for bootstrap step evidence, sibling to the verification

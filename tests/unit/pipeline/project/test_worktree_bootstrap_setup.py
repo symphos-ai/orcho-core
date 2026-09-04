@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -47,6 +49,10 @@ def _setup_isolation_kwargs(
         "worktree_bootstrap_config": None,
         "presentation": presentation,
     }
+
+
+def _iso(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _init_repo_with_ignored_libs(path: Path) -> None:
@@ -212,15 +218,24 @@ def test_bootstrap_terminal_renders_step_and_total_elapsed(
     assert "Worktree bootstrap complete (2.50s)" in output
 
 
-def test_bootstrap_silent_is_quiet_and_does_not_pass_reporter(
+def test_bootstrap_silent_is_quiet_even_when_steps_report(
     tmp_path: Path, capsys,
 ) -> None:
+    """SILENT still receives the step callback (it feeds the startup watchdog)
+    but must not render anything for it."""
     session = {}
     worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
-    engine = Mock(return_value={"status": "ok", "steps": []})
+    record = {"index": 1, "action": "copy", "status": "ok"}
+    seen: dict[str, object] = {}
+
+    def bootstrap(*args, on_step, **kwargs):
+        seen.update(kwargs)
+        on_step("start", 1, "copy", {"copy": "libs"})
+        on_step("complete", 1, "copy", record)
+        return {"status": "ok", "steps": [record]}
 
     with patch(
-        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", engine,
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
     ):
         _apply_worktree_bootstrap(
             config=[{"copy": "libs"}],
@@ -231,13 +246,65 @@ def test_bootstrap_silent_is_quiet_and_does_not_pass_reporter(
             presentation=PresentationPolicy.SILENT,
         )
 
-    assert engine.call_args.kwargs == {
-        "source_root": tmp_path,
-        "worktree_path": tmp_path,
-    }
+    assert seen == {"source_root": tmp_path, "worktree_path": tmp_path}
+    assert session["worktree_bootstrap"]["status"] == "ok"
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def test_bootstrap_longer_than_the_startup_budget_is_not_retro_halted(
+    tmp_path: Path,
+) -> None:
+    """A successful bootstrap emits no event and writes no output.log, so the
+    startup watchdog's ambient progress check cannot see it. The bootstrap
+    path must report its own progress: after a bootstrap that outlives the
+    budget, the next checkpoint keeps the run alive and the durable window in
+    ``startup_command.json`` is refreshed, while the watchdog stays armed for
+    a later hang before the first phase."""
+    from pipeline.project.startup_watchdog import startup_watchdog_scope
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = {"status": "running", "phases": {}}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+    step_beats: list[str] = []
+
+    def bootstrap(*args, on_step, **kwargs):
+        for index in (1, 2):
+            on_step("start", index, "run", {"run": ["npm", "ci"]})
+            time.sleep(0.02)
+            on_step("complete", index, "run", {"index": index, "action": "run", "status": "ok"})
+            step_beats.append(json.loads((run_dir / "startup_command.json").read_text())["armed_at"])
+        return {"status": "ok", "steps": []}
+
+    with startup_watchdog_scope(run_dir) as watchdog, patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
+    ):
+        watchdog.budget_s = 0.01
+        watchdog.arm()
+        armed_at = json.loads((run_dir / "startup_command.json").read_text())["armed_at"]
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npm", "ci"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.SILENT,
+        )
+        assert watchdog.checkpoint(session) is False
+        assert watchdog.armed is True and watchdog.disarmed is False
+        refreshed = json.loads((run_dir / "startup_command.json").read_text())
+        assert (
+            _iso(refreshed["armed_at"]) > _iso(step_beats[-1]) > _iso(step_beats[0]) > _iso(armed_at)
+        )
+        assert refreshed["budget_s"] == 0.01
+
+        time.sleep(0.02)
+        assert watchdog.checkpoint(session) is True
+
+    assert session["worktree_bootstrap"]["status"] == "ok"
+    assert session["halt_reason"] == "startup_stalled"
 
 
 def test_pre_run_dirty_halt_silent_is_quiet_and_clears_stale_phase_handoff(
