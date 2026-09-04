@@ -51,6 +51,19 @@
   entirely when the profile is unresolved. Behaviour is unchanged — this was
   a labelling defect, not a scheduling one.
 
+- Resuming a run no longer discards the operator's `max_rounds` budget. A run
+  started with `max_rounds=4` reached its first subprocess correctly, but the
+  resume argv carried no `--max-rounds`, so the orchestrator's argparse default
+  of 1 applied: the repair loop silently shrank to a single round, and the
+  shrunken value was then written back over the run's persisted
+  `checkpoints.db` `run_meta.config_json`, destroying the record of what was
+  originally requested. `resume_run` now reads the budget back from that store
+  and re-emits the flag, alongside the `mock` / `output_mode` / profile values
+  a resume already inherited. A run with nothing persisted still omits the flag
+  and keeps the previous behaviour. `pipeline.checkpoint.read_run_config` is
+  the read-only probe behind this: it never creates a checkpoint store, so a
+  launcher cannot fabricate one for a run that never wrote one.
+
 - The unsafe-process-polling guardrail no longer re-flags a command from the
   stream records that merely echo it. Claude stream-json `system`
   `task_started` / `task_notification` lines repeat an issued Bash command in
