@@ -21,11 +21,15 @@ branch leans on a single existing owner:
 - ``superseded_by_child`` / ``active_child_run`` —
   :func:`pipeline.control.resume_context.detect_active_followup_child`;
 - ``blocked_worktree`` — the persisted ``meta['worktree']['followup_continuity']``
-  block read via :func:`sdk.run_control.recovery_lineage._worktree_continuity`;
+  block read via :func:`sdk.run_control.recovery_source._worktree_continuity`;
 - terminality (``resume_inert_terminal`` / ``closed_by_followup``) —
   :func:`~pipeline.control.resume_context.is_terminal_resume_parent`;
 - the continuation subject / recovery lineage —
-  :func:`sdk.run_control.recovery_lineage._resolve_continuation`;
+  :func:`sdk.run_control.recovery_lineage._resolve_continuation` (whose source
+  facts come from the canonical launch preflight via
+  :mod:`sdk.run_control.recovery_source`, so ``recover_via_source_run`` never
+  recommends an operation ``resume_run`` / ``launch_from_run_plan`` would
+  refuse);
 - a resumable non-terminal stop — ``RESUMABLE_TERMINAL_STATUSES`` from
   :mod:`pipeline.run_state.status_vocab`.
 
@@ -79,7 +83,7 @@ from sdk.run_control.recovery_lineage import (
     ACTION_DELIVERY_DECISION as ACTION_DELIVERY_DECISION,
     ACTION_PLAN_ARTIFACT_CONTINUATION as ACTION_PLAN_ARTIFACT_CONTINUATION,
     ACTION_RESUME_ACTIVE_CHILD,
-    ACTION_RESUME_SOURCE_RUN,
+    ACTION_RESUME_SOURCE_RUN,  # noqa: F401 - public diagnosis vocabulary re-export
     ACTION_START_FOLLOWUP,
     ACTION_STOP_UNKNOWN as ACTION_STOP_UNKNOWN,
     SUBJECT_ACTIVE_CHILD_RUN,
@@ -87,18 +91,18 @@ from sdk.run_control.recovery_lineage import (
     SUBJECT_NONE,
     SUBJECT_PLAN_ARTIFACT,  # noqa: F401 - public diagnosis vocabulary re-export
     SUBJECT_RETAINED_CHANGE,
-    SUBJECT_SOURCE_RUN_CHECKPOINT,
+    SUBJECT_SOURCE_RUN_CHECKPOINT,  # noqa: F401 - public diagnosis vocabulary re-export
     SUBJECT_UNKNOWN,
     _build_recovery_lineage,
     _Continuation,
-    _optional_str,
+    _continues_via_source,
     _resolve_continuation,
-    _worktree_continuity,
 )
 from sdk.run_control.recovery_lineage_resolve import (
     _strict_load_meta,
     _unreadable_meta_lineage,
 )
+from sdk.run_control.recovery_source import _optional_str, _worktree_continuity
 from sdk.run_control.types import RecoveryLineage, RunDiagnosis
 from sdk.runs import _CWD_DEFAULT, find_run
 
@@ -476,21 +480,24 @@ def _classify(
         source_meta=source_meta,
     )
 
-    # (5) recover_via_source_run — resume the source checkpoint, not this run.
-    if cont.subject == SUBJECT_SOURCE_RUN_CHECKPOINT:
+    # (5) recover_via_source_run — continue via the source, not this run:
+    # resume the source's checkpoint (``resume_source_run``) when preflight
+    # accepts it, else start a new run off the source's launchable plan
+    # artifact (``plan_artifact_continuation`` with the source as the
+    # recommended ``from_run_plan`` parent).
+    if _continues_via_source(cont):
         return RunDiagnosis(
             run_id=run_id,
             condition=CONDITION_RECOVER_VIA_SOURCE_RUN,
             reason=(
                 f"run is a terminal/rejected dead-end (status={status}"
                 + (f", halt_reason={halt_reason}" if halt_reason else "")
-                + f"); source run {cont.recommended_run_id} is resumable — "
-                "resume it"
+                + f"); {cont.reason}"
             ),
             status=status,
             halt_reason=halt_reason,
-            continuation_subject=SUBJECT_SOURCE_RUN_CHECKPOINT,
-            recommended_next_action=ACTION_RESUME_SOURCE_RUN,
+            continuation_subject=cont.subject,
+            recommended_next_action=cont.action,
             recommended_run_id=cont.recommended_run_id,
             source_run_id=cont.source_run_id,
         )

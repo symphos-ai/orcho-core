@@ -356,9 +356,14 @@ class RecoveryLineage:
     2. a parked delivery / correction gate → ``delivery_gate`` /
        ``delivery_decision``;
     3. a terminal-or-rejected run → ``source_run_checkpoint`` /
-       ``resume_source_run``, ``plan_artifact`` /
-       ``plan_artifact_continuation``, ``none`` / ``start_followup``
-       (clean terminal success), or ``unknown`` / ``stop_unknown``;
+       ``resume_source_run`` (the source's checkpoint resume passes the
+       canonical launch preflight), ``plan_artifact`` /
+       ``plan_artifact_continuation`` (this run's own persisted plan, or —
+       when ``recommended_run_id`` names the source — the source's plan
+       artifact, because preflight refuses to resume the source in place but
+       accepts a fresh ``from_run_plan`` launch off it), ``none`` /
+       ``start_followup`` (clean terminal success), or ``unknown`` /
+       ``stop_unknown``;
     4. / 5. a non-terminal stop → ``none`` / ``None`` with the source and
        plan facts still enriched.
 
@@ -420,8 +425,13 @@ class RunDiagnosis:
     ``available_actions`` for a pending decision, ``delivery_gate_kind`` for a
     parked delivery / correction gate, ``recommended_run_id`` / ``source_run_id``
     for a lineage redirect, and ``blocked`` / ``block_message`` for a blocked
-    follow-up worktree. ``reason`` is one line assembled from persisted facts,
-    never parsed from log prose.
+    follow-up worktree. Under ``recover_via_source_run`` the
+    ``recommended_next_action`` says which via-source operation the launch
+    preflight accepts: ``resume_source_run`` (resume the source's checkpoint)
+    or ``plan_artifact_continuation`` (start a new run with
+    ``from_run_plan=recommended_run_id``, because the source cannot be resumed
+    in place). ``reason`` is one line assembled from persisted facts, never
+    parsed from log prose.
 
     ``recovery`` additively attaches the full :class:`RecoveryLineage`
     read-model (ADR 0114): the same composition, projected as the typed

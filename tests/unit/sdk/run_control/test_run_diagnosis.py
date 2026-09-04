@@ -180,6 +180,31 @@ def test_startup_recent_or_progressing_run_stays_active(tmp_path: Path) -> None:
     assert _diag(runs, "output").condition == diag.CONDITION_ACTIVE
 
 
+def test_startup_window_refreshed_by_a_heartbeat_classifies_from_armed_at(tmp_path: Path) -> None:
+    """A worktree bootstrap heartbeat rewrites ``startup_command.json`` with a
+    fresh ``armed_at`` and the same event/output baselines. Diagnosis must
+    measure idleness from that refreshed window, not from the old
+    ``run.start`` event: a long bootstrap that just finished is active, and
+    only a window that expired again with no growth is stalled."""
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "fresh", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "output.log": "",
+        "startup_command.json": _startup_artifact(age_s=5, event_size=len(event.encode())),
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=600),
+    })
+    _mk(runs, "expired", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "output.log": "",
+        "startup_command.json": _startup_artifact(age_s=130, event_size=len(event.encode())),
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=600),
+    })
+
+    assert _diag(runs, "fresh").condition == diag.CONDITION_ACTIVE
+    expired = _diag(runs, "expired")
+    assert expired.condition == diag.CONDITION_STALLED
+    assert "startup has been idle for 13" in expired.reason
+
+
 def test_live_healthy_recent_launch_and_fresh_progress_stay_active(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     now = datetime.now(UTC).isoformat()
@@ -339,14 +364,14 @@ def test_recover_via_source_run(tmp_path: Path) -> None:
 
 
 def test_recover_via_source_run_respects_injected_source_facts(tmp_path: Path) -> None:
-    # The source's on-disk meta is stale (``running`` + retained worktree → it
-    # would read as resumable), but the embedder's supervisor-merge has already
-    # settled it to a clean terminal ``done``. Feeding that resolved meta via
-    # ``source_meta`` must suppress the blind ``recover_via_source_run`` — the
-    # source is terminal, so the child is a dead-end stop, not a redirect.
+    # The source's on-disk meta is stale (``failed`` + retained worktree → it
+    # reads as a resumable checkpoint), but the embedder's supervisor-merge has
+    # already settled it to a clean terminal ``done``. Feeding that resolved meta
+    # via ``source_meta`` must suppress the blind ``recover_via_source_run`` —
+    # the source is terminal, so the child is a dead-end stop, not a redirect.
     runs = tmp_path / "runs"
     _mk(runs, "parent", {
-        "status": "running",
+        "status": "failed",
         "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
         "project": "/x",
     })
@@ -370,6 +395,77 @@ def test_recover_via_source_run_respects_injected_source_facts(tmp_path: Path) -
     assert resolved.continuation_subject == diag.SUBJECT_UNKNOWN
     assert resolved.recommended_next_action == diag.ACTION_STOP_UNKNOWN
     assert diag._MISSING_SOURCE in resolved.missing_facts
+
+
+def _finalize_ledger(runs_dir: Path, run_id: str) -> None:
+    """The finalized scheduled-gate ledger finalization leaves at run.end."""
+    from pipeline.verification_ledger_store import ScheduledGateLedger, write_ledger
+
+    write_ledger(runs_dir / run_id, ScheduledGateLedger(rows=(), finalized=True))
+
+
+def test_recover_via_source_run_finalized_ledger_recommends_from_run_plan(
+    tmp_path: Path,
+) -> None:
+    # Field shape: the source is a non-terminal stop with a retained worktree
+    # and a persisted plan, but its scheduled-gate ledger was finalized at
+    # run.end — the canonical launch preflight refuses a same-run resume of it.
+    # The diagnosis must not tell the operator to resume it; the via-source
+    # recovery is a NEW run from the source's plan artifact.
+    runs = tmp_path / "runs"
+    _mk(
+        runs, "parent",
+        {
+            "status": "halted", "halt_reason": "plan rejected before implement",
+            "plan_source": "local", "profile": "feature",
+            "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+            "project": "/x",
+        },
+        files={"parsed_plan.json": "{}"},
+    )
+    _finalize_ledger(runs, "parent")
+    _mk(runs, "child", {
+        "status": "halted", "halt_reason": "phase_handoff_halt",
+        "parent_run_id": "parent", "plan_source": "run",
+        "plan_source_run_id": "parent", "profile": "feature", "project": "/x",
+        "worktree": {"isolation": "per_run", "path": "/tmp/wt-child"},
+    })
+    d = _diag(runs, "child")
+    assert d.condition == diag.CONDITION_RECOVER_VIA_SOURCE_RUN
+    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recommended_run_id == "parent"
+    assert d.source_run_id == "parent"
+    assert "finalized scheduled-gate ledger" in d.reason
+    assert "from_run_plan=parent" in d.reason
+    # The attached recovery agrees field-for-field.
+    assert d.recovery is not None
+    assert d.recovery.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recovery.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recovery.recommended_run_id == "parent"
+    assert d.recovery.source_resumable is False
+    assert d.recovery.reason == d.reason
+
+
+def test_running_source_is_never_a_resume_target(tmp_path: Path) -> None:
+    # A live source is refused by the launch preflight, so the terminal child
+    # is a dead-end stop (unknown, missing a resumable source) — never
+    # ``recover_via_source_run`` pointing at a run that cannot be resumed.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", {
+        "status": "running",
+        "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+        "project": "/x",
+    })
+    _mk(runs, "child", {
+        "status": "halted", "halt_reason": "final_acceptance_rejected",
+        "parent_run_id": "parent", "project": "/x",
+    })
+    d = _diag(runs, "child")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_UNKNOWN
+    assert d.recommended_next_action == diag.ACTION_STOP_UNKNOWN
+    assert diag._MISSING_SOURCE in d.missing_facts
 
 
 def test_closed_by_followup(tmp_path: Path) -> None:
@@ -579,6 +675,22 @@ def _scenarios(runs: Path) -> list[tuple[str, str, str | None]]:
         "parent_run_id": "src", "project": "/x",
     })
     table.append(("viasrc", "recover_via_source_run", "source_run_checkpoint"))
+
+    _mk(
+        runs, "srcplan",
+        {
+            "status": "failed", "plan_source": "local", "profile": "feature",
+            "worktree": {"isolation": "per_run", "path": "/tmp/wt-srcplan"},
+            "project": "/x",
+        },
+        files={"parsed_plan.json": "{}"},
+    )
+    _finalize_ledger(runs, "srcplan")
+    _mk(runs, "viaplan", {
+        "status": "halted", "halt_reason": "final_acceptance_rejected",
+        "parent_run_id": "srcplan", "project": "/x",
+    })
+    table.append(("viaplan", "recover_via_source_run", "plan_artifact"))
 
     _mk(runs, "closed", {
         "status": "done",

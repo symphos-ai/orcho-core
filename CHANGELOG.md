@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source
+  run that the launch preflight would refuse. A terminal recovery child whose
+  source had a finalized `scheduled_gate_ledger.json` (written at every
+  runner-side `run.end`) was diagnosed `recover_via_source_run` / "resume the
+  source", and `orcho run resume` then rejected exactly that with "same-run
+  resume is blocked: parent has a finalized scheduled-gate ledger". Source
+  resumability is now the canonical `preflight_continuation` answer (a
+  paused or live source is refused the same way); when the source cannot be
+  resumed in place but preflight accepts a `from_run_plan` launch off its
+  persisted plan, the diagnosis recommends `plan_artifact_continuation` with
+  the source as `recommended_run_id` — the exit operators were already using
+  by hand. Source-candidate facts moved to `sdk/run_control/recovery_source.py`.
 - A plan (or any assistant reply) larger than the 96 KiB per-line model
   output cap no longer halts the run with `plan rejected before implement:
   raw JSON parse failed: Extra data: line 2 column 1`. The stdout line cap

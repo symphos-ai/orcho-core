@@ -11,13 +11,19 @@ sub-700-line read-model rather than one God classifier.
 Discipline matches the diagnosis half: it **never re-derives** terminal /
 resumable logic. The single owners it leans on:
 
-- terminality of a candidate source — :func:`is_terminal_resume_parent`
+- terminality of the inspected run — :func:`is_terminal_resume_parent`
   and :func:`is_terminal_success` from
   :mod:`pipeline.control.resume_context`;
+- continuation facts of a candidate *source* run — the canonical launch
+  preflight, asked through :mod:`sdk.run_control.recovery_source` (a source is
+  ``resumable`` only when the same preflight ``resume_run`` runs would accept a
+  same-run checkpoint resume, and ``plan_launchable`` only when
+  ``launch_from_run_plan`` would accept a fresh launch off its plan artifact);
 - worktree continuity — the persisted
   ``meta['worktree']['followup_continuity']`` block (the exact shape
   ``pipeline/project/isolation_setup.py`` writes via
-  :meth:`FollowupWorktreeDecision.to_dict`).
+  :meth:`FollowupWorktreeDecision.to_dict`), read via the shared helper in
+  :mod:`sdk.run_control.recovery_source`.
 
 No status / halt-reason decision-table literal is declared here; the only
 frozensets (``_PERSISTED_PLAN_SOURCES`` / ``_PLANNING_PROFILES``) are
@@ -32,7 +38,6 @@ read-only: it never prints, mutates, or finalizes.
 """
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -55,8 +60,15 @@ from sdk.run_control.recovery_lineage_resolve import (
     _strict_load_meta,
     _unreadable_meta_lineage,
 )
+from sdk.run_control.recovery_source import (
+    _has_durable_parsed_plan,
+    _optional_str,
+    _resolve_source,
+    _SourceFacts,
+    _worktree_continuity,
+)
 from sdk.run_control.types import RecoveryLineage
-from sdk.runs import _CWD_DEFAULT, find_run, load_meta
+from sdk.runs import _CWD_DEFAULT, find_run
 
 # ── Closed continuation-subject + next-action vocabulary ──────────────────────
 # The ``unknown`` / ``stop_unknown`` dead-end half of this vocabulary
@@ -85,10 +97,15 @@ _PLANNING_PROFILES = frozenset({"planning", "research"})
 
 
 class _Continuation:
-    """The resolved continuation subject for a terminal/rejected dead-end."""
+    """The resolved continuation subject for a terminal/rejected dead-end.
+
+    ``reason`` is set only on the via-source branches (see
+    :func:`_continues_via_source`): the fact-built tail that names the source
+    and the operation it accepts, shared verbatim with the lineage reason.
+    """
 
     __slots__ = ("subject", "action", "recommended_run_id", "source_run_id",
-                 "missing_facts")
+                 "missing_facts", "reason")
 
     def __init__(
         self,
@@ -97,30 +114,36 @@ class _Continuation:
         recommended_run_id: str | None,
         source_run_id: str | None,
         missing_facts: tuple[str, ...],
+        reason: str | None = None,
     ) -> None:
         self.subject = subject
         self.action = action
         self.recommended_run_id = recommended_run_id
         self.source_run_id = source_run_id
         self.missing_facts = missing_facts
+        self.reason = reason
 
 
-class _SourceFacts:
-    """Resumability facts about one candidate source run."""
+def _continues_via_source(cont: _Continuation) -> bool:
+    """Whether the continuation target is the *source* run, not the inspected one.
 
-    __slots__ = ("run_id", "status", "resumable", "worktree_preserved")
+    True for both via-source recoveries — resume the source's checkpoint, or
+    start a new run from the source's plan artifact — which the diagnosis half
+    surfaces under one ``recover_via_source_run`` condition.
+    """
+    return cont.source_run_id is not None and cont.recommended_run_id == cont.source_run_id
 
-    def __init__(
-        self,
-        run_id: str,
-        status: str | None,
-        resumable: bool,
-        worktree_preserved: bool,
-    ) -> None:
-        self.run_id = run_id
-        self.status = status
-        self.resumable = resumable
-        self.worktree_preserved = worktree_preserved
+
+def _source_reason(source: _SourceFacts) -> str:
+    """Fact-built tail naming the source and the operation preflight accepts."""
+    head = f"source run {source.run_id} (status={source.status})"
+    if source.resumable:
+        return f"{head} is resumable — resume it"
+    return (
+        f"{head} cannot be resumed in place ({source.resume_blocker}); its "
+        "persisted plan artifact is launchable — start a new run with "
+        f"from_run_plan={source.run_id}"
+    )
 
 
 def _resolve_continuation(
@@ -140,9 +163,12 @@ def _resolve_continuation(
     """Resolve the durable continuation subject of a terminal/rejected run.
 
     Only meaningful for a terminal dead-end (a non-terminal run continues
-    itself → ``none``). Priority: a resumable source checkpoint, else a
-    persisted plan artifact, else a clean terminal-success start-followup, else
-    an explicit ``unknown`` with the missing durable facts enumerated.
+    itself → ``none``). Priority: a resumable source checkpoint, else this
+    run's own persisted plan artifact, else a clean terminal-success
+    start-followup, else the source's launchable plan artifact (a source that
+    preflight refuses to resume in place but accepts as a ``from_run_plan``
+    parent), else an explicit ``unknown`` with the missing durable facts
+    enumerated.
     """
     if not terminal:
         return _Continuation(SUBJECT_NONE, None, None, None, ())
@@ -158,7 +184,7 @@ def _resolve_continuation(
     if source is not None and source.resumable:
         return _Continuation(
             SUBJECT_SOURCE_RUN_CHECKPOINT, ACTION_RESUME_SOURCE_RUN,
-            source.run_id, source.run_id, (),
+            source.run_id, source.run_id, (), _source_reason(source),
         )
 
     if _plan_subject_available(
@@ -174,6 +200,12 @@ def _resolve_continuation(
             SUBJECT_NONE, ACTION_START_FOLLOWUP, None, source_run_id, (),
         )
 
+    if source is not None and source.plan_launchable:
+        return _Continuation(
+            SUBJECT_PLAN_ARTIFACT, ACTION_PLAN_ARTIFACT_CONTINUATION,
+            source.run_id, source.run_id, (), _source_reason(source),
+        )
+
     # Dead-end with no durable continuation fact → stop, and say which facts
     # are absent (gate / child were ruled out by the earlier branches).
     missing: list[str] = []
@@ -184,90 +216,6 @@ def _resolve_continuation(
     missing.append(_MISSING_CHILD)
     return _Continuation(
         SUBJECT_UNKNOWN, ACTION_STOP_UNKNOWN, None, source_run_id, tuple(missing),
-    )
-
-
-def _resolve_source(
-    parent_run_id: str | None,
-    plan_source_run_id: str | None,
-    *,
-    workspace: Path | str | None,
-    runs_dir: Path | str | None,
-    cwd: Path | str | None | object,
-    source_meta: Mapping[str, dict[str, Any]] | None = None,
-) -> _SourceFacts | None:
-    """Resolve the best source candidate from the durable pointers.
-
-    Returns the first *resumable* candidate (``parent_run_id`` then
-    ``plan_source_run_id``); else the first readable candidate's facts so the
-    caller can still report its status; ``None`` when none is readable.
-    """
-    candidates: list[str] = []
-    if parent_run_id:
-        candidates.append(parent_run_id)
-    if plan_source_run_id and plan_source_run_id not in candidates:
-        candidates.append(plan_source_run_id)
-
-    first_readable: _SourceFacts | None = None
-    for cid in candidates:
-        facts = _resolve_source_facts(
-            cid, workspace=workspace, runs_dir=runs_dir, cwd=cwd,
-            source_meta=source_meta,
-        )
-        if facts is None:
-            continue
-        if first_readable is None:
-            first_readable = facts
-        if facts.resumable:
-            return facts
-    return first_readable
-
-
-def _resolve_source_facts(
-    source_run_id: str,
-    *,
-    workspace: Path | str | None,
-    runs_dir: Path | str | None,
-    cwd: Path | str | None | object,
-    source_meta: Mapping[str, dict[str, Any]] | None = None,
-) -> _SourceFacts | None:
-    """Resolve resumability facts for one candidate source run.
-
-    A source is resumable when it is NOT a terminal-resume-parent (the canonical
-    predicate) AND it has retained work — a preserved worktree OR a persisted
-    plan. When ``source_meta`` carries an already-resolved meta for this
-    candidate (an embedder's supervisor-merged status), it is used verbatim in
-    place of the on-disk read, so a stale on-disk status cannot drive a blind
-    resume. Any read failure degrades to ``None`` so a corrupt source-meta cannot
-    break the inspected run's diagnosis.
-    """
-    meta: dict[str, Any] | None = None
-    if source_meta is not None:
-        provided = source_meta.get(source_run_id)
-        if isinstance(provided, dict):
-            meta = provided
-    if meta is None:
-        try:
-            ref = find_run(
-                source_run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd,
-            )
-            meta = load_meta(ref.run_dir)
-        except Exception:  # noqa: BLE001 — a read-only probe must never raise
-            return None
-    if not isinstance(meta, dict):
-        return None
-
-    not_terminal = not is_terminal_resume_parent(meta)
-    has_worktree, blocked, _, _ = _worktree_continuity(meta)
-    worktree_preserved = has_worktree and not blocked
-    plan_source = _optional_str(meta.get("plan_source"))
-    has_plan = bool(plan_source) and plan_source != "none"
-    retained = worktree_preserved or has_plan
-    return _SourceFacts(
-        run_id=source_run_id,
-        status=_optional_str(meta.get("status")),
-        resumable=not_terminal and retained,
-        worktree_preserved=worktree_preserved,
     )
 
 
@@ -302,62 +250,6 @@ def _plan_subject_available(
     )
 
 
-# ── Durable-fact read helpers (shared with the diagnosis half) ────────────────
-
-
-def _worktree_continuity(
-    meta: dict[str, Any],
-) -> tuple[bool, bool, str | None, str | None]:
-    """Read ``meta['worktree']['followup_continuity']`` → continuity facts.
-
-    Returns ``(has_worktree, blocked, block_message, diff_source)`` from the
-    exact persisted shape ``pipeline/project/isolation_setup.py`` writes via
-    :meth:`FollowupWorktreeDecision.to_dict` (``{mode_label, blocked, reason,
-    diff_source}``). A run with a worktree but no follow-up sub-block kept its
-    own worktree (not blocked); a missing block has no worktree. Never raises.
-    """
-    wt = meta.get("worktree") if isinstance(meta, dict) else None
-    if not isinstance(wt, dict) or not wt:
-        return (False, False, None, None)
-    from pipeline.engine.worktree import is_worktree_reclaimed
-    if is_worktree_reclaimed(wt):
-        return (
-            False,
-            True,
-            "retained worktree was reclaimed; recorded path is historical",
-            None,
-        )
-    fc = wt.get("followup_continuity")
-    if not isinstance(fc, dict):
-        return (True, False, None, None)
-    return (
-        True,
-        bool(fc.get("blocked")),
-        _optional_str(fc.get("reason")),
-        _optional_str(fc.get("diff_source")),
-    )
-
-
-def _has_durable_parsed_plan(run_dir: Path) -> bool:
-    """Whether a durable, readable ``parsed_plan.json`` artifact exists."""
-    try:
-        path = run_dir / "parsed_plan.json"
-        if not path.is_file():
-            return False
-        json.loads(path.read_text(encoding="utf-8"))
-        return True
-    except Exception:  # noqa: BLE001 — a missing / corrupt plan reads as absent
-        return False
-
-
-def _optional_str(value: Any) -> str | None:
-    """Coerce ``value`` to a non-empty stripped ``str``, else ``None``."""
-    if not isinstance(value, str):
-        return None
-    s = value.strip()
-    return s or None
-
-
 # ── Public recovery-lineage read-model ────────────────────────────────────────
 #
 # Field-for-field + branch-for-branch parity with MCP's
@@ -380,7 +272,9 @@ def _optional_str(value: Any) -> str | None:
 #       delivery_decision);  (3) terminal/rejected dead-end: (3a) resumable source →
 #       Case A (source_run_checkpoint/resume_source_run), (3b) plan-only → Case C
 #       (plan_artifact/plan_artifact_continuation), (3c) clean terminal-success →
-#       none/start_followup, (3d) no continuation fact → Case D (unknown/stop_unknown);
+#       none/start_followup, (3d) source plan launchable → Case C via the source
+#       (plan_artifact/plan_artifact_continuation, recommended_run_id = source),
+#       (3e) no continuation fact → Case D (unknown/stop_unknown);
 #   (4/5) non-terminal → none/None *with* source_*+plan_subject_available enrichment.
 #
 # ``is_terminal_or_rejected`` reproduces MCP's
@@ -410,7 +304,8 @@ def recovery_lineage(
     via the failure-aware :func:`_strict_load_meta`; when ``meta`` is supplied it
     is used verbatim (the embedder seam an already-merged supervisor status flows
     through — this module never reads a provider file). ``source_meta`` is the
-    same seam for the *source* candidates (see :func:`_resolve_source_facts`).
+    same seam for the *source* candidates (see
+    :func:`sdk.run_control.recovery_source._resolve_source_facts`).
 
     Fully defensive: any failure reading the inspected run's meta — a missing,
     corrupt, or non-object ``meta.json`` — degrades to an ``unknown`` /
@@ -552,8 +447,7 @@ def _build_recovery_lineage(
                 reason=(
                     f"run is a terminal/rejected dead-end (status={status}"
                     + (f", halt_reason={halt_reason}" if halt_reason else "")
-                    + f"); source run {source.run_id} (status={source.status}) "
-                    "is resumable — resume it"
+                    + f"); {_source_reason(source)}"
                 ),
             )
 
@@ -595,7 +489,29 @@ def _build_recovery_lineage(
                 ),
             )
 
-        # (3d) dead-end with no durable continuation fact → unknown.
+        # (3d) source plan launchable — the source cannot be resumed in place
+        # (preflight refuses the same-run resume: finalized ledger, paused,
+        # running, …) but accepts a fresh launch off its plan artifact.
+        if source is not None and source.plan_launchable:
+            return RecoveryLineage(
+                run_id=run_id,
+                is_terminal_or_rejected=True,
+                continuation_subject=SUBJECT_PLAN_ARTIFACT,
+                recommended_next_action=ACTION_PLAN_ARTIFACT_CONTINUATION,
+                recommended_run_id=source.run_id,
+                source_run_id=source.run_id,
+                source_status=source.status,
+                source_resumable=False,
+                source_worktree_preserved=source.worktree_preserved,
+                plan_subject_available=plan_available,
+                reason=(
+                    f"run is a terminal/rejected dead-end (status={status}"
+                    + (f", halt_reason={halt_reason}" if halt_reason else "")
+                    + f"); {_source_reason(source)}"
+                ),
+            )
+
+        # (3e) dead-end with no durable continuation fact → unknown.
         return _unknown_lineage(
             run_id,
             is_terminal_or_rejected=True,

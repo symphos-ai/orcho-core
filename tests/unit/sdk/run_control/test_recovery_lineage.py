@@ -10,13 +10,19 @@ scenario per ladder branch of MCP's ``project_recovery_lineage``:
     (3a) terminal + resumable source → source_run_checkpoint / resume_source_run
     (3b) terminal plan-only → plan_artifact / plan_artifact_continuation
     (3c) clean terminal-success → none / start_followup
-    (3d) terminal dead-end → unknown / stop_unknown (+ missing_facts)
+    (3d) terminal + source not resumable in place but plan-launchable →
+         plan_artifact / plan_artifact_continuation with the SOURCE as the
+         recommended ``from_run_plan`` parent
+    (3e) terminal dead-end → unknown / stop_unknown (+ missing_facts)
     (4/5) non-terminal → none / None *with* source/plan enrichment
 
 Plus the defensive contract (unreadable meta → unknown/stop_unknown, never
-raises), the empty-``run_id`` → ``ValueError`` guard, and the ``source_meta``
-provider seam (a stale on-disk ``running`` source must not drive a blind resume;
-an overlay that settles the source as terminal suppresses it).
+raises), the empty-``run_id`` → ``ValueError`` guard, the ``source_meta``
+provider seam (an overlay that settles the source as terminal suppresses the
+source-run resume), and the single-owner contract for ``source_resumable``: it
+is exactly what the canonical launch preflight would accept as a same-run
+checkpoint resume (a finalized scheduled-gate ledger, a paused handoff, or a
+live ``running`` source are all refused there, so none may be recommended).
 
 orcho-mcp is NEITHER imported NOR modified: the MCP closed sets are mirrored as
 plain literals so the test fails loudly if the core read-model ever drifts from
@@ -30,11 +36,15 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.control.continuation import ContinuationRequest
+from pipeline.control.resume_context import is_terminal_resume_parent
+from pipeline.verification_ledger_store import ScheduledGateLedger, write_ledger
 from sdk import RecoveryLineage, recovery_lineage
 from sdk.run_control import (
     RecoveryLineage as RecoveryLineage_rc,
     recovery_lineage as recovery_lineage_rc,
 )
+from sdk.run_control.continuation import preflight_continuation
 
 pytestmark = [pytest.mark.sdk, pytest.mark.filesystem_light]
 
@@ -63,6 +73,27 @@ def _mk(
 def _lineage(runs_dir: Path, run_id: str, **kw) -> RecoveryLineage:
     """Resolve ``run_id`` from an explicit runs_dir (no ambient walk-up)."""
     return recovery_lineage(run_id, runs_dir=runs_dir, cwd=None, **kw)
+
+
+def _finalize_ledger(runs_dir: Path, run_id: str) -> None:
+    """Write the finalized ``scheduled_gate_ledger.json`` finalization leaves.
+
+    Uses the store API (not a hand-written body) so the artifact is exactly
+    what ``pipeline/project/finalization.py`` persists at every runner-side
+    ``run.end`` — the durable fact that blocks a same-run resume in preflight.
+    """
+    write_ledger(runs_dir / run_id, ScheduledGateLedger(rows=(), finalized=True))
+
+
+_FAILED_SOURCE_WITH_PLAN = {
+    "status": "failed", "plan_source": "local", "profile": "feature",
+    "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+    "project": "/x",
+}
+_TERMINAL_CHILD = {
+    "status": "halted", "halt_reason": "final_acceptance_rejected",
+    "parent_run_id": "parent", "project": "/x",
+}
 
 
 # ── export wiring ─────────────────────────────────────────────────────────────
@@ -271,14 +302,14 @@ def test_empty_run_id_raises() -> None:
 
 
 def test_source_meta_seam_suppresses_blind_resume(tmp_path: Path) -> None:
-    # The source's on-disk meta is stale (``running`` + retained worktree → it
-    # would read as resumable), but the embedder's supervisor-merge has settled it
-    # to a clean terminal ``done``. Feeding the resolved meta via ``source_meta``
-    # must suppress the blind source-run resume — the terminal child becomes an
-    # unknown dead-end rather than a redirect.
+    # The source's on-disk meta is stale (``failed`` + retained worktree → it
+    # reads as a resumable checkpoint), but the embedder's supervisor-merge has
+    # settled it to a clean terminal ``done``. Feeding the resolved meta via
+    # ``source_meta`` must suppress the blind source-run resume — the terminal
+    # child becomes an unknown dead-end rather than a redirect.
     runs = tmp_path / "runs"
     _mk(runs, "parent", {
-        "status": "running",
+        "status": "failed",
         "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
         "project": "/x",
     })
@@ -332,6 +363,169 @@ def test_inspected_meta_seam_drives_delivery_gate(tmp_path: Path) -> None:
     assert seamed.continuation_subject == rlm.SUBJECT_DELIVERY_GATE
     assert seamed.recommended_next_action == rlm.ACTION_DELIVERY_DECISION
     assert seamed.recommended_run_id == "r"
+
+
+# ── source resumability is owned by the launch preflight ─────────────────────
+
+
+def test_finalized_source_ledger_recommends_from_run_plan(tmp_path: Path) -> None:
+    # Field shape: the child dead-ended (phase_handoff_halt / rejected) and its
+    # source is a non-terminal ``failed``/``halted`` stop with a retained
+    # worktree AND a persisted plan — but the source's scheduled-gate ledger was
+    # finalized at run.end, so the canonical preflight refuses a same-run
+    # resume. Recommending "resume the source" would be a dead recommendation;
+    # the durable exit is a NEW run from the source's plan artifact.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", _FAILED_SOURCE_WITH_PLAN, files={"parsed_plan.json": "{}"})
+    _finalize_ledger(runs, "parent")
+    _mk(runs, "child", _TERMINAL_CHILD)
+    rl = _lineage(runs, "child")
+    assert rl.is_terminal_or_rejected is True
+    assert rl.continuation_subject == rlm.SUBJECT_PLAN_ARTIFACT
+    assert rl.recommended_next_action == rlm.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert rl.recommended_run_id == "parent"
+    assert rl.source_run_id == "parent"
+    assert rl.source_status == "failed"
+    assert rl.source_resumable is False
+    # Reported facts stay reported; they no longer decide resumability.
+    assert rl.source_worktree_preserved is True
+    assert rl.plan_subject_available is False
+    assert "finalized scheduled-gate ledger" in rl.reason
+    assert "from_run_plan=parent" in rl.reason
+    assert rl.missing_facts == ()
+
+
+def test_finalized_source_ledger_without_plan_is_unknown(tmp_path: Path) -> None:
+    # Same finalized source, but no persisted plan artifact: neither via-source
+    # operation passes preflight, so the child stops as an explicit unknown
+    # (missing the resumable source) rather than being pointed at a dead resume.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", _FAILED_SOURCE_WITH_PLAN)
+    _finalize_ledger(runs, "parent")
+    _mk(runs, "child", _TERMINAL_CHILD)
+    rl = _lineage(runs, "child")
+    assert rl.continuation_subject == rlm.SUBJECT_UNKNOWN
+    assert rl.recommended_next_action == rlm.ACTION_STOP_UNKNOWN
+    assert rl.recommended_run_id is None
+    assert rl.source_run_id == "parent"
+    assert rl.source_resumable is False
+    assert rlm._MISSING_SOURCE in rl.missing_facts
+
+
+def test_paused_source_is_not_a_resume_target(tmp_path: Path) -> None:
+    # A source parked at ``awaiting_phase_handoff`` with no recorded decision is
+    # refused by preflight ("same-run resume is only available for a
+    # checkpoint-resumable state"); with its plan persisted the child is routed
+    # to a from_run_plan launch off the source, never to a resume of it.
+    runs = tmp_path / "runs"
+    _mk(
+        runs, "parent",
+        {
+            "status": "awaiting_phase_handoff", "plan_source": "local",
+            "profile": "planning", "project": "/x",
+            "phase_handoff": {"id": "h1", "available_actions": ["continue"]},
+            "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+        },
+        files={"parsed_plan.json": "{}"},
+    )
+    # The child is a non-success terminal dead-end (operator halt at delivery).
+    _mk(runs, "child", {
+        "status": "halted", "halt_reason": "commit_decision_halt",
+        "plan_source": "run", "plan_source_run_id": "parent", "project": "/x",
+    })
+    rl = _lineage(runs, "child")
+    assert rl.source_resumable is False
+    assert rl.continuation_subject == rlm.SUBJECT_PLAN_ARTIFACT
+    assert rl.recommended_next_action == rlm.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert rl.recommended_run_id == "parent"
+
+
+def test_running_source_is_not_a_resume_target(tmp_path: Path) -> None:
+    # A live ``running`` source is not checkpoint-resumable (preflight refuses
+    # it), so a terminal child must never be told to resume it; with no plan
+    # artifact the child stops as unknown.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", {
+        "status": "running",
+        "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+        "project": "/x",
+    })
+    _mk(runs, "child", _TERMINAL_CHILD)
+    rl = _lineage(runs, "child")
+    assert rl.source_run_id == "parent"
+    assert rl.source_resumable is False
+    assert rl.continuation_subject == rlm.SUBJECT_UNKNOWN
+    assert rl.recommended_next_action == rlm.ACTION_STOP_UNKNOWN
+
+
+def test_clean_success_child_keeps_start_followup_over_source_plan(
+    tmp_path: Path,
+) -> None:
+    # A child that completed cleanly is not a recovery case: even though its
+    # source cannot be resumed and holds a launchable plan, re-implementing that
+    # plan is wrong advice — the clean terminal-success branch (start a fresh
+    # follow-up) keeps priority over the via-source plan launch.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", _FAILED_SOURCE_WITH_PLAN, files={"parsed_plan.json": "{}"})
+    _finalize_ledger(runs, "parent")
+    _mk(runs, "child", {
+        "status": "done", "plan_source": "run", "plan_source_run_id": "parent",
+        "project": "/x",
+    })
+    rl = _lineage(runs, "child")
+    assert rl.continuation_subject == rlm.SUBJECT_NONE
+    assert rl.recommended_next_action == rlm.ACTION_START_FOLLOWUP
+    assert rl.source_run_id == "parent"
+    assert rl.source_resumable is False
+
+
+@pytest.mark.parametrize(
+    ("source_meta", "finalized"),
+    [
+        ({"status": "failed", "project": "/x"}, False),
+        ({"status": "failed", "project": "/x"}, True),
+        ({"status": "halted", "halt_reason": "x", "project": "/x"}, False),
+        ({"status": "interrupted", "project": "/x"}, False),
+        ({"status": "running", "project": "/x"}, False),
+        ({"status": "done", "project": "/x"}, False),
+        ({"status": "halted", "halt_reason": "phase_handoff_halt", "project": "/x"}, False),
+        (
+            {
+                "status": "awaiting_phase_handoff", "project": "/x",
+                "phase_handoff": {"id": "h1", "available_actions": ["continue"]},
+            },
+            False,
+        ),
+    ],
+)
+def test_source_resumable_matches_launch_preflight(
+    tmp_path: Path, source_meta: dict, finalized: bool,
+) -> None:
+    # DRIFT INVARIANT (single owner): ``source_resumable`` is exactly "the
+    # canonical launch preflight selects resume_checkpoint for the source AND the
+    # source is not a terminal resume parent" — the two gates every resume
+    # surface applies before spawning. Re-deriving it from meta facts alone is
+    # what produced the dead "resume the source" recommendation.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", {**source_meta, "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"}})
+    if finalized:
+        _finalize_ledger(runs, "parent")
+    _mk(runs, "child", _TERMINAL_CHILD)
+    rl = _lineage(runs, "child")
+    preflight = preflight_continuation(
+        ContinuationRequest(run_id="parent", intent="resume"),
+        parent_run_dir=runs / "parent",
+    )
+    persisted_source = json.loads((runs / "parent" / "meta.json").read_text())
+    expected = (
+        preflight.resolution.operation == "resume_checkpoint"
+        and not is_terminal_resume_parent(persisted_source)
+    )
+    assert rl.source_resumable is expected, (source_meta, finalized, preflight.resolution)
+    if rl.source_resumable:
+        assert rl.recommended_next_action == rlm.ACTION_RESUME_SOURCE_RUN
+    else:
+        assert rl.recommended_next_action != rlm.ACTION_RESUME_SOURCE_RUN
 
 
 # ── field-for-field parity table (living documentation; MCP not imported) ──────
