@@ -170,7 +170,7 @@ def test_run_header_contains_all_model_and_effort_fields() -> None:
         ],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         output_log="/runs/REAL_ADV_2/output.log",
         events_log="/runs/REAL_ADV_2/events.jsonl",
@@ -191,8 +191,11 @@ def test_run_header_contains_all_model_and_effort_fields() -> None:
         assert effort in out
     # State fields.
     assert "session" in out and "auto" in out
-    assert "rounds=1" in out
+    # The two retry budgets are labelled separately: the repair cap is
+    # never rendered as a bare ``rounds=`` next to ``plan=``.
+    assert "repair_rounds=1" in out
     assert "plan=yes" in out
+    assert "rounds=1" not in out.replace("repair_rounds=1", "")
     # Log paths preserved.
     assert "/runs/REAL_ADV_2/output.log" in out
     assert "/runs/REAL_ADV_2/events.jsonl" in out
@@ -206,7 +209,7 @@ def test_run_header_surfaces_discovered_skills_line() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         plugin_line="Project",
         skills_line="2: quant-analytics-atas, quant-analytics-theory",
@@ -251,7 +254,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         verification=view,
     ))
@@ -278,7 +281,7 @@ def test_run_header_omits_verification_block_without_contract() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
     ))
 
@@ -457,7 +460,7 @@ def test_run_header_surfaces_followup_parent() -> None:
         agents=[{"role": "PLAN", "model": "mock", "effort": "high"}],
         profile="lite",
         session_mode="stateless",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         followup_parent_run_id="20260518_173520",
         followup_base_task="first task",
@@ -477,7 +480,7 @@ def test_run_header_surfaces_followup_parent() -> None:
         agents=[{"role": "PLAN", "model": "mock", "effort": "high"}],
         profile="lite",
         session_mode="stateless",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
     ))
     assert "follow-up" not in fresh.lower()
@@ -504,7 +507,7 @@ def test_cross_run_header_surfaces_followup_parent() -> None:
 def test_run_header_does_not_print_giant_banner() -> None:
     out = _strip(render_run_header(
         run_id=None, project="/p", task="t", agents=[], profile="lite",
-        session_mode="stateless", rounds=0, plan=False,
+        session_mode="stateless", repair_rounds=0, plan=False,
     ))
     # Heavy ════ × 60+ banners are gone — only the thin rule (and shorter
     # variants) remain.

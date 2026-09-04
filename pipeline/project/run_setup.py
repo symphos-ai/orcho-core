@@ -368,8 +368,10 @@ def print_pipeline_header(
     :func:`init_run_session`.
 
     Renders the same data the legacy header carried — model names, effort
-    levels, profile, session mode, max rounds, plan toggle, plugin line,
-    run-dir path — as a scannable table block. When ``profile_obj`` is
+    levels, profile, session mode, retry budgets, plan toggle, plugin line,
+    run-dir path — as a scannable table block. ``max_rounds`` is the
+    implement/review/repair cap only; the plan/validate_plan budget is read
+    off ``profile_obj``'s plan LoopStep and rendered separately. When ``profile_obj`` is
     supplied, a static pipeline progress block is rendered under the header
     showing every phase in the profile; ``completed_phases`` (peeked from
     the checkpoint DB on a ``--resume``) highlights phases already finished
@@ -466,6 +468,14 @@ def print_pipeline_header(
     )
     output_log = str(output_dir / "output.log") if output_dir is not None else None
     events_log = str(output_dir / "events.jsonl") if output_dir is not None else None
+    # Two independent retry budgets reach the header. ``max_rounds`` is the
+    # per-run implement/review/repair cap; the plan/validate_plan budget is
+    # declared by the profile's plan LoopStep and has no runtime override
+    # (ADR 0031). Read it through the existing single owner of "which
+    # LoopStep is the plan loop" rather than re-deriving the key here.
+    from pipeline.project.handoff import find_plan_loop
+    plan_loop = find_plan_loop(profile_obj) if profile_obj is not None else None
+    plan_rounds = int(plan_loop.max_rounds) if plan_loop is not None else None
 
     print(render_run_header(
         run_id=output_dir.name if output_dir is not None else None,
@@ -474,8 +484,9 @@ def print_pipeline_header(
         agents=agents_block,
         profile=profile_name,
         session_mode=session_mode.value,
-        rounds=max_rounds,
+        repair_rounds=max_rounds,
         plan=do_plan,
+        plan_rounds=plan_rounds,
         output_log=output_log,
         events_log=events_log,
         plugin_line=plugin_line,
