@@ -124,7 +124,12 @@ py-modules = []
 
 [tool.setuptools.packages.find]
 include = ["core*", "agents*", "pipeline*", "cli*", "sdk*"]
-exclude = ["tests*", "docs*", "shell*"]
+# ``core._runtime_wrappers`` was removed when claude-glm setup moved into the
+# runtime adapter; nothing imports it and the wrappers must not ship. It still
+# carries an ``__init__.py`` in some working trees, so ``core*`` would otherwise
+# auto-discover it. Excluded here so the wheel stays clean regardless of
+# untracked residue on the builder's disk.
+exclude = ["tests*", "docs*", "shell*", "core._runtime_wrappers*"]
 
 # Asset directories (``core/_prompts/`` and ``core/_config/``) live
 # INSIDE the ``core`` package so they ship in wheels / sdists.
@@ -151,6 +156,10 @@ core = [
 [tool.setuptools.exclude-package-data]
 core = [
     "_config/config.local.json",
+    # Belt-and-braces companion to the ``core._runtime_wrappers*`` package
+    # exclusion above: the retired claude-glm wrappers never ship as data
+    # either, even if a future glob widens to ``*.sh`` / ``*.cmd``.
+    "_runtime_wrappers/*",
 ]
 
 [tool.pytest.ini_options]
