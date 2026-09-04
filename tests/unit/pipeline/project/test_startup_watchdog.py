@@ -96,37 +96,39 @@ def test_event_or_output_progress_or_first_phase_disarms_without_halt(tmp_path: 
 def test_bootstrap_heartbeat_restarts_the_budget_but_keeps_the_watchdog_armed(
     tmp_path: Path,
 ) -> None:
-    """Worktree bootstrap emits no event and writes no output.log, so its
+    """Worktree bootstrap emits no event and writes no ``output.log``, so its
     completion is invisible to ``_has_progress``. The heartbeat is the single
     owner's way to accept that progress: the deadline and the durable window
     move, the baselines re-snapshot, and the watchdog stays armed so a hang
-    after bootstrap is still halted."""
+    after bootstrap is still halted. Expiry is forced rather than slept for,
+    so the assertion does not race the budget."""
     events.init_event_store(tmp_path)
     events.emit("run.start", run_kind="single_project", task="t", project="/p", profile="feature")
     with startup_watchdog_scope(tmp_path) as watchdog:
-        watchdog.budget_s = 0.02
+        watchdog.budget_s = 30.0
         watchdog.arm()
         armed = json.loads((tmp_path / "startup_command.json").read_text())
-        time.sleep(0.03)
+
+        # Setup work the watchdog cannot see outlived the budget.
+        watchdog.deadline = 0.0
         events.emit("agent.text", text="bootstrap-adjacent event")
         heartbeat_startup_watchdog()
 
         assert watchdog.checkpoint(_session()) is False
         assert watchdog.armed is True and watchdog.disarmed is False
         refreshed = json.loads((tmp_path / "startup_command.json").read_text())
-        assert _iso(refreshed["armed_at"]) > _iso(armed["armed_at"])
+        assert _iso(refreshed["armed_at"]) >= _iso(armed["armed_at"])
         assert refreshed["baseline_events_size"] == (tmp_path / "events.jsonl").stat().st_size
         assert refreshed["baseline_events_size"] > armed["baseline_events_size"]
-        assert refreshed["budget_s"] == 0.02
+        assert refreshed["budget_s"] == 30.0
         assert "command" not in refreshed
 
-        time.sleep(0.03)
+        watchdog.deadline = 0.0
         session = _session()
         assert watchdog.checkpoint(session) is True
 
     meta = json.loads((tmp_path / "meta.json").read_text())
     assert meta["halt_reason"] == "startup_stalled"
-    assert meta["halt"]["elapsed_s"] < 0.2
     assert session["halt"]["command"] is None
 
 
