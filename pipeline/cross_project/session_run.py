@@ -57,7 +57,10 @@ from pipeline.cross_project.planning_loop import (
     CrossPlanningContext as _CrossPlanningContext,
     run_cross_planning as _run_cross_planning,
 )
-from pipeline.cross_project.profile_setup import setup_cross_profile
+from pipeline.cross_project.profile_setup import (
+    find_cross_plan_loop,
+    setup_cross_profile,
+)
 from pipeline.cross_project.project_dispatch import (
     DispatchPorts as _DispatchPorts,
     ProjectDispatchContext as _ProjectDispatchContext,
@@ -330,7 +333,7 @@ def _run_cross_hypothesis(request: CrossRunRequest, ctx: _CrossRunContext) -> No
 
 def _resolve_global_plan_steps(ctx: _CrossRunContext) -> None:
     """Locate the global cross_plan / cross_validate_plan steps."""
-    from pipeline.runtime import LoopStep as _LoopStep, PhaseStep as _PhaseStep
+    from pipeline.runtime import PhaseStep as _PhaseStep
 
     def _find_handler(steps, handler_name):
         for s in steps:
@@ -342,22 +345,27 @@ def _resolve_global_plan_steps(ctx: _CrossRunContext) -> None:
                 return s
         return None
 
-    for _entry in ctx.projection.global_steps:
-        if isinstance(_entry, _LoopStep):
-            inner_plan = _find_handler(_entry.steps, "cross_plan")
-            if inner_plan is not None:
-                ctx.global_plan_loop = _entry
-                ctx.global_plan_step = inner_plan
-                ctx.global_validate_step = _find_handler(
-                    _entry.steps,
-                    "cross_validate_plan",
-                )
-                break
-        elif isinstance(_entry, _PhaseStep) and _entry.cross is not None:
-            if _entry.cross.handler == "cross_plan":
-                ctx.global_plan_step = _entry
-            elif _entry.cross.handler == "cross_validate_plan":
-                ctx.global_validate_step = _entry
+    # The loop is located by the shared owner so the run flow and the run
+    # header (assembled earlier, from the projection alone) can never
+    # disagree about which loop carries the planning budget. Bare
+    # cross_plan / cross_validate_plan steps are only consulted when the
+    # projection declares no plan loop at all — matching the previous
+    # in-order scan, which broke as soon as it found the loop.
+    ctx.global_plan_loop = find_cross_plan_loop(ctx.projection.global_steps)
+    if ctx.global_plan_loop is not None:
+        ctx.global_plan_step = _find_handler(
+            ctx.global_plan_loop.steps, "cross_plan",
+        )
+        ctx.global_validate_step = _find_handler(
+            ctx.global_plan_loop.steps, "cross_validate_plan",
+        )
+    else:
+        for _entry in ctx.projection.global_steps:
+            if isinstance(_entry, _PhaseStep) and _entry.cross is not None:
+                if _entry.cross.handler == "cross_plan":
+                    ctx.global_plan_step = _entry
+                elif _entry.cross.handler == "cross_validate_plan":
+                    ctx.global_validate_step = _entry
     ctx.has_global_plan = ctx.global_plan_step is not None
     ctx.has_global_validate = ctx.global_validate_step is not None
     ctx.effective_plan_rounds = (
