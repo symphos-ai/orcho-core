@@ -303,7 +303,7 @@ def test_cross_run_header_lists_projects_and_agents() -> None:
             {"role": "REVIEW_CHANGES", "model": "gpt-5.4",          "effort": "medium"},
         ],
         cross_mode="full",
-        rounds=2,
+        repair_rounds=2,
         output_log="/runs/x/output.log",
         events_log="/runs/x/events.jsonl",
     ))
@@ -330,7 +330,9 @@ def test_cross_run_header_lists_projects_and_agents() -> None:
     assert "claude-sonnet-4-6" in out
     assert "high" in out and "medium" in out
     # State + log paths preserved.
-    assert "rounds_per_project=2" in out
+    # The repair cap is named for the loop it caps; the planning budget
+    # is a separate number and never hides behind this one.
+    assert "repair_rounds_per_project=2" in out
     assert "/runs/x/events.jsonl" in out
 
 
@@ -345,7 +347,7 @@ def test_cross_run_header_surfaces_profile_projection() -> None:
         projects={"api": "/tmp/api"},
         agents=[{"role": "CROSS_PLAN", "model": "claude-opus-4-7", "effort": "high"}],
         cross_mode="full",
-        rounds=2,
+        repair_rounds=2,
         profile="advanced",
         plan_source="cross",
         projection="global + per-project",
@@ -494,7 +496,7 @@ def test_cross_run_header_surfaces_followup_parent() -> None:
         projects={"api": "/tmp/api"},
         agents=[{"role": "CROSS_PLAN", "model": "mock", "effort": "high"}],
         cross_mode="full",
-        rounds=1,
+        repair_rounds=1,
         followup_parent_run_id="20260518_170000",
         followup_base_task="original cross task",
     ))
