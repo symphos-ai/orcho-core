@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A plan (or any assistant reply) larger than the 96 KiB per-line model
+  output cap no longer halts the run with `plan rejected before implement:
+  raw JSON parse failed: Extra data: line 2 column 1`. The stdout line cap
+  was byte-middle-cutting every oversized line that was JSON but not a
+  tool-result envelope, which destroyed the stream-json `assistant` and
+  `result` events carrying the reply; the text extractor then skipped the
+  malformed lines and the phase received raw NDJSON. Non-tool JSON lines now
+  pass through unchanged; tool-result lines and non-JSON blobs keep the cap.
+  As defense in depth, the Claude runtime now raises a typed
+  `AgentCallError` naming the real cause when a stream-json reply carries no
+  assistant text at all, instead of silently returning the raw stream.
+
 ## 0.9.0 - 2026-08-29
 
 Onboarding stops producing something inert, and a run that has ceased to exist

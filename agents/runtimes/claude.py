@@ -44,6 +44,7 @@ from agents.stream import StreamAbort
 from core.infra import config
 from core.infra.config import _wrap_windows_cmd
 from core.infra.lazy import LazyValue, lazy_cli_binary
+from core.io.retry import AgentCallError
 from pipeline.runtime.roles import AttachmentKind
 from pipeline.runtime.steps import Attachment
 
@@ -170,6 +171,59 @@ def _extract_assistant_text(stdout: str) -> str:
         if chunks:
             last_chunks = chunks
     return "\n".join(last_chunks)
+
+
+def _is_stream_json_output(stdout: str) -> bool:
+    """True when stdout opens with Claude Code's stream-json init event."""
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if not line.startswith("{"):
+            return False
+        try:
+            d = json.loads(line)
+        except (ValueError, TypeError):
+            return False
+        return (
+            isinstance(d, dict)
+            and d.get("type") == "system"
+            and d.get("subtype") == "init"
+        )
+    return False
+
+
+def _raw_reply_fallback(stdout: str, *, runtime: str) -> str:
+    """Return the reply to use when stdout carried no assistant text.
+
+    When stdout is not stream-json (a plain ``--print`` reply, a banner, a
+    tail from a call killed mid-stream), the raw blob is the best available
+    answer and is returned as-is. When stdout *is* stream-json, raw NDJSON is
+    never a valid reply: handing it to a phase produces a misleading
+    downstream failure (the plan parser reports ``Extra data`` on line 2
+    instead of the real cause). Raise a typed runtime failure naming what the
+    stream actually contained. Callers run the exit-code and exit-0 transport
+    classifiers first so those keep their more specific error types.
+    """
+    if not _is_stream_json_output(stdout):
+        return stdout
+    result = _extract_last_result(stdout)
+    detail = "no assistant text in stream-json output"
+    if isinstance(result, dict):
+        subtype = result.get("subtype")
+        if isinstance(subtype, str) and subtype and subtype != "success":
+            detail = f"{detail}; result subtype={subtype}"
+        errors = result.get("errors")
+        if isinstance(errors, list) and errors:
+            detail = f"{detail}; errors={errors[:3]!r}"
+        if result.get("is_error"):
+            detail = f"{detail}; is_error=true"
+    else:
+        detail = f"{detail}; no result event (stream ended early?)"
+    raise AgentCallError(
+        f"{runtime} returned no assistant text (exit=0): {detail}",
+        exit_code=0,
+    )
 
 
 def _extract_last_result(stdout: str) -> dict | None:
@@ -764,11 +818,17 @@ class ClaudeAgent:
             # as a normal response. Transient transport shapes retry first.
             # ``reply_text`` is the answer we'd return — the exit-0 transport
             # check scans only this, not stderr log noise.
-            reply_text = _extract_assistant_text(stdout) or stdout
+            assistant_text = _extract_assistant_text(stdout)
             _failures.raise_on_runtime_failure(
                 runtime=self.runtime, model=self.model, cli=self.bin,
                 returncode=returncode, stdout=stdout, stderr=stderr,
-                reply_text=reply_text,
+                reply_text=assistant_text or stdout,
+            )
+            # Exit 0 and no classified failure: the reply is the assistant
+            # text, or the raw blob for non-stream output. Stream-json with no
+            # assistant text is a typed failure, never a reply.
+            reply_text = assistant_text or _raw_reply_fallback(
+                stdout, runtime=self.runtime,
             )
             return ("ok", reply_text, stderr)
 
