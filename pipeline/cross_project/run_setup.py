@@ -268,6 +268,14 @@ def render_cross_pipeline_header(
     _projection_label = (
         "global + per-project" if projection.project_steps else "global only"
     )
+    # Two independent budgets, as on the mono header: ``max_rounds`` is the
+    # per-run repair cap cross projects into each child run, while the cross
+    # plan loop's budget is declared by the profile and has no runtime
+    # override (ADR 0031). Read through the shared owner so this never
+    # disagrees with the planning loop that actually enforces it.
+    from pipeline.cross_project.profile_setup import find_cross_plan_loop
+    _plan_loop = find_cross_plan_loop(projection.global_steps)
+    _plan_rounds = int(_plan_loop.max_rounds) if _plan_loop is not None else None
     print(render_cross_run_header(
         run_id=_run_dir_for_header.name if _run_dir_for_header is not None else None,
         task=task,
@@ -275,8 +283,9 @@ def render_cross_pipeline_header(
         agents=agents_block,
         project_agents=project_agents_block,
         cross_mode=cross_mode,
-        rounds=max_rounds,
+        repair_rounds=max_rounds,
         profile=requested_profile_name,
+        plan_rounds=_plan_rounds,
         plan_source="cross",
         projection=_projection_label,
         output_log=str(_run_dir_for_header / "output.log") if _run_dir_for_header else None,

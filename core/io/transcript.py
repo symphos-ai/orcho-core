@@ -326,8 +326,9 @@ def render_cross_run_header(
     agents: Iterable[Mapping[str, str]],
     project_agents: Iterable[Mapping[str, str]] = (),
     cross_mode: str,
-    rounds: int,
+    repair_rounds: int,
     profile: str | None = None,
+    plan_rounds: int | None = None,
     plan_source: str | None = None,
     projection: str | None = None,
     output_log: str | None = None,
@@ -350,6 +351,16 @@ def render_cross_run_header(
     knob and projection result up-front: a cross run always has
     ``plan_source="cross"`` (the cross-level plan is canonical), and
     ``projection`` is typically ``"global + per-project"``.
+
+    The two retry budgets are named separately, for the same reason the
+    mono header names them (see :func:`render_run_header`).
+    ``repair_rounds`` is the per-run implement/review/repair cap, which
+    cross projects into every child project run; ``plan_rounds`` is the
+    cross plan loop's own declared budget, which ``--max-rounds`` does
+    not reach. Rendering only the former as ``rounds_per_project=4``
+    while the transcript then banners ``CROSS-PLAN -- Round 1/2`` reads
+    as a contradiction. ``plan_rounds=None`` omits the planning budget
+    rather than guessing it.
     """
     parts: list[str] = []
     is_followup = bool(followup_parent_run_id)
@@ -383,7 +394,11 @@ def render_cross_run_header(
     if profile:
         parts.append(_kv("Profile", profile, C.CYAN))
     if plan_source:
-        parts.append(_kv("Plan source", plan_source, C.CYAN))
+        plan_source_label = plan_source
+        if plan_rounds is not None:
+            unit = "round" if plan_rounds == 1 else "rounds"
+            plan_source_label = f"{plan_source}  ({plan_rounds} {unit})"
+        parts.append(_kv("Plan source", plan_source_label, C.CYAN))
     if projection:
         parts.append(_kv("Projection", projection, C.CYAN))
 
@@ -413,7 +428,9 @@ def render_cross_run_header(
 
     parts.append("")
     parts.append(_line(C.CYAN + C.BOLD, "State"))
-    parts.append(_kv("session", f"rounds_per_project={rounds}", C.CYAN, indent=2))
+    parts.append(_kv(
+        "session", f"repair_rounds_per_project={repair_rounds}", C.CYAN, indent=2,
+    ))
     if output_log:
         parts.append(_kv("output", output_log, C.GREY, indent=2))
     if events_log:

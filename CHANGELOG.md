@@ -24,6 +24,20 @@
 
 ### Fixed
 
+- The cross-run header no longer reports the repair budget as if it were the
+  planning budget either. Companion to the mono header fix above, on the
+  surface it left behind: `orcho cross --max-rounds 4` printed
+  `rounds_per_project=4` and the transcript then bannered
+  `CROSS-PLAN -- Round 1/2`, because the cross plan loop's budget is the
+  projection's own `LoopStep.max_rounds` and `--max-rounds` never reached it
+  (ADR 0031). The header now names the repair cap for the loop it caps
+  (`repair_rounds_per_project=4`) and carries the planning budget on the
+  `Plan source` row (`cross  (2 rounds)`). `find_cross_plan_loop` becomes the
+  single owner of "which projected LoopStep is the plan loop": the run flow
+  and the header both read it there, which they must, since the header is
+  assembled before the run flow resolves its own step handles. Behaviour is
+  unchanged.
+
 - The run header no longer reports the repair budget as if it were the
   planning budget. The State line rendered a bare `rounds=<max_rounds>`
   immediately next to `plan=yes`, so an operator who passed `--max-rounds 4`
