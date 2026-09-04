@@ -448,7 +448,15 @@ Examples:
             "or exits cleanly with a hint. Use for MCP / CI transports."
         ),
     )
-    parser.add_argument("--max-rounds",   type=int, default=1)
+    parser.add_argument(
+        "--max-rounds", type=int, default=None, metavar="N",
+        help=(
+            "Cap on implement/review/repair rounds. Default 1. On "
+            "--resume, omitting this inherits the budget the run was "
+            "started with (persisted in its checkpoint store); passing "
+            "it explicitly overrides that inherited value."
+        ),
+    )
     parser.add_argument(
         "--session-split",
         action="append",
@@ -809,6 +817,7 @@ Examples:
         load_resume_meta as _load_resume_meta,
         prompt_resume_intent as _prompt_resume_intent,
         resolve_project as _resolve_project,
+        resolve_resume_max_rounds as _resolve_resume_max_rounds,
         resolve_resume_profile as _resolve_resume_profile,
         resolve_task as _resolve_task,
         should_prompt_for_resume_intent as _should_prompt_for_resume_intent,
@@ -1446,6 +1455,27 @@ Examples:
             run_dir=output_dir,
             meta=_resumed.meta,
             no_interactive=_no_interactive,
+        )
+
+    # Round budget: explicit --max-rounds → the budget persisted for the
+    # resumed run → 1. A CHECKPOINT resume continues the operator's own
+    # run, so omitting the flag must not shrink the repair loop to the
+    # argparse default and then write that shrunken value back over the
+    # run's persisted config. FOLLOWUP mints a new run and inherits
+    # nothing here; FRESH has nothing to inherit from.
+    _budget = _resolve_resume_max_rounds(
+        explicit=args.max_rounds,
+        run_dir=(
+            output_dir if _resume_mode == _ResumeMode.CHECKPOINT else None
+        ),
+        run_id=args.resume if _resume_mode == _ResumeMode.CHECKPOINT else None,
+        default=1,
+    )
+    args.max_rounds = _budget.value
+    if _budget.inherited:
+        print(
+            f"  \u21b3 inheriting --max-rounds {_budget.value} from the resumed "
+            "run (pass --max-rounds to override)."
         )
 
     # Kwargs that stay constant across an auto-correction follow-up loop
