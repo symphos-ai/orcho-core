@@ -62,14 +62,27 @@ class StartupWatchdog(ServiceCommandObserver):
         self.armed = True
         self.started = time.monotonic()
         self.deadline = self.started + self.budget_s
-        self.baseline_events_size = self._size("events.jsonl")
-        self.baseline_output_size = self._size("output.log")
-        if self.output_dir is not None:
-            _atomic_json(self.output_dir / _ARTIFACT_NAME, {
-                "armed_at": _utc_now(), "budget_s": self.budget_s,
-                "baseline_events_size": self.baseline_events_size,
-                "baseline_output_size": self.baseline_output_size,
-            })
+        self._snapshot_baselines()
+        self._write_artifact()
+
+    def mark_progress(self) -> None:
+        """Restart the idle budget after engine-owned work that leaves no trace.
+
+        The window's only ambient progress signals are ``events.jsonl`` and
+        ``output.log`` growth. Setup work that emits neither (worktree
+        bootstrap steps such as a dependency install) would otherwise complete
+        successfully and then be retro-halted at the next checkpoint. A
+        heartbeat re-snapshots the baselines and moves the deadline, but keeps
+        the watchdog armed so a later hang before the first phase is still
+        caught. A recorded command timeout is not cleared: it remains a halt
+        cause at the next checkpoint.
+        """
+        if not self.armed or self.disarmed or self._halted:
+            return
+        self.started = time.monotonic()
+        self.deadline = self.started + self.budget_s
+        self._snapshot_baselines()
+        self._write_artifact()
 
     def on_start(self, event: ServiceCommandEvent) -> float | None:
         if not self.armed or self.disarmed or self.deadline is None:
@@ -82,13 +95,7 @@ class StartupWatchdog(ServiceCommandObserver):
             "declared_timeout_s": event.declared_timeout_s,
             "effective_timeout_s": effective,
         }
-        if self.output_dir is not None:
-            _atomic_json(self.output_dir / _ARTIFACT_NAME, {
-                "armed_at": _utc_now(), "budget_s": self.budget_s,
-                "baseline_events_size": self.baseline_events_size,
-                "baseline_output_size": self.baseline_output_size,
-                "command": self.breadcrumb,
-            })
+        self._write_artifact()
         return self.deadline
 
     def on_terminal(self, event: ServiceCommandEvent) -> None:
@@ -127,6 +134,23 @@ class StartupWatchdog(ServiceCommandObserver):
 
     def disarm(self) -> None:
         self.disarmed = True
+
+    def _snapshot_baselines(self) -> None:
+        self.baseline_events_size = self._size("events.jsonl")
+        self.baseline_output_size = self._size("output.log")
+
+    def _write_artifact(self) -> None:
+        """Persist the current window: ``armed_at`` is the start of the idle budget."""
+        if self.output_dir is None:
+            return
+        payload: dict[str, Any] = {
+            "armed_at": _utc_now(), "budget_s": self.budget_s,
+            "baseline_events_size": self.baseline_events_size,
+            "baseline_output_size": self.baseline_output_size,
+        }
+        if self.breadcrumb is not None:
+            payload["command"] = self.breadcrumb
+        _atomic_json(self.output_dir / _ARTIFACT_NAME, payload)
 
     def _size(self, name: str) -> int:
         if self.output_dir is None:
@@ -172,10 +196,18 @@ def disarm_startup_watchdog() -> None:
         watchdog.disarm()
 
 
+def heartbeat_startup_watchdog() -> None:
+    """Report setup progress that writes neither an event nor output."""
+    watchdog = _ACTIVE_WATCHDOG.get()
+    if watchdog is not None:
+        watchdog.mark_progress()
+
+
 __all__ = [
     "StartupWatchdog",
     "arm_startup_watchdog",
     "checkpoint_startup_watchdog",
     "disarm_startup_watchdog",
+    "heartbeat_startup_watchdog",
     "startup_watchdog_scope",
 ]

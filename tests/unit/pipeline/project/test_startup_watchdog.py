@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,12 +15,17 @@ from pipeline.project.startup_watchdog import (
     arm_startup_watchdog,
     checkpoint_startup_watchdog,
     disarm_startup_watchdog,
+    heartbeat_startup_watchdog,
     startup_watchdog_scope,
 )
 
 
 def _session() -> dict:
     return {"status": "running", "phases": {}, "task": "watchdog"}
+
+
+def _iso(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _events(run_dir: Path) -> list[dict]:
@@ -87,10 +93,70 @@ def test_event_or_output_progress_or_first_phase_disarms_without_halt(tmp_path: 
     assert not (tmp_path / "meta.json").exists()
 
 
+def test_bootstrap_heartbeat_restarts_the_budget_but_keeps_the_watchdog_armed(
+    tmp_path: Path,
+) -> None:
+    """Worktree bootstrap emits no event and writes no output.log, so its
+    completion is invisible to ``_has_progress``. The heartbeat is the single
+    owner's way to accept that progress: the deadline and the durable window
+    move, the baselines re-snapshot, and the watchdog stays armed so a hang
+    after bootstrap is still halted."""
+    events.init_event_store(tmp_path)
+    events.emit("run.start", run_kind="single_project", task="t", project="/p", profile="feature")
+    with startup_watchdog_scope(tmp_path) as watchdog:
+        watchdog.budget_s = 0.02
+        watchdog.arm()
+        armed = json.loads((tmp_path / "startup_command.json").read_text())
+        time.sleep(0.03)
+        events.emit("agent.text", text="bootstrap-adjacent event")
+        heartbeat_startup_watchdog()
+
+        assert watchdog.checkpoint(_session()) is False
+        assert watchdog.armed is True and watchdog.disarmed is False
+        refreshed = json.loads((tmp_path / "startup_command.json").read_text())
+        assert _iso(refreshed["armed_at"]) > _iso(armed["armed_at"])
+        assert refreshed["baseline_events_size"] == (tmp_path / "events.jsonl").stat().st_size
+        assert refreshed["baseline_events_size"] > armed["baseline_events_size"]
+        assert refreshed["budget_s"] == 0.02
+        assert "command" not in refreshed
+
+        time.sleep(0.03)
+        session = _session()
+        assert watchdog.checkpoint(session) is True
+
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert meta["halt_reason"] == "startup_stalled"
+    assert meta["halt"]["elapsed_s"] < 0.2
+    assert session["halt"]["command"] is None
+
+
+def test_heartbeat_is_inert_before_arming_after_disarming_and_after_a_halt(
+    tmp_path: Path,
+) -> None:
+    watchdog = StartupWatchdog(tmp_path)
+    watchdog.mark_progress()
+    assert watchdog.deadline is None
+    assert not (tmp_path / "startup_command.json").exists()
+
+    watchdog.arm()
+    watchdog.disarm()
+    deadline = watchdog.deadline
+    watchdog.mark_progress()
+    assert watchdog.deadline == deadline
+
+    halted = StartupWatchdog(tmp_path / "halted")
+    halted.arm()
+    halted.deadline = 0.0
+    assert halted.checkpoint(_session()) is True
+    halted.mark_progress()
+    assert halted.deadline == 0.0
+
+
 def test_module_helpers_are_inert_without_an_active_scope() -> None:
     """The helpers are called unconditionally from the setup sequence, so
     outside a watchdog scope they must be no-ops rather than errors."""
     arm_startup_watchdog()
+    heartbeat_startup_watchdog()
     disarm_startup_watchdog()
 
     assert checkpoint_startup_watchdog({"status": "running"}) is False

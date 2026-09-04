@@ -83,6 +83,15 @@
   As defense in depth, the Claude runtime now raises a typed
   `AgentCallError` naming the real cause when a stream-json reply carries no
   assistant text at all, instead of silently returning the raw stream.
+- A worktree bootstrap that outlived `startup_stall_seconds` (a long
+  `npm ci`, for example) completed successfully and was then halted as
+  `startup_stalled` at the next checkpoint, because bootstrap steps emit no
+  event and write no `output.log`, the watchdog's only progress signals. The
+  bootstrap path now reports a heartbeat to the startup watchdog per completed
+  step and after success; the heartbeat restarts the idle budget and refreshes
+  `startup_command.json` (`armed_at` is the start of the current idle window)
+  while keeping the watchdog armed for a hang before the first phase
+  (ADR 0180 addendum).
 
 ## 0.9.0 - 2026-08-29
 
