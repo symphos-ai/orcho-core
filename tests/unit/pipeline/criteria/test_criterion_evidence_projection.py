@@ -67,10 +67,12 @@ def run_dir(tmp_path):
     )
     (d / "events.jsonl").write_text("", encoding="utf-8")
     write_parsed_plan_artifact(d, parse_plan(json.dumps(_PLAN)), attempt=1)
+    # A finished run's ledger is finalized: only ``finalize`` ever writes an
+    # executed_* disposition into a row, and it does so from the trail.
     write_ledger(d, ScheduledGateLedger(rows=(
         _row("unit", "executed_pass", "verification_command_receipts/unit.json"),
         _row("lint", "executed_fail", "verification_command_receipts/lint.json"),
-    )))
+    ), finalized=True))
     record_criterion_claim(
         d, run_id=RUN_ID, criterion_id="C3", actor="reviewer",
         statement="The authoring workflow reads coherently.",
@@ -349,3 +351,71 @@ class TestDurableClaimRoundTrip:
         assert criteria_to_wire(plan.acceptance_criteria) == _PLAN[
             "acceptance_criteria"
         ]
+
+
+class TestMidRunViewMatchesFinalizedView:
+    """The matrix read before finalize must equal the matrix read after it.
+
+    ``final_acceptance`` consumes the criterion matrix while the ledger is still
+    open. A third dogfood run had every gate pass, review approve, and the
+    release rejected anyway: the persisted row snapshot still said
+    ``residual_missing`` (it is only rewritten at finalize) while the trail
+    already carried ``execution pass``, so the reviewer was told C1/C2 were
+    missing and end-of-run evidence said they were proven. The reader now
+    reduces from the trail with the same reducer finalize uses.
+    """
+
+    def _open_run(self, tmp_path):
+        from pipeline.verification_ledger import GateTrailEvent
+
+        d = tmp_path / RUN_ID
+        d.mkdir()
+        (d / "meta.json").write_text(
+            json.dumps({"run_id": RUN_ID, "status": "running"}), encoding="utf-8",
+        )
+        (d / "events.jsonl").write_text("", encoding="utf-8")
+        write_parsed_plan_artifact(d, parse_plan(json.dumps(_PLAN)), attempt=1)
+        # Rows as the runtime declares them at setup; executions only in the trail.
+        write_ledger(d, ScheduledGateLedger(
+            rows=(
+                _row("unit", "residual_missing", None),
+                _row("lint", "residual_missing", None),
+            ),
+            trail=(
+                GateTrailEvent(
+                    "unit", "after_phase", "implement", "execution", "pass",
+                    receipt_evidence="verification_command_receipts/unit.json",
+                ),
+                GateTrailEvent(
+                    "lint", "after_phase", "implement", "execution", "fail",
+                    receipt_evidence="verification_command_receipts/lint.json",
+                ),
+            ),
+            finalized=False,
+        ))
+        record_criterion_claim(
+            d, run_id=RUN_ID, criterion_id="C3", actor="reviewer",
+            statement="The authoring workflow reads coherently.",
+        )
+        record_human_decision(
+            d, run_id=RUN_ID, criterion_id="C4", decision="accept",
+        )
+        return d
+
+    def test_executed_gates_are_proven_before_finalize(self, tmp_path) -> None:
+        d = self._open_run(tmp_path)
+
+        states = [r.state for r in criterion_matrix_for_run(d).rows]
+
+        assert states[:2] == ["proven", "failed"], states
+
+    def test_open_and_finalized_ledgers_yield_the_same_matrix(self, tmp_path) -> None:
+        from pipeline.verification_ledger_store import load_ledger
+
+        d = self._open_run(tmp_path)
+        before = criterion_matrix_for_run(d).to_dict()
+
+        write_ledger(d, load_ledger(d).finalize())
+        after = criterion_matrix_for_run(d).to_dict()
+
+        assert before == after

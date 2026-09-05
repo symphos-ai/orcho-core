@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- The criterion matrix read while a run is still open now agrees with the
+  one read at run end. Gate rows in the scheduled-gate ledger carry a
+  disposition that only `finalize` rewrites from the trail, so mid-run the
+  persisted row still said `residual_missing` for a gate the trail already
+  recorded as passed. `final_acceptance` consumes the matrix before finalize:
+  a dogfood run had every gate pass and review approve, and the release was
+  rejected because the reviewer was told the executable criteria were
+  `missing` while end-of-run evidence reported them `proven`. The reader now
+  reduces an open ledger from its trail with the same reducer `finalize`
+  uses (`ScheduledGateLedger.reduced_rows`); a finalized ledger's rows are
+  already that reduction and are used as-is.
+
 - A plan that fails to parse or violates the plan contract no longer ends the
   run at the plan phase. The violation is recorded and `validate_plan` renders
   it as a synthesized `REJECTED` verdict, so the planner receives the exact

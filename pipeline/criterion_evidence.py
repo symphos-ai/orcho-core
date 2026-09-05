@@ -74,7 +74,15 @@ def gate_facts_from_ledger(
 
     states: dict[tuple[str, str, str], str] = {}
     receipts: dict[tuple[str, str, str], str] = {}
-    for row in ledger.rows:
+    # A finalized ledger's rows are the reduced truth: ``finalize`` wrote them
+    # from the trail and the loader rejects any non-terminal row. An open
+    # ledger's rows are still the run-setup declaration (``residual_missing``
+    # even after the trail records a pass), so reduce them from the trail
+    # with the same reducer ``finalize`` uses. ``final_acceptance`` reads this
+    # matrix while the ledger is open; without this its view of an executed
+    # gate was ``missing`` while end-of-run evidence said ``proven``.
+    rows = ledger.rows if ledger.finalized else ledger.reduced_rows()
+    for row in rows:
         states[row.identity] = gate_state_from_disposition(row.disposition)
         if row.receipt_evidence:
             receipts[row.identity] = str(row.receipt_evidence)
