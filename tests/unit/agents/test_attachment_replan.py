@@ -243,4 +243,9 @@ def test_replan_parse_error_persists_both_fields_then_clears(
     assert log["meta"]["human_directed"] is True
     assert "parse_error" in log
     assert state.human_feedback == ""
-    assert state.halt is True
+    # A parse error is a rejection for validate_plan, not a halt: the run
+    # keeps its remaining planning rounds.
+    assert state.halt is False
+    assert state.parsed_plan is None
+    from pipeline.phases.builtin.plan_artifact import PLAN_CONTRACT_REJECTION_KEY
+    assert state.extras[PLAN_CONTRACT_REJECTION_KEY]["round"] == 2

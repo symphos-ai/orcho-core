@@ -267,6 +267,12 @@ recognise:
 | `"phase_failure:<ExceptionClass>"` | `_record_phase_failure` | uncaught exception escaped a phase handler |
 | free-form string | finalize `state.halt` branch | any `state.stop(reason)` caller — see the [halt-trigger enumeration](#halt-trigger-enumeration) below |
 
+A plan that fails to parse or violates the plan contract is **not** a halt
+while the plan loop has rounds left: the plan handler records the violation
+and `validate_plan` renders it as a synthesized `REJECTED` verdict, so it
+becomes critique for the next round. The strings below appear only when no
+replan or operator-decision path remains.
+
 **Caveat — `state.halt` free-form strings.** When the finalize
 `state.halt` branch fires, `halt_reason` holds whatever string the
 caller passed to `state.stop()`. Real examples that ship today:
@@ -688,7 +694,8 @@ orchestrator paths are listed separately.
 
 | Trigger | Location | `state.halt_reason` string |
 |---|---|---|
-| Plan parse failure round-1 | `pipeline/phases/builtin.py:476` | `"plan rejected before implement: <parse error>"` |
+| Plan-contract violation with no replan or operator path left | `pipeline/phases/builtin/handlers/validate_plan.py` `_rejection_requires_stop` | `"plan rejected before implement: <parse error>"` |
+| Unresolvable criterion gate ref with no replan or operator path left | same | `"validate_plan rejected before implement: <problems>"` |
 | validate_plan budget exhausted on contract reject | `pipeline/phases/builtin.py:655` | `"validate_plan contract rejected before implement: <error>"` |
 | validate_plan contract reject (early-exit) | `pipeline/phases/builtin.py:900` | `"validate_plan contract rejected before implement: <error>"` |
 | review contract reject before repair_changes | `pipeline/phases/builtin.py:2225` | `"review contract rejected before repair_changes: <error>"` |

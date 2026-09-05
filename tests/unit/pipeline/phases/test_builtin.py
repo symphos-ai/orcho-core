@@ -714,7 +714,7 @@ class TestPlanHandler:
         """Risk #3: when parse fails the structured preview must be
  skipped, but the raw model output AND the parse error must
  appear in stdout — not only on disk. Hiding the bad JSON
- behind the suppressor would make a halt feel silent."""
+ behind the suppressor would make the rejection feel silent."""
         bad = "{not valid json — missing required fields"
         state = _state(phase_config=_StubPhaseConfig(
             plan_agent     = _FakeArchitect(bad),
@@ -726,8 +726,11 @@ class TestPlanHandler:
         ))
         new = default_registry().get("plan")(state)
         out = capsys.readouterr().out
-        # Run halted with parse error and raw output preserved.
-        assert new.halt is True
+        # Parse error recorded as a rejection for validate_plan (not a halt),
+        # raw output preserved.
+        assert new.halt is False
+        from pipeline.phases.builtin.plan_artifact import PLAN_CONTRACT_REJECTION_KEY
+        assert new.extras[PLAN_CONTRACT_REJECTION_KEY]["error"]
         assert new.phase_log["plan"]["output"] == bad
         assert "parse_error" in new.phase_log["plan"]
         # No structured plan block — the parse never produced one.

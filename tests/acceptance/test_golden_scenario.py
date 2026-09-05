@@ -525,14 +525,17 @@ def test_golden_scenario_typed_plan_contract_propagates_to_phase_prompts(
 def test_golden_scenario_malformed_contract_halts_active_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """REA-1: malformed structured plan halts the active pipeline before BUILD.
+    """REA-1: a malformed structured plan never reaches BUILD.
 
     Replaces the mock architect's planning output with one that carries
     a JSON fence whose ``acceptance_criteria`` is the wrong type. The
-    PLAN handler must run :func:`parse_plan`, detect the
-    :class:`PlanSchemaError`, call ``state.stop()``, and skip BUILD.
-    BUILD's spy assertion proves the halt landed before any developer
-    invocation.
+    PLAN handler runs :func:`parse_plan`, detects the
+    :class:`PlanSchemaError`, and records it for ``validate_plan``, which
+    renders a synthesized ``REJECTED`` verdict: the planner gets another
+    round rather than the run dying. The second round is malformed too, so
+    on the final round ``feature``'s ``human_feedback_on_reject`` policy
+    pauses the run for an operator. The spy proves BUILD never ran: exactly
+    two architect calls, both PLAN.
     """
     from agents.runtimes._strategy import (
         MockAgentProvider,
@@ -597,14 +600,13 @@ def test_golden_scenario_malformed_contract_halts_active_pipeline(
         profile_name="feature",
     )
 
-    assert session["status"] == "halted"
-    assert "acceptance_criteria" in session.get("halt", {}).get("reason", "")
+    assert session["status"] == "awaiting_phase_handoff"
 
-    # Exactly one architect call (PLAN) — BUILD/FIX must NOT have been
-    # invoked. The PLAN handler stopped the run when parse_plan()
-    # rejected the malformed contract.
-    assert len(invocations) == 1, (
-        f"expected exactly one architect call (PLAN), got "
+    # Two architect calls (PLAN round 1, PLAN round 2) — BUILD/FIX must NOT
+    # have been invoked. The malformed contract was rejected each round and
+    # the run paused for an operator instead of proceeding.
+    assert len(invocations) == 2, (
+        f"expected exactly two architect calls (two PLAN rounds), got "
         f"{len(invocations)}: {[p[:80] for p in invocations]!r}"
     )
     plan_log = session.get("phases", {}).get("plan")
@@ -613,9 +615,22 @@ def test_golden_scenario_malformed_contract_halts_active_pipeline(
         isinstance(e, dict) and "acceptance_criteria" in (e.get("parse_error") or "")
         for e in plan_entries
     ), f"plan log missing parse_error breadcrumb: {plan_log!r}"
-    metrics = session.get("metrics", {})
+    vp_log = session.get("phases", {}).get("validate_plan")
+    vp_entries = vp_log if isinstance(vp_log, list) else [vp_log]
+    # The persisted projection keeps verdict + findings; the engine-synthesized
+    # rejection is recognisable by its finding id and by no reviewer having run.
+    assert vp_entries and all(
+        isinstance(e, dict) and e.get("verdict") == "REJECTED"
+        and (e.get("findings") or [{}])[0].get("id") == "plan-contract"
+        and not e.get("reviewer_provider")
+        for e in vp_entries
+    ), f"validate_plan must reject each malformed round by contract: {vp_log!r}"
+    # On the pause path metrics live in the durable artifact, not the
+    # in-memory session; the rejected PLAN rounds still consumed agent calls
+    # and must be recorded there.
+    metrics = json.loads((out_dir / "metrics.json").read_text())
     assert "plan" in metrics.get("phases", {}), (
-        "halted PLAN consumed an agent call and must still be recorded "
+        "rejected PLAN consumed agent calls and must still be recorded "
         f"in metrics: {metrics!r}"
     )
     assert metrics.get("total_tokens", 0) > 0
@@ -624,22 +639,18 @@ def test_golden_scenario_malformed_contract_halts_active_pipeline(
         json.loads(line)
         for line in (out_dir / "events.jsonl").read_text().splitlines()
     ]
-    run_end = [e for e in events if e["kind"] == "run.end"][-1]
-    assert run_end["payload"]["status"] == "halted"
-    assert "acceptance_criteria" in run_end["payload"]["halt_reason"]
-    plan_end = [
-        e for e in events
-        if e["kind"] == "phase.end" and e.get("phase") == "PLAN"
-    ][-1]
-    assert plan_end["payload"]["outcome"].startswith("halted:")
-
-    evidence = json.loads((out_dir / "evidence.json").read_text())
-    assert evidence["status"] == "halted"
     assert any(
-        e["kind"] == "run_halted" and "acceptance_criteria" in e["message"]
-        for e in evidence["errors"]
-    )
-
+        e["kind"] == "phase.handoff_requested"
+        and e.get("payload", {}).get("phase") == "validate_plan"
+        for e in events
+    ), "the final rejected round must pause for an operator"
+    assert not any(
+        e["kind"] == "phase.end" and e.get("phase") == "IMPLEMENT"
+        for e in events
+    ), "BUILD must never have started"
+    # No evidence.json here: the pause path writes evidence only at run end.
+    # The parse_error breadcrumb is already pinned above in the plan log and
+    # the events stream.
 
 def test_golden_scenario_malformed_contract_rejected_before_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

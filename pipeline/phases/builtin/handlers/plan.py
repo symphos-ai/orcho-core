@@ -20,6 +20,7 @@ from pipeline.phases.builtin.lifecycle import (
     _prompt_from_active_step,
 )
 from pipeline.phases.builtin.plan_artifact import (
+    PLAN_CONTRACT_REJECTION_KEY,
     _emit_plan_parsed_event,
     _finalize_replan_phase_log,
     _plan_prompt_prefix,
@@ -75,6 +76,30 @@ def _prior_plan_handoff_part(body: str) -> object:
         volatile_reason="prior plan attempt varies every replan round",
         id="replan_prior_plan:prior_plan",
     )
+
+def _reject_plan_contract(state: PipelineState, error: Exception, plan_round: int) -> None:
+    """Hand a plan-contract violation to plan review instead of ending the run.
+
+    A plan that fails to parse or violates the plan schema is a fixable defect
+    in the planner's own output. This handler used to ``state.stop`` here,
+    which spent the run on a naming or shape mistake while the plan loop still
+    had rounds left: two consecutive dogfood runs died this way at round 1 of
+    2. The violation is now recorded for ``validate_plan``, which renders it as
+    a synthesized ``REJECTED`` verdict, so the planner gets the exact error as
+    critique on the next round and no reviewer call is spent on a question the
+    engine already answered.
+
+    Fail-closed is preserved by the readers, not here: ``validate_plan`` stops
+    the run when no replan or operator-decision path remains, and implement
+    refuses to start without a parsed plan.
+    """
+    state.parsed_plan = None
+    state.extras[PLAN_CONTRACT_REJECTION_KEY] = {
+        "error": str(error),
+        "kind": type(error).__name__,
+        "round": plan_round,
+    }
+
 
 def _phase_plan(state: PipelineState) -> PipelineState:
     """Wrap ``adapters.run_plan``. Captures rendered plan markdown into state.
@@ -221,7 +246,7 @@ def _phase_plan(state: PipelineState) -> PipelineState:
                 error=str(e),
                 raw_output=output,
             ))
-            state.stop(f"plan rejected before implement: {e}")
+            _reject_plan_contract(state, e, plan_round)
             _finalize_replan_phase_log(state, base={
                 "output": output,
                 "meta": {"replan": True, "critique": state.last_critique},
@@ -431,9 +456,7 @@ def _phase_plan(state: PipelineState) -> PipelineState:
                 error=str(e),
                 raw_output=result.output,
             ))
-            state.stop(
-                f"plan rejected before implement: {e}"
-            )
+            _reject_plan_contract(state, e, plan_round)
             state.phase_log["plan"] = {
                 "output": result.output,
                 "meta": dict(result.meta),

@@ -56,6 +56,11 @@ def _parsed_plan_to_render_dict(parsed_plan) -> dict:
     }
 
 
+#: ``state.extras`` key carrying a plan-contract violation from the plan
+#: handler to ``validate_plan``, which renders it as a synthesized rejection.
+PLAN_CONTRACT_REJECTION_KEY = "plan_contract_rejection"
+
+
 def _print_plan_preview(state: PipelineState) -> None:
     """Emit the structured plan block on stdout after a successful parse.
 
