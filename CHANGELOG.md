@@ -4,6 +4,17 @@
 
 ### Fixed
 
+- A plan that fails to parse or violates the plan contract no longer ends the
+  run at the plan phase. The violation is recorded and `validate_plan` renders
+  it as a synthesized `REJECTED` verdict, so the planner receives the exact
+  error as critique on its next round and no reviewer call is spent on a
+  question the engine already answered. The run stops only when no replan or
+  operator-decision path remains, through the same fail-closed check that
+  already governed verification-ownership conflicts; that check now also
+  covers unresolvable gate refs on the final round. Two consecutive dogfood
+  runs had died at round 1 of 2 on fixable output mistakes: a gate named by
+  its shell command, then an executable criterion no task referenced.
+
 - A plan whose acceptance criterion names a gate the project does not declare
   no longer ends the run. The reference is resolved at plan review, next to the
   existing verification-ownership check, and an unresolvable one is a

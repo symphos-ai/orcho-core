@@ -24,6 +24,7 @@ from pipeline.phases.builtin.lifecycle import (
     _prompt_from_active_step,
 )
 from pipeline.phases.builtin.plan_artifact import (
+    PLAN_CONTRACT_REJECTION_KEY,
     _approved_review_json,
     _plan_contract_for,
     _review_plan_artifact,
@@ -54,11 +55,18 @@ if TYPE_CHECKING:
     from pipeline.runtime import PipelineState
 
 
-def _ownership_conflict_requires_stop(
+def _rejection_requires_stop(
     state: PipelineState,
     plan_round: int,
 ) -> bool:
-    """Fail closed when no replan or operator-decision path remains."""
+    """Fail closed when no replan or operator-decision path remains.
+
+    Shared by every engine-synthesized rejection (plan-contract violation,
+    verification-ownership conflict, unresolvable gate ref): while rounds
+    remain the rejection is critique for the next plan round; on the final
+    round a pausing handoff policy hands the decision to an operator; with
+    neither left, the run must stop rather than fall through to implement.
+    """
     max_rounds = int(state.extras.get("plan_round_max") or 0)
     if max_rounds <= 0 or plan_round < max_rounds:
         return False
@@ -86,6 +94,39 @@ def _declared_gate_identities(state: PipelineState) -> frozenset:
         return frozenset()
 
 
+def _render_plan_contract_rejection(rejection: dict[str, Any]) -> str:
+    """Render a valid validate-plan review for a plan-contract violation.
+
+    The plan handler recorded the violation instead of halting; this turns it
+    into the verdict shape the loop already understands, without a reviewer
+    call, so the planner receives the exact error as critique next round.
+    """
+    import json
+
+    error = str(rejection.get("error", "")).strip()
+    kind = str(rejection.get("kind", "PlanContractError"))
+    return json.dumps({
+        "verdict": "REJECTED",
+        "short_summary": "The plan output does not satisfy the plan contract.",
+        "findings": [{
+            "id": "plan-contract",
+            "severity": "P1",
+            "title": f"Plan rejected by the engine: {kind}",
+            "body": (
+                f"{error}. The engine could not accept the plan as written; "
+                "nothing was reviewed for substance."
+            ),
+            "required_fix": (
+                "Re-emit the complete plan so it satisfies the plan contract. "
+                "The error above names the exact violation; fix that and keep "
+                "everything else unchanged."
+            ),
+        }],
+        "risks": [],
+        "checks": ["Parsed the plan output against the plan contract."],
+    })
+
+
 def _phase_validate_plan(state: PipelineState) -> PipelineState:
     """validate_plan reviewer: validate the just-produced plan markdown.
 
@@ -95,18 +136,27 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
     REJECTED with the gate flag on.
     """
     agent = _require_agent(state, "validate_plan_agent")
-    ownership_conflicts = find_verification_ownership_conflicts(
-        state.parsed_plan,
-        state.extras.get("verification_contract"),
-        state.extras,
-    )
-    # ADR 0188 resolves every executable criterion's gate_refs before implement.
-    # Detecting it here rather than in the plan handler keeps an unresolvable
-    # ref a *rejection* the planner can fix on the next round, instead of a
-    # halt that ends the run over a fixable naming mistake.
-    gate_ref_problems = plan_gate_ref_problems(
-        state.parsed_plan, getattr(state, "output_dir", None),
-    )
+    # A plan-contract violation recorded by the plan handler: the plan did not
+    # parse, so there is no plan object to check for ownership or gate refs.
+    # It is consumed here so a later, valid round is judged on its own.
+    contract_rejection = state.extras.pop(PLAN_CONTRACT_REJECTION_KEY, None)
+    if state.parsed_plan is not None:
+        ownership_conflicts = find_verification_ownership_conflicts(
+            state.parsed_plan,
+            state.extras.get("verification_contract"),
+            state.extras,
+        )
+        # ADR 0188 resolves every executable criterion's gate_refs before
+        # implement. Detecting it here rather than in the plan handler keeps an
+        # unresolvable ref a *rejection* the planner can fix on the next round,
+        # instead of a halt that ends the run over a fixable naming mistake.
+        gate_ref_problems = plan_gate_ref_problems(
+            state.parsed_plan, getattr(state, "output_dir", None),
+        )
+    else:
+        ownership_conflicts = ()
+        gate_ref_problems = []
+    engine_rejected = bool(contract_rejection or ownership_conflicts or gate_ref_problems)
 
     from pipeline.prompts import plan_review_focus
 
@@ -135,7 +185,9 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
         phase="validate_plan",
         round_key="plan_round",
     ).continue_session
-    if ownership_conflicts:
+    if contract_rejection:
+        raw = _render_plan_contract_rejection(contract_rejection)
+    elif ownership_conflicts:
         raw = render_verification_ownership_rejection(ownership_conflicts)
     elif gate_ref_problems:
         raw = render_gate_ref_rejection(
@@ -163,7 +215,12 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
                 prompt_spec=prompt_spec,
                 continue_session=validate_plan_continue,
             )
-    plan_artifact = state.extras.get("plan_artifact_path", "") or ""
+    # A rejected-by-contract round stored no artifact; do not point the log at
+    # a prior round's plan.
+    plan_artifact = (
+        "" if contract_rejection
+        else state.extras.get("plan_artifact_path", "") or ""
+    )
 
     # M7: _session_aware_invoke stashed prompt_render trace metadata
     # under state.phase_log["validate_plan"] before the parser ran.
@@ -271,6 +328,12 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
     }
     if contract_repair is not None:
         entry["contract_repair"] = contract_repair
+    if contract_rejection:
+        entry["contract_conflict"] = "plan_contract"
+        entry["plan_contract_rejection"] = dict(contract_rejection)
+    elif gate_ref_problems:
+        entry["contract_conflict"] = "criterion_gate_refs"
+        entry["criterion_gate_ref_problems"] = list(gate_ref_problems)
     if ownership_conflicts:
         entry["contract_conflict"] = "verification_ownership"
         entry["verification_ownership_conflicts"] = [
@@ -296,14 +359,20 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
         approved=approved,
         critique=body,
     )
-    if ownership_conflicts and _ownership_conflict_requires_stop(
-        state,
-        plan_round,
-    ):
-        state.stop(
-            "validate_plan verification ownership conflict rejected before "
-            "implement"
-        )
+    if engine_rejected and _rejection_requires_stop(state, plan_round):
+        if contract_rejection:
+            reason = f"plan rejected before implement: {contract_rejection.get('error', '')}"
+        elif ownership_conflicts:
+            reason = (
+                "validate_plan verification ownership conflict rejected before "
+                "implement"
+            )
+        else:
+            reason = (
+                "validate_plan rejected before implement: "
+                + "; ".join(gate_ref_problems)
+            )
+        state.stop(reason)
 
     # Phase 3 cutover: handler-side gate-blocked halt was removed.
     # Pause semantics now live in the loop runner — a non-bypass
