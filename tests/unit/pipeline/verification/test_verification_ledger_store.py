@@ -152,3 +152,24 @@ def test_finalize_closes_each_duplicate_command_identity_independently(tmp_path:
     update_ledger(tmp_path, GateTrailEvent("same", "after_phase", "implement", "execution", "pass"), finalize=True)
     closed = load_ledger(tmp_path)
     assert [row.disposition for row in closed.rows] == ["executed_pass", "residual_missing"]
+
+
+def test_reduced_rows_closes_from_the_trail_before_finalize(tmp_path: Path) -> None:
+    """``rows`` is a snapshot rewritten only at finalize; ``reduced_rows`` is
+    the live answer. A reader that needs the truth mid-run (the criterion
+    matrix behind ``final_acceptance``) must see the executed gate as
+    ``executed_pass`` while the persisted row still says ``residual_missing``,
+    and ``finalize`` must agree with it exactly.
+    """
+    write_ledger(tmp_path, ScheduledGateLedger(rows=(_row("one", "after_phase", "implement"),)))
+    ledger = update_ledger(
+        tmp_path, GateTrailEvent("one", "after_phase", "implement", "execution", "pass"),
+    )
+
+    assert ledger.finalized is False
+    # The persisted snapshot is untouched by append(): the store leaves it as
+    # declared (None here; the runtime declares ``residual_missing`` at setup).
+    assert ledger.rows[0].disposition is None
+    live = ledger.reduced_rows()
+    assert live[0].disposition == "executed_pass"
+    assert ledger.finalize().rows == live

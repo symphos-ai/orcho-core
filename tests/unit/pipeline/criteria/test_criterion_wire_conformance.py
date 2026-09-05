@@ -144,10 +144,12 @@ def run_dir(tmp_path):
         encoding="utf-8",
     )
     write_parsed_plan_artifact(d, parse_plan(json.dumps(_PLAN)), attempt=1)
+    # Only ``finalize`` writes executed_* into a row, so a ledger carrying them
+    # is a finalized one.
     write_ledger(d, ScheduledGateLedger(rows=(
         _row("unit", "executed_pass"),
         _row("lint", "executed_fail"),
-    )))
+    ), finalized=True))
     from pipeline.criterion_claims import record_criterion_claim
 
     record_criterion_claim(
