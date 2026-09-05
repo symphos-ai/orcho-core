@@ -1493,6 +1493,7 @@ def test_atexit_interrupted_follows_policy(
         project_path=tmp_path / "proj",
         plugin=SimpleNamespace(name="p"),
         model="m",
+        max_rounds=1,
         profile_name="default",
         session_mode=SimpleNamespace(value="auto"),
         change_handoff="uncommitted",

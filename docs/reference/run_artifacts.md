@@ -198,7 +198,8 @@ in-flight runs (the pipeline subprocess) and one out-of-band writer
   "timestamp": "2026-05-24T01:23:45.678901",
   "status": "running",
   "phases": { },
-  "versions": { "orcho-core": "0.9.1", "orcho-mcp": "0.8.3" }
+  "versions": { "orcho-core": "0.9.1", "orcho-mcp": "0.8.3" },
+  "max_rounds": 4
 }
 ```
 
@@ -209,6 +210,18 @@ uninstalled source checkout); other entries appear only when that package
 is installed alongside the engine. Cross-project parent runs carry the
 same key. This is the only artifact-side record of which engine wrote the
 run — use it before attributing a behaviour to a release.
+
+`max_rounds` is the effective implement/review/repair round budget supplied to
+session construction, stamped once beside `versions`. For mono runs this is
+the resolved budget, including checkpoint inheritance when a resume frontend
+resolves it. Cross-project parent runs stamp the cross-run request's budget;
+this field does not add cross-resume inheritance.
+
+This is a **read-only audit projection**. The authority for resume inheritance
+stays the run's own `checkpoints.db` (`run_meta.config_json`, read through
+`read_run_config` by `pipeline/control/resume_budget.py`). No resume path reads
+the budget back out of `meta.json`. Use this key to audit the recorded budget,
+not to predict what a future resume will restore.
 
 ### Status field semantics
 

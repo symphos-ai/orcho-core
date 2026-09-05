@@ -391,6 +391,7 @@ def init_session_with_atexit(
     project_path: Path,
     plugin: PluginConfig,
     model: str,
+    max_rounds: int,
     profile_name: str,
     session_mode: SessionMode,
     change_handoff: str,
@@ -433,6 +434,11 @@ def init_session_with_atexit(
         # Which Orcho packages wrote this run: the only way an artifact can
         # later be matched to an engine version.
         "versions": installed_orcho_versions(),
+        # The effective round budget this run executes with, already resolved
+        # by the frontend (inherited on a resume, not the frontend default).
+        # Read-only audit projection: the authority a resume reads is the run's
+        # own ``checkpoints.db`` ``run_meta.config_json``, never this key.
+        "max_rounds": max_rounds,
     }
     if projected_profile:
         session["projected_profile"] = projected_profile

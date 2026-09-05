@@ -375,6 +375,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
     session = init_run_session(
         task=request.task, project_path=ctx.project_path, plugin=ctx.plugin,
         model=request.model,
+        max_rounds=ctx.max_rounds,
         profile_name=ctx.resolved_profile_name, session_mode=request.session_mode,
         change_handoff=ctx.change_handoff,
         output_dir=request.output_dir,

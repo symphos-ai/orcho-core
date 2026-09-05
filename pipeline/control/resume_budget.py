@@ -10,8 +10,10 @@ rounds, not silently shrink to the frontend's own default.
 The budget's persisted home is the run's own checkpoint store —
 :func:`pipeline.project.bootstrap` writes the effective value into
 ``checkpoints.db`` ``run_meta.config_json`` at bootstrap. Reading it back
-from there keeps a single owner: nothing re-derives the budget and no
-second copy is introduced on ``meta.json`` / ``run_supervisor.json``.
+from there keeps a single owner: nothing re-derives the budget. ``meta.json``
+carries a read-only audit projection of the same effective value, stamped once
+at session construction so an artifact can be read back without the checkpoint
+store; no resume path reads it, and ``run_supervisor.json`` holds no copy.
 
 This module is the one owner of *how* that persisted value is read and
 normalised. Both resume frontends use it — the ``orcho-run`` CLI

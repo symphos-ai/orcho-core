@@ -1,5 +1,6 @@
 {
   "change_handoff": "uncommitted",
+  "max_rounds": 0,
   "metrics": {
     "phase_attempts": [],
     "phases": {},

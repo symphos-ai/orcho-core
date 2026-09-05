@@ -75,6 +75,7 @@ def setup_cross_run(
     projects: Mapping[str, Path],
     model: str,
     mock: bool,
+    max_rounds: int,
     output_dir: Path,
     cross_mode: str,
     resume_from: str | None,
@@ -92,6 +93,10 @@ def setup_cross_run(
     ``cross_mode`` is normalized to ``"full"`` unless it is ``"plan"``.
     The ``success`` resume line is gated by ``terminal``; the ``run.start``
     event and ``session`` shape are never gated.
+
+    ``max_rounds`` is the budget supplied by the cross-run request. It is
+    stamped once here, on the same seam as ``versions``, as a read-only audit
+    projection on ``meta.json``; this does not resolve resume inheritance.
     """
     from pipeline.cross_project.rendering import silent_renderers
     (_banner, success, _warn, _preview, _rcpp, _print, _C) = silent_renderers(
@@ -139,6 +144,7 @@ def setup_cross_run(
         "status": "running",
         "phases": {},
         "versions": installed_orcho_versions(),
+        "max_rounds": max_rounds,
     }
     if resume_mode:
         session["resume_mode"] = resume_mode

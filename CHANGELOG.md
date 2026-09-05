@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Run metadata records the effective `max_rounds` budget for mono runs and
+  cross-project parents. This is an audit projection; resume continues to
+  read the authoritative checkpoint configuration.
+
 - The criterion matrix read while a run is still open now agrees with the
   one read at run end. Gate rows in the scheduled-gate ledger carry a
   disposition that only `finalize` rewrites from the trail, so mid-run the

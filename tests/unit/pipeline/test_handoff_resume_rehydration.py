@@ -933,6 +933,7 @@ def test_bootstrap_rehydrate_preserves_persisted_requested_at(
         project_path=tmp_path,
         plugin=PluginConfig(),
         model="model",
+        max_rounds=1,
         profile_name="small_task",
         session_mode=SessionMode.AUTO,
         change_handoff="uncommitted",
