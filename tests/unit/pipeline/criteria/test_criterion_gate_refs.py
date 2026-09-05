@@ -7,6 +7,9 @@ not-selected all reject the plan before implement.
 """
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from core.contracts.criteria import AcceptanceCriterion, GateRef
@@ -187,3 +190,89 @@ def test_every_unresolved_ref_is_reported_in_declaration_order(run_dir) -> None:
     assert len(problems) == 2
     assert "does not declare" in problems[0]
     assert "not selected" in problems[1]
+
+
+class TestPlanReviewRouting:
+    """An unresolvable ref is a rejection the planner can fix, not a halt.
+
+    The raising path states the same rule for callers that need an exception.
+    Plan review needs it as data: the mistake is in the plan's own text, so it
+    costs one more planning round instead of ending the run.
+    """
+
+    def test_problems_are_returned_instead_of_raised(self, run_dir) -> None:
+        from pipeline.criterion_gate_refs import plan_gate_ref_problems
+
+        plan = SimpleNamespace(acceptance_criteria=(
+            _criterion(GateRef("python -m ruff check .", "after_phase", "implement")),
+        ))
+        problems = plan_gate_ref_problems(plan, run_dir)
+
+        assert len(problems) == 1
+        assert "does not declare" in problems[0]
+
+    def test_a_resolvable_plan_reports_no_problem(self, run_dir) -> None:
+        from pipeline.criterion_gate_refs import plan_gate_ref_problems
+
+        plan = SimpleNamespace(acceptance_criteria=(
+            _criterion(GateRef("unit", "after_phase", "implement")),
+        ))
+
+        assert plan_gate_ref_problems(plan, run_dir) == []
+
+    def test_a_missing_ledger_is_a_problem_not_an_exception(self, tmp_path) -> None:
+        from pipeline.criterion_gate_refs import plan_gate_ref_problems
+
+        plan = SimpleNamespace(acceptance_criteria=(
+            _criterion(GateRef("unit", "after_phase", "implement")),
+        ))
+        problems = plan_gate_ref_problems(plan, tmp_path)
+
+        assert len(problems) == 1
+        assert "no scheduled-gate ledger" in problems[0]
+
+    def test_no_output_dir_is_a_problem_not_an_exception(self) -> None:
+        from pipeline.criterion_gate_refs import plan_gate_ref_problems
+
+        plan = SimpleNamespace(acceptance_criteria=(
+            _criterion(GateRef("unit", "after_phase", "implement")),
+        ))
+        problems = plan_gate_ref_problems(plan, None)
+
+        assert len(problems) == 1
+        assert "no output directory" in problems[0]
+
+    def test_a_plan_without_executable_criteria_needs_no_ledger(self) -> None:
+        from pipeline.criterion_gate_refs import plan_gate_ref_problems
+
+        plan = SimpleNamespace(acceptance_criteria=(
+            AcceptanceCriterion("C1", "i", "agent_assertion"),
+        ))
+
+        assert plan_gate_ref_problems(plan, None) == []
+
+    def test_the_rejection_carries_the_declared_catalogue(self, run_dir) -> None:
+        """The planner cannot fix a ref without being told the real ones."""
+        from pipeline.criterion_gate_refs import render_gate_ref_rejection
+
+        declared = official_gate_identities(run_dir).declared
+        verdict = json.loads(render_gate_ref_rejection(
+            ["C1 references gate 'python -m ruff check .'"], declared,
+        ))
+
+        assert verdict["verdict"] == "REJECTED"
+        fix = verdict["findings"][0]["required_fix"]
+        assert "unit @ after_phase implement" in fix
+        assert "release @ before_delivery" in fix
+        assert "by its declared" in verdict["findings"][0]["body"]
+
+    def test_the_rejection_is_a_valid_review_contract(self, run_dir) -> None:
+        """It replaces a reviewer answer, so it must parse like one."""
+        from core.contracts.review_schema import validate_review_dict
+        from pipeline.criterion_gate_refs import render_gate_ref_rejection
+
+        raw = render_gate_ref_rejection(
+            ["C1 references gate 'x'"], official_gate_identities(run_dir).declared,
+        )
+
+        assert validate_review_dict(json.loads(raw))["verdict"] == "REJECTED"

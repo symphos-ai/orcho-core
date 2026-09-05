@@ -25,7 +25,6 @@ from pipeline.phases.builtin.plan_artifact import (
     _plan_prompt_prefix,
     _print_plan_preview,
     _render_and_store_plan_artifact,
-    _validate_plan_criterion_gate_refs,
 )
 from pipeline.phases.builtin.prompt_parts import (
     _codemap_part,
@@ -205,7 +204,6 @@ def _phase_plan(state: PipelineState) -> PipelineState:
                 delta_droppable_part_ids=("turn_input:replan_task",),
             )
         from core.contracts.plan_schema import PlanSchemaError
-        from pipeline.criterion_gate_refs import CriterionGateRefError
         from pipeline.plan_parser import PlanParseError, parse_plan
         # M8 / M14.1: _session_aware_invoke stashed trace metadata
         # (M12 ``prompt_render`` + M14.1 ``context_growth``) under
@@ -216,8 +214,7 @@ def _phase_plan(state: PipelineState) -> PipelineState:
         _replan_carried = _carry_trace_metadata(state, "plan")
         try:
             parsed_plan = parse_plan(output)
-            _validate_plan_criterion_gate_refs(state, parsed_plan)
-        except (PlanSchemaError, PlanParseError, CriterionGateRefError) as e:
+        except (PlanSchemaError, PlanParseError) as e:
             state.plan_markdown = output
             print(_render_parse_failure(
                 title=f"PLAN replan (round {plan_round})",
@@ -424,12 +421,10 @@ def _phase_plan(state: PipelineState) -> PipelineState:
     _plan_carried = _carry_trace_metadata(state, "plan")
     if not state.dry_run:
         from core.contracts.plan_schema import PlanSchemaError
-        from pipeline.criterion_gate_refs import CriterionGateRefError
         from pipeline.plan_parser import PlanParseError, parse_plan
         try:
             parsed_plan = parse_plan(result.output)
-            _validate_plan_criterion_gate_refs(state, parsed_plan)
-        except (PlanSchemaError, PlanParseError, CriterionGateRefError) as e:
+        except (PlanSchemaError, PlanParseError) as e:
             state.plan_markdown = result.output
             print(_render_parse_failure(
                 title="PLAN",

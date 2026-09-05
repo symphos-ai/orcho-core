@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Any
 from core.contracts.review_schema import ReviewSchemaError
 from core.io.stdout_render import defer_assistant_json
 from core.io.transcript import render_parse_failure as _render_parse_failure
+from pipeline.criterion_gate_refs import (
+    official_gate_identities,
+    plan_gate_ref_problems,
+    render_gate_ref_rejection,
+)
 from pipeline.phases.builtin.lifecycle import (
     _agent_project_dir,
     _carry_trace_metadata,
@@ -65,6 +70,22 @@ def _ownership_conflict_requires_stop(
     )
 
 
+def _declared_gate_identities(state: PipelineState) -> frozenset:
+    """The ledger's declared identities, or empty when it cannot be read.
+
+    Only feeds the rejection's ``required_fix`` catalogue. The problem list
+    already states an unreadable ledger, so a second failure here must not
+    replace that message with a traceback.
+    """
+    run_dir = getattr(state, "output_dir", None)
+    if run_dir is None:
+        return frozenset()
+    try:
+        return official_gate_identities(run_dir).declared
+    except Exception:  # noqa: BLE001 — catalogue is best-effort context
+        return frozenset()
+
+
 def _phase_validate_plan(state: PipelineState) -> PipelineState:
     """validate_plan reviewer: validate the just-produced plan markdown.
 
@@ -78,6 +99,13 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
         state.parsed_plan,
         state.extras.get("verification_contract"),
         state.extras,
+    )
+    # ADR 0188 resolves every executable criterion's gate_refs before implement.
+    # Detecting it here rather than in the plan handler keeps an unresolvable
+    # ref a *rejection* the planner can fix on the next round, instead of a
+    # halt that ends the run over a fixable naming mistake.
+    gate_ref_problems = plan_gate_ref_problems(
+        state.parsed_plan, getattr(state, "output_dir", None),
     )
 
     from pipeline.prompts import plan_review_focus
@@ -109,6 +137,10 @@ def _phase_validate_plan(state: PipelineState) -> PipelineState:
     ).continue_session
     if ownership_conflicts:
         raw = render_verification_ownership_rejection(ownership_conflicts)
+    elif gate_ref_problems:
+        raw = render_gate_ref_rejection(
+            gate_ref_problems, _declared_gate_identities(state),
+        )
     elif state.dry_run:
         raw = _approved_review_json(
             "validate_plan dry run skipped reviewer invocation."

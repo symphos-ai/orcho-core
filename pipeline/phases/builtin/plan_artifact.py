@@ -56,20 +56,6 @@ def _parsed_plan_to_render_dict(parsed_plan) -> dict:
     }
 
 
-def _validate_plan_criterion_gate_refs(state: PipelineState, parsed_plan) -> None:
-    """Reject a plan whose executable criteria name non-official gates.
-
-    Runs before implement so an unresolvable ``gate_ref`` routes to plan repair
-    exactly like a schema violation. Resolution reads the run's durable
-    scheduled-gate ledger; a run with no verification contract has no ledger
-    and asserts nothing (ADR 0188 §2).
-    """
-    from pipeline.criterion_gate_refs import validate_plan_gate_refs
-
-    run_dir = getattr(state, "output_dir", None)
-    validate_plan_gate_refs(parsed_plan, run_dir)
-
-
 def _print_plan_preview(state: PipelineState) -> None:
     """Emit the structured plan block on stdout after a successful parse.
 

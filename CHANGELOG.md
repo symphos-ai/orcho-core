@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- A plan whose acceptance criterion names a gate the project does not declare
+  no longer ends the run. The reference is resolved at plan review, next to the
+  existing verification-ownership check, and an unresolvable one is a
+  synthesized `REJECTED` verdict carrying the declared identities, so the
+  planner fixes it on the next planning round. It previously raised inside the
+  plan phase and halted before implement, spending a full planning round and
+  the run on a fixable naming mistake: a first dogfood run died on
+  `C1 references gate 'python -m ruff check .'`, where the contract declares
+  that gate as `lint`. The resolution stays fail-closed and still happens
+  before implement.
+
+
 ### Added
 
 - `orcho update` upgrades the CLI through the package manager that installed
