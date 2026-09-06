@@ -230,7 +230,7 @@ def _patch_gate(monkeypatch, results: list[dict]) -> dict:
     calls = {"gate": 0, "repair": 0}
     queue = list(results)
 
-    def fake_gate(run, contract, entry):
+    def fake_gate(run, contract, entry, *, invocation_id=None):
         calls["gate"] += 1
         return queue.pop(0) if queue else results[-1]
 
@@ -300,7 +300,7 @@ def test_repair_phase_reruns_only_selected_fast_implement_gates(monkeypatch) -> 
     monkeypatch.setattr(
         gate_repair,
         "_run_gate_command",
-        lambda _run, _contract, entry: (
+        lambda _run, _contract, entry, *, invocation_id=None: (
             commands.append(entry.command) or _receipt(0)
         ),
     )
@@ -345,7 +345,7 @@ def test_skipped_repair_phase_does_not_rerun_fast_implement_gates(
     monkeypatch.setattr(
         gate_repair,
         "_run_gate_command",
-        lambda _run, _contract, entry: (
+        lambda _run, _contract, entry, *, invocation_id=None: (
             commands.append(entry.command) or _receipt(0)
         ),
     )
@@ -841,7 +841,7 @@ class TestRoutingPlanLifecycle:
         monkeypatch.setattr(
             gate_repair,
             "_run_gate_command",
-            lambda run, contract, entry: {
+            lambda run, contract, entry, *, invocation_id=None: {
                 "exit_code": 0 if entry.command == "lint" else 1,
             },
         )

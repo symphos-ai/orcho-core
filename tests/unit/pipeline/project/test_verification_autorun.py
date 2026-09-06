@@ -2493,7 +2493,7 @@ def test_handoff_continuation_refreshes_repaired_receipts_before_acceptance(
     run._record_phase_failure = lambda *args, **kwargs: None
     recorder = _Recorder(run_dir, production_writer=True).install(monkeypatch)
 
-    def execute_initial_gate(run, contract, entry):
+    def execute_initial_gate(run, contract, entry, *, invocation_id=None):
         command = entry.command
         recorder.verify_run(commands=[command], subject_checkout=str(project), project=str(project))
         return json.loads((run_dir / COMMAND_RECEIPTS_DIRNAME / f"{command}.json").read_text())

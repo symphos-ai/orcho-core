@@ -1620,6 +1620,99 @@
         {
           "default": null,
           "default_factory": null,
+          "name": "command",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "hook",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "phase",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "invocation_id",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "started_at",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "observed_at",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "elapsed_s",
+          "type": "float"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "last_output_at",
+          "type": "str | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "stdout_tail",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "stderr_tail",
+          "type": "str"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "has_output",
+          "type": "bool"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "execution_state",
+          "type": "Literal['running', 'settled']"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "exit_code",
+          "type": "int | None"
+        },
+        {
+          "default": null,
+          "default_factory": null,
+          "name": "outcome",
+          "type": "str | None"
+        }
+      ],
+      "frozen": true,
+      "kind": "dataclass",
+      "module": "sdk.gate_progress",
+      "name": "GateProgressSnapshot",
+      "slots": true
+    },
+    {
+      "fields": [
+        {
+          "default": null,
+          "default_factory": null,
           "name": "name",
           "type": "str"
         },
@@ -5995,6 +6088,38 @@
         }
       ],
       "return": "Path"
+    },
+    {
+      "kind": "callable",
+      "module": "sdk.gate_progress",
+      "name": "read_active_gate_progress",
+      "params": [
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "name": "run_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "workspace"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "runs_dir"
+        },
+        {
+          "annotation": "Path | str | None | object",
+          "default": "_CWD_DEFAULT",
+          "kind": "KEYWORD_ONLY",
+          "name": "cwd"
+        }
+      ],
+      "return": "GateProgressSnapshot | None"
     },
     {
       "kind": "callable",

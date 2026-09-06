@@ -137,6 +137,10 @@ from sdk.evidence_slices import (
 )
 from sdk.fine_tune import FineTuneResult, fine_tune_project
 from sdk.fine_tune_probes import EnvCandidate, register_marker_probe
+from sdk.gate_progress import (
+    GateProgressSnapshot,
+    read_active_gate_progress,
+)
 from sdk.handoff_advice import (
     HandoffAdviceConflict,
     HandoffAdviceResult,
@@ -425,6 +429,9 @@ __all__ = [
     "ReceiptEvidence",
     "ScheduledGateEvent",
     "ScheduledGateRow",
+    # Live gate progress projection (read-only, durable; ADR 0190)
+    "read_active_gate_progress",
+    "GateProgressSnapshot",
     # Fine-tune
     "fine_tune_project",
     "FineTuneResult",

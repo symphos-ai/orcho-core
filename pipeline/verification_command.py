@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import re
 import shlex
-import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from core.io.bounded_proc import (
+    Completed,
+    OnOutput,
+    SpawnFailure,
+    TimedOut,
+    run_bounded,
+)
 from pipeline.verification_contract import (
     PlaceholderContext,
     VerificationContract,
@@ -42,6 +48,9 @@ from pipeline.verification_subject import (
     VerificationSubjectAvailable,
     capture_verification_subject,
 )
+
+if TYPE_CHECKING:
+    from pipeline.verification_progress import GateProgressContext
 
 # Command wall-clock budget used when the contract declares none. A hung
 # command degrades to a failed receipt (exit_code=None) rather than blocking the
@@ -66,6 +75,7 @@ def run_command(
     baseline_head: str | None = None,
     log_dir: Path | None = None,
     tail_chars: int = 4000,
+    progress: GateProgressContext | None = None,
 ) -> dict[str, Any]:
     """Execute one declared command natively and return its receipt payload.
 
@@ -74,6 +84,15 @@ def run_command(
     by the caller (the required-gate differential subject) — the executor never
     derives it. ``log_dir`` opts into writing the full stdout+stderr to
     ``<log_dir>/<safe_command>.log``; ``tail_chars`` bounds the inline tails.
+
+    ``progress`` opts into live, coalesced ``gate.progress`` publication while
+    the command runs (ADR 0190): when supplied, a
+    :class:`pipeline.verification_progress.GateProgressAggregator` is wired to
+    the streaming executor as its output callback. It is purely observational —
+    the receipt shape, the outcomes, and #305 timeout partial-output retention
+    are unchanged whether or not it is supplied, and an emit/presenter failure
+    never alters the command's pass/fail result. When absent behavior is
+    identical to before (``sdk/verify.py`` and existing tests unaffected).
 
     Returns a flat dict (NOT written to disk here): ``kind``, ``command``,
     ``env``, ``cwd`` (= eff_cwd), ``placeholders`` (checkout/project), ``argv``,
@@ -95,9 +114,12 @@ def run_command(
     argv = _resolve_argv(cmd_spec.get("run", ""), ctx, python=python)
 
     timeout_s = int(cmd_spec.get("timeout") or _DEFAULT_TIMEOUT_S)
-    exit_code, stdout, stderr, duration_s, detail, outcome = _execute(
-        argv, eff_cwd, sub_env, timeout_s=timeout_s,
-    )
+    from pipeline.verification_progress import observe_gate
+
+    with observe_gate(progress) as on_output:
+        exit_code, stdout, stderr, duration_s, detail, outcome = _execute(
+            argv, eff_cwd, sub_env, timeout_s=timeout_s, on_output=on_output,
+        )
 
     log_path = _write_log(log_dir, command_name, stdout, stderr)
 
@@ -179,9 +201,9 @@ def _coerce_stream(value: Any) -> str:
     ``None`` -> ``""``; ``str`` -> unchanged; ``bytes`` -> a lossily decoded
     string (utf-8 with ``errors="replace"``) so incomplete/invalid encoded
     bytes never raise and no repr-style ``b'...'`` wrapping leaks into text
-    output. This is the single normaliser applied on both the completed and the
-    timeout paths, so a ``TimeoutExpired`` carrying bytes/str/None captured by
-    subprocess is preserved verbatim as text.
+    output. This is the single normaliser applied on the completed, timeout, and
+    spawn-failure paths, so ``run_bounded``'s captured bytes (or the str/None a
+    monkeypatched boundary hands back) are preserved verbatim as text (#305).
     """
     if value is None:
         return ""
@@ -194,9 +216,15 @@ def _coerce_stream(value: Any) -> str:
 
 def _execute(
     argv: list[str], eff_cwd: str, sub_env: dict[str, str],
-    *, timeout_s: int = _DEFAULT_TIMEOUT_S,
+    *, timeout_s: int = _DEFAULT_TIMEOUT_S, on_output: OnOutput | None = None,
 ) -> tuple[int | None, str, str, float, str, str]:
     """Run ``argv`` without a shell; degrade failures to ``exit_code=None``.
+
+    Streams via :func:`core.io.bounded_proc.run_bounded` so a caller can observe
+    live output (the ``on_output`` callback) without changing the captured
+    result: the returned tails and log are byte-for-byte identical whether or
+    not a callback is supplied. ``run_bounded`` also owns the process tree, so a
+    timeout / cancellation kills the whole subtree (no surviving grandchild).
 
     Returns the trailing ``outcome`` as a typed member of
     :data:`COMMAND_OUTCOMES`. Every non-``completed`` outcome carries the same
@@ -204,45 +232,50 @@ def _execute(
     from prose in ``detail``: a command that never finished within its budget is
     a different operator problem from one whose binary could not be spawned.
 
-    On timeout the subprocess has usually already captured whatever the child
-    flushed before the kill; that output is preserved via :func:`_coerce_stream`
-    while ``exit_code`` stays ``None`` and ``outcome`` stays ``"timeout"`` — the
-    receipt must never reinterpret captured output as command completion.
+    On timeout the reader threads have usually already captured whatever the
+    child flushed before the kill; that output is preserved via
+    :func:`_coerce_stream` (#305) while ``exit_code`` stays ``None`` and
+    ``outcome`` stays ``"timeout"`` — the receipt must never reinterpret
+    captured output as command completion. stdout and stderr stay distinct.
     """
     if not argv:
         return None, "", "", 0.0, "empty command (nothing to run)", "empty"
     start = time.monotonic()
-    try:
-        proc = subprocess.run(  # noqa: S603 — argv is declared, not shell
-            argv,
-            cwd=eff_cwd or None,
-            env=sub_env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
+    # text=False: bounded_proc returns raw bytes so ``on_output`` sees byte
+    # chunks (the aggregator owns the incremental decode); we normalise the
+    # captured streams to text here via the single :func:`_coerce_stream`.
+    outcome = run_bounded(
+        argv,
+        timeout_s=float(timeout_s),
+        cwd=eff_cwd or None,
+        env=sub_env,
+        text=False,
+        on_output=on_output,
+    )
+    duration_s = time.monotonic() - start
+    if isinstance(outcome, Completed):
+        return (
+            outcome.returncode,
+            _coerce_stream(outcome.stdout),
+            _coerce_stream(outcome.stderr),
+            duration_s,
+            "",
+            "completed",
         )
-    except subprocess.TimeoutExpired as exc:
+    if isinstance(outcome, TimedOut):
         return (
             None,
-            _coerce_stream(exc.stdout),
-            _coerce_stream(exc.stderr),
-            time.monotonic() - start,
+            _coerce_stream(outcome.stdout),
+            _coerce_stream(outcome.stderr),
+            duration_s,
             f"command timed out after {timeout_s}s",
             "timeout",
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return (
-            None, "", "", time.monotonic() - start,
-            f"subprocess error: {exc}", "error",
-        )
+    # SpawnFailure: the binary could not be launched; no exit code exists.
+    assert isinstance(outcome, SpawnFailure)
     return (
-        proc.returncode,
-        _coerce_stream(proc.stdout),
-        _coerce_stream(proc.stderr),
-        time.monotonic() - start,
-        "",
-        "completed",
+        None, "", "", duration_s,
+        f"subprocess error: {outcome.error}", "error",
     )
 
 

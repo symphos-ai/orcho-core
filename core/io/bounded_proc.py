@@ -4,7 +4,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -17,6 +17,11 @@ from core.io.service_command import (
 )
 
 Output = str | bytes
+
+#: Optional live-output callback: ``on_output(stream_label, chunk_bytes)``.
+#: Invoked from the reader thread for each drained chunk. Best-effort — the
+#: runner suppresses its exceptions so observation can never break capture.
+OnOutput = Callable[[str, bytes], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +51,14 @@ class TimedOut:
 CommandOutcome = Completed | SpawnFailure | TimedOut
 
 
-def _reader(stream: object, sink: bytearray, done: threading.Event) -> None:
+def _reader(
+    stream: object,
+    sink: bytearray,
+    done: threading.Event,
+    *,
+    on_output: OnOutput | None = None,
+    label: str = "",
+) -> None:
     try:
         # BufferedReader.read(n) is allowed to wait for *n* bytes.  read1
         # returns promptly with whatever a pipe has, which is essential when
@@ -54,6 +66,12 @@ def _reader(stream: object, sink: bytearray, done: threading.Event) -> None:
         read = getattr(stream, "read1", None) or stream.read  # type: ignore[attr-defined]
         while chunk := read(65536):
             sink.extend(chunk)
+            # Best-effort live observation. The no-callback path stays exactly
+            # the original loop; when a callback is supplied its failure can
+            # never break the drain (which is what preserves capture fidelity).
+            if on_output is not None:
+                with suppress(Exception):
+                    on_output(label, bytes(chunk))
     finally:
         done.set()
 
@@ -75,11 +93,19 @@ def run_bounded(
     encoding: str = "utf-8",
     errors: str = "replace",
     shell: bool = False,
+    on_output: OnOutput | None = None,
 ) -> CommandOutcome:
     """Run exactly ``args`` and return by timeout plus the reap budget.
 
     Pipe readers are daemon threads so an inherited pipe held by a surviving
     descendant cannot keep the interpreter alive after this function returns.
+
+    ``on_output`` opts into live observation: it is called with
+    ``(stream_label, chunk_bytes)`` for each chunk drained from stdout/stderr,
+    from the reader threads, so a caller can stream progress without changing
+    the captured result. It is best-effort (its exceptions are suppressed) and
+    the returned ``stdout`` / ``stderr`` are byte-for-byte identical whether or
+    not it is supplied.
     """
     started = time.monotonic()
     declared_timeout_s = max(0.0, timeout_s)
@@ -133,8 +159,14 @@ def run_bounded(
 
     process = tree.process
     out_done, err_done = threading.Event(), threading.Event()
-    threading.Thread(target=_reader, args=(process.stdout, stdout, out_done), daemon=True).start()
-    threading.Thread(target=_reader, args=(process.stderr, stderr, err_done), daemon=True).start()
+    threading.Thread(
+        target=_reader, args=(process.stdout, stdout, out_done),
+        kwargs={"on_output": on_output, "label": "stdout"}, daemon=True,
+    ).start()
+    threading.Thread(
+        target=_reader, args=(process.stderr, stderr, err_done),
+        kwargs={"on_output": on_output, "label": "stderr"}, daemon=True,
+    ).start()
     if input_data is not None:
         payload = input_data.encode(encoding) if isinstance(input_data, str) else input_data
         def write_input() -> None:
@@ -146,21 +178,36 @@ def run_bounded(
                 pass
         threading.Thread(target=write_input, daemon=True).start()
 
-    while time.monotonic() < deadline:
-        if process.poll() is not None and out_done.is_set() and err_done.is_set():
-            observe_terminal("completed")
-            return Completed(process.returncode, _convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors))
-        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+    # Own the process tree across the whole wait: if the caller is interrupted
+    # or cancelled (KeyboardInterrupt, CancelledError, any BaseException) while
+    # we poll, tear the subtree down before propagating so no child or
+    # grandchild survives — the same cleanup the old ``subprocess.run`` path did
+    # in its finally (ADR 0179 / #305 process-tree kill guarantee).
+    try:
+        while time.monotonic() < deadline:
+            if process.poll() is not None and out_done.is_set() and err_done.is_set():
+                observe_terminal("completed")
+                return Completed(process.returncode, _convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors))
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
-    reap_deadline = time.monotonic() + max(0.0, reap_budget_s)
-    terminate_tree(tree, deadline=reap_deadline)
-    while time.monotonic() < reap_deadline:
-        if process.poll() is not None and out_done.is_set() and err_done.is_set():
+        reap_deadline = time.monotonic() + max(0.0, reap_budget_s)
+        terminate_tree(tree, deadline=reap_deadline)
+        while time.monotonic() < reap_deadline:
+            if process.poll() is not None and out_done.is_set() and err_done.is_set():
+                observe_terminal("timed_out")
+                return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.returncode, False)
+            time.sleep(min(0.01, max(0.0, reap_deadline - time.monotonic())))
+        observe_terminal("timed_out")
+        return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.poll(), not (out_done.is_set() and err_done.is_set()))
+    except BaseException:
+        with suppress(Exception):
+            terminate_tree(tree, deadline=time.monotonic() + max(0.0, reap_budget_s))
+        with suppress(Exception):
             observe_terminal("timed_out")
-            return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.returncode, False)
-        time.sleep(min(0.01, max(0.0, reap_deadline - time.monotonic())))
-    observe_terminal("timed_out")
-    return TimedOut(_convert(stdout, text=text, encoding=encoding, errors=errors), _convert(stderr, text=text, encoding=encoding, errors=errors), process.poll(), not (out_done.is_set() and err_done.is_set()))
+        raise
 
 
-__all__ = ["CommandOutcome", "Completed", "SpawnFailure", "TimedOut", "run_bounded"]
+__all__ = [
+    "CommandOutcome", "Completed", "OnOutput", "SpawnFailure", "TimedOut",
+    "run_bounded",
+]

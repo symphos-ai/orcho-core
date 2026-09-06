@@ -163,32 +163,13 @@ def run_gate_hook(
                 return GateRepairOutcome(active=True, halted=True)
             failures.append(failure)
             continue
-        _emit_scheduled_gate_start(
-            entry,
-            hook=hook,
-            phase=phase,
+        # One id per execution lands on gate.start / gate.end and on the
+        # gate.progress stream so a reader can pair the settled boundary with
+        # the live progress that preceded it (ADR 0190).
+        receipt, classification = _execute_gate_with_boundary(
+            run, contract, entry,
+            hook=hook, phase=phase,
             project_alias=getattr(run, "project_alias", None),
-        )
-        try:
-            receipt, classification = _run_and_classify_gate(run, contract, entry)
-        except BaseException:
-            _emit_scheduled_gate_end(
-                entry,
-                hook=hook,
-                phase=phase,
-                outcome="failed",
-                duration_s=0.0,
-                project_alias=getattr(run, "project_alias", None),
-            )
-            raise
-        _emit_scheduled_gate_end(
-            entry,
-            hook=hook,
-            phase=phase,
-            outcome="passed" if classification.status == "present" else "failed",
-            duration_s=_gate_duration(receipt),
-            project_alias=getattr(run, "project_alias", None),
-            classification=classification,
         )
         executed.add(identity)
         _record_executed_gate_event(
@@ -678,7 +659,14 @@ def _recheck_failures(
     """
     still_failing: list[GateFailure] = []
     for failure in pending:
-        receipt, classification = _run_and_classify_gate(run, contract, failure.entry)
+        # A recheck is a real re-execution that emits gate.progress, so it needs
+        # a paired gate.start/gate.end (same invocation_id) or the reader could
+        # not settle it (ADR 0190).
+        receipt, classification = _execute_gate_with_boundary(
+            run, contract, failure.entry,
+            hook=hook, phase=phase,
+            project_alias=getattr(run, "project_alias", None),
+        )
         _record_executed_gate_event(
             run,
             failure.entry,
@@ -862,7 +850,9 @@ def _render_gate_command_result(
 # ── command execution + critique ───────────────────────────────────────────
 
 
-def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
+def _run_gate_command(
+    run: Any, contract: Any, entry: Any, *, invocation_id: str | None = None,
+) -> dict:
     """Execute one gate command and return its receipt (monkeypatch seam).
 
     The receipt is also persisted under
@@ -873,12 +863,38 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
 
     On a TERMINAL run a ``▶ running…`` line is printed (and flushed) before the
     blocking command and a ``✓/✗`` result line after, so a multi-minute gate is
-    never a silent gap.
+    never a silent gap. In between, live ``gate.progress`` is published (durable
+    event always; a compact terminal line only under TERMINAL) via the progress
+    context threaded into ``run_command`` — purely observational (ADR 0190).
+
+    A unique ``invocation_id`` identifies this one execution so reruns are
+    distinguishable and the reader can pair the settled ``gate.end`` with the
+    progress stream. The caller (``run_gate_hook``) supplies it so the same id
+    lands on the boundary events; the other converged callers let it default.
     """
     from pipeline.verification_command import run_command
+    from pipeline.verification_progress import build_gate_progress_context
+
+    if invocation_id is None:
+        from pipeline.verification_progress import new_invocation_id
+
+        invocation_id = new_invocation_id()
 
     if _gate_progress_on(run):
         _render_gate_command_start(entry.command)
+        from pipeline.project.gate_progress_view import gate_progress_presenter
+
+        presenter = gate_progress_presenter()
+    else:
+        presenter = None
+
+    progress = build_gate_progress_context(
+        invocation_id=invocation_id,
+        name=entry.command,
+        hook=str(getattr(entry, "hook", "") or ""),
+        phase=str(getattr(entry, "phase", "") or ""),
+        presenter=presenter,
+    )
 
     spec = contract.commands.get(entry.command, {})
     receipt = run_command(
@@ -887,12 +903,15 @@ def _run_gate_command(run: Any, contract: Any, entry: Any) -> dict:
         contract,
         _placeholders(run),
         required=True,
+        progress=progress,
     )
     _persist_gate_receipt(run, entry, receipt)
     return receipt
 
 
-def _run_and_classify_gate(run: Any, contract: Any, entry: Any) -> tuple[dict, Any]:
+def _run_and_classify_gate(
+    run: Any, contract: Any, entry: Any, *, invocation_id: str | None = None,
+) -> tuple[dict, Any]:
     """Execute one gate command and classify its receipt as one step.
 
     Routing never wants one without the other: the receipt records what the
@@ -901,17 +920,72 @@ def _run_and_classify_gate(run: Any, contract: Any, entry: Any) -> tuple[dict, A
     is rendered from both facts at every call site instead of from the
     receipt alone.
     """
-    receipt = _run_gate_command(run, contract, entry)
+    receipt = _run_gate_command(run, contract, entry, invocation_id=invocation_id)
     classification = _classify_gate_receipt(receipt, _placeholders(run))
     if _gate_progress_on(run):
         _render_gate_command_result(entry.command, receipt, classification)
     return receipt, classification
 
 
+def _execute_gate_with_boundary(
+    run: Any,
+    contract: Any,
+    entry: Any,
+    *,
+    hook: str,
+    phase: str,
+    project_alias: str | None = None,
+) -> tuple[dict, Any]:
+    """Run one gate under a paired ``gate.start`` / ``gate.end`` boundary.
+
+    Generates the unique ``invocation_id`` once and stamps it on both the
+    boundary events and the ``gate.progress`` stream (via ``_run_gate_command``),
+    so a reader can pair the live progress with its settled ``gate.end`` — even
+    for repair-loop rechecks and handoff reruns, which would otherwise emit
+    progress the reader could never settle (ADR 0190). ``gate.end`` stays
+    authoritative for the outcome. This is the single seam that pairs a gate
+    execution's progress with a settleable boundary.
+    """
+    from pipeline.verification_progress import new_invocation_id
+
+    invocation_id = new_invocation_id()
+    _emit_scheduled_gate_start(
+        entry, hook=hook, phase=phase, project_alias=project_alias,
+        invocation_id=invocation_id,
+    )
+    try:
+        receipt, classification = _run_and_classify_gate(
+            run, contract, entry, invocation_id=invocation_id,
+        )
+    except BaseException:
+        _emit_scheduled_gate_end(
+            entry, hook=hook, phase=phase, outcome="failed", duration_s=0.0,
+            project_alias=project_alias, invocation_id=invocation_id,
+        )
+        raise
+    _emit_scheduled_gate_end(
+        entry, hook=hook, phase=phase,
+        outcome="passed" if classification.status == "present" else "failed",
+        duration_s=_gate_duration(receipt), project_alias=project_alias,
+        classification=classification, invocation_id=invocation_id,
+    )
+    return receipt, classification
+
+
 def _emit_scheduled_gate_start(
-    entry: Any, *, hook: str, phase: str, project_alias: str | None = None
+    entry: Any,
+    *,
+    hook: str,
+    phase: str,
+    project_alias: str | None = None,
+    invocation_id: str | None = None,
 ) -> None:
-    """Persist the engine-owned gate boundary before its blocking command."""
+    """Persist the engine-owned gate boundary before its blocking command.
+
+    The optional ``invocation_id`` pairs this boundary with the ``gate.progress``
+    stream of the same execution (ADR 0190); it is omitted (readers tolerant)
+    when unknown.
+    """
     from core.observability.events import emit
 
     emit(
@@ -923,6 +997,7 @@ def _emit_scheduled_gate_start(
         phase=phase,
         ownership="engine",
         **({"project_alias": project_alias} if project_alias else {}),
+        **({"invocation_id": invocation_id} if invocation_id else {}),
     )
 
 
@@ -935,6 +1010,7 @@ def _emit_scheduled_gate_end(
     duration_s: float,
     project_alias: str | None = None,
     classification: Any = None,
+    invocation_id: str | None = None,
 ) -> None:
     """Close the typed gate boundary after the command returns or raises.
 
@@ -943,6 +1019,10 @@ def _emit_scheduled_gate_end(
     stream distinguishes a command that failed from one that ran clean but
     could not be proven against the current checkout. Both are omitted when
     the boundary closes on a raise, where no classification exists.
+
+    The optional ``invocation_id`` pairs this settled boundary with the
+    ``gate.progress`` stream of the same execution (ADR 0190). ``gate.end``
+    remains authoritative for the settled outcome; progress never overrides it.
     """
     from core.observability.events import emit
 
@@ -960,6 +1040,7 @@ def _emit_scheduled_gate_end(
         **({"project_alias": project_alias} if project_alias else {}),
         **({"receipt_status": status} if status else {}),
         **({"failure_kind": failure_kind} if failure_kind else {}),
+        **({"invocation_id": invocation_id} if invocation_id else {}),
     )
 
 
@@ -1574,7 +1655,14 @@ def rerun_verification_handoff_gate(
 
     failures: list[GateFailure] = []
     for identity, entry in zip(identities, entries, strict=True):
-        receipt, classification = _run_and_classify_gate(run, contract, entry)
+        # A handoff rerun is a real re-execution that emits gate.progress, so it
+        # needs a paired gate.start/gate.end (same invocation_id) or the reader
+        # could not settle it (ADR 0190).
+        receipt, classification = _execute_gate_with_boundary(
+            run, contract, entry,
+            hook=identity.hook, phase=identity.phase,
+            project_alias=getattr(run, "project_alias", None),
+        )
         _record_executed_gate_event(
             run, entry, receipt, classification,
             hook=identity.hook, phase=identity.phase, rerun=True,
