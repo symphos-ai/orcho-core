@@ -81,6 +81,7 @@ EXECUTABLE_STATE_PRECEDENCE: tuple[str, ...] = (
     "stale",
     "missing",
     "not_selected",
+    "pending",
     "proven",
 )
 
@@ -244,6 +245,8 @@ def _copy_method(method: Mapping[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {"kind": method["kind"]}
     if "gate_refs" in method:
         out["gate_refs"] = [dict(ref) for ref in method["gate_refs"]]
+    if "implied" in method:
+        out["implied"] = method["implied"]
     if "instructions" in method:
         out["instructions"] = method["instructions"]
     return out
@@ -258,6 +261,8 @@ def build_criterion_matrix(
     executors_by_criterion: Mapping[str, Sequence[str]] | None = None,
     gate_states: Mapping[tuple[str, str, str], str] | None = None,
     gate_proof_refs: Mapping[tuple[str, str, str], str] | None = None,
+    selected_gate_refs: Sequence[GateRef] = (),
+    selection_pending: bool = False,
     claims: Sequence[CriterionClaim] = (),
     human_decisions: Mapping[str, HumanDecisionFact] | None = None,
 ) -> CriterionMatrix:
@@ -267,6 +272,9 @@ def build_criterion_matrix(
     canonical executable state (see :func:`gate_state_from_disposition`); an
     identity absent from the mapping is ``missing``. ``gate_proof_refs`` maps
     the same identity to the durable receipt id that backs it, when one exists.
+    ``selected_gate_refs`` supplies engine-owned binding for criteria without
+    explicit refs. Unresolved selection remains blocking ``pending``; an empty
+    resolved binding is ``missing``, never a vacuous pass.
     """
     owners = {k: tuple(v) for k, v in (executors_by_criterion or {}).items()}
     states = dict(gate_states or {})
@@ -280,7 +288,10 @@ def build_criterion_matrix(
     for criterion in criteria:
         if criterion.verify == "executable":
             rows.append(
-                _executable_row(criterion, owners, states, receipts),
+                _executable_row(
+                    criterion, owners, states, receipts,
+                    selected_gate_refs, selection_pending,
+                ),
             )
         elif criterion.verify == "agent_assertion":
             rows.append(
@@ -308,10 +319,14 @@ def _executable_row(
     owners: Mapping[str, tuple[str, ...]],
     states: Mapping[tuple[str, str, str], str],
     receipts: Mapping[tuple[str, str, str], str],
+    selected_gate_refs: Sequence[GateRef],
+    selection_pending: bool,
 ) -> CriterionRow:
     per_ref: list[tuple[GateRef, str, str | None]] = []
     unreceipted: list[GateRef] = []
-    for ref in criterion.gate_refs:
+    implied = not criterion.gate_refs
+    refs = tuple(selected_gate_refs) if implied else criterion.gate_refs
+    for ref in refs:
         state = states.get(ref.identity, "missing")
         receipt = receipts.get(ref.identity) or None
         # ADR 0188 §3: ``proven`` is a statement about *proof*, so a passing
@@ -324,7 +339,10 @@ def _executable_row(
             unreceipted.append(ref)
         per_ref.append((ref, state, receipt))
 
-    state = _worst_executable_state(tuple(s for _, s, _ in per_ref))
+    considered_states = [s for _, s, _ in per_ref]
+    if implied and selection_pending:
+        considered_states.append("pending")
+    state = _worst_executable_state(considered_states)
     proof_refs = tuple(
         ProofRef("receipt", receipt)
         for _ref, _s, receipt in per_ref
@@ -332,6 +350,8 @@ def _executable_row(
     )
     losing = [ref.label() for ref, s, _ in per_ref if s == state]
     reason = "" if state == "proven" else f"{state}: " + ", ".join(losing)
+    if implied and selection_pending:
+        reason += "; gate selection is not yet decided"
     if unreceipted:
         reason += (
             "; a passing gate without a canonical receipt is not proof: "
@@ -344,7 +364,8 @@ def _executable_row(
         executors=_executors_for(criterion, owners, REVIEWER_EXECUTOR),
         method={
             "kind": "gates",
-            "gate_refs": [ref.to_dict() for ref in criterion.gate_refs],
+            "gate_refs": [ref.to_dict() for ref in refs],
+            **({"implied": True} if implied else {}),
         },
         proof_refs=proof_refs,
         state=state,

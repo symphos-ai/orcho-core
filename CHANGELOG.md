@@ -8,6 +8,10 @@
   cross-project parents. This is an audit projection; resume continues to
   read the authoritative checkpoint configuration.
 
+- Executable acceptance criteria can omit gate references. The engine binds
+  them to selected verification gates and records the binding in evidence;
+  explicit references retain strict validation (ADR 0188 addendum).
+
 - The criterion matrix read while a run is still open now agrees with the
   one read at run end. Gate rows in the scheduled-gate ledger carry a
   disposition that only `finalize` rewrites from the trail, so mid-run the

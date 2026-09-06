@@ -1180,7 +1180,7 @@
     {
       "kind": "value",
       "name": "EXECUTABLE_STATE_PRECEDENCE",
-      "repr": "('failed', 'stale', 'missing', 'not_selected', 'proven')",
+      "repr": "('failed', 'stale', 'missing', 'not_selected', 'pending', 'proven')",
       "type": "tuple"
     },
     {

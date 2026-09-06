@@ -40,7 +40,7 @@ implement starts, so a violation routes to plan repair:
 | Rule | Failure |
 | --- | --- |
 | IDs unique, non-empty, `C[1-9][0-9]*` when composer-generated | schema error |
-| `executable` needs ≥1 `gate_refs`, forbids `human_instructions` | schema error |
+| `executable` permits omitted or empty `gate_refs`, forbids `human_instructions` | schema error |
 | `human` needs non-empty `human_instructions`, forbids `gate_refs` | schema error |
 | `agent_assertion` forbids both | schema error |
 | A `gate_ref` is the complete `(command, hook, phase)` identity | schema error |
@@ -49,11 +49,20 @@ implement starts, so a violation routes to plan repair:
 | Every executable ref resolves against the durable gate ledger | `CriterionGateRefError` (`pipeline.criterion_gate_refs`) |
 
 Gate-ref resolution is fail-closed: an absent or unreadable ledger rejects
-every executable criterion, as does an undeclared identity or one the run has
+every explicit gate reference, as does an undeclared identity or one the run has
 resolved as `selected is False`. `selected is None` (the selection epoch has
 not run yet) is admitted at plan time — it cannot be resolved before the
 implement diff exists — and stays fail-closed downstream, where an identity the
 run never selects reduces to `not_selected` and blocks.
+
+Omit `gate_refs` by default. The engine binds the criterion to selected gates
+from the durable ledger, excluding unexecuted `suggested` / `manual_available`
+recommendations. Executed recommendations contribute their recorded outcome.
+The method carries `implied: true` and the resolved identities. Unresolved
+selection is blocking `pending`; no selected proof is `missing`. A passing
+classification without a receipt is still `missing`. Explicit refs retain
+strict identity resolution and their existing proof semantics. See the
+[ADR 0188 addendum](../adr/0188-typed-acceptance-criteria-and-criterion-matrix.md).
 
 Legacy `list[str]` plans are accepted through exactly one normalizer,
 `core.contracts.criteria.normalize_legacy_criteria`, which assigns positional
@@ -92,14 +101,14 @@ outside `manual`.
 * `executable` — `proven` only when every referenced identity has a fresh
   passing canonical classification **and** a canonical receipt id; a pass with
   no receipt reduces that identity to `missing`. Otherwise `failed`, `stale`,
-  `missing`, or `not_selected`. Always blocks unless `proven`.
+  `missing`, `not_selected`, or `pending`. Always blocks unless `proven`.
 * `agent_assertion` — `advisory` with a linked typed claim/finding, `pending`
   without. Never blocks, never `proven`.
 * `human` — `accepted` / `rejected` / `pending` from the validated decision
   chain head. Only `accepted` satisfies.
 
 **Executable precedence** (multi-gate rows):
-`failed > stale > missing > not_selected > proven`.
+`failed > stale > missing > not_selected > pending > proven`.
 
 **Canonical serialization order** — a different axis, used for
 `counts_by_state` keys and every state enumeration everywhere:

@@ -35,7 +35,7 @@ class TestCanonicalOrders:
 
     def test_precedence_is_a_different_axis_from_serialization(self) -> None:
         assert EXECUTABLE_STATE_PRECEDENCE == (
-            "failed", "stale", "missing", "not_selected", "proven",
+            "failed", "stale", "missing", "not_selected", "pending", "proven",
         )
         assert CRITERION_STATE_ORDER[:5] != EXECUTABLE_STATE_PRECEDENCE
 

@@ -285,8 +285,7 @@ Emit exactly one JSON object with this shape:
 
   "goal": "<one-sentence machine-readable target>",
   "acceptance_criteria": [
-    {"id": "C1", "intent": "<checkable condition>", "verify": "executable",
-     "gate_refs": [{"command": "<declared gate command>", "hook": "after_phase", "phase": "implement"}]},
+    {"id": "C1", "intent": "<checkable condition>", "verify": "executable"},
     {"id": "C2", "intent": "<condition an agent can only inspect>", "verify": "agent_assertion"},
     {"id": "C3", "intent": "<condition only an operator can judge>", "verify": "human",
      "human_instructions": "<what the operator should exercise and record>"}
@@ -320,7 +319,7 @@ Rules:
 - Keep `short_summary` <=280 chars and put discovery/constraints in `planning_context`.
 - Optional list fields are arrays of strings; `mcp_context` is a list of objects.
 - `acceptance_criteria` is a list of typed criterion objects, never a list of strings. Each has a unique `id` matching `C1`, `C2`, ... , a one-sentence `intent`, and exactly one `verify` class:
-  - `executable` — requires a non-empty `gate_refs`; each ref is the COMPLETE scheduled gate identity `{"command", "hook", "phase"}` naming a gate the project's verification contract already declares and selects. A command name alone, an unknown gate, or raw shell text is invalid. Never turn `commands_to_run` into a gate ref.
+  - `executable` — omit `gate_refs` by default: the engine binds the criterion to the run's selected verification gates. Name gates only when the project declares a gate specifically proving this criterion. Optional refs must use the COMPLETE scheduled gate identity `{"command", "hook", "phase"}` naming a gate the project's verification contract already declares and selects. A command name alone, an unknown gate, or raw shell text is invalid. Never turn `commands_to_run` into a gate ref.
   - `agent_assertion` — no `gate_refs`, no `human_instructions`; advisory evidence only, it can never prove a blocking condition.
   - `human` — non-empty `human_instructions`, no `gate_refs`; stays pending until an operator records a decision.
 - `acceptance_refs` on a task lists plan criterion ids only; never copy or restate the criterion text. Every `executable` criterion must be referenced by at least one task.
