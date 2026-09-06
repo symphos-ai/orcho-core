@@ -181,6 +181,7 @@ def _setup_cross_run(request: CrossRunRequest) -> _CrossRunContext:
         projects=request.projects,
         model=request.model,
         mock=request.mock,
+        max_rounds=request.max_rounds,
         output_dir=request.output_dir,
         cross_mode=request.cross_mode,
         resume_from=request.resume_from,

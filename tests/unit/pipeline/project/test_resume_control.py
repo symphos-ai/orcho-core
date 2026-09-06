@@ -158,6 +158,7 @@ def test_bootstrap_carries_rearmed_payload_without_recomputation(tmp_path) -> No
 
     session = init_session_with_atexit(
         task="t", project_path=tmp_path, plugin=PluginConfig(), model="m",
+        max_rounds=1,
         profile_name="small_task", session_mode=SessionMode.AUTO,
         change_handoff="", output_dir=tmp_path,
     )

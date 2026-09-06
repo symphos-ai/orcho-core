@@ -27,6 +27,7 @@ def test_setup_cross_run_persists_parent_meta_for_resume_discovery(
         projects={"core": core, "mcp": mcp},
         model="fake-model",
         mock=True,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=None,
@@ -75,6 +76,7 @@ def test_setup_cross_run_persists_real_provider_mode_as_boolean(tmp_path) -> Non
         projects={"project": project},
         model="fake-model",
         mock=False,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=None,
@@ -128,6 +130,7 @@ def test_setup_cross_run_resume_does_not_clobber_existing_meta(
         projects={},
         model="fake-model",
         mock=False,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=run_dir.name,
@@ -168,6 +171,7 @@ def test_resume_hydrates_declared_child_sessions_in_request_order(tmp_path) -> N
         projects=projects,
         model="fake-model",
         mock=False,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=run_dir.name,
@@ -232,6 +236,7 @@ def test_setup_cross_run_records_installed_orcho_versions(
         projects={"core": core},
         model="fake-model",
         mock=True,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=None,
@@ -247,3 +252,41 @@ def test_setup_cross_run_records_installed_orcho_versions(
 
     meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     assert meta["versions"] == {"orcho-core": "1.2.3"}
+
+
+def test_setup_cross_run_stamps_effective_max_rounds(tmp_path) -> None:
+    """A fresh cross parent stamps the effective budget it was handed.
+
+    The supplied cross-run budget is stamped once on the ``versions`` seam
+    as a read-only audit projection. This test does not assert inheritance.
+    """
+    run_dir = tmp_path / "runs" / "20260623_090354"
+    core = tmp_path / "orcho-core"
+    core.mkdir()
+    profile_setup = SimpleNamespace(
+        requested_profile=SimpleNamespace(name="feature"),
+        projected_profile_name="feature#project",
+    )
+
+    setup = setup_cross_run(
+        task="cross run stamped with a non-default budget",
+        projects={"core": core},
+        model="fake-model",
+        mock=True,
+        max_rounds=7,
+        output_dir=run_dir,
+        cross_mode="full",
+        resume_from=None,
+        resume_mode=None,
+        followup_parent_run_id=None,
+        followup_parent_run_dir=None,
+        followup_parent_status=None,
+        followup_base_task=None,
+        resumed_meta=None,
+        profile_setup=profile_setup,
+        terminal=False,
+    )
+
+    assert setup.session["max_rounds"] == 7
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["max_rounds"] == 7

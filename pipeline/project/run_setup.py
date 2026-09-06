@@ -134,6 +134,7 @@ def init_run_session(
     project_path: Path,
     plugin: PluginConfig,
     model: str,
+    max_rounds: int,
     profile_name: str,
     session_mode: SessionMode,
     change_handoff: str,
@@ -167,6 +168,7 @@ def init_run_session(
     """
     session = init_session_with_atexit(
         task=task, project_path=project_path, plugin=plugin, model=model,
+        max_rounds=max_rounds,
         profile_name=profile_name, session_mode=session_mode,
         change_handoff=change_handoff,
         output_dir=output_dir,

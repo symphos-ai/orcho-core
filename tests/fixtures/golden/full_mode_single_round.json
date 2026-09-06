@@ -38,6 +38,7 @@
     "reason": "patch_applies",
     "status": "patch_valid"
   },
+  "max_rounds": 1,
   "metrics": {
     "phase_attempts": [
       {
