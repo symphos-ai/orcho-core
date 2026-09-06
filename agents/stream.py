@@ -434,6 +434,8 @@ def _stream_run(
 
     stderr_reader: BoundedStderrReader | None = None
     prompt_writer: PromptStdinWriter | None = None
+    owner = owned_child_owner or OwnedChildRegistry()
+    child_handle = None
     try:
         transport = select_transport()
     except OSError as exc:
@@ -459,7 +461,6 @@ def _stream_run(
         # Registry-only ownership pins the launcher (and its Windows Job
         # Object) until terminal settlement. A local registry keeps bare
         # callers' historical tuple contract intact.
-        owner = owned_child_owner or OwnedChildRegistry()
         child_handle = owner.register(
             proc,
             group_owned=_group_owned,
@@ -655,6 +656,17 @@ def _stream_run(
         stderr_text = _mask(stderr_raw)
         if termination_reason:
             stderr_text = f"{stderr_text.rstrip()}\n{termination_reason}".strip()
+    except BaseException:
+        # Settle the invocation before closing pipes: a reader may hold its
+        # stream lock until the child exits. Preserve cancellation while
+        # preventing that child from continuing work during stack unwinding.
+        if (
+            child_handle is not None
+            and owner.poll(child_handle).state is OwnedChildState.RUNNING
+        ):
+            owner.cancel(child_handle)
+            owner.wait(child_handle, timeout=2.0)
+        raise
     finally:
         # Terminal stall raises after the owned child is reaped; timeout and
         # StreamAbort settle below before reaching their normal return path.
