@@ -1081,6 +1081,20 @@ def _finding_totals(phases: Mapping[str, Any]) -> tuple[int, int]:
     return summary.total, summary.active
 
 
+def _unpriced_model_names(metrics: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the exact model ids the metrics writer recorded as unpriced.
+
+    Read-only. The unpriced fact is born once, in the metrics writer, which
+    knows whether pricing was actually attempted; a ``None`` cost seen from
+    here could mean several other things, so it is never re-derived. Legacy
+    ``metrics.json`` has no such key and yields nothing.
+    """
+    raw = metrics.get("unpriced_models")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(name for name in raw if isinstance(name, str) and name)
+
+
 def _render_roi_summary(
     session: Mapping[str, Any],
     metrics: Mapping[str, Any],
@@ -1130,12 +1144,17 @@ def _render_roi_summary(
         and not isinstance(cost, bool)
         and isinstance(cost, (int, float))
     ):
-        parts.append(
-            format_cost_reference_key_value(
-                float(cost),
-                estimated=metrics.get("cost_estimated") is True,
-            )
+        cost_part = format_cost_reference_key_value(
+            float(cost),
+            estimated=metrics.get("cost_estimated") is True,
         )
+        # Name what the number leaves out, right where the number is. Absent
+        # for a fully-priced run (and for legacy metrics.json without the
+        # key), so that line stays byte-identical.
+        unpriced = _unpriced_model_names(metrics)
+        if unpriced:
+            cost_part += f" (excl. unpriced: {', '.join(unpriced)})"
+        parts.append(cost_part)
     outcome_bits = [task_part]
     if release_part:
         outcome_bits.append(release_part)

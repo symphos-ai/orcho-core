@@ -311,7 +311,7 @@ def render_live_card(
                 _tokens_out = int(outcome.tokens_out or 0)
                 _tokens_total = int(outcome.tokens_total or 0)
                 _tokens_unknown = max(0, _tokens_total - _tokens_in - _tokens_out)
-                _cost_usd, _cost_estimated = _resolve_phase_cost_usd_equivalent(
+                _cost_usd, _cost_estimated, _ = _resolve_phase_cost_usd_equivalent(
                     cost_usd=outcome.cost_usd_equivalent,
                     model=_model,
                     tokens_in=_tokens_in,

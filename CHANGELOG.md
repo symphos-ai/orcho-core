@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- `metrics.json` says when its cost total is partial. An invocation on a
+  model the pricing table does not know is marked `cost_unpriced` on its
+  record, the run lists such models under `unpriced_models`, and
+  `total_cost_usd_equivalent` is accompanied by `total_cost_partial`; the
+  DONE summary names the unpriced models next to the total. Until now the
+  only trace was a one-shot stderr warning and a total that was silently
+  smaller (ADR 0189). Fully priced runs are unchanged.
+
 ### Fixed
 
 - Run metadata records the effective `max_rounds` budget for mono runs and
