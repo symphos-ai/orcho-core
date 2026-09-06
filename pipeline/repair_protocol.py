@@ -17,6 +17,15 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class RepairFeedback:
+    """Source-separated inputs for a single repair invocation."""
+
+    review: str = ""
+    verification_failure: str = ""
+    test_failures: str = ""
+
+
+@dataclass(frozen=True)
 class ReceiptItem:
     """One repair response to a reviewer finding or operator decision."""
 
@@ -99,7 +108,7 @@ def build_repair_receipt(
     """
     fixed = (
         ReceiptItem(
-            finding_id="review-feedback",
+            finding_id="verification-feedback" if source_phase == "verification" else "review-feedback",
             summary=_first_meaningful_line(
                 repair_output,
                 fallback=f"{repair_phase} produced an updated subject.",

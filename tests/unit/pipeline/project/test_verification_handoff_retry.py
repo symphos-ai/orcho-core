@@ -288,12 +288,7 @@ def test_control_preflight_failure_preserves_active_recovery_subject(
 def test_retry_seeds_persisted_gate_failure_into_repair_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The repair round starts from the same ADR 0081 carrier the loop uses.
-
-    ``last_output`` holds the critique synthesized over the whole failing set,
-    so the human-directed round must reach ``repair_changes`` with it already
-    in ``state.last_critique`` — not with an unexplained fix request.
-    """
+    """The persisted gate failure reaches repair without overwriting review state."""
     run = _run()
     seen: dict[str, object] = {}
     monkeypatch.setattr(
@@ -302,8 +297,9 @@ def test_retry_seeds_persisted_gate_failure_into_repair_inputs(
     monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
 
     def _repair(dispatch_run, *_args, **_kwargs) -> None:
+        seen["verification_failure"] = dispatch_run.state.repair_feedback.verification_failure
         seen["last_critique"] = dispatch_run.state.last_critique
-        seen["last_test_output"] = dispatch_run.state.last_test_output
+        seen["last_test_output"] = dispatch_run.state.repair_feedback.test_failures
         seen["human_feedback"] = dispatch_run.state.human_feedback
 
     monkeypatch.setattr(
@@ -335,7 +331,9 @@ def test_retry_seeds_persisted_gate_failure_into_repair_inputs(
         decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
     )
 
-    assert seen["last_critique"] == critique
+    assert seen["verification_failure"] == critique
+    assert seen["last_critique"] == ""
+    assert run.state.repair_feedback is None
     # Only test_failure findings carry a test output; the lint body must not
     # be laundered into it.
     assert seen["last_test_output"] == "E   assert 1 == 2"
@@ -356,7 +354,7 @@ def test_retry_recovers_gate_failure_from_findings_when_output_is_absent(
     monkeypatch.setattr(
         "pipeline.project.verification_handoff_retry._dispatch_one_repair",
         lambda dispatch_run, *_a, **_kw: seen.update(
-            last_critique=dispatch_run.state.last_critique,
+            verification_failure=dispatch_run.state.repair_feedback.verification_failure,
         ),
     )
     monkeypatch.setattr(
@@ -375,7 +373,7 @@ def test_retry_recovers_gate_failure_from_findings_when_output_is_absent(
         decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
     )
 
-    assert seen["last_critique"] == "pytest-unit exited 1"
+    assert seen["verification_failure"] == "pytest-unit exited 1"
 
 
 def test_unrecoverable_gate_failure_blocks_retry_without_consuming_subject(
@@ -1112,6 +1110,12 @@ def test_retry_decision_reaches_the_real_repair_prompt_exactly_once(
     # (2) both texts on the wire, each on its own typed carrier
     wire = agent.calls[0]
     assert _GATE_FAILURE in wire
+    assert f"Verification failed:\n{_GATE_FAILURE}" in wire
+    assert "A code review found these issues:" not in wire
+    assert run.state.repair_feedback is None
+    receipt = run.session["phases"]["rounds"][0]["repair_receipt"]
+    assert receipt["source_phase"] == "verification"
+    assert receipt["fixed"][0]["finding_id"] == "verification-feedback"
     assert _OPERATOR_INSTRUCTION in wire
     parts = _prompt_parts(agent.turns[0])
     operator_part = parts["human_feedback:operator_feedback"]
@@ -1194,3 +1198,32 @@ def test_unproven_subject_blocks_before_any_provider_call(
     assert run.session["phase_handoff"]["id"] == "gate:lint:2"
     assert run.session["status"] == "awaiting_phase_handoff"
     assert "phase_handoff_override" not in run.state.extras
+
+
+@pytest.mark.parametrize("error", [RuntimeError("control"), KeyboardInterrupt()])
+def test_retry_restores_scoped_feedback_when_dispatch_raises(monkeypatch, error):
+    from pipeline.repair_protocol import RepairFeedback
+
+    run = _run()
+    previous = RepairFeedback(review="earlier reviewer input")
+    run.state.repair_feedback = previous
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+
+    def fail(*_args, **_kwargs):
+        assert run.state.repair_feedback.verification_failure
+        raise error
+
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair", fail,
+    )
+    expected = VerificationHandoffRetryBlocked if isinstance(error, RuntimeError) else type(error)
+    with pytest.raises(expected):
+        apply_verification_handoff_retry(
+            run=run, profile=object(), ctx=object(), active=run.session["phase_handoff"],
+            handoff_id="gate:pytest-unit:1", feedback="fix it", note=None,
+            decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+        )
+    assert run.state.repair_feedback is previous

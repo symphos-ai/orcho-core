@@ -102,7 +102,12 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             )
 
     agent = _require_agent(state, "repair_changes_agent")
-    critique_for_round = state.last_critique  # captured before fix consumes it
+    from pipeline.repair_protocol import RepairFeedback
+
+    feedback = state.repair_feedback or RepairFeedback(
+        review=state.last_critique, test_failures=state.last_test_output,
+    )
+    critique_for_round = feedback.review  # captured before fix consumes it
 
     # Phase 5e-5 substep 4 + 6b: read text/test-config helpers from ctx.
     # FSM always populates ``state.lifecycle_ctx``; legacy
@@ -164,7 +169,8 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             critique_for_round,
             _agent_project_dir(state),
             state.plugin,
-            test_failures=state.last_test_output,
+            test_failures=feedback.test_failures,
+            verification_failure=feedback.verification_failure,
             write_style=_resolve_tests_config_local(state.plugin).write_style,
             operator_feedback=operator_feedback,
             continue_session=continue_session,
@@ -192,7 +198,8 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             critique_for_round,
             _agent_project_dir(state),
             state.plugin,
-            test_failures=state.last_test_output,
+            test_failures=feedback.test_failures,
+            verification_failure=feedback.verification_failure,
             write_style=_resolve_tests_config_local(state.plugin).write_style,
             operator_feedback=operator_feedback,
             plan_contract=_plan_contract_for(state),
@@ -320,11 +327,11 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
     repair_receipt = _store_repair_receipt(
         state,
         build_repair_receipt(
-            source_phase="review_changes",
+            source_phase="verification" if feedback.verification_failure else "review_changes",
             source_round=cfg.get("repair_round"),
             repair_phase="repair_changes",
             repair_round=cfg.get("repair_round"),
-            critique=critique_for_round,
+            critique=critique_for_round or feedback.verification_failure,
             repair_output=result.output,
             operator_feedback=state.human_feedback,
             changed_refs=tuple(

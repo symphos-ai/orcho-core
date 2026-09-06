@@ -780,14 +780,15 @@ class TestFixPrompt:
         assert "pre-existing uncommitted changes as user-owned" in p
         assert "git checkout -- <path>" in p
 
+    @pytest.mark.parametrize("mode", ["full", "minimal", "minimal_with_format"])
     def test_operator_feedback_rides_its_own_human_feedback_part(
-        self, task: str, full_plugin: PluginConfig,
+        self, task: str, full_plugin: PluginConfig, mode: str,
     ) -> None:
         critique = "Verification gate `lint` failed: E501 line too long."
         feedback = "Fix the lint failure only; do not touch the parser."
         turn = prompts.fix_prompt(
             task, critique, "/project", full_plugin,
-            operator_feedback=feedback,
+            operator_feedback=feedback, professional_prompt_mode=mode,
         )
         by_id = {p.id: p for p in turn.envelope().parts}
         hf = by_id.get("human_feedback:operator_feedback")
@@ -798,10 +799,11 @@ class TestFixPrompt:
         # Provenance stays split: the gate failure keeps riding the
         # critique carrier, the operator instruction never leaks into it.
         repair_body = by_id.get("feedback:repair_body")
-        assert repair_body is not None
-        assert critique in repair_body.body
-        assert feedback not in repair_body.body
-        assert feedback in turn.text
+        if mode == "full":
+            assert repair_body is not None
+            assert critique in repair_body.body
+            assert feedback not in repair_body.body
+        assert turn.text.count(feedback) == 1
 
     def test_empty_operator_feedback_emits_no_part_and_same_bytes(
         self, task: str, full_plugin: PluginConfig,
@@ -818,6 +820,21 @@ class TestFixPrompt:
         assert "human_feedback:operator_feedback" not in {
             p.id for p in explicit.envelope().parts
         }
+
+    @pytest.mark.parametrize("mode", ["full", "minimal", "minimal_with_format"])
+    @pytest.mark.parametrize("review", ["", "Reviewer found an off-by-one error"])
+    def test_verification_failure_does_not_impersonate_review(self, mode, review):
+        failure = "lint exited 1: E501"
+        turn = prompts.fix_prompt(
+            "Fix gate", review, "/project", PluginConfig(),
+            verification_failure=failure, professional_prompt_mode=mode,
+        )
+        assert f"Verification failed:\n{failure}" in turn.text
+        assert f"A code review found these issues:\n{failure}" not in turn.text
+        if review:
+            assert f"A code review found these issues:\n{review}" in turn.text
+        else:
+            assert "A code review found these issues:" not in turn.text
 
 
 class TestPromptContracts:

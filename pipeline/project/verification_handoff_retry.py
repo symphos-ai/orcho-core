@@ -250,15 +250,15 @@ def apply_verification_handoff_retry(
     run.state.extras["phase_handoff_override"] = transition.override
     run.state.extras["human_feedback"] = transition.human_feedback
     run.state.human_feedback = feedback
-    # ADR 0081: the failed command output IS the repair critique. Reuse the
-    # automatic loop's carrier (``_synthesize_critique`` writes the same two
-    # fields) so a human-directed round reaches the repair agent with the gate
-    # failure already in hand instead of an unexplained fix request.
-    run.state.last_critique = gate_critique
-    run.state.last_test_output = gate_test_output
     from pipeline.project.handoff import _persist_handoff_running_state
     _persist_handoff_running_state(run)
 
+    from pipeline.repair_protocol import RepairFeedback
+
+    previous_feedback = getattr(run.state, "repair_feedback", None)
+    run.state.repair_feedback = RepairFeedback(
+        verification_failure=gate_critique, test_failures=gate_test_output,
+    )
     try:
         _dispatch_one_repair(
             run,
@@ -273,6 +273,8 @@ def apply_verification_handoff_retry(
     except (RuntimeError, ValueError) as exc:
         _restore_recovery_subject(run, active)
         raise VerificationHandoffRetryBlocked(str(exc)) from exc
+    finally:
+        run.state.repair_feedback = previous_feedback
     if getattr(run.state, "halt", False):
         return _outcome(profile, paused=False)
     from pipeline.project.gate_repair import rerun_verification_handoff_gate

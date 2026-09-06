@@ -1949,6 +1949,7 @@ def fix_prompt(
     test_failures: str = "",
     write_style: str = "",
     operator_feedback: str = "",
+    verification_failure: str = "",
     plan_contract: str = "",
     plan_tasks: str = "",
     handoff_contract: str = "",
@@ -1977,12 +1978,14 @@ def fix_prompt(
     and is never folded into the critique body, so the provenance of
     machine critique and human instruction stays distinct on the wire.
     Empty (the common case) emits no part and leaves the render
-    byte-identical.
+    byte-identical. ``verification_failure`` carries gate output separately
+    from reviewer critique and retains verification framing in every mode.
     """
     cfg = AppConfig.load()
     mode = coerce_professional_prompt_mode(professional_prompt_mode)
     body = build_fix_prompt(
         review=critique,
+        verification_failure=verification_failure,
         test_failures=test_failures,
         write_style=write_style,
     )
@@ -2004,12 +2007,11 @@ def fix_prompt(
             p for p in (
                 _turn_input_part("repair_task", f"TASK:\n{task}"),
                 _feedback_part("repair_body", body),
-                _human_feedback_part(operator_feedback),
             )
             if p is not None
         )
     else:
-        intent = minimal_intents.fix_intent(task, body, operator_feedback)
+        intent = minimal_intents.fix_intent(task, body)
         if mode is ProfessionalPromptMode.MINIMAL_WITH_FORMAT:
             rendered = _append_format(
                 intent,
@@ -2021,6 +2023,9 @@ def fix_prompt(
             )
         else:
             rendered = intent
+    human_part = _human_feedback_part(operator_feedback)
+    if human_part is not None:
+        extra_parts += (human_part,)
     prefix_parts: list[PromptPart] = []
     if handoff_contract:
         prefix_parts.append(_handoff_contract_part(handoff_contract))
@@ -2048,6 +2053,8 @@ def build_fix_prompt(
     review: str,
     test_failures: str = "",
     write_style: str = "",
+    *,
+    verification_failure: str = "",
 ) -> str:
     """Compose the body section of a repair_changes prompt from review + test output.
 
@@ -2058,6 +2065,9 @@ def build_fix_prompt(
 
     if review:
         sections.append(f"A code review found these issues:\n{review}")
+
+    if verification_failure:
+        sections.append(f"Verification failed:\n{verification_failure}")
 
     if test_failures:
         sections.append(
