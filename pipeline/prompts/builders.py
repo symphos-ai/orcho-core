@@ -1948,6 +1948,7 @@ def fix_prompt(
     *,
     test_failures: str = "",
     write_style: str = "",
+    operator_feedback: str = "",
     plan_contract: str = "",
     plan_tasks: str = "",
     handoff_contract: str = "",
@@ -1969,6 +1970,14 @@ def fix_prompt(
     helper) and threaded into the ``$body`` placeholder of
     ``tasks/fix``. ``prompt_spec`` from ``PhaseStep.prompt`` overrides
     the default triple; it must carry an explicit prompt role.
+
+    ``operator_feedback`` carries operator instruction from
+    ``phase_handoff_decide(retry_feedback)``. It rides its own
+    ``human_feedback:operator_feedback`` part (``source="operator"``)
+    and is never folded into the critique body, so the provenance of
+    machine critique and human instruction stays distinct on the wire.
+    Empty (the common case) emits no part and leaves the render
+    byte-identical.
     """
     cfg = AppConfig.load()
     mode = coerce_professional_prompt_mode(professional_prompt_mode)
@@ -1995,11 +2004,12 @@ def fix_prompt(
             p for p in (
                 _turn_input_part("repair_task", f"TASK:\n{task}"),
                 _feedback_part("repair_body", body),
+                _human_feedback_part(operator_feedback),
             )
             if p is not None
         )
     else:
-        intent = minimal_intents.fix_intent(task, body)
+        intent = minimal_intents.fix_intent(task, body, operator_feedback)
         if mode is ProfessionalPromptMode.MINIMAL_WITH_FORMAT:
             rendered = _append_format(
                 intent,

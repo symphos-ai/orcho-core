@@ -780,6 +780,45 @@ class TestFixPrompt:
         assert "pre-existing uncommitted changes as user-owned" in p
         assert "git checkout -- <path>" in p
 
+    def test_operator_feedback_rides_its_own_human_feedback_part(
+        self, task: str, full_plugin: PluginConfig,
+    ) -> None:
+        critique = "Verification gate `lint` failed: E501 line too long."
+        feedback = "Fix the lint failure only; do not touch the parser."
+        turn = prompts.fix_prompt(
+            task, critique, "/project", full_plugin,
+            operator_feedback=feedback,
+        )
+        by_id = {p.id: p for p in turn.envelope().parts}
+        hf = by_id.get("human_feedback:operator_feedback")
+        assert hf is not None
+        assert hf.kind == "human_feedback"
+        assert hf.source == "operator"
+        assert hf.body == feedback
+        # Provenance stays split: the gate failure keeps riding the
+        # critique carrier, the operator instruction never leaks into it.
+        repair_body = by_id.get("feedback:repair_body")
+        assert repair_body is not None
+        assert critique in repair_body.body
+        assert feedback not in repair_body.body
+        assert feedback in turn.text
+
+    def test_empty_operator_feedback_emits_no_part_and_same_bytes(
+        self, task: str, full_plugin: PluginConfig,
+    ) -> None:
+        critique = "Logic error in line 42"
+        baseline = prompts.fix_prompt(task, critique, "/project", full_plugin)
+        explicit = prompts.fix_prompt(
+            task, critique, "/project", full_plugin, operator_feedback="",
+        )
+        assert explicit.text == baseline.text
+        assert [p.id for p in explicit.envelope().parts] == [
+            p.id for p in baseline.envelope().parts
+        ]
+        assert "human_feedback:operator_feedback" not in {
+            p.id for p in explicit.envelope().parts
+        }
+
 
 class TestPromptContracts:
     def test_change_handoff_modes(self) -> None:

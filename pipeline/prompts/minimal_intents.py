@@ -146,11 +146,17 @@ def build_intent(
     )
 
 
-def fix_intent(task: str, body: str) -> str:
-    """Minimal intent for repair_changes — address feedback (review findings, tests)."""
+def fix_intent(task: str, body: str, operator_feedback: str = "") -> str:
+    """Minimal intent for repair_changes — address feedback (review findings, tests).
+
+    ``operator_feedback`` carries operator instruction from a
+    ``phase_handoff_decide(retry_feedback)`` decision. It is optional;
+    an empty value emits no section, leaving prior renders byte-identical.
+    """
     return _join(
         _section("TASK", task),
         _section("Feedback", body),
+        _section("HUMAN FEEDBACK", operator_feedback),
         "Address the feedback above.",
     )
 

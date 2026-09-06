@@ -295,7 +295,11 @@ def test_verification_retry_feedback_preserves_human_directed_round_context(
 
     from pipeline.control.handoff_labels import render_round_label
 
-    active = {"id": "gate:pytest-unit:2", "round": 2, "loop_max_rounds": 2}
+    active = {
+        "id": "gate:pytest-unit:2", "round": 2, "loop_max_rounds": 2,
+        # The persisted gate critique the retry seam recovers repair inputs from.
+        "last_output": "Required verification gate failed.\nCommand: pytest-unit",
+    }
     run_dir = tmp_path / "runs" / "retry-round-3"
     run_dir.mkdir(parents=True)
     (run_dir / "meta.json").write_text(
@@ -373,7 +377,10 @@ def test_retry_control_failure_keeps_subject_but_process_crash_propagates(
     from types import SimpleNamespace
 
     def _run() -> SimpleNamespace:
-        active = {"id": "gate:pytest-unit:1", "round": 1}
+        active = {
+            "id": "gate:pytest-unit:1", "round": 1,
+            "last_output": "Required verification gate failed.\nCommand: pytest-unit",
+        }
         return SimpleNamespace(
             session={"phase_handoff": active, "status": "awaiting_phase_handoff"},
             state=SimpleNamespace(extras={}, human_feedback="", halt=False, phase_handoff_request=None),
