@@ -87,6 +87,22 @@ class TestRunCommandBasics:
 
         assert receipt["exit_code"] == 3
 
+    def test_empty_command_receipt_shape(self, tmp_path: Path) -> None:
+        # C5: an empty ``run`` declaration produces no argv, so _execute short
+        # -circuits to the ``empty`` outcome with no exit code and empty tails.
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        contract = _contract(commands={"nothing": {"run": ""}})
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        receipt = run_command("nothing", contract.commands["nothing"], contract, ctx)
+
+        assert receipt["outcome"] == "empty"
+        assert receipt["exit_code"] is None
+        assert receipt["stdout_tail"] == ""
+        assert receipt["stderr_tail"] == ""
+        assert receipt["detail"] == "empty command (nothing to run)"
+
     def test_missing_binary_does_not_raise(self, tmp_path: Path) -> None:
         checkout = tmp_path / "co"
         _init_repo(checkout)
@@ -139,6 +155,161 @@ class TestCommandTimeout:
 
         assert receipt["exit_code"] is None
         assert "timed out after 1s" in receipt["detail"]
+
+    def test_timeout_preserves_flushed_stdout_and_stderr(
+        self, tmp_path: Path,
+    ) -> None:
+        """C1/C2/C4: a child that flushes distinct stdout/stderr markers before
+        exceeding a bounded timeout yields both markers in the respective
+        receipt tails and in the on-disk log, while outcome stays ``timeout``
+        and exit_code stays ``None`` (even when the output contains 'passed')."""
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        # The child writes a distinct marker to each stream, flushes both, then
+        # sleeps well past the declared timeout so the kill happens after the
+        # bytes are captured. 'passed' is embedded to prove it never flips the
+        # execution outcome.
+        child = (
+            "import sys, time; "
+            "sys.stdout.write('OUTMARKER passed\\n'); sys.stdout.flush(); "
+            "sys.stderr.write('ERRMARKER\\n'); sys.stderr.flush(); "
+            "time.sleep(30)"
+        )
+        contract = _contract(commands={
+            "hang": {"run": ["python", "-c", child], "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+
+        receipt = run_command(
+            "hang", contract.commands["hang"], contract, ctx, log_dir=log_dir,
+        )
+
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert receipt["duration_s"] < 30
+        assert "OUTMARKER passed" in receipt["stdout_tail"]
+        assert "ERRMARKER" in receipt["stderr_tail"]
+
+        # Read the saved log back from disk: both markers present and stdout vs
+        # stderr remain distinguishable via the stderr divider.
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "OUTMARKER passed" in log_text
+        assert "ERRMARKER" in log_text
+        assert "--- stderr ---" in log_text
+        assert log_text.index("OUTMARKER") < log_text.index("--- stderr ---")
+        assert log_text.index("--- stderr ---") < log_text.index("ERRMARKER")
+
+    def test_timeout_tail_is_bounded_but_log_retains_full_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """C2: a short ``tail_chars`` bounds the receipt tail while the on-disk
+        log keeps the full captured output."""
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        child = (
+            "import sys, time; "
+            "sys.stdout.write('A' * 500 + 'ZEND\\n'); sys.stdout.flush(); "
+            "time.sleep(30)"
+        )
+        contract = _contract(commands={
+            "hang": {"run": ["python", "-c", child], "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+
+        receipt = run_command(
+            "hang", contract.commands["hang"], contract, ctx,
+            log_dir=log_dir, tail_chars=10,
+        )
+
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        # The tail is bounded to the trailing 10 chars (the end of the marker).
+        assert len(receipt["stdout_tail"]) == 10
+        assert "ZEND" in receipt["stdout_tail"]
+        # The full output survives on disk, tail bounding notwithstanding.
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "A" * 500 + "ZEND" in log_text
+
+
+class TestStreamCoercion:
+    """C3: normalisation of TimeoutExpired-carried stdout/stderr shapes must
+    never crash receipt/log construction and must not repr-wrap bytes.
+
+    These use a fake subprocess boundary (monkeypatched ``subprocess.run``) so
+    the exact captured-stream shape is controlled; only the normalisation is
+    under test here, not the real kill path."""
+
+    def _run_with_timeout_streams(
+        self, tmp_path, monkeypatch, *, stdout, stderr,
+    ):
+        from pipeline import verification_command
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+
+        def fake_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=args[0] if args else kwargs.get("args"),
+                timeout=1,
+                output=stdout,
+                stderr=stderr,
+            )
+
+        monkeypatch.setattr(verification_command.subprocess, "run", fake_run)
+        contract = _contract(commands={"c": {"run": "python -c \"pass\"", "timeout": 1}})
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+        return run_command(
+            "c", contract.commands["c"], contract, ctx, log_dir=log_dir,
+        )
+
+    def test_bytes_streams_are_decoded(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout=b"hello out", stderr=b"hello err",
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert "hello out" in receipt["stdout_tail"]
+        assert "hello err" in receipt["stderr_tail"]
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "b'" not in log_text
+
+    def test_str_streams_pass_through(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout="str out", stderr="str err",
+        )
+        assert "str out" in receipt["stdout_tail"]
+        assert "str err" in receipt["stderr_tail"]
+
+    def test_none_streams_become_empty(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch, stdout=None, stderr=None,
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert receipt["stdout_tail"] == ""
+        assert receipt["stderr_tail"] == ""
+
+    def test_invalid_encoded_bytes_do_not_crash_or_repr_wrap(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        # Incomplete/invalid utf-8 sequences must decode lossily, not raise.
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout=b"valid\xff\xfe tail", stderr=b"\x80\x81",
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert "valid" in receipt["stdout_tail"]
+        # No repr-style wrapping leaked into text.
+        assert "b'" not in receipt["stdout_tail"]
+        assert "b'" not in receipt["stderr_tail"]
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "b'" not in log_text
 
 
 class TestPythonTokenAndCwd:

@@ -173,6 +173,25 @@ def _resolve_argv(
     return argv
 
 
+def _coerce_stream(value: Any) -> str:
+    """Normalise a captured stream to text without ever raising.
+
+    ``None`` -> ``""``; ``str`` -> unchanged; ``bytes`` -> a lossily decoded
+    string (utf-8 with ``errors="replace"``) so incomplete/invalid encoded
+    bytes never raise and no repr-style ``b'...'`` wrapping leaks into text
+    output. This is the single normaliser applied on both the completed and the
+    timeout paths, so a ``TimeoutExpired`` carrying bytes/str/None captured by
+    subprocess is preserved verbatim as text.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _execute(
     argv: list[str], eff_cwd: str, sub_env: dict[str, str],
     *, timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -184,6 +203,11 @@ def _execute(
     ``exit_code=None`` as before, so the *why* is no longer recoverable only
     from prose in ``detail``: a command that never finished within its budget is
     a different operator problem from one whose binary could not be spawned.
+
+    On timeout the subprocess has usually already captured whatever the child
+    flushed before the kill; that output is preserved via :func:`_coerce_stream`
+    while ``exit_code`` stays ``None`` and ``outcome`` stays ``"timeout"`` — the
+    receipt must never reinterpret captured output as command completion.
     """
     if not argv:
         return None, "", "", 0.0, "empty command (nothing to run)", "empty"
@@ -198,10 +222,15 @@ def _execute(
             timeout=timeout_s,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        return None, "", "", time.monotonic() - start, (
-            f"command timed out after {timeout_s}s"
-        ), "timeout"
+    except subprocess.TimeoutExpired as exc:
+        return (
+            None,
+            _coerce_stream(exc.stdout),
+            _coerce_stream(exc.stderr),
+            time.monotonic() - start,
+            f"command timed out after {timeout_s}s",
+            "timeout",
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return (
             None, "", "", time.monotonic() - start,
@@ -209,8 +238,8 @@ def _execute(
         )
     return (
         proc.returncode,
-        proc.stdout or "",
-        proc.stderr or "",
+        _coerce_stream(proc.stdout),
+        _coerce_stream(proc.stderr),
         time.monotonic() - start,
         "",
         "completed",
