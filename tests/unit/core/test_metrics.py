@@ -1010,6 +1010,126 @@ class TestCrossRollup:
             "cross_plan", "cross_validate_plan", "contract_check",
         ]
 
+    def test_cross_unpriced_ids_merge_from_children_and_cross_level(self) -> None:
+        """The cross writer is the single place the cross-run unpriced fact is
+        recorded: it unions the exact ids a child already wrote with those the
+        cross-level rollup carries, marks both source rows, and leaves the
+        summed number alone."""
+        per = {
+            "api": {
+                **self._metrics(tin=1000, tout=500, dur=30.0, cost=0.10),
+                "unpriced_models": ["child-ghost"],
+                "total_cost_partial": True,
+            },
+            "web": self._metrics(tin=200, tout=300, dur=15.5, cost=0.05),
+        }
+        cross_phases = {
+            "cross_plan": {
+                "tokens_in": 5000, "tokens_out": 800, "total_tokens": 5800,
+                "duration_s": 12.0, "calls": 1,
+                "cost_unpriced": True, "unpriced_models": ["cross-ghost"],
+            },
+            "contract_check": {
+                "tokens_in": 3000, "tokens_out": 400, "total_tokens": 3400,
+                "duration_s": 6.0, "calls": 2, "cost_usd_equivalent": 0.03,
+            },
+        }
+        d = cross_metrics_dict(per, cross_phases)
+        # Both exact ids survive, sorted and deduped — neither collapses into
+        # the other's row nor into a "mixed" model field.
+        assert d["unpriced_models"] == ["child-ghost", "cross-ghost"]
+        # Marked on the rows the ids came from, and only those.
+        assert d["phases"]["api"]["cost_unpriced"] is True
+        assert d["phases"]["cross_plan"]["cost_unpriced"] is True
+        assert "cost_unpriced" not in d["phases"]["web"]
+        assert "cost_unpriced" not in d["phases"]["contract_check"]
+        # The qualifier sits beside the total; the number is the same sum of
+        # the priced contributions it always was.
+        assert d["total_cost_partial"] is True
+        assert d["total_cost_usd_equivalent"] == round(0.10 + 0.05 + 0.03, 4)
+        assert d["total_cost_usd_equivalent"] == cross_metrics_dict(
+            {"api": self._metrics(tin=1000, tout=500, dur=30.0, cost=0.10),
+             "web": self._metrics(tin=200, tout=300, dur=15.5, cost=0.05)},
+            {"contract_check": {
+                "tokens_in": 3000, "tokens_out": 400, "total_tokens": 3400,
+                "duration_s": 6.0, "calls": 2, "cost_usd_equivalent": 0.03,
+            }},
+        )["total_cost_usd_equivalent"]
+
+    def test_cross_unpriced_dedupes_same_model_across_sources(self) -> None:
+        per = {"api": {
+            **self._metrics(tin=10, tout=5, dur=1.0, cost=0.01),
+            "unpriced_models": ["ghost"],
+        }}
+        cross_phases = {"cross_plan": {
+            "tokens_in": 3, "tokens_out": 2, "total_tokens": 5,
+            "duration_s": 0.5, "unpriced_models": ["ghost"],
+        }}
+        assert cross_metrics_dict(per, cross_phases)["unpriced_models"] == ["ghost"]
+
+    def test_cross_marks_cross_level_row_from_marker_alone(self) -> None:
+        """A cross-level rollup that lost its model id still marks its row —
+        the phase's cost really is partial even when nothing can be named."""
+        cross_phases = {"cross_plan": {
+            "tokens_in": 3, "tokens_out": 2, "total_tokens": 5,
+            "duration_s": 0.5, "cost_unpriced": True,
+        }}
+        d = cross_metrics_dict({}, cross_phases)
+        assert d["phases"]["cross_plan"]["cost_unpriced"] is True
+        assert "unpriced_models" not in d
+
+    def test_fully_priced_cross_run_keeps_its_key_set(self) -> None:
+        per = {
+            "api": self._metrics(tin=1000, tout=500, dur=30.0, rounds=2, cost=0.10),
+            "web": self._metrics(tin=200, tout=300, dur=15.5, rounds=1, cost=0.05),
+        }
+        cross_phases = {"cross_plan": {
+            "tokens_in": 5000, "tokens_out": 800, "total_tokens": 5800,
+            "duration_s": 12.0, "calls": 1, "cost_usd_equivalent": 0.07,
+        }}
+        d = cross_metrics_dict(per, cross_phases)
+        assert json.dumps(d, indent=2, ensure_ascii=False) == json.dumps({
+            "total_tokens_in": 6200,
+            "total_tokens_out": 1600,
+            "total_tokens": 7800,
+            "total_duration_s": 57.5,
+            "phases": {
+                "api": {
+                    "tokens_in": 1000,
+                    "tokens_out": 500,
+                    "total_tokens": 1500,
+                    "duration_s": 30.0,
+                    "kind": "sub_pipeline",
+                    "rounds": 2,
+                    "cost_usd_equivalent": 0.1,
+                },
+                "web": {
+                    "tokens_in": 200,
+                    "tokens_out": 300,
+                    "total_tokens": 500,
+                    "duration_s": 15.5,
+                    "kind": "sub_pipeline",
+                    "rounds": 1,
+                    "cost_usd_equivalent": 0.05,
+                },
+                "cross_plan": {
+                    "tokens_in": 5000,
+                    "tokens_out": 800,
+                    "total_tokens": 5800,
+                    "duration_s": 12.0,
+                    "kind": "cross_level",
+                    "calls": 1,
+                    "cost_usd_equivalent": 0.07,
+                },
+            },
+            "cross_aggregation": {
+                "sub_pipelines": ["api", "web"],
+                "cross_phases": ["cross_plan"],
+            },
+            "total_rounds": 3,
+            "total_cost_usd_equivalent": 0.22,
+        }, indent=2, ensure_ascii=False)
+
     def test_cross_summary_table_renders_both_sections(self) -> None:
         per = {"api": self._metrics(tin=1000, tout=500, dur=30.0, cost=0.10)}
         cross_phases = {
@@ -1027,6 +1147,238 @@ class TestCrossRollup:
         assert "6,000" in out         # 1000 + 5000
         assert "TOTAL" in out
         assert "$0.17" in out         # 0.10 + 0.07
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# unpriced-model visibility
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestUnpricedVisibility:
+    """A run whose pricing table has no entry for a model still reports a
+    number — it just no longer pretends the number covers everything. The
+    fact is written once, by this writer, and readers only read it back."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_accounting(self, accounting_on) -> None:
+        pass
+
+    @pytest.fixture
+    def pricing_knows_one_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pricing table that prices ``priced-model`` and nothing else."""
+        from core.observability import pricing
+        monkeypatch.setattr(
+            pricing, "estimate_cost_usd",
+            lambda model, **kw: 0.02 if model == "priced-model" else None,
+        )
+        monkeypatch.setattr(
+            pricing, "estimate_cost_from_total",
+            lambda model, total: 0.02 if model == "priced-model" else None,
+        )
+
+    def _mixed_run(self) -> MetricsCollector:
+        m = MetricsCollector()
+        m.record_phase(
+            "plan", model="priced-model",
+            tokens_in=1000, tokens_out=100, duration_s=1.0,
+        )
+        m.record_phase(
+            "implement", model="ghost-model",
+            tokens_in=2000, tokens_out=200, duration_s=2.0,
+        )
+        return m
+
+    def test_mixed_run_names_the_unpriced_model_and_flags_the_total(
+        self, pricing_knows_one_model,
+    ) -> None:
+        d = self._mixed_run().as_dict()
+        assert d["unpriced_models"] == ["ghost-model"]
+        assert d["phases"]["implement"]["cost_unpriced"] is True
+        assert "cost_unpriced" not in d["phases"]["plan"]
+        assert d["total_cost_partial"] is True
+
+    def test_total_number_is_unchanged_by_the_qualifier(
+        self, pricing_knows_one_model,
+    ) -> None:
+        """The unpriced phase contributes nothing to the sum — exactly as
+        before. Only the qualifier next to it is new."""
+        control = MetricsCollector()
+        control.record_phase(
+            "plan", model="priced-model",
+            tokens_in=1000, tokens_out=100, duration_s=1.0,
+        )
+        mixed = self._mixed_run().as_dict()
+        assert (
+            mixed["total_cost_usd_equivalent"]
+            == control.as_dict()["total_cost_usd_equivalent"]
+        )
+        assert "total_cost_partial" not in control.as_dict()
+
+    def test_marker_ors_across_attempts_of_one_phase(
+        self, pricing_knows_one_model,
+    ) -> None:
+        m = MetricsCollector()
+        m.record_phase(
+            "implement", model="ghost-model",
+            tokens_in=2000, tokens_out=200, duration_s=2.0,
+        )
+        m.record_phase(
+            "implement", model="priced-model",
+            tokens_in=10, tokens_out=1, duration_s=0.5,
+        )
+        d = m.as_dict()
+        # One unpriced attempt makes the rolled-up phase cost partial, even
+        # though the rollup also carries a real priced number.
+        assert d["phases"]["implement"]["cost_unpriced"] is True
+        assert d["phases"]["implement"]["cost_usd_equivalent"] == 0.02
+        assert d["unpriced_models"] == ["ghost-model"]
+
+    def test_heuristic_token_phase_is_not_marked(
+        self, pricing_knows_one_model,
+    ) -> None:
+        """Estimated tokens were never a pricing candidate, so the phase is
+        not "unpriced" — marking it would blame the pricing table for a
+        decision this resolver made upstream."""
+        m = MetricsCollector()
+        m.record_phase(
+            "plan", model="ghost-model",
+            prompt="a" * 400, output="b" * 400, duration_s=1.0,
+        )
+        d = m.as_dict()
+        assert d["phases"]["plan"]["tokens_exact"] is False
+        assert "cost_unpriced" not in d["phases"]["plan"]
+        assert "unpriced_models" not in d
+        assert "total_cost_partial" not in d
+
+    def test_provider_reported_cost_is_not_marked(
+        self, pricing_knows_one_model,
+    ) -> None:
+        m = MetricsCollector()
+        m.record_phase(
+            "plan", model="ghost-model",
+            tokens_in=1000, tokens_out=100, duration_s=1.0, cost_usd=0.5,
+        )
+        d = m.as_dict()
+        assert d["phases"]["plan"]["cost_usd_equivalent"] == 0.5
+        assert "cost_unpriced" not in d["phases"]["plan"]
+        assert "unpriced_models" not in d
+
+    def test_subtask_records_contribute_their_own_exact_model_id(
+        self, pricing_knows_one_model,
+    ) -> None:
+        """A subtask record names its own model; the phase rollup above it
+        may already read ``"mixed"``, which could never identify it."""
+        m = self._mixed_run()
+        m.record_subtask_usage("implement", [
+            {"subtask_id": "T1", "model": "subtask-ghost",
+             "total_tokens": 100, "cost_unpriced": True},
+            {"subtask_id": "T2", "model": "priced-model",
+             "total_tokens": 50, "cost_usd_equivalent": 0.01},
+        ])
+        assert m.as_dict()["unpriced_models"] == ["ghost-model", "subtask-ghost"]
+
+    def test_resume_keeps_the_unpriced_models_list(
+        self, pricing_knows_one_model, tmp_path: Path,
+    ) -> None:
+        """The pricing table may answer differently by resume time, so the
+        fact has to survive in the attempt records, not be re-derived."""
+        self._mixed_run().save(tmp_path)
+        resumed = MetricsCollector()
+        assert resumed.load_from_disk(tmp_path / "metrics.json") == 2
+        d = resumed.as_dict()
+        assert d["unpriced_models"] == ["ghost-model"]
+        assert d["phases"]["implement"]["cost_unpriced"] is True
+        assert d["total_cost_partial"] is True
+
+    def test_fully_priced_run_serializes_byte_identically(
+        self, pricing_knows_one_model,
+    ) -> None:
+        m = MetricsCollector()
+        m.record_phase(
+            "plan", model="priced-model",
+            tokens_in=1000, tokens_out=100, duration_s=1.0,
+        )
+        m.record_phase(
+            "implement", model="priced-model",
+            tokens_in=2000, tokens_out=200, duration_s=2.0,
+        )
+        phase_fields = {
+            "plan": {"tokens_in": 1000, "tokens_out": 100,
+                     "total_tokens": 1100, "duration_s": 1.0},
+            "implement": {"tokens_in": 2000, "tokens_out": 200,
+                          "total_tokens": 2200, "duration_s": 2.0},
+        }
+        expected = {
+            "total_tokens_in": 3000,
+            "total_tokens_out": 300,
+            "total_tokens_unknown": 0,
+            "total_tokens": 3300,
+            "total_duration_s": 3.0,
+            "phases": {
+                name: {
+                    "model": "priced-model", **fields,
+                    "cost_usd_equivalent": 0.02, "cost_estimated": True,
+                    "tokens_exact": True, "attempts": 1,
+                }
+                for name, fields in phase_fields.items()
+            },
+            "phase_attempts": [
+                {
+                    "phase": name, "attempt": 1, "model": "priced-model",
+                    **fields,
+                    "cost_usd_equivalent": 0.02, "cost_estimated": True,
+                    "tokens_exact": True,
+                }
+                for name, fields in phase_fields.items()
+            ],
+            "total_cost_usd_equivalent": 0.04,
+            "cost_estimated": True,
+        }
+        assert json.dumps(m.as_dict(), indent=2, ensure_ascii=False) == json.dumps(
+            expected, indent=2, ensure_ascii=False,
+        )
+
+
+class TestUnpricedVisibilityWithoutAccounting:
+    """Every new key is dollar semantics, so accounting-off runs must not see
+    one — including via the scrubber that strips them from nested records."""
+
+    def test_no_new_key_when_accounting_disabled(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from core.infra import config
+        from core.observability import pricing
+        monkeypatch.delenv("ORCHO_ACCOUNTING", raising=False)
+        config._reset_config()
+        try:
+            monkeypatch.setattr(
+                pricing, "estimate_cost_usd", lambda model, **kw: None,
+            )
+            m = MetricsCollector()
+            m.record_phase(
+                "implement", model="ghost-model",
+                tokens_in=2000, tokens_out=200, duration_s=2.0,
+            )
+            m.record_subtask_usage("implement", [
+                {"subtask_id": "T1", "model": "subtask-ghost",
+                 "total_tokens": 100, "cost_unpriced": True},
+            ])
+            d = m.as_dict()
+            assert "unpriced_models" not in d
+            assert "total_cost_partial" not in d
+            assert "cost_unpriced" not in d["phases"]["implement"]
+            assert "cost_unpriced" not in d["phase_attempts"][0]
+            assert "cost_unpriced" not in d["subtasks"]["implement"][0]
+        finally:
+            config._reset_config()
+
+    def test_scrubber_strips_the_new_keys(self) -> None:
+        from core.observability.metrics import scrub_accounting_fields
+        scrubbed = scrub_accounting_fields({
+            "total_cost_partial": True,
+            "unpriced_models": ["ghost"],
+            "phases": {"implement": {"cost_unpriced": True, "tokens_in": 1}},
+        })
+        assert scrubbed == {"phases": {"implement": {"tokens_in": 1}}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -572,6 +572,14 @@ Three rollup fields are **omitted when zero** (`as_dict` at
 * `cost_estimated: bool` — `false` when the cost reference came from
   the active runtime/endpoint; `true` when Orcho estimated it from a
   local pricing table.
+* `unpriced_models: list[str]` — sorted, deduped **exact** model ids
+  whose invocations went unpriced. Present only when the list is
+  non-empty and dollar accounting is enabled; a fully-priced run keeps
+  its historical key set byte for byte. See
+  [Unpriced invocations](#unpriced-invocations) below.
+* `total_cost_partial: bool` — only when `true`, and only ever written
+  next to a present `total_cost_usd_equivalent`. Says that total sums
+  the priced invocations only.
 
 Consumers must use `metrics.get("total_rounds", 0)` rather than
 `metrics["total_rounds"]`.
@@ -593,7 +601,12 @@ Consumers must use `metrics.get("total_rounds", 0)` rather than
 
 Optional per-entry keys (omitted when zero / unset):
 `tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`,
-`cost_estimated`.
+`cost_estimated`, `cost_unpriced`.
+
+`cost_unpriced: true` marks the attempt whose pricing lookup ran and
+came back empty. Written **only when true** — a priced attempt carries
+no `cost_unpriced: false`. It is also the attempt whose exact `model`
+lands in the top-level `unpriced_models`.
 
 `tokens_exact` semantics: `true` when the count came from the
 provider's API headers / CLI usage trailer; `false` when we
@@ -608,6 +621,96 @@ collapsed via summation, plus:
 * `model` becomes `"mixed"` when attempts used different models.
 * `tokens_exact` becomes `False` when any contributing attempt was
   estimated.
+* `cost_unpriced` becomes `true` when **any** contributing attempt was
+  unpriced (logical OR), and is absent otherwise. Because `model` here
+  can be `"mixed"`, a rollup row can never name which model went
+  unpriced — that is what the top-level `unpriced_models` list is for.
+
+### Unpriced invocations
+
+> [ADR 0189](../adr/0189-unpriced-usage-visibility-in-metrics.md).
+
+An invocation is **unpriced** when Orcho had no provider-reported cost,
+went to the local pricing table for an estimate, and the table had no
+entry for the model. The dollar total cannot include that invocation,
+so the fact is recorded rather than silently folded into a smaller
+number.
+
+**One invariant, everywhere.** `cost_unpriced: true` means *pricing was
+attempted here and the table returned nothing*. It never means anything
+else, on any record:
+
+* **Not** "this record cost nothing." A phase with zero tokens, no
+  model, or a provider-reported cost is not a pricing candidate at all
+  and carries no marker.
+* **Not** "the token counts were heuristic" — and here the two forms
+  differ, because they reach the pricing table on different terms:
+  * In a **mono** run, `tokens_exact: false` phases are deliberately
+    never priced by the resolver (`_resolve_phase_cost_usd_equivalent`)
+    — Orcho refuses to turn byte estimates into dollar-looking facts —
+    so they are not pricing candidates and carry no marker.
+  * In a **cross** run, `capture_invoke_usage` prices any invocation
+    with `total_tokens > 0` whatever its `token_split_source` (`exact`,
+    `runtime_estimate`, `text_estimate_scaled`, `aggregate_total_only`).
+    A heuristic-split invocation on an unpriced model therefore *does*
+    carry the marker: the lookup ran and returned nothing.
+* **Not** "accounting is off." With dollar accounting disabled the
+  whole surface is scrubbed: `cost_unpriced`, `unpriced_models`, and
+  `total_cost_partial` are all absent, like the other cost keys.
+
+The marker is written **only when true**; there is no `false` form.
+It appears on:
+
+* `phase_attempts[]` entries — the attempt whose lookup came back empty.
+* `phases.<name>` rollups — OR'd across that phase's attempts.
+* `subtasks.<phase>[]` records — when the record's producer attempted
+  pricing and got nothing. (The in-tree `subtask_dag` builder only
+  passes through runtime-reported cost, so it does not set the marker
+  today; the collector honors it when a record carries it.)
+* Cross-run `phases.<alias|cross_phase>` entries — see
+  [Cross-run `metrics.json`](#cross-run-metricsjson).
+
+**The list is written once, by the writer.** `unpriced_models` carries
+the **exact** model ids, collected by the metrics writer from the
+records that were actually marked. Readers (`DONE` summary, SDK, MCP)
+must read that list, never re-derive the fact from a missing/`null`
+cost — a `null` cost has several other causes above.
+
+**`total_cost_usd_equivalent` is a lower bound when
+`total_cost_partial` is `true`.** The total's value and rounding are
+unchanged by any of this: it sums the priced invocations exactly as
+before. `total_cost_partial` is a qualifier sitting next to it saying
+that at least one invocation is missing from the sum, and
+`unpriced_models` names the models responsible. `total_cost_partial` is
+never written without a `total_cost_usd_equivalent` to qualify (a run
+with no priced invocation at all has no total, and `unpriced_models`
+alone carries the fact).
+
+```json
+{
+  "total_tokens": 51200,
+  "total_cost_usd_equivalent": 1.23,
+  "cost_estimated": true,
+  "total_cost_partial": true,
+  "unpriced_models": ["ghost-model-1", "vendor/unlisted-9"],
+  "phases": {
+    "plan":      { "total_tokens": 1200, "cost_usd_equivalent": 1.23 },
+    "implement": { "total_tokens": 50000, "model": "mixed", "attempts": 2,
+                   "cost_unpriced": true }
+  },
+  "phase_attempts": [
+    { "phase": "implement", "attempt": 1, "model": "ghost-model-1",
+      "tokens_exact": true, "cost_unpriced": true },
+    { "phase": "implement", "attempt": 2, "model": "vendor/unlisted-9",
+      "tokens_exact": true, "cost_unpriced": true }
+  ]
+}
+```
+
+Resume keeps the fact: `load_from_disk` rehydrates `cost_unpriced` from
+`phase_attempts`, so a pause → resume → re-save re-emits
+`unpriced_models` rather than losing it because the pricing table
+answers differently in the second process.
 
 ### Per-subtask usage breakdown (`subtasks`)
 
@@ -647,8 +750,11 @@ Always-present per-record fields: `subtask_id`, `runtime`, `model`,
 `invocations`, `duration_s`, `tokens_in`, `tokens_out`,
 `total_tokens`, `tool_calls`, `tokens_exact`. The remaining fields —
 `tokens_in_cache_read`, `tokens_in_cache_create`,
-`cost_usd_equivalent`, `cost_estimated`, `state`, `declared_files` —
-appear **only when known**; an unknown value is omitted.
+`cost_usd_equivalent`, `cost_estimated`, `cost_unpriced`, `state`,
+`declared_files` — appear **only when known**; an unknown value is
+omitted. A record marked `cost_unpriced: true` contributes its own
+exact `model` to the top-level `unpriced_models`
+(see [Unpriced invocations](#unpriced-invocations)).
 
 Three authority/semantics rules a consumer must honor:
 
@@ -694,6 +800,69 @@ cumulative `phases.implement` rollup.
 
 `save()` writes via `json.dumps(d, indent=2, ensure_ascii=False)` —
 no trailing newline (unlike `phase_handoff_decide`'s meta.json write).
+
+### Cross-run `metrics.json`
+
+**Writer:** `core/observability/metrics.py:cross_metrics_dict`,
+persisted by `pipeline/cross_project/finalization.py` (and snapshotted
+on the cross pause paths).
+
+A cross run's `metrics.json` keeps the same top-level surface as the
+mono one (`total_tokens_in` / `total_tokens_out` / `total_tokens` /
+`total_duration_s` / `phases`), so consumers need no cross-vs-mono
+branch. Its `phases` entries are not phase rollups but two other kinds,
+tagged by `kind`: one `sub_pipeline` entry per child alias (folded from
+that child's own `metrics.json`) and one `cross_level` entry per
+cross-level invoke (`cross_hypothesis`, `cross_plan`,
+`cross_validate_plan`, `contract_check`). `cross_aggregation` lists
+both sets of names.
+
+The unpriced keys carry over unchanged in meaning:
+
+* `unpriced_models` — the **union** of the exact ids each source
+  already recorded: every child's own top-level `unpriced_models` and
+  every cross-level entry's `unpriced_models`. Nothing here re-derives
+  ids from a `model` field (a cross-level rollup's `model` collapses to
+  `"mixed"` once a phase spans two models, so it could never name
+  them). Same conditions as mono: sorted, deduped, present only when
+  non-empty and accounting is enabled. Malformed values arriving from a
+  child `metrics.json` on disk are ignored rather than merged.
+* `cost_unpriced: true` on a `phases` entry — the alias or cross-level
+  phase that contributed at least one unpriced invocation. A
+  cross-level entry that carries only `cost_unpriced` and no ids still
+  marks its row (the row is honest even when the id is unavailable).
+* `total_cost_partial: true` beside `total_cost_usd_equivalent` — same
+  lower-bound semantics: the summed total is unchanged, and the flag
+  says the sum omits the unpriced invocations.
+
+```json
+{
+  "total_tokens": 90000,
+  "total_cost_usd_equivalent": 4.5,
+  "total_cost_partial": true,
+  "unpriced_models": ["ghost-model-1"],
+  "phases": {
+    "api":       { "kind": "sub_pipeline", "total_tokens": 60000,
+                   "cost_usd_equivalent": 4.5 },
+    "web":       { "kind": "sub_pipeline", "total_tokens": 20000,
+                   "cost_unpriced": true },
+    "cross_plan":{ "kind": "cross_level", "total_tokens": 10000,
+                   "calls": 1, "cost_unpriced": true }
+  },
+  "cross_aggregation": {
+    "sub_pipelines": ["api", "web"],
+    "cross_phases": ["cross_plan"]
+  }
+}
+```
+
+Upstream of the writer, `pipeline/cross_project/usage.py` is where a
+cross-level invoke's marker is born: `capture_invoke_usage` sets
+`cost_unpriced` on the invoke whose pricing lookup came back empty
+(durable, independent of the one-shot stderr warning's per-model
+dedupe), and `accumulate_phase_usage` folds those invokes into the
+per-phase entry, keeping the exact ids in that entry's own
+`unpriced_models` list.
 
 ---
 
