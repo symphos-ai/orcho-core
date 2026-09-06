@@ -2164,6 +2164,13 @@ def process_pending_phase_handoffs(
                 on_round_end=on_round_end,
                 ctx=ctx,
                 completed_phases=completed_phases,
+                # Unattended continuation must retain the pre-final receipt
+                # materializer used by initial dispatch. Keep operator-driven
+                # continuation unchanged.
+                on_phase_pre=(
+                    getattr(run, "_on_phase_pre", None)
+                    if getattr(run, "unattended", False) else None
+                ),
             )
         except Exception as exc:
             current_phase = run.state.extras.get(
