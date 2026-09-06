@@ -22,7 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from core.contracts.criteria import AcceptanceCriterion
+from core.contracts.criteria import AcceptanceCriterion, GateRef
 from pipeline.criterion_claims import reducer_claims
 from pipeline.criterion_decisions import human_decision_facts
 from pipeline.criterion_matrix import (
@@ -97,12 +97,27 @@ def collect_criterion_matrix(
     findings: Iterable[Mapping[str, Any]] = (),
 ) -> CriterionMatrix:
     """Build the criterion matrix for ``run_dir`` from durable facts only."""
+    from pipeline.criterion_gate_refs import official_gate_identities
+    from pipeline.verification_ledger_store import ledger_path
+
     states, receipts = gate_facts_from_ledger(run_dir)
+    identities = (
+        official_gate_identities(run_dir)
+        if ledger_path(Path(run_dir)).exists() else None
+    )
     return build_criterion_matrix(
         criteria,
         executors_by_criterion=executors_from_plan(subtasks),
         gate_states=states,
         gate_proof_refs=receipts,
+        selected_gate_refs=tuple(
+            GateRef(*identity) for identity in sorted(identities.selected)
+            # Suggested/manual gates without execution are not proof obligations.
+            if states.get(identity) != "not_selected"
+        ) if identities else (),
+        selection_pending=bool(identities and any(
+            states.get(identity) != "not_selected" for identity in identities.pending
+        )),
         claims=reducer_claims(run_dir, findings=findings),
         human_decisions=human_decision_facts(run_dir),
     )

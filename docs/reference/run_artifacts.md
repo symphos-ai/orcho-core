@@ -868,3 +868,15 @@ delivered.
 * [Observability surfaces](../architecture/observability_surfaces.md) — `prompt_render` + four sibling per-phase trace surfaces.
 * [Event registry](event_registry.md) — canonical `events.jsonl` event kinds and required payload keys.
 * [Resume modes](resume_modes.md) — CHECKPOINT vs FOLLOWUP vs FRESH semantics + `--from-run-plan`.
+
+
+### Engine-bound criterion evidence
+
+An executable plan criterion may omit `gate_refs`. Its `criterion_matrix`
+method then carries `{"kind": "gates", "gate_refs": [...], "implied": true}`,
+where the identities come from the run's selected ledger gates. Unexecuted
+operator recommendations are excluded. Pending selection blocks as `pending`;
+no selected proof blocks as `missing`. A row becomes `proven` only when every
+bound gate has a passing classification and a canonical receipt. Explicit
+plan references retain strict identity matching. The same matrix supplies live
+final acceptance, finalized evidence, SDK, and MCP readers.

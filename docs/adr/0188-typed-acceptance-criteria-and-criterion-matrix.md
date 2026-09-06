@@ -287,3 +287,27 @@ Evidence gains an additive `criterion_matrix` key.
   contract; they are not aliased into plan acceptance criteria.
 * The public SDK/wire shape changes, so the paired MCP projection, schema
   snapshot, and mock smoke ship in the same delivery wave.
+
+
+## Addendum — 2026-09-06: engine-owned default gate binding
+
+Executable criteria may omit `gate_refs` or carry an empty list. The planner
+should declare the verification class and omit identities unless a declared
+gate specifically proves that criterion. The engine owns gate selection; the
+planner no longer has to restate it before the implementation diff exists.
+
+`criterion_evidence` reads the ledger's selected identities and supplies them
+to the pure matrix reducer. Unexecuted `suggested` and `manual_available`
+recommendations are excluded; executed recommendations contribute their actual
+outcome. Selection that has not resolved remains blocking `pending`. An empty
+resolved binding is `missing`, never a vacuous pass. All bound identities must
+have passing canonical classifications and receipts to produce `proven`.
+
+The evidence method records `implied: true` alongside its resolved `gate_refs`.
+Explicit references keep strict resolution and existing rejection routing.
+Human decisions, task coverage, criterion IDs, and verification ownership are
+unchanged. Live readiness and finalized evidence consume the same reducer.
+
+This supersedes only the mandatory planner-authored gate-reference requirement
+and extends executable precedence to
+`failed > stale > missing > not_selected > pending > proven`.

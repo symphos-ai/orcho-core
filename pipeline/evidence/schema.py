@@ -463,6 +463,11 @@ def _validate_criterion_rows_against_plan(rows: list, plan: Any) -> None:
                     f"{criterion.get(plan_key)!r}"
                 )
         expected_method = _expected_method(criterion)
+        if criterion.get("verify") == "executable" and not criterion.get("gate_refs"):
+            expected_method = {
+                "kind": "gates", "gate_refs": row["method"]["gate_refs"],
+                "implied": True,
+            }
         if row["method"] != expected_method:
             raise EvidenceSchemaError(
                 f"{loc}[{i}].method does not project the accepted plan "
@@ -564,13 +569,19 @@ def _validate_criterion_row(row: Any, loc: str) -> None:
             f"{loc}.method.kind must be {allowed_kind!r} for verify "
             f"{row['verify']!r}, got {kind!r}"
         )
+    if kind == "gates" and "implied" in method:
+        if method["implied"] is not True:
+            raise EvidenceSchemaError(f"{loc}.method.implied must be true")
+        expected = expected | {"implied"}
     if set(method) != expected:
         raise EvidenceSchemaError(
             f"{loc}.method for kind {kind!r} must have exactly keys "
             f"{sorted(expected)}, got {sorted(method)}"
         )
     if kind == "gates":
-        _validate_criterion_gate_refs(method["gate_refs"], f"{loc}.method")
+        _validate_criterion_gate_refs(
+            method["gate_refs"], f"{loc}.method", allow_empty=method.get("implied") is True,
+        )
     if kind == "manual" and (
         not isinstance(method["instructions"], str)
         or not method["instructions"].strip()
@@ -667,14 +678,16 @@ def _validate_criterion_proof(row: dict, loc: str) -> None:
         )
 
 
-def _validate_criterion_gate_refs(gate_refs: Any, loc: str) -> None:
+def _validate_criterion_gate_refs(
+    gate_refs: Any, loc: str, *, allow_empty: bool = False,
+) -> None:
     """Validate a row's gate identities through the criterion schema itself."""
     from core.contracts.criteria import (
         CriterionSchemaError,
         validate_acceptance_criteria,
     )
 
-    if not isinstance(gate_refs, list) or not gate_refs:
+    if not isinstance(gate_refs, list) or (not gate_refs and not allow_empty):
         raise EvidenceSchemaError(f"{loc}.gate_refs must be a non-empty list")
     # Reuse the plan-contract validator so the row can never carry an identity
     # shape the plan schema would have rejected.

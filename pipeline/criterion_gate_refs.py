@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """pipeline.criterion_gate_refs — resolve criterion gate refs to official gates.
 
-An ``executable`` criterion names complete scheduled identities
+An ``executable`` criterion may optionally name complete scheduled identities
 ``(command, hook, phase)``. Before implement starts, every one of them must
 resolve against the run's durable scheduled-gate ledger — the same identity set
 the engine actually runs, written at run setup by
@@ -9,7 +9,7 @@ the engine actually runs, written at run setup by
 
 The resolution is **fail-closed**:
 
-* no ledger, or an unreadable one, rejects every executable criterion. A
+* no ledger, or an unreadable one, rejects every explicit gate reference. A
   project that declares no verification contract has no official gates, so a
   criterion claiming gate proof there cannot be honoured;
 * an identity the ledger does not declare is rejected;
@@ -137,10 +137,10 @@ def validate_criterion_gate_refs(
 ) -> None:
     """Raise :class:`CriterionGateRefError` when any ref fails to resolve.
 
-    A plan with no executable criterion needs no ledger at all and is accepted
+    A plan with no explicit gate refs needs no ledger at plan time and is accepted
     without touching one.
     """
-    executable = [c for c in criteria if c.verify == "executable"]
+    executable = [c for c in criteria if c.verify == "executable" and c.gate_refs]
     if not executable:
         return
     if run_dir is None:
@@ -172,7 +172,7 @@ def plan_gate_ref_problems(
     ledger.
     """
     criteria = getattr(plan, "acceptance_criteria", ()) or ()
-    executable = [c for c in criteria if c.verify == "executable"]
+    executable = [c for c in criteria if c.verify == "executable" and c.gate_refs]
     if not executable:
         return []
     if run_dir is None:
@@ -221,8 +221,8 @@ def render_gate_ref_rejection(
                 "name, not by the shell command that gate runs."
             ),
             "required_fix": (
-                "Point every executable criterion at one of the declared "
-                f"identities: {catalogue}. Keep the (command, hook, phase) "
+                "Omit gate_refs to use engine binding, or correct each explicit "
+                f"ref to a declared identity: {catalogue}. Keep (command, hook, phase) "
                 "triple complete, and use the gate's name as the command."
             ),
         }],

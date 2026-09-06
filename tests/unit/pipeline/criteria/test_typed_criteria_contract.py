@@ -70,8 +70,6 @@ class TestTypedShape:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"id": "C1", "intent": "i", "verify": "executable"},
-            {"id": "C1", "intent": "i", "verify": "executable", "gate_refs": []},
             {"id": "C1", "intent": "i", "verify": "executable",
              "gate_refs": [{"command": "unit"}]},
             {"id": "C1", "intent": "i", "verify": "executable",

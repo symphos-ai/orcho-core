@@ -237,7 +237,7 @@ def _criterion_from_dict(value: Mapping[str, Any], where: str) -> AcceptanceCrit
             f"{where}.verify must be one of {list(VERIFY_CLASSES)}, got {verify!r}"
         )
 
-    raw_refs = value.get("gate_refs")
+    raw_refs = value.get("gate_refs", [])
     instructions = value.get("human_instructions")
 
     if verify == "executable":
@@ -247,10 +247,6 @@ def _criterion_from_dict(value: Mapping[str, Any], where: str) -> AcceptanceCrit
             )
         if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, (str, bytes)):
             raise CriterionSchemaError(f"{where}.gate_refs must be a list")
-        if not raw_refs:
-            raise CriterionSchemaError(
-                f"{where}.gate_refs must name at least one official gate identity"
-            )
         refs = tuple(
             _gate_ref_from_dict(r, f"{where}.gate_refs[{i}]")
             for i, r in enumerate(raw_refs)
@@ -264,7 +260,7 @@ def _criterion_from_dict(value: Mapping[str, Any], where: str) -> AcceptanceCrit
             seen.add(ref.identity)
         return AcceptanceCriterion(id=cid, intent=intent, verify=verify, gate_refs=refs)
 
-    if raw_refs is not None:
+    if value.get("gate_refs") is not None:
         raise CriterionSchemaError(
             f"{where}.gate_refs is only allowed on an executable criterion"
         )
