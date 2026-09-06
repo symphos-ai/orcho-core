@@ -147,7 +147,7 @@ def build_intent(
 
 
 def fix_intent(task: str, body: str) -> str:
-    """Minimal intent for repair_changes — address feedback (review findings, tests)."""
+    """Minimal intent for repair_changes; typed parts carry operator instruction."""
     return _join(
         _section("TASK", task),
         _section("Feedback", body),

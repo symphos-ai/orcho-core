@@ -1576,6 +1576,69 @@ class TestFixHandler:
         assert new.phase_log["repair_changes"]["output"] == "fixed"
         assert new.last_critique == ""  # consumed
 
+    def _human_directed(self, feedback: str) -> PipelineState:
+        """A retry_feedback round exactly as the handoff seam leaves it."""
+        from pipeline.runtime.handoff import HUMAN_DIRECTED_FLAG_KEY
+
+        state = _state()
+        state.extras["session_mode_initial"] = "stateless"
+        state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
+        state.extras["repair_round"] = 2
+        state.human_feedback = feedback
+        return state
+
+    def test_human_directed_retry_repairs_even_with_empty_critique(self) -> None:
+        """The operator's one retry must reach the provider, not the skip."""
+        state = self._human_directed("Почините lint, не трогая парсер.")
+
+        new = default_registry().get("repair_changes")(state)
+
+        calls = state.phase_config.repair_changes_agent.calls
+        assert len(calls) == 1
+        assert "skipped" not in new.phase_log["repair_changes"]
+        assert new.phase_log["repair_changes"]["output"] == "fixed"
+        assert "Почините lint, не трогая парсер." in calls[0][0]
+
+    def test_human_directed_repair_bypasses_stale_skip_adapter_marker(self) -> None:
+        """``_skip_adapter`` describes a prior review, not the retry decision."""
+        state = self._human_directed("Перезапустите после правки.")
+        state.phase_log["rounds_pending"] = {"_skip_adapter": True}
+
+        new = default_registry().get("repair_changes")(state)
+
+        calls = state.phase_config.repair_changes_agent.calls
+        assert len(calls) == 1
+        assert "skipped" not in new.phase_log["repair_changes"]
+        # The stale marker must not survive: RoundAdapter would then omit a
+        # round that really did run.
+        assert "_skip_adapter" not in new.phase_log["rounds_pending"]
+        assert "Перезапустите после правки." in calls[0][0]
+
+    def test_skip_adapter_without_human_direction_still_skips_repair(self) -> None:
+        state = _state()
+        state.phase_log["rounds_pending"] = {"_skip_adapter": True}
+
+        new = default_registry().get("repair_changes")(state)
+
+        assert new.phase_log["repair_changes"] == {
+            "skipped": "review skipped (no uncommitted)"
+        }
+        assert state.phase_config.repair_changes_agent.calls == []
+
+    def test_stale_human_feedback_does_not_reach_an_automatic_repair_round(self) -> None:
+        """Without the human-directed flag the field is a leftover, not input."""
+        state = _state()
+        state.extras["session_mode_initial"] = "stateless"
+        state.extras["repair_round"] = 2
+        state.human_feedback = "Инструкция прошлого раунда"
+        state.last_critique = "fix me"
+
+        default_registry().get("repair_changes")(state)
+
+        calls = state.phase_config.repair_changes_agent.calls
+        assert len(calls) == 1
+        assert "Инструкция прошлого раунда" not in calls[0][0]
+
     def test_guardrail_blocked_fix_halts(self) -> None:
         state = _state(phase_config=_StubPhaseConfig(
             repair_changes_agent=_FakeDeveloper(f"{ORCHO_GUARDRAIL_BLOCKED}\nblocked"),

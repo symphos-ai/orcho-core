@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pipeline.repair_protocol import RepairFeedback
 
 
 @dataclass
@@ -39,6 +42,7 @@ class PipelineState:
     last_critique: str = ""        # reviewer critique from validate_plan / review / final_acceptance
     human_feedback: str = ""       # operator feedback from phase_handoff_decide(retry_feedback)
     last_test_output: str = ""
+    repair_feedback: RepairFeedback | None = None  # scoped input override for one repair
     dag_result: Any = None         # DagRunResult after execute_dag
 
     # Per-phase log: handler name → arbitrary dict the handler emitted.

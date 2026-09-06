@@ -92,6 +92,45 @@ def _blocking_identities(
     return (identity, *[item for item in resolved if item != identity])
 
 
+def _nonempty_str(value: object) -> str:
+    """The value when it is a non-blank string, else ``""``."""
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _persisted_gate_failure(active: Mapping[str, object]) -> tuple[str, str]:
+    """Recover ``(critique, test_output)`` for the repair round from the record.
+
+    ``last_output`` is preferred: ``_request_handoff`` stores the critique
+    ``_synthesize_critique`` built over the WHOLE failing command set, so it is
+    the only carrier guaranteed to name every red command. ``short_summary``
+    and the per-command finding bodies are progressively lossier fallbacks for
+    a record written without it.
+
+    The test output is best-effort — only ``test_failure`` findings carry one,
+    and the critique already restates their evidence, so an empty second
+    element is a normal result rather than a recovery failure.
+    """
+    artifacts = active.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, Mapping) else {}
+    findings = artifacts.get("findings")
+    findings = findings if isinstance(findings, list | tuple) else ()
+    bodies = [
+        (finding, _nonempty_str(finding.get("body")))
+        for finding in findings
+        if isinstance(finding, Mapping)
+    ]
+    critique = (
+        _nonempty_str(active.get("last_output"))
+        or _nonempty_str(artifacts.get("short_summary"))
+        or "\n\n".join(body for _finding, body in bodies if body)
+    )
+    test_output = "\n\n".join(
+        body for finding, body in bodies
+        if body and finding.get("failure_kind") == "test_failure"
+    )
+    return critique, test_output
+
+
 def apply_verification_handoff_resume(
     *, run: Any, profile: Any, ctx: Any, active: dict[str, Any], handoff_id: str,
     action: str, feedback: str, note: str | None, decided_at: str,
@@ -175,9 +214,10 @@ def apply_verification_handoff_retry(
     """Repair once, then re-run one selected gate on a fresh subject.
 
     All validation precedes ``retry_feedback_handoff`` so malformed routing,
-    stale decisions, or absent retained work leave the active handoff available
-    for operator recovery. Provider/process exceptions are intentionally not
-    caught: their established interrupted/failed lifecycle remains authoritative.
+    stale decisions, absent retained work, or an unrecoverable persisted gate
+    failure leave the active handoff available for operator recovery.
+    Provider/process exceptions are intentionally not caught: their established
+    interrupted/failed lifecycle remains authoritative.
     """
     if not feedback.strip():
         raise VerificationHandoffRetryBlocked("verification retry requires retry_feedback")
@@ -195,6 +235,11 @@ def apply_verification_handoff_retry(
     repair_step = _repair_step(profile)
     if repair_step is None:
         raise VerificationHandoffRetryBlocked("verification retry profile has no repair_changes step")
+    gate_critique, gate_test_output = _persisted_gate_failure(active)
+    if not gate_critique:
+        raise VerificationHandoffRetryBlocked(
+            "verification retry has no recoverable gate failure to repair",
+        )
 
     retry_context = VerificationHandoffRetryContext.from_active(active, identity)
 
@@ -208,6 +253,12 @@ def apply_verification_handoff_retry(
     from pipeline.project.handoff import _persist_handoff_running_state
     _persist_handoff_running_state(run)
 
+    from pipeline.repair_protocol import RepairFeedback
+
+    previous_feedback = getattr(run.state, "repair_feedback", None)
+    run.state.repair_feedback = RepairFeedback(
+        verification_failure=gate_critique, test_failures=gate_test_output,
+    )
     try:
         _dispatch_one_repair(
             run,
@@ -222,6 +273,8 @@ def apply_verification_handoff_retry(
     except (RuntimeError, ValueError) as exc:
         _restore_recovery_subject(run, active)
         raise VerificationHandoffRetryBlocked(str(exc)) from exc
+    finally:
+        run.state.repair_feedback = previous_feedback
     if getattr(run.state, "halt", False):
         return _outcome(profile, paused=False)
     from pipeline.project.gate_repair import rerun_verification_handoff_gate
