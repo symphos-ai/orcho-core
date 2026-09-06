@@ -149,7 +149,30 @@ class EventKind(StrEnum):
     classified: ``outcome`` is the pass/fail rollup routing acted on, and
     those two say why, so a command that exited clean but could not be
     proven against the current checkout is not read back as a test
-    failure. Both are absent when the boundary closes on a raise."""
+    failure. Both are absent when the boundary closes on a raise.
+
+    Both boundaries additionally carry an OPTIONAL ``invocation_id`` (a
+    unique id per gate-command execution) so a reader can pair a settled
+    boundary with the :data:`GATE_PROGRESS` stream that preceded it. It is
+    absent on historical runs (pre ADR 0190) and on any boundary the engine
+    did not stamp; readers tolerate its absence."""
+
+    GATE_PROGRESS = "gate.progress"
+    """Live, coalesced progress for a running gate command (ADR 0190).
+
+    Observational only: it never changes the gate's real pass/fail outcome
+    (:data:`GATE_END` stays authoritative for the settled result) and never
+    fabricates a percentage or a process-health verdict — the payload is
+    facts (elapsed, byte counters, bounded output tails, timestamps).
+
+    Required payload: ``name`` (the command identity), ``invocation_id``
+    (unique per execution, so reruns of the same command are distinct), and
+    ``elapsed_s``. Optional: ``hook``, ``has_output`` (bool),
+    ``last_output_at`` (ISO), ``stdout_tail`` / ``stderr_tail`` (each bounded
+    ~2000 chars, separately labelled), and ``stdout_bytes`` / ``stderr_bytes``
+    counters. ``phase`` rides on the top-level ``Event.phase`` field as usual.
+    Emissions are COALESCED (rate + size limited); they never carry the full
+    log and are never emitted one-per-byte/line."""
 
     COMMAND_START = "command.start"
     COMMAND_END = "command.end"
@@ -244,6 +267,10 @@ REQUIRED_PAYLOAD_KEYS: dict[EventKind, frozenset[str]] = {
     # collisions raise TypeError at runtime.
     EventKind.GATE_START: frozenset({"name", "gate_kind"}),
     EventKind.GATE_END: frozenset({"name", "outcome", "duration_s"}),
+    # Progress is self-bounded at construction (see pipeline.verification_progress)
+    # and stays observational: ``name`` identifies the command, ``invocation_id``
+    # distinguishes reruns, ``elapsed_s`` is the running duration.
+    EventKind.GATE_PROGRESS: frozenset({"name", "invocation_id", "elapsed_s"}),
     EventKind.COMMAND_START: frozenset({"argv_summary", "cwd"}),
     EventKind.COMMAND_END: frozenset({"exit_code", "duration_s", "outcome"}),
     EventKind.ARTIFACT_CREATED: frozenset({"path", "artifact_kind"}),

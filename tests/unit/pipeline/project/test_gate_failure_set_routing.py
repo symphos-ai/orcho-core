@@ -121,7 +121,7 @@ def _patch_gates(monkeypatch, per_command: dict[str, list[dict]]) -> list[str]:
     order: list[str] = []
     queues = {command: list(results) for command, results in per_command.items()}
 
-    def fake_gate(run, contract, entry):
+    def fake_gate(run, contract, entry, *, invocation_id=None):
         order.append(entry.command)
         queue = queues[entry.command]
         return queue.pop(0) if len(queue) > 1 else queue[0]

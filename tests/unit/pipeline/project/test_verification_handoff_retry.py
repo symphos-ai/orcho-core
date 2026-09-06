@@ -636,7 +636,7 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
     )
     monkeypatch.setattr(gate_repair, "_contract", lambda _run: object())
     monkeypatch.setattr(gate_repair, "_plan", lambda *_args, **_kwargs: SimpleNamespace(entries=[entry]))
-    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args: {"exit_code": 1})
+    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args, **_kw: {"exit_code": 1})
     monkeypatch.setattr(gate_repair, "_placeholders", lambda _run: object())
     monkeypatch.setattr(
         gate_repair, "_classify_gate_receipt",
@@ -765,7 +765,7 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
     monkeypatch.setattr(gate_repair, "_plan", lambda *_args, **_kwargs: SimpleNamespace(entries=[entry]))
     monkeypatch.setattr(
         gate_repair, "_run_gate_command",
-        lambda _run, _contract, selected: calls.append(
+        lambda _run, _contract, selected, *, invocation_id=None: calls.append(
             (selected.command, selected.hook, selected.phase),
         ) or {"exit_code": 0},
     )
@@ -893,7 +893,7 @@ def test_rerun_rechecks_every_blocking_identity(
     )
     monkeypatch.setattr(
         gate_repair, "_run_gate_command",
-        lambda _run, _contract, selected: ran.append(selected.command) or {
+        lambda _run, _contract, selected, *, invocation_id=None: ran.append(selected.command) or {
             "exit_code": 0 if selected.command == "lint" else 1,
         },
     )

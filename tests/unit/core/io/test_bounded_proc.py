@@ -55,6 +55,60 @@ def test_inherited_pipe_descendant_is_killed_within_total_budget(tmp_path: Path)
         pytest.fail("grandchild survived bounded tree termination")
 
 
+def test_cancellation_during_wait_kills_the_process_tree(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """If the caller is interrupted/cancelled while run_bounded polls (not a
+    timeout), the owned tree is still torn down before the exception
+    propagates — no child or grandchild survives (F2 / ADR 0179)."""
+    import core.io.bounded_proc as bp
+
+    gc_pid_file = tmp_path / "gc.pid"
+    marker = tmp_path / "grandchild.marker"
+    grandchild = (
+        "import pathlib, time; time.sleep(4); "
+        f"pathlib.Path({str(marker)!r}).write_text('alive')"
+    )
+    parent = (
+        "import pathlib, subprocess, sys, time; "
+        f"p=subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+        f"pathlib.Path({str(gc_pid_file)!r}).write_text(str(p.pid)); "
+        "time.sleep(30)"
+    )
+
+    real_sleep = time.sleep
+    fired = {"done": False}
+
+    def fake_sleep(duration: float) -> None:
+        # Simulate a cancellation once the child has spawned its grandchild:
+        # raise KeyboardInterrupt from inside the poll loop, exactly where a
+        # real Ctrl-C / task cancellation would land.
+        if not fired["done"] and gc_pid_file.exists():
+            fired["done"] = True
+            raise KeyboardInterrupt
+        real_sleep(duration)
+
+    monkeypatch.setattr(bp.time, "sleep", fake_sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_bounded(
+            [sys.executable, "-c", parent],
+            timeout_s=30, reap_budget_s=0.5, text=True,
+        )
+
+    assert fired["done"], "cancellation was never triggered mid-wait"
+    gc_pid = int(gc_pid_file.read_text())
+    for _ in range(200):
+        if not pid_is_alive(gc_pid):
+            break
+        real_sleep(0.02)
+    else:
+        pytest.fail("grandchild survived cancellation — process tree not killed")
+    # The grandchild's would-be marker write (after 4s) must never land.
+    real_sleep(0.2)
+    assert not marker.exists()
+
+
 def test_timeout_reports_partial_output_and_reap_state() -> None:
     result = run_bounded(
         [sys.executable, "-c", "import sys,time; print('before'); sys.stdout.flush(); time.sleep(30)"],

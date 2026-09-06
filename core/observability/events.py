@@ -261,7 +261,7 @@ def current_phase_header() -> tuple[str, str] | None:
 
 
 # ── Emit ─────────────────────────────────────────────────────────────────────
-def emit(kind: str, **payload: Any) -> None:
+def emit(kind: str, *, event_phase: str | None = None, **payload: Any) -> None:
     """Append one event to the store. No-op if init_event_store was never
     called or was called with None.
 
@@ -270,6 +270,14 @@ def emit(kind: str, **payload: Any) -> None:
     never see partial JSON lines (POSIX append on small writes is atomic
     enough for our line size; we still flush + os.fsync-light via flush
     only — no fsync for performance).
+
+    ``event_phase`` overrides the top-level ``Event.phase`` for this one write
+    instead of taking the active :func:`set_phase` context. It exists for
+    producers that run *after* their phase context has been cleared but still
+    belong to a phase — e.g. an ``after_phase`` gate's ``gate.progress`` stream,
+    which fires after ``phase.end`` calls :func:`clear_phase_context` (ADR
+    0190). Keyword-only and distinct from any ``phase`` payload key, so existing
+    emitters that pass ``phase=`` in the payload are unaffected.
     """
     global _seq
     with _lock:
@@ -291,7 +299,7 @@ def emit(kind: str, **payload: Any) -> None:
             seq=_seq,
             ts=_now_iso(),
             kind=kind,
-            phase=_phase,
+            phase=event_phase if event_phase is not None else _phase,
             payload=_clean_payload(merged_payload),
         )
         line = json.dumps(asdict(evt), ensure_ascii=False) + "\n"

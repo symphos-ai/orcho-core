@@ -169,7 +169,7 @@ def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
     calls = {"gate": 0, "repair": 0}
     queue = list(results)
 
-    def fake_gate(run, contract, entry):
+    def fake_gate(run, contract, entry, *, invocation_id=None):
         calls["gate"] += 1
         return queue.pop(0) if queue else results[-1]
 
