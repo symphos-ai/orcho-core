@@ -2453,6 +2453,106 @@ def test_materializer_refreshes_after_phase_delivery_identity(
     assert recorder.run_calls[0]["commands"] == ["lint"]
 
 
+@pytest.mark.parametrize("unattended", [True, False], ids=["unattended", "interactive"])
+def test_handoff_continuation_refreshes_repaired_receipts_before_acceptance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
+    unattended: bool,
+) -> None:
+    from pipeline.control.handoff_prompt import HandoffDecisionInput
+    from pipeline.lifecycle import default_lifecycle_context
+    from pipeline.project import gate_repair, handoff
+    from pipeline.project.handoff_advice_policy import HandoffAdvicePolicy
+    from pipeline.project.run import _PipelineRun
+    from pipeline.project.types import PresentationPolicy
+    from pipeline.runtime import LoopStep, PhaseRegistry, PhaseStep, PipelineState, Profile
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract([
+        {"after_phase": "implement", "policy": "require", "commands": ["lint"]},
+    ])
+    contract.commands["lint"]["cost"] = "slow"
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    state = PipelineState(task="refresh after repair", project_dir=str(project), plugin=PluginConfig())
+    state.extras.update(run.state.extras)
+    state.output_dir = run_dir
+    run.state = state
+    run.no_interactive = unattended
+    run.unattended = unattended
+    run._presentation = PresentationPolicy.SILENT
+    run.profile_name = "feature"
+    run.session_ts = "rid"
+    run.git_cwd = str(project)
+    run._ckpt = None
+    run._dispatch_active = False
+    run.max_rounds = 2
+    run._on_phase_start = lambda *args: None
+    run._on_phase_pre = lambda name, st: _PipelineRun._on_phase_pre(run, name, st)
+    run._on_phase_end = lambda name, st: gate_repair.evaluate_post_phase_gates(run, name)
+    run._record_phase_failure = lambda *args, **kwargs: None
+    recorder = _Recorder(run_dir, production_writer=True).install(monkeypatch)
+
+    def execute_initial_gate(run, contract, entry):
+        command = entry.command
+        recorder.verify_run(commands=[command], subject_checkout=str(project), project=str(project))
+        return json.loads((run_dir / COMMAND_RECEIPTS_DIRNAME / f"{command}.json").read_text())
+
+    monkeypatch.setattr(gate_repair, "_run_gate_command", execute_initial_gate)
+    phases: list[str] = []
+    acceptance: list[str] = []
+
+    def handler(name, st):
+        if name == "repair_changes" and st.phase_log["review_changes"]["clean"]:
+            st.phase_log[name] = {"skipped": True}
+            return st
+        phases.append(name)
+        if name == "review_changes":
+            st.phase_log[name] = {"clean": phases.count(name) == 2}
+        if name == "repair_changes":
+            fake_verification_subject_capture.set_identity(project, tree_oid="9" * 40)
+            assert classify_required_receipts(
+                contract, run_dir, ctx, checkout=str(project), extras=st.extras,
+            )["lint"].status == "stale"
+        if name == "final_acceptance":
+            acceptance.append(classify_required_receipts(
+                contract, run_dir, ctx, checkout=str(project), extras=st.extras,
+            )["lint"].status)
+        return st
+
+    registry = PhaseRegistry()
+    for name in ("implement", "review_changes", "repair_changes", "final_acceptance"):
+        registry.register(name, lambda st, name=name: handler(name, st))
+    run.registry = registry
+    profile = Profile(name="refresh", kind="custom", steps=(
+        PhaseStep(phase="implement"),
+        LoopStep(steps=(PhaseStep(phase="review_changes"), PhaseStep(phase="repair_changes")),
+                 until="review_changes.clean", max_rounds=2, round_extras_key="repair_round"),
+        PhaseStep(phase="final_acceptance"),
+    ))
+    lifecycle = default_lifecycle_context(phase_registry=registry)
+    state.phase_handoff_request = SimpleNamespace(
+        handoff_id="validate_plan:plan_round:2", phase="validate_plan",
+        available_actions=("continue",), trigger="rejected", approved=False,
+    )
+    monkeypatch.setattr(handoff, "apply_phase_handoff_pause", lambda run: None)
+    monkeypatch.setattr(handoff, "should_prompt_for_phase_handoff", lambda **kw: not unattended)
+    monkeypatch.setattr(handoff, "prompt_phase_handoff_action", lambda *a, **k: HandoffDecisionInput(action="continue"))
+    monkeypatch.setattr("pipeline.project.handoff_advice_policy.resolve_handoff_advice_policy",
+                        lambda run: HandoffAdvicePolicy(auto_retry_with_agent=False))
+    monkeypatch.setattr("sdk.phase_handoff.phase_handoff_decide", lambda *a, **k: None)
+    monkeypatch.setattr(handoff, "apply_phase_handoff_resume_with_banners", lambda *a, **k:
+                        handoff.PhaseHandoffResumeOutcome(profile=profile, completed_phases=frozenset(), paused=False))
+
+    handoff.process_pending_phase_handoffs(run, profile, lifecycle)
+
+    assert phases == ["implement", "review_changes", "repair_changes", "review_changes", "final_acceptance"]
+    assert acceptance == (["present"] if unattended else ["stale"])
+    assert len(recorder.run_calls) == (2 if unattended else 1)
+    executions = [event for event in load_ledger(run_dir).trail if event.kind == "execution"]
+    assert [event.rerun for event in executions] == ([False, True] if unattended else [False])
+
+
 @pytest.mark.parametrize(
     ("policy", "executions", "paused"),
     (("manual", 0, False), ("suggest", 0, False), ("warn", 1, False), ("require", 1, True)),
