@@ -932,6 +932,27 @@ keep it `halted` (`commit_decision_halt` / `commit_decision_fix`). The read-only
 companion `sdk.delivery_decision_state(run_id)` preserves a stopped gate's kind
 and reason but offers no direct decision until the live re-park.
 
+### Delivery ledger (ADR 0191)
+
+`commit_decisions/<id>.delivery.json` is written around the delivery commit
+itself, not after it: `stage="intent"` right before the first mutating git
+op (`action`, `commit_target`, `baseline_ref`, `head_before`,
+`branch_before`, `message`, `strategy`, `staged_paths`), `stage="committed"`
+right after `git commit` (`commit_sha`), `stage="recorded"` once the audit
+artifact above exists. A run that stops between the commit and the audit
+therefore still carries the fact. On resume, `resolve_commit_delivery`
+reconciles the ledger with Git and *adopts* a ledger-backed commit
+(`meta.commit_delivery.provenance="resume_adopted"`, the audit completed
+from the intent) instead of delivering a second time. A commit an older
+engine created without a ledger (`legacy_commit`, found by the deterministic
+fallback subject `chore: deliver orcho run <run_id>`) is never adopted
+silently: the resolve refuses to deliver again, run diagnosis reports
+`delivery_inconsistent` with the sha, and an operator records it with
+`orcho reconcile-delivery <run_id> --apply --commit <sha>`
+(`provenance="reconciled"`, `operator` / `note` in the audit artifact; a
+rejected release settles as a *reconciled* `delivery_override`, never an
+operator override).
+
 ### Delivery publication facts
 
 The durable commit-delivery decision projected in `meta.commit_delivery`

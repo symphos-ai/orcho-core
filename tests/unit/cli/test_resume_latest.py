@@ -296,9 +296,18 @@ class TestResolveResumeLatest:
     ) -> None:
         # No env, no walk-up target, no cwd-derived workspace. find_run
         # must raise NoWorkspace, which the resolver maps to rc=2.
+        #
+        # The walk-up also scans each ancestor's *siblings* for
+        # ``runspace/runs`` (``sdk.runs._walkup_runs_dir``), so a bare
+        # ``tmp_path`` is not isolated: another test's ``tmp_path`` under the
+        # same pytest base dir that laid down a workspace with a valid run
+        # would be found from here. Start deeper than the walk-up's level
+        # budget so the scan never reaches the shared pytest base dir.
         monkeypatch.delenv("ORCHO_WORKSPACE", raising=False)
         monkeypatch.delenv("ORCHO_RUNSPACE", raising=False)
-        monkeypatch.chdir(tmp_path)
+        deep = tmp_path.joinpath(*[f"d{i}" for i in range(8)])
+        deep.mkdir(parents=True)
+        monkeypatch.chdir(deep)
 
         from pipeline.project.cli import _resolve_resume_latest
 

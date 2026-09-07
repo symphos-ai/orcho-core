@@ -1979,6 +1979,9 @@ def _apply_rejected_release_terminal_outcome(run: Any) -> None:
     delivery_status = (
         str(delivery.get("status")) if isinstance(delivery, Mapping) else ""
     )
+    delivery_provenance = (
+        str(delivery.get("provenance") or "") if isinstance(delivery, Mapping) else ""
+    )
 
     resolve_rejected_release_terminal(
         run.session,
@@ -1988,6 +1991,7 @@ def _apply_rejected_release_terminal_outcome(run: Any) -> None:
         blockers=blockers,
         short_summary=short_summary,
         engine_reason=engine_reason,
+        delivery_provenance=delivery_provenance,
     )
 
 

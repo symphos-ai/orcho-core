@@ -575,6 +575,7 @@ def test_interrupted_in_flight_phase_recommends_plan_artifact(
 _MCP_CONDITIONS = frozenset({
     "needs_decision",
     "needs_delivery_decision",
+    "delivery_inconsistent",
     "correction_followup_required",
     "superseded_by_child",
     "closed_by_followup",
@@ -997,3 +998,86 @@ def test_stalled_vocabulary_and_active_order_are_single_and_guarded() -> None:
         "artifact_stalled_reason = _startup_stalled_reason",
     ):
         assert src.index(stall_check) < active_branch
+
+
+# ── delivery_inconsistent (ADR 0191) ──────────────────────────────────────────
+#
+# Git carries a delivery commit for the run that its durable record does not.
+# Outranks the delivery-gate and terminal branches: nothing may reason about
+# a delivery that in fact happened as if it had not.
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _repo_with_delivery(tmp_path: Path, run_id: str, *, subject: str | None = None) -> tuple[Path, str]:
+    from pipeline.engine.delivery_ledger import default_delivery_subject
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@orcho.invalid")
+    _git(repo, "config", "user.name", "Orcho Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-q", "-m", subject or default_delivery_subject(run_id))
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_delivery_inconsistent_from_a_legacy_commit(tmp_path: Path) -> None:
+    repo, sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "failed", "halt_reason": "abnormal_exit:1",
+                    "project": str(repo)})
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_DELIVERY_INCONSISTENT
+    assert d.recommended_next_action == "reconcile_delivery"
+    assert d.continuation_subject == "delivery_gate"
+    assert d.recommended_run_id == "r"
+    assert sha[:12] in d.reason
+    assert "orcho reconcile-delivery r" in d.reason
+    assert d.status == "failed"
+
+
+def test_delivery_inconsistent_from_a_ledger_fact(tmp_path: Path) -> None:
+    from pipeline.engine import delivery_ledger as dl
+
+    repo, sha = _repo_with_delivery(tmp_path, "r", subject="feat: anything")
+    runs = tmp_path / "runs"
+    run_dir = runs / "r"
+    _mk(runs, "r", {"status": "failed", "project": str(repo)})
+    record = dl.record_delivery_intent(
+        run_dir, run_id="r", decision_id="r", action="approve", commit_target=repo,
+        baseline_ref="HEAD", message="feat: anything", strategy="release_summary",
+        staged_paths=("app.txt",),
+    )
+    dl.record_delivery_commit(run_dir, record, sha)
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_DELIVERY_INCONSISTENT
+    assert sha[:12] in d.reason
+
+
+def test_a_recorded_delivery_is_consistent(tmp_path: Path) -> None:
+    repo, sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "failed", "project": str(repo),
+                    "commit_delivery": {"status": "committed", "commit_sha": sha}})
+    d = _diag(runs, "r")
+    assert d.condition != diag.CONDITION_DELIVERY_INCONSISTENT
+    assert d.condition == "failed"
+
+
+def test_a_running_run_is_never_probed_for_delivery(tmp_path: Path) -> None:
+    repo, _sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "running", "project": str(repo)})
+    assert _diag(runs, "r").condition == diag.CONDITION_ACTIVE

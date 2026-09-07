@@ -172,3 +172,12 @@ def test_plan_without_refs_requires_engine_provenance_in_evidence(tmp_path):
     bundle["criterion_matrix"]["rows"][0]["method"].pop("implied")
     with pytest.raises(EvidenceSchemaError, match="does not project the accepted plan"):
         validate_bundle(bundle)
+
+
+def test_an_unbound_implied_row_says_why_and_what_to_do():
+    # ADR 0191 (E2): a bare ``missing:`` told the operator nothing.
+    row = build_criterion_matrix([CRITERION]).rows[0]
+    assert row.state == "missing"
+    assert row.blocking
+    assert row.reason.startswith("missing: no official gate is bound")
+    assert "reclassify" in row.reason

@@ -350,6 +350,15 @@ def _executable_row(
     )
     losing = [ref.label() for ref, s, _ in per_ref if s == state]
     reason = "" if state == "proven" else f"{state}: " + ", ".join(losing)
+    if implied and not refs and state == "missing":
+        # Nothing was ever bound: the run selected no scheduled gate for this
+        # criterion (or declares none). Say so, and say what would fix it —
+        # an empty label list would read as a bare ``missing:``.
+        reason = (
+            "missing: no official gate is bound to this criterion — the run "
+            "selected no scheduled gate to bind it to; bind it to a declared "
+            "gate or reclassify it as agent_assertion / human"
+        )
     if implied and selection_pending:
         reason += "; gate selection is not yet decided"
     if unreceipted:
