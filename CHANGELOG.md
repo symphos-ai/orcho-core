@@ -57,7 +57,10 @@
   nothing to bind to; it used to pass `validate_plan` and surface only as a
   final-acceptance backstop REJECT after the whole run. The rejection names
   the fix (reclassify as `agent_assertion` / `human`, or declare the check as
-  a gate), and the criterion matrix says why an unbound row is `missing`.
+  a gate), the criterion matrix says why an unbound row is `missing`, and the
+  plan contract tells the planner up front that `executable` needs declared
+  gates, so a project without a verification contract does not spend a
+  planning round learning it.
 
 - The final-acceptance session record keeps the engine backstop and the
   model's own verdict (`engine_backstop.model_verdict`), so a backstop REJECT
