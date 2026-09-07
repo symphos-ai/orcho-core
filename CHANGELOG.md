@@ -26,6 +26,13 @@
 
 ### Fixed
 
+- A deferred delivery parked by the producer is decidable in place (ADR 0175
+  addendum). `decide_delivery` / `delivery_decision_state` no longer answer
+  `delivery_decision_requires_resume` for the producer's own
+  `halted` / `commit_delivery_pending` record (`action=none`, `pending`);
+  `run_diagnosis` classifies it `needs_delivery_decision`. Every other stopped
+  gate keeps the resume-first rule.
+
 - An unresolved delivery action can no longer reach Git (ADR 0191). A
   `decision_mode=defer` run launched without `--no-interactive` and without
   a TTY parked its delivery as `action=none`, and the producer applied it
