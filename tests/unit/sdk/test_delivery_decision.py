@@ -424,6 +424,7 @@ def test_stopped_gate_requires_resume_without_mutation(tmp_path: Path, status: s
     meta_path = runs_dir / "r1" / "meta.json"
     meta = _meta(runs_dir)
     meta["status"] = status
+    meta["halt_reason"] = "operator_halt"
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     before = meta_path.read_bytes()
 
@@ -464,6 +465,7 @@ def test_stopped_correction_gate_preserves_kind_and_becomes_decidable_when_live(
     meta_path = runs_dir / "r1" / "meta.json"
     meta = _meta(runs_dir)
     meta["status"] = "halted"
+    meta["halt_reason"] = "operator_halt"
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     stopped = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
@@ -483,6 +485,7 @@ def test_stopped_gate_can_be_decided_after_lifecycle_returns_live(tmp_path: Path
     meta_path = runs_dir / "r1" / "meta.json"
     meta = _meta(runs_dir)
     meta["status"] = "halted"
+    meta["halt_reason"] = "operator_halt"
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     assert delivery_decision_state("r1", runs_dir=runs_dir, cwd=None).decidable is False
@@ -1347,3 +1350,19 @@ def test_bypass_projection_carries_commit_sha_not_branch(tmp_path: Path) -> None
     assert result.pr_intent is None
     # No PR opened on the commit-onto-checkout path.
     assert result.pr_url is None
+
+
+def test_producer_pending_halt_accepts_explicit_delivery_decision(tmp_path: Path) -> None:
+    runs_dir, repo, _ = _park(tmp_path)
+    path = runs_dir / "r1" / "meta.json"
+    meta = _meta(runs_dir)
+    meta["status"] = "halted"
+    path.write_text(json.dumps(meta))
+    assert delivery_decision_state("r1", runs_dir=runs_dir, cwd=None).decidable
+    result = decide_delivery("r1", "approve", runs_dir=runs_dir, cwd=None)
+    assert result.accepted
+    assert result.status == "committed"
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip() == result.commit_sha
+    ledger = list((runs_dir / "r1" / "commit_decisions").glob("*.delivery.json"))
+    assert len(ledger) == 1
+    assert json.loads(ledger[0].read_text())["stage"] == "recorded"

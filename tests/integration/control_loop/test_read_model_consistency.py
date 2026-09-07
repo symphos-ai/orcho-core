@@ -119,7 +119,7 @@ EXPECTED: dict[str, dict[str, object]] = {
         "condition": "needs_decision", "decidable": False, "kind": "none",
     },
     "needs_delivery_decision": {
-        "condition": "halted", "decidable": False, "kind": "delivery",
+        "condition": "needs_delivery_decision", "decidable": True, "kind": "delivery",
     },
     "correction_followup_required": {
         "condition": "correction_followup_required",
@@ -406,16 +406,10 @@ def test_continuation_read_models_preserve_retained_followup_and_preflight_block
     assert "finalized scheduled-gate ledger" in preflight.resolution.blocker
 
 
-def test_stopped_commit_delivery_pending_routes_to_checkpoint_resume(
+def test_parked_commit_delivery_pending_exposes_explicit_decision(
     states: dict[str, H.DriverResult],
 ) -> None:
-    """A stopped durable gate retains its diagnosis predicate but routes to resume.
-
-    ``is_terminal_commit_delivery_pending`` is computed independently on the
-    settled meta and must be True; the resume classifier deliberately does not
-    make it checkpoint-inert, and the SDK must not advertise a same-place
-    delivery decision while the lifecycle remains stopped.
-    """
+    """The real producer's pending halt is directly decidable through the SDK."""
     res = states["needs_delivery_decision"]
     meta = res.meta
     assert meta.get("status") == "halted"
@@ -425,10 +419,8 @@ def test_stopped_commit_delivery_pending_routes_to_checkpoint_resume(
     assert is_terminal_resume_parent(meta) is False
 
     diag, _rl, dds = _views(res, use_captured_meta=False)
-    assert diag.condition == "halted"
-    assert diag.condition != "active"
-    assert diag.condition != "failed"
-    assert dds.decidable is False
+    assert diag.condition == "needs_delivery_decision"
+    assert dds.decidable is True
     assert dds.kind == "delivery"
 
 
@@ -579,7 +571,7 @@ def fresh_base(tmp_path) -> Iterator:
 
 
 def test_delivery_skip_roundtrip_transitions_consistently(fresh_base) -> None:
-    """stopped gate → resume re-park → ``decide_delivery(skip)`` → diagnosis.
+    """Producer pending halt → ``decide_delivery(skip)`` → terminal diagnosis.
 
     The real delivery command layer resolves the parked gate, ships nothing,
     and finalizes the run; the SDK condition must transition consistently from
@@ -590,15 +582,9 @@ def test_delivery_skip_roundtrip_transitions_consistently(fresh_base) -> None:
     runs_dir = res.run_dir.parent
 
     before = run_diagnosis(res.run_id, runs_dir=runs_dir, cwd=None)
-    assert before.condition == "halted"
+    assert before.condition == "needs_delivery_decision"
     before_dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None)
-    assert before_dds.decidable is False
-    refused = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
-    assert refused.blocker == "delivery_decision_requires_resume"
-
-    H.repark_delivery_gate(res.run_dir / "meta.json")
-    live_dds = delivery_decision_state(res.run_id, runs_dir=runs_dir, cwd=None)
-    assert live_dds.decidable is True
+    assert before_dds.decidable is True
 
     result = decide_delivery(res.run_id, "skip", runs_dir=runs_dir, cwd=None)
     assert result.accepted is True

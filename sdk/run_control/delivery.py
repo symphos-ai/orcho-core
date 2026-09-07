@@ -490,6 +490,16 @@ def _stopped_delivery_gate_reason(meta: dict[str, Any]) -> str | None:
     authorization to execute after its lifecycle has stopped.
     """
     status = meta.get("status")
+    context = meta.get("commit_delivery")
+    if (
+        status == "halted"
+        and meta.get("halt_reason") == "commit_delivery_pending"
+        and isinstance(context, dict)
+        and context.get("status") == "pending"
+        and context.get("action") == "none"
+    ):
+        # This is the producer's parked decision, not an operator stop.
+        return None
     stopped_statuses = (
         TERMINAL_SUCCESS_STATUSES
         | RESUMABLE_TERMINAL_STATUSES
