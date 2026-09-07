@@ -4,6 +4,18 @@
 
 ### Added
 
+- Delivery ledger and `orcho reconcile-delivery` (ADR 0191). Every delivery
+  commit now leaves a durable intent / fact record next to its audit
+  artifact, written before `git add` and right after `git commit`, so a run
+  that stops between the commit and the audit can be resumed idempotently
+  (the commit is adopted, never repeated). Run diagnosis reports
+  `delivery_inconsistent` with the commit sha when the target checkout
+  carries a delivery the run does not record; `orcho reconcile-delivery
+  <run_id> --apply --commit <sha>` records such a commit with operator
+  attribution and settles the terminal through the finalization reducers.
+  A reconciled delivery of a rejected release reads as a reconciliation,
+  never as an operator override.
+
 - `metrics.json` says when its cost total is partial. An invocation on a
   model the pricing table does not know is marked `cost_unpriced` on its
   record, the run lists such models under `unpriced_models`, and
@@ -13,6 +25,28 @@
   smaller (ADR 0189). Fully priced runs are unchanged.
 
 ### Fixed
+
+- An unresolved delivery action can no longer reach Git (ADR 0191). A
+  `decision_mode=defer` run launched without `--no-interactive` and without
+  a TTY parked its delivery as `action=none`, and the producer applied it
+  anyway: the patch was transported and committed — for a rejected release —
+  before the audit schema refused the action, leaving a real commit the run
+  never recorded. `apply_commit_delivery` now refuses any unresolved action
+  before touching the checkout, the producer parks on the decision itself,
+  and the audit artifact is validated before any mutation.
+
+- Plan review rejects an executable acceptance criterion the run could never
+  prove (ADR 0191). An implied (ref-less) executable criterion on a run that
+  declares no scheduled gate — or only gates resolved as not selected — has
+  nothing to bind to; it used to pass `validate_plan` and surface only as a
+  final-acceptance backstop REJECT after the whole run. The rejection names
+  the fix (reclassify as `agent_assertion` / `human`, or declare the check as
+  a gate), and the criterion matrix says why an unbound row is `missing`.
+
+- The final-acceptance session record keeps the engine backstop and the
+  model's own verdict (`engine_backstop.model_verdict`), so a backstop REJECT
+  over a model APPROVED is readable from meta / checkpoints, not only from the
+  in-memory phase log.
 
 - Run metadata records the effective `max_rounds` budget for mono runs and
   cross-project parents. This is an audit projection; resume continues to

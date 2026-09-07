@@ -1598,16 +1598,17 @@ class _PipelineRun:
                 self.session, halt_reason="commit_delivery_scope_blocked",
             )
             return
-        # ADR 0100 — defer mode parks the decision: ``resolve`` returns a
-        # ``pending`` decision (action unresolved) instead of an applicable one.
-        # Persist the full context and halt the run at a recoverable delivery /
-        # correction gate WITHOUT touching the project checkout; an operator
-        # resolves it later through ``decide_delivery``.
-        if (
-            decision_mode == "defer"
-            and self.no_interactive
-            and decision.status == "pending"
-        ):
+        # ADR 0100 / ADR 0191 — a parked decision is recognised by the decision
+        # itself (``action='none'`` + ``status='pending'``), never by re-deriving
+        # the resolve's inputs here. ``resolve`` parks on ``defer`` whenever no
+        # operator can be prompted — ``--no-interactive`` OR simply no TTY (an
+        # MCP-supervised resume launched without the flag) — and the two
+        # predicates used to disagree: the run applied a decision whose action
+        # was unresolved and committed a rejected release. Persist the full
+        # context and halt at a recoverable delivery / correction gate WITHOUT
+        # touching the project checkout; an operator resolves it later through
+        # ``decide_delivery``.
+        if decision.status == "pending" and decision.action == "none":
             self.session["commit_delivery"] = decision.to_dict()
             _record_multi_project_delivery(self.session, decision)
             mark_run_halted(self.session, halt_reason="commit_delivery_pending")
@@ -1634,9 +1635,17 @@ class _PipelineRun:
             decision.status == "not_applicable"
             and is_release_blocked(decision.release_verdict, empty_blocks=False)
         )
+        # ADR 0191 — a refused delivery because Git already carries a delivery
+        # commit for this run (``provenance='existing_commit'``) is a real,
+        # inspectable fact: persist it so status / diagnosis name the sha
+        # instead of reading "no delivery".
+        existing_commit = (
+            decision.status == "not_applicable" and bool(decision.commit_sha)
+        )
         if (
             decision.status in {"disabled", "not_applicable", "no_diff"}
             and not rejected_release
+            and not existing_commit
         ):
             return
         self.session["commit_delivery"] = decision.to_dict()

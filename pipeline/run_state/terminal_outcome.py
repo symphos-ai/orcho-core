@@ -386,6 +386,7 @@ def resolve_rejected_release_terminal(
     blockers: list[Any],
     short_summary: Any,
     engine_reason: EngineBackstopReason | None = None,
+    delivery_provenance: str = "",
 ) -> None:
     """Reconcile a still-``done`` terminal to the authoritative release verdict.
 
@@ -424,6 +425,15 @@ def resolve_rejected_release_terminal(
     dicts are display markers (modeled on ``no_op_outcome``) whose own
     ``"status"`` field is descriptive and does not touch ``session['status']``.
 
+    ``delivery_provenance`` (ADR 0191) is the ``provenance`` token the delivery
+    decision carries. Empty for an ordinary operator/auto approve, so the
+    override marker keeps its byte-identical shape and "Operator override"
+    headline. A non-empty token (``resume_adopted`` / ``reconciled``) is
+    stamped onto the marker and, for a delivery an operator merely *recorded*
+    after the fact (``reconciled``), replaces the headline: that diff landed
+    without anyone approving the rejected release, and the marker must not
+    claim otherwise.
+
     The rejected branch is ADR 0106; the approved-supersede branch is ADR 0109.
     """
     if not rejected:
@@ -441,14 +451,25 @@ def resolve_rejected_release_terminal(
             "release_blockers": blockers,
             "delivery_status": delivery_status,
         }
-        override["message"] = _apply_engine_reason_to_marker(
-            override,
-            engine_reason,
-            base_message=(
+        if delivery_provenance:
+            override["provenance"] = delivery_provenance
+        if delivery_provenance == "reconciled":
+            base_message = (
+                "Delivery landed although final acceptance was rejected; an "
+                "operator recorded the existing commit after an engine "
+                "failure. This run reached 'done' by reconciliation — not "
+                "clean success, and not an approval of the rejected release."
+            )
+        else:
+            base_message = (
                 "Operator override: delivery was applied despite a rejected "
                 "final acceptance. This run reached 'done' by override, not "
                 "clean success."
-            ),
+            )
+        override["message"] = _apply_engine_reason_to_marker(
+            override,
+            engine_reason,
+            base_message=base_message,
         )
         _attach_short_summary(override, short_summary, superseded=engine_present)
         session["delivery_override"] = override

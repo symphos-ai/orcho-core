@@ -86,6 +86,7 @@ from cli._help import (
 from cli._managed_command import add_managed_command_parser
 from cli._profile_prompt import require_profile_or_exit
 from cli._quality_gates import cmd_quality_gates
+from cli._reconcile_delivery import format_reconcile_result, format_reconcile_state
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
 from cli._task_prompt import prompt_for_task_if_needed
@@ -725,6 +726,90 @@ def _render_evidence_diff_markdown(record) -> str:  # noqa: ANN001
             f"\n_... output truncated at {record.max_bytes} bytes ..._\n",
         )
     return "".join(lines)
+
+
+def cmd_reconcile_delivery(args: argparse.Namespace) -> int:
+    """Inspect and (with --apply) record a delivery commit the run never recorded.
+
+    Dry-run (default) prints the read-only reconciliation: what the delivery
+    ledger and the target checkout say against ``meta.commit_delivery``.
+    ``--apply`` records the commit named by ``--commit`` through the SDK
+    executor (audit artifact with operator / note, durable delivery block,
+    terminal settle via the finalization reducers). The checkout is never
+    mutated. ``--json`` prints one JSON object on stdout. Exit codes: 0 on a
+    consistent dry-run or an accepted apply, 3 when a dry-run finds an
+    unrecorded commit, 1 when an apply is refused.
+    """
+    from sdk.run_control.delivery_reconcile import (
+        inspect_delivery_reconciliation,
+        reconcile_delivery_record,
+    )
+
+    want_json = bool(getattr(args, "json", False))
+    apply_requested = bool(getattr(args, "apply", False))
+    workspace = getattr(args, "workspace", None)
+    try:
+        ref = find_run(args.run_id, workspace=workspace)
+    except OrchoError as exc:
+        print(format_error(exc), file=sys.stderr)
+        return exc.exit_code
+
+    if not apply_requested:
+        state = inspect_delivery_reconciliation(ref.run_id, workspace=workspace)
+        if want_json:
+            sys.stdout.write(
+                json.dumps(state.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+                + "\n"
+            )
+        else:
+            current_status = load_meta(ref.run_dir).get("status")
+            print(format_reconcile_state(state, current_status=current_status))
+        return 0 if state.consistent else 3
+
+    commit = getattr(args, "commit", None)
+    if not commit:
+        print(
+            "reconcile-delivery: --apply requires --commit <sha> naming the "
+            "commit you verified",
+            file=sys.stderr,
+        )
+        return 2
+    operator = (getattr(args, "operator", None) or "").strip() or _default_operator()
+    result = reconcile_delivery_record(
+        ref.run_id,
+        operator=operator,
+        commit=commit,
+        note=getattr(args, "note", None),
+        workspace=workspace,
+    )
+    if want_json:
+        sys.stdout.write(
+            json.dumps(result.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n"
+        )
+    else:
+        print(format_reconcile_result(result))
+    return 0 if result.accepted else 1
+
+
+def _default_operator() -> str:
+    """The operator identity for an audit record when ``--operator`` is absent."""
+    import getpass
+    import subprocess
+
+    try:
+        name = subprocess.run(
+            ["git", "config", "user.name"],
+            capture_output=True, text=True, check=False, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    if name:
+        return name
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        return "operator"
 
 
 def cmd_repair_state(args: argparse.Namespace) -> int:
@@ -1377,6 +1462,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
     )
     p_repair.set_defaults(func=cmd_repair_state)
+
+    # ── reconcile-delivery ────────────────────────────────────────────────────
+    p_reconcile = sub.add_parser(
+        "reconcile-delivery",
+        help="Record a delivery commit the run stopped without recording",
+        description=(
+            "Compare the run's durable delivery record with its delivery "
+            "ledger and the target checkout. Dry-run is the default (nothing "
+            "is written; exit 3 when Git carries a delivery commit the run "
+            "does not record). With --apply --commit <sha>, record the commit "
+            "you verified: the audit artifact carries your operator name and "
+            "note, the run's delivery block is set with provenance "
+            "'reconciled', and the terminal status is settled the same way "
+            "finalization settles it. The checkout is never mutated."
+        ),
+    )
+    p_reconcile.add_argument("run_id", help="Run id to inspect / reconcile")
+    p_reconcile.add_argument(
+        "--apply", action="store_true", default=False,
+        help="Record the delivery (default: dry-run, nothing written)",
+    )
+    p_reconcile.add_argument(
+        "--commit", default=None, metavar="SHA",
+        help="The delivery commit you verified (sha or unique prefix); required with --apply",
+    )
+    p_reconcile.add_argument(
+        "--operator", default=None,
+        help="Operator name for the audit record (default: git user.name / login)",
+    )
+    p_reconcile.add_argument(
+        "--note", default=None,
+        help="Free-text note stored in the audit record (why / what was verified)",
+    )
+    p_reconcile.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit a single JSON object on stdout instead of a text report",
+    )
+    p_reconcile.add_argument(
+        "--workspace", default=None,
+        help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
+    )
+    p_reconcile.set_defaults(func=cmd_reconcile_delivery)
 
     # ── update ────────────────────────────────────────────────────────────────
     p_update = sub.add_parser(

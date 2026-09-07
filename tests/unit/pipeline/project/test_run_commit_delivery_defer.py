@@ -265,3 +265,119 @@ def test_finalization_banner_for_pending_is_amber() -> None:
     from core.io.ansi import C
 
     assert color == C.YELLOW
+
+
+# ── ADR 0191: the parked decision is recognised by the decision itself ───────
+#
+# ``resolve_commit_delivery`` parks on ``defer`` whenever no operator can be
+# prompted: ``no_interactive=True`` OR no TTY. The producer used to park only
+# on ``no_interactive`` and applied a parked (``action='none'``) decision when
+# a headless run was launched without the flag — the dogfood failure that
+# committed a rejected release. The whole matrix now shares one rule: an
+# unresolved action never reaches ``apply_commit_delivery``.
+
+_TERMINAL_STATUS = {
+    "approve": "committed",
+    "apply": "applied_uncommitted",
+    "skip": "skipped",
+    "fix": "fix_requested",
+    "halt": "halted",
+}
+
+
+def _approved_final_acceptance() -> dict:
+    return {
+        "verdict": "APPROVED",
+        "ship_ready": True,
+        "approved": True,
+        "short_summary": "all good",
+        "release_blockers": [],
+    }
+
+
+@pytest.mark.parametrize("decision_mode", ["defer", "auto"])
+@pytest.mark.parametrize("no_interactive", [True, False])
+@pytest.mark.parametrize("tty", [True, False])
+@pytest.mark.parametrize("verdict", ["APPROVED", "REJECTED"])
+def test_unresolved_action_never_reaches_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision_mode: str,
+    no_interactive: bool,
+    tty: bool,
+    verdict: str,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    _stub_git(monkeypatch)
+    monkeypatch.setattr(cd, "stdio_interactive", lambda: tty)
+    # An interactive resolve owns the choice through the prompt; stand in for
+    # the operator with ``skip`` (never delivers) and skip the git-backed menu
+    # destination probe.
+    monkeypatch.setattr(cd, "_prompt_action", lambda **_kw: "skip")
+    monkeypatch.setattr(cd, "_menu_destination", lambda **_kw: "checkout_commit")
+    monkeypatch.setattr(
+        "pipeline.project.run.config.AppConfig.load",
+        lambda: SimpleNamespace(commit={
+            "enabled": True,
+            "add_untracked": False,
+            "decision_mode": decision_mode,
+            "auto_in_ci": "approve",
+        }),
+    )
+    applied: list[str] = []
+
+    def _spy_apply(decision, **_kw):
+        assert decision.action in cd._ACTIONS, (
+            f"unresolved action {decision.action!r} reached apply_commit_delivery"
+        )
+        applied.append(decision.action)
+        return cd.CommitDeliveryDecision(
+            action=decision.action,
+            status=_TERMINAL_STATUS[decision.action],
+            run_id=decision.run_id,
+            decision_id=decision.decision_id,
+            project_path=decision.project_path,
+            source_path=decision.source_path,
+            baseline_ref=decision.baseline_ref,
+            decided_at=decision.decided_at,
+            commit_sha="a" * 40 if decision.action == "approve" else None,
+        )
+
+    monkeypatch.setattr(cd, "apply_commit_delivery", _spy_apply)
+
+    stub = _stub(run_dir, project_dir, no_interactive=no_interactive)
+    stub._presentation = None
+    # The approve path builds a commit-message generator off the phase config;
+    # no agent means the summary fallback, which is all this matrix needs.
+    stub.phase_config = SimpleNamespace(final_acceptance_agent=None)
+    stub.session["phases"] = {
+        "final_acceptance": (
+            _approved_final_acceptance() if verdict == "APPROVED"
+            else _rejected_final_acceptance()
+        ),
+    }
+    _PipelineRun._run_commit_delivery(stub, diff_cwd=project_dir)
+
+    interactive = tty and not no_interactive
+    if decision_mode == "defer" and not interactive:
+        # Parked — regardless of WHICH predicate made the run headless.
+        assert applied == []
+        assert stub.session["status"] == "halted"
+        assert stub.session["halt_reason"] == "commit_delivery_pending"
+        parked = stub.session["commit_delivery"]
+        assert parked["status"] == "pending"
+        assert parked["action"] == "none"
+        assert parked["release_verdict"] == verdict
+    elif interactive:
+        assert applied == ["skip"]
+        assert stub.session["status"] == "done"
+    elif verdict == "REJECTED":
+        # auto + headless + rejected: refused before apply, persisted.
+        assert applied == []
+        assert stub.session["commit_delivery"]["status"] == "not_applicable"
+    else:
+        assert applied == ["approve"]
+        assert stub.session["commit_delivery"]["status"] == "committed"

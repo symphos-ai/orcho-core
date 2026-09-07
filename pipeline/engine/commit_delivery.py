@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping
@@ -19,7 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from core.contracts.commit_decision_schema import validate_decision_dict
+from core.contracts.commit_decision_schema import (
+    COMMIT_MESSAGE_STRATEGIES,
+    validate_decision_dict,
+)
 from core.io.ansi import C, paint
 from core.io.git_helpers import apply_patch_to_checkout, worktree_diff_against_base
 from core.io.journey_prompt import (
@@ -31,7 +33,7 @@ from core.io.journey_prompt import (
     title,
 )
 from core.io.terminal_input import stdio_interactive
-from pipeline.engine import delivery_branch as _delivery_branch
+from pipeline.engine import delivery_branch as _delivery_branch, delivery_ledger as _ledger
 from pipeline.engine.delivery_branch import (
     DeliveryBranchOutcome,
     DeliveryPrIntent,
@@ -99,7 +101,15 @@ COMMIT_DELIVERY_HALT_REASONS: dict[str, str] = {
 }
 
 _ACTIONS = frozenset({"fix", "approve", "apply", "skip", "halt"})
-_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+# ADR 0191 — where a delivered decision came from. Empty for the ordinary
+# resolve→apply path; ``resume_adopted`` when a resume adopted a ledger-backed
+# commit the previous process created before it stopped; ``existing_commit``
+# when Git already carries a delivery commit for the run that no ledger
+# explains (never adopted — the resolve refuses to deliver again);
+# ``reconciled`` when an operator recorded such a commit after the fact.
+PROVENANCE_RESUME_ADOPTED = "resume_adopted"
+PROVENANCE_EXISTING_COMMIT = "existing_commit"
+PROVENANCE_RECONCILED = "reconciled"
 _PYTHON_BYTECODE_SUFFIXES = (".pyc", ".pyo")
 
 
@@ -180,6 +190,10 @@ class CommitDeliveryDecision:
     # stay byte-identical.
     delivery_warnings: tuple[str, ...] = ()
     delivery_notices: tuple[str, ...] = ()
+    # ADR 0191 — one of the ``PROVENANCE_*`` tokens, or empty for a decision the
+    # ordinary resolve→apply path produced. Serialised only when non-empty so
+    # every existing decision shape stays byte-identical.
+    provenance: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -264,6 +278,8 @@ class CommitDeliveryDecision:
             out["delivery_warnings"] = list(self.delivery_warnings)
         if self.delivery_notices:
             out["delivery_notices"] = list(self.delivery_notices)
+        if self.provenance:
+            out["provenance"] = self.provenance
         return out
 
 
@@ -375,6 +391,21 @@ def resolve_commit_delivery(
             error="no run directory",
             **release_fields,
         )
+    # ADR 0191 — before any gate or diff: a delivery commit this run already
+    # created (the previous process stopped between ``git commit`` and its
+    # audit) is adopted, never repeated. Runs before the release / verification
+    # guards on purpose: the commit is a fact those guards cannot undo.
+    existing = _adopt_existing_delivery(
+        run_dir=run_dir,
+        run_id=run_id,
+        decision_id=decision_id,
+        project_dir=project_dir,
+        source_worktree=source_worktree,
+        baseline_ref=baseline_ref,
+        release_fields=release_fields,
+    )
+    if existing is not None:
+        return existing
     interactive = (not no_interactive) and stdio_interactive()
     # ADR 0100: ``defer`` parks the decision for a later operator call. It is
     # only meaningful for a non-interactive run; an interactive resolve always
@@ -693,6 +724,15 @@ def apply_commit_delivery(
     if decision.status != "pending":
         return decision
 
+    if decision.action not in _ACTIONS:
+        # ADR 0191 fail-closed guard: ``action='none'`` + ``pending`` is an
+        # UNRESOLVED gate (a defer park, a scope block, a caller that ignored
+        # the parked state). Nothing below may run for it — not the dirty
+        # guard, not the patch transport, not ``git add`` / ``commit`` /
+        # publish — regardless of how correct the caller was. The decision
+        # comes back untouched so the caller still sees an undecided gate.
+        return decision
+
     if decision.scope_blocker:
         # Strict delivery-scope violation (T4): a reversible, decidable gate.
         # Never ship — leave it parked (status stays 'pending', action 'none')
@@ -706,6 +746,11 @@ def apply_commit_delivery(
         return _persist(decision, run_dir=run_dir, status="skipped")
     if decision.action == "halt":
         return _persist(decision, run_dir=run_dir, status="halted")
+
+    # ADR 0191 — the audit artifact a successful approve / apply will write is
+    # validated BEFORE any mutation, so a schema refusal can only ever happen
+    # here, with the checkout untouched, never after the commit exists.
+    _preflight_audit(decision)
 
     interactive = (not no_interactive) and stdio_interactive()
     in_place_delivery = _same_checkout(decision.source_path, decision.project_path)
@@ -882,6 +927,26 @@ def apply_commit_delivery(
             error="no run-owned paths to stage",
             target_dirty_retries=retries,
         )
+    commit_message = decision.final_message or _message_from_release_summary(
+        "", decision.run_id,
+    )
+    # ADR 0191 — durable intent BEFORE the first mutating git op of the
+    # commit, so a stop anywhere between here and the audit artifact leaves a
+    # record a resume can reconcile against Git (parent + subject).
+    ledger_record = _ledger.record_delivery_intent(
+        run_dir,
+        run_id=decision.run_id,
+        decision_id=decision.decision_id,
+        action=decision.action,
+        commit_target=decision.project_path,
+        baseline_ref=decision.baseline_ref,
+        message=commit_message,
+        strategy=decision.commit_message_strategy,
+        staged_paths=tuple(stage_paths),
+        delivery_branch=(
+            delivery_outcome.delivery_branch if delivery_outcome is not None else None
+        ),
+    )
     add = _run_git(decision.project_path, ["add", "--", *stage_paths])
     if not add.ok:
         return _persist(
@@ -894,7 +959,7 @@ def apply_commit_delivery(
     files_staged = _git_lines(decision.project_path, ["diff", "--cached", "--name-only"])
     commit = _run_git(
         decision.project_path,
-        ["commit", "-s", "-m", decision.final_message or _message_from_release_summary("", decision.run_id)],
+        ["commit", "-s", "-m", commit_message],
     )
     if not commit.ok:
         reset = _run_git(decision.project_path, ["reset"])
@@ -911,6 +976,9 @@ def apply_commit_delivery(
             target_dirty_retries=retries,
         )
     sha = (_git_stdout(decision.project_path, ["rev-parse", "HEAD"]) or "").strip()
+    # ADR 0191 — the commit fact, written before publish / audit so neither
+    # can lose it.
+    ledger_record = _ledger.record_delivery_commit(run_dir, ledger_record, sha)
     persist_fields = _delivery_branch_persist_fields(delivery_outcome)
     if (
         delivery_outcome is not None
@@ -933,7 +1001,7 @@ def apply_commit_delivery(
             "delivery_warnings": facts.delivery_warnings,
             "delivery_notices": facts.delivery_notices,
         }
-    return _persist(
+    persisted = _persist(
         decision,
         run_dir=run_dir,
         status="committed",
@@ -943,6 +1011,216 @@ def apply_commit_delivery(
         target_dirty_retries=retries,
         **persist_fields,
     )
+    _ledger.record_delivery_audit(run_dir, ledger_record)
+    return persisted
+
+
+def persist_reconciled_delivery(
+    run_dir: Path,
+    *,
+    run_id: str,
+    project_dir: Path,
+    source_worktree: Path,
+    baseline_ref: str,
+    commit_sha: str,
+    message: str,
+    files_staged: tuple[str, ...],
+    operator: str,
+    note: str | None,
+    strategy: str | None = None,
+    release_fields: Mapping[str, Any] | None = None,
+) -> CommitDeliveryDecision:
+    """Record, after the fact, a delivery commit the run never recorded (ADR 0191).
+
+    The single write path behind ``orcho reconcile-delivery``: an operator
+    verified that ``commit_sha`` in ``project_dir`` is this run's delivery and
+    attests it. The audit artifact carries ``operator`` / ``note`` and the
+    decision carries ``provenance='reconciled'``, so no reader can mistake the
+    record for an engine-resolved approve — least of all the rejected-release
+    reducer, which words its marker differently for a reconciled delivery. The
+    ledger is advanced to ``recorded`` so a later resume adopts this record
+    instead of probing Git again.
+    """
+    decision_id = _safe_decision_id(run_id)
+    strategy = strategy if strategy in COMMIT_MESSAGE_STRATEGIES else "release_summary"
+    base = CommitDeliveryDecision(
+        action="approve",
+        status="pending",
+        run_id=run_id,
+        decision_id=decision_id,
+        project_path=project_dir,
+        source_path=source_worktree,
+        baseline_ref=baseline_ref,
+        dirty=True,
+        changed_paths=files_staged,
+        include_untracked=False,
+        commit_message_strategy=strategy,
+        final_message=message,
+        decided_at=datetime.now(UTC).isoformat(),
+        provenance=PROVENANCE_RECONCILED,
+        **dict(release_fields or {}),
+    )
+    persisted = _persist(
+        base,
+        run_dir=run_dir,
+        status="committed",
+        commit_sha=commit_sha,
+        files_staged=files_staged,
+        delivery_notices=(
+            f"delivery commit {commit_sha[:12]} recorded by operator "
+            f"{operator} after the run stopped without an audit record",
+        ),
+        operator=operator,
+        note=note,
+    )
+    existing = _ledger.load_delivery_ledger(run_dir, decision_id)
+    if existing is None:
+        existing = _ledger.record_delivery_intent(
+            run_dir,
+            run_id=run_id,
+            decision_id=decision_id,
+            action="approve",
+            commit_target=project_dir,
+            baseline_ref=baseline_ref,
+            message=message,
+            strategy=strategy,
+            staged_paths=files_staged,
+            provenance=PROVENANCE_RECONCILED,
+        )
+        existing = _ledger.record_delivery_commit(run_dir, existing, commit_sha)
+    _ledger.record_delivery_audit(run_dir, existing)
+    return persisted
+
+
+def _preflight_audit(decision: CommitDeliveryDecision) -> None:
+    """Validate the audit artifact a successful delivery will write (ADR 0191).
+
+    Builds the same artifact ``_persist`` will produce for the decision's
+    success status — ``committed`` for ``approve`` (with a placeholder sha),
+    ``applied_uncommitted`` for ``apply`` — and runs it through the schema.
+    Raises :class:`~core.contracts.commit_decision_schema.CommitDecisionSchemaError`
+    before any Git mutation, so an unauditable decision (an unknown action or
+    message strategy) can never leave a commit behind with no audit record.
+    """
+    success_status: CommitDeliveryStatus = (
+        "committed" if decision.action == "approve" else "applied_uncommitted"
+    )
+    artifact = _artifact_dict(
+        decision,
+        status=success_status,
+        error=None,
+        commit_sha="0" * 40 if success_status == "committed" else None,
+        files_staged=tuple(decision.changed_paths),
+        untracked_delivered=(),
+    )
+    validate_decision_dict(artifact)
+
+
+def _adopt_existing_delivery(
+    *,
+    run_dir: Path,
+    run_id: str,
+    decision_id: str,
+    project_dir: Path,
+    source_worktree: Path,
+    baseline_ref: str,
+    release_fields: Mapping[str, Any],
+) -> CommitDeliveryDecision | None:
+    """Return the decision for a delivery commit that already exists, else ``None``.
+
+    Consumes :func:`pipeline.engine.delivery_ledger.reconcile_delivery`:
+
+    * ``recorded`` — audit and commit both exist: surface the recorded
+      ``committed`` decision (a resume simply re-reads its own outcome);
+    * ``committed_unrecorded`` — the previous process stopped between
+      ``git commit`` and the audit: complete the audit now from the ledger's
+      intent (action, message, strategy, paths) and return ``committed``;
+    * ``legacy_commit`` — Git carries a delivery commit for this run that no
+      ledger explains: refuse to deliver again, but never adopt it silently —
+      nothing durable says who decided it, so an operator records it
+      explicitly (``orcho reconcile-delivery``).
+
+    Every other state (``none`` / ``intent_only`` / ``commit_missing`` /
+    ``unreadable``) lets the ordinary resolve continue.
+    """
+    recon = _ledger.reconcile_delivery(
+        run_dir, run_id=run_id, decision_id=decision_id, project_path=project_dir,
+    )
+    if not recon.found:
+        return None
+    sha = recon.commit_sha or ""
+    if recon.state == _ledger.RECON_LEGACY_COMMIT or recon.record is None:
+        return CommitDeliveryDecision(
+            action="none",
+            status="not_applicable",
+            run_id=run_id,
+            decision_id=decision_id,
+            project_path=project_dir,
+            source_path=source_worktree,
+            baseline_ref=baseline_ref,
+            commit_sha=sha or None,
+            error=(
+                f"a delivery commit for this run already exists in the target "
+                f"checkout ({sha[:12]}) but the run holds no delivery record; "
+                "delivery is not repeated. Verify the commit, then record it "
+                f"with `orcho reconcile-delivery {run_id} --commit {sha[:12]}` "
+                "before resuming."
+            ),
+            provenance=PROVENANCE_EXISTING_COMMIT,
+            **release_fields,
+        )
+    record = recon.record
+    on_target = _same_checkout(Path(record.commit_target), project_dir)
+    approve = record.action == "approve"
+    base = CommitDeliveryDecision(
+        action=record.action,  # type: ignore[arg-type]
+        status="pending",
+        run_id=run_id,
+        decision_id=decision_id,
+        project_path=project_dir,
+        source_path=source_worktree,
+        baseline_ref=record.baseline_ref,
+        dirty=True,
+        changed_paths=record.staged_paths,
+        include_untracked=False,
+        commit_message_strategy=record.strategy if approve else None,
+        final_message=record.message if approve else None,
+        decided_at=record.intended_at,
+        # A record an operator reconciled keeps saying so on every re-read.
+        provenance=record.provenance or PROVENANCE_RESUME_ADOPTED,
+        **release_fields,
+    )
+    if recon.state == _ledger.RECON_RECORDED:
+        return replace(
+            base,
+            status="committed",
+            commit_sha=sha if on_target else None,
+            published_commit_sha=None if on_target else sha,
+            delivery_branch=None if on_target else record.delivery_branch,
+            artifact_path=_artifact_path(run_dir, decision_id),
+        )
+    notice = (
+        f"delivery audit completed on resume: commit {sha[:12]} was created "
+        "before the previous run process stopped"
+    )
+    if not on_target:
+        notice += (
+            f" on delivery branch {record.delivery_branch or '?'}; its "
+            "publication state was not recorded — verify the branch"
+        )
+    persisted = _persist(
+        base,
+        run_dir=run_dir,
+        status="committed",
+        commit_sha=sha if on_target else None,
+        artifact_commit_sha=sha,
+        published_commit_sha=None if on_target else sha,
+        files_staged=record.staged_paths,
+        delivery_branch=None if on_target else record.delivery_branch,
+        delivery_notices=(notice,),
+    )
+    _ledger.record_delivery_audit(run_dir, record)
+    return persisted
 
 
 def _resolve_delivery_branch_outcome(
@@ -1016,13 +1294,15 @@ def _deliver_published_branch(
     or provider failure degrades to a "branch ready" notice / warning and the
     delivery status stays ``committed``.
     """
-    branch_sha, error = _commit_run_branch(decision)
-    if error is not None:
+    branch_sha, ledger_record, error = _commit_run_branch(
+        decision, run_dir=run_dir, delivery_branch=outcome.delivery_branch,
+    )
+    if error is not None or branch_sha is None:
         return _persist(
             decision,
             run_dir=run_dir,
             status="commit_failed",
-            error=error,
+            error=error or "could not resolve delivery branch HEAD after commit",
         )
     published = publish_delivery_branch(
         source_path=decision.source_path,
@@ -1036,7 +1316,7 @@ def _deliver_published_branch(
         commit_config=commit_config,
     )
     facts = publication_facts(published, result)
-    return _persist(
+    persisted = _persist(
         decision,
         run_dir=run_dir,
         status="committed",
@@ -1049,40 +1329,60 @@ def _deliver_published_branch(
         delivery_warnings=facts.delivery_warnings,
         delivery_notices=facts.delivery_notices,
     )
+    _ledger.record_delivery_audit(run_dir, ledger_record)
+    return persisted
 
 
 def _commit_run_branch(
     decision: CommitDeliveryDecision,
-) -> tuple[str | None, str | None]:
+    *,
+    run_dir: Path,
+    delivery_branch: str | None,
+) -> tuple[str | None, _ledger.DeliveryLedgerRecord, str | None]:
     """Stage + commit the run's own work onto its branch in the run worktree.
 
-    Returns ``(commit_sha, None)`` on success, or ``(None, error)``. The run's
-    changes are otherwise uncommitted working-tree diffs; this materialises them
-    as the delivery commit so ``publish_delivery_branch`` has something to rebase
-    and publish. Runs entirely inside ``decision.source_path`` (the run
-    worktree) — never the canonical checkout.
+    Returns ``(commit_sha, ledger_record, None)`` on success, or
+    ``(None, ledger_record, error)``. The run's changes are otherwise
+    uncommitted working-tree diffs; this materialises them as the delivery
+    commit so ``publish_delivery_branch`` has something to rebase and publish.
+    Runs entirely inside ``decision.source_path`` (the run worktree) — never
+    the canonical checkout. The delivery ledger (ADR 0191) records the intent
+    before ``git add`` and the commit fact right after ``git commit``.
     """
     source = decision.source_path
     stage_paths = list(decision.changed_paths)
     if decision.include_untracked:
         stage_paths += list(decision.untracked_paths)
+    message = decision.final_message or _message_from_release_summary(
+        decision.release_summary, decision.run_id,
+    )
+    ledger_record = _ledger.record_delivery_intent(
+        run_dir,
+        run_id=decision.run_id,
+        decision_id=decision.decision_id,
+        action=decision.action,
+        commit_target=source,
+        baseline_ref=decision.baseline_ref,
+        message=message,
+        strategy=decision.commit_message_strategy,
+        staged_paths=tuple(stage_paths),
+        delivery_branch=delivery_branch,
+    )
     if stage_paths:
         add = _run_git(source, ["add", "--", *stage_paths])
         if not add.ok:
-            return None, add.error
+            return None, ledger_record, add.error
     staged = _run_git(source, ["diff", "--cached", "--name-only"])
     if staged.ok and staged.stdout.strip():
-        message = decision.final_message or _message_from_release_summary(
-            decision.release_summary, decision.run_id,
-        )
         commit = _run_git(source, ["commit", "-s", "-m", message])
         if not commit.ok:
             _run_git(source, ["reset"])
-            return None, commit.error
+            return None, ledger_record, commit.error
     sha = (_git_stdout(source, ["rev-parse", "HEAD"]) or "").strip()
     if not sha:
-        return None, "could not resolve delivery branch HEAD after commit"
-    return sha, None
+        return None, ledger_record, "could not resolve delivery branch HEAD after commit"
+    ledger_record = _ledger.record_delivery_commit(run_dir, ledger_record, sha)
+    return sha, ledger_record, None
 
 
 def _run_owned_patch(source_worktree: Path, baseline_ref: str) -> str:
@@ -1224,6 +1524,9 @@ def _persist(
     delivery_notices: tuple[str, ...] = (),
     artifact_commit_sha: str | None = None,
     published_commit_sha: str | None = None,
+    provenance: str | None = None,
+    operator: str | None = None,
+    note: str | None = None,
 ) -> CommitDeliveryDecision:
     """Write the audit artifact and rebuild the frozen decision dataclass.
 
@@ -1253,6 +1556,8 @@ def _persist(
         target_dirty_paths=target_dirty_paths,
         target_dirty_retries=target_dirty_retries,
         action_override=action,
+        operator=operator,
+        note=note,
     )
     validate_decision_dict(artifact)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1317,6 +1622,7 @@ def _persist(
         delivery_notices=_merge_delivery_diagnostics(
             decision.delivery_notices, delivery_notices,
         ),
+        provenance=provenance if provenance is not None else decision.provenance,
     )
 
 
@@ -1331,6 +1637,8 @@ def _artifact_dict(
     target_dirty_paths: tuple[str, ...] = (),
     target_dirty_retries: int = 0,
     action_override: CommitDeliveryAction | None = None,
+    operator: str | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     """Build the JSON-serialisable audit artifact for one delivery decision.
 
@@ -1338,6 +1646,10 @@ def _artifact_dict(
     operator's substituted action lands in the artifact instead of the
     original approve/apply, so the schema validator's cross-field
     coherence is satisfied (skip↔skipped, halt↔halted only).
+
+    ``operator`` / ``note`` (ADR 0191) attribute a decision an operator
+    recorded after the fact (``persist_reconciled_delivery``); both stay
+    ``None`` on every engine-resolved path.
     """
     effective_action = action_override or decision.action
     artifact: dict[str, Any] = {
@@ -1359,8 +1671,10 @@ def _artifact_dict(
         ),
         "commit_sha": commit_sha,
         "commit_error": error,
-        "operator": None,
+        "operator": operator,
     }
+    if note:
+        artifact["note"] = note
     if target_dirty_paths:
         artifact["target_dirty_paths"] = list(target_dirty_paths)
     if target_dirty_retries:
@@ -1813,7 +2127,7 @@ def render_commit_message_prompt(
 def _message_from_release_summary(summary: str, run_id: str) -> str:
     subject = " ".join(summary.split())
     if not subject:
-        subject = f"chore: deliver orcho run {run_id}"
+        subject = _ledger.default_delivery_subject(run_id)
     return subject
 
 
@@ -2522,8 +2836,7 @@ def _artifact_path(run_dir: Path, decision_id: str) -> Path:
 
 
 def _safe_decision_id(run_id: str) -> str:
-    safe = _SAFE_ID_RE.sub("_", run_id).strip("._")
-    return safe or "run"
+    return _ledger.safe_decision_id(run_id)
 
 
 @dataclass(frozen=True, slots=True)

@@ -215,6 +215,10 @@ class TestFinalAcceptanceCriterionBackstop:
             for g in entry["verification_gaps"]
         )
         assert entry["engine_backstop"]["reason"] == "acceptance_criteria_open"
+        # ADR 0191: the model's own verdict stays readable next to the engine's.
+        assert entry["engine_backstop"]["model_verdict"] == "APPROVED"
+        assert entry["engine_backstop"]["model_ship_ready"] is True
+        assert entry["verdict"] == "REJECTED"
         assert "Engine backstop — acceptance criteria open" in entry["output"]
 
     def test_an_operator_waiver_cannot_ship_a_pending_human_criterion(

@@ -87,6 +87,9 @@ ACTION_DELIVERY_DECISION = "delivery_decision"
 ACTION_RESUME_SOURCE_RUN = "resume_source_run"
 ACTION_START_FOLLOWUP = "start_followup"
 ACTION_PLAN_ARTIFACT_CONTINUATION = "plan_artifact_continuation"
+# ADR 0191 — Git carries a delivery commit for the run that its durable record
+# does not: record it (``orcho reconcile-delivery``) before anything resumes.
+ACTION_RECONCILE_DELIVERY = "reconcile_delivery"
 
 # ``meta.plan_source`` values that mean a parsed plan is durably attributable;
 # the profile work-kinds that produce a plan artifact rather than an undelivered

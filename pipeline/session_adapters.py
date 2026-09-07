@@ -653,6 +653,11 @@ class FinalAcceptanceAdapter:
             "scope_expansion_sanction",
             # No-diff release gate surface.
             "skipped", "review_target", "diff", "no_change_outcome",
+            # ADR 0191: the engine backstop record (reason, gaps, and the model's
+            # own verdict before the engine overrode it) is durable evidence, not
+            # an in-memory detail — finalization, evidence, and status readers
+            # must see the model verdict and the engine verdict separately.
+            "engine_backstop",
         ):
             value = log.get(key)
             if value is not None:

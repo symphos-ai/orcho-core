@@ -82,6 +82,7 @@ from sdk.run_control.recovery_lineage import (
     _MISSING_SOURCE as _MISSING_SOURCE,
     ACTION_DELIVERY_DECISION as ACTION_DELIVERY_DECISION,
     ACTION_PLAN_ARTIFACT_CONTINUATION as ACTION_PLAN_ARTIFACT_CONTINUATION,
+    ACTION_RECONCILE_DELIVERY,
     ACTION_RESUME_ACTIVE_CHILD,
     ACTION_RESUME_SOURCE_RUN,  # noqa: F401 - public diagnosis vocabulary re-export
     ACTION_START_FOLLOWUP,
@@ -113,6 +114,10 @@ CONDITION_NEEDS_DECISION = "needs_decision"
 CONDITION_SUPERSEDED_BY_CHILD = "superseded_by_child"
 CONDITION_BLOCKED_WORKTREE = "blocked_worktree"
 CONDITION_CORRECTION_FOLLOWUP_REQUIRED = "correction_followup_required"
+# ADR 0191 — the target checkout carries a delivery commit for this run that
+# the run's durable record does not (the process stopped between the commit
+# and its audit, or an older engine kept no ledger). Never a resume target.
+CONDITION_DELIVERY_INCONSISTENT = "delivery_inconsistent"
 CONDITION_NEEDS_DELIVERY_DECISION = "needs_delivery_decision"
 CONDITION_RECOVER_VIA_SOURCE_RUN = "recover_via_source_run"
 CONDITION_RESUME_INERT_TERMINAL = "resume_inert_terminal"
@@ -462,6 +467,29 @@ def _classify(
             block_message=block_message,
         )
 
+    # (3b) delivery_inconsistent — Git already carries a delivery commit for
+    # this run that its durable record does not (ADR 0191). Outranks every
+    # delivery-gate / terminal branch below: a parked gate or a plain resume
+    # would reason about a delivery that in fact happened.
+    inconsistency = _delivery_inconsistency(run_id, run_dir, meta, status)
+    if inconsistency is not None:
+        sha, detail = inconsistency
+        return RunDiagnosis(
+            run_id=run_id,
+            condition=CONDITION_DELIVERY_INCONSISTENT,
+            reason=(
+                f"delivery commit {sha[:12]} exists for this run but the run "
+                f"records no matching delivery ({detail}); record it with "
+                f"`orcho reconcile-delivery {run_id} --commit {sha[:12]} --apply` "
+                "after verifying it — do not resume or decide delivery first"
+            ),
+            status=status,
+            halt_reason=halt_reason,
+            continuation_subject=SUBJECT_DELIVERY_GATE,
+            recommended_next_action=ACTION_RECONCILE_DELIVERY,
+            recommended_run_id=run_id,
+        )
+
     # (4) correction_followup_required / needs_delivery_decision — a parked
     # post-release delivery / correction gate (the gate kind is authoritative
     # even when halt_reason reads as a terminal ``commit_decision_fix``).
@@ -705,6 +733,45 @@ def _terminal_branch(
 
 
 # ── Defensive read helpers ───────────────────────────────────────────────────
+
+
+#: Delivery statuses whose durable record already accounts for a commit.
+_DELIVERED_STATUSES: frozenset[str] = frozenset({"committed", "applied_uncommitted"})
+
+
+def _delivery_inconsistency(
+    run_id: str, run_dir: Path, meta: dict[str, Any], status: str | None,
+) -> tuple[str, str] | None:
+    """``(commit_sha, detail)`` when Git holds a delivery the run does not record.
+
+    Read-only and never raising: consumes
+    :func:`pipeline.engine.delivery_ledger.reconcile_delivery` (ledger + a
+    bounded ``git log`` probe of the project checkout) and compares it with
+    ``meta.commit_delivery``. Skipped for a live run (``running``), whose
+    ledger legitimately passes through the intent / committed stages.
+    """
+    if status in (None, _RUNNING_STATUS):
+        return None
+    try:
+        from pipeline.engine.delivery_ledger import reconcile_delivery, safe_decision_id
+
+        project = meta.get("project")
+        recon = reconcile_delivery(
+            run_dir,
+            run_id=run_id,
+            decision_id=safe_decision_id(run_id),
+            project_path=project if isinstance(project, str) and project else None,
+        )
+    except Exception:  # noqa: BLE001 — auxiliary read-only probe
+        return None
+    if not recon.found or not recon.commit_sha:
+        return None
+    recorded = meta.get("commit_delivery")
+    if isinstance(recorded, dict) and recorded.get("status") in _DELIVERED_STATUSES:
+        recorded_sha = recorded.get("commit_sha") or recorded.get("published_commit_sha")
+        if recorded_sha == recon.commit_sha:
+            return None
+    return recon.commit_sha, recon.detail
 
 
 def _safe_active_child(run_id: str, runs_dir: Path) -> Any:

@@ -5478,3 +5478,137 @@ def test_profile_customize_output_stays_quiet_without_a_conflict() -> None:
     )
 
     assert "not in effect" not in rendered
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# cmd_reconcile_delivery (orcho reconcile-delivery) — ADR 0191
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCmdReconcileDelivery:
+    @pytest.fixture
+    def workspace(self, tmp_path: Path) -> Path:
+        (tmp_path / "runspace" / "runs").mkdir(parents=True)
+        return tmp_path
+
+    @staticmethod
+    def _git(repo: Path, *args: str) -> str:
+        import subprocess
+
+        return subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def _repo_with_delivery(self, workspace: Path, run_id: str) -> tuple[Path, str]:
+        from pipeline.engine.delivery_ledger import default_delivery_subject
+
+        repo = workspace / "project"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "config", "user.email", "test@orcho.invalid")
+        self._git(repo, "config", "user.name", "Orcho Test")
+        self._git(repo, "config", "commit.gpgsign", "false")
+        (repo / "app.txt").write_text("base\n", encoding="utf-8")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "init")
+        (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+        self._git(repo, "add", "app.txt")
+        self._git(repo, "commit", "-q", "-m", default_delivery_subject(run_id))
+        return repo, self._git(repo, "rev-parse", "HEAD")
+
+    def _run_dir(self, workspace: Path, run_id: str, meta: dict) -> Path:
+        d = workspace / "runspace" / "runs" / run_id
+        d.mkdir(parents=True, exist_ok=True)
+        d.joinpath("meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        return d
+
+    def _parse(self, *argv: str):
+        from cli.orcho import build_parser
+
+        return build_parser().parse_args(["reconcile-delivery", *argv])
+
+    def test_parser_wires(self) -> None:
+        from cli.orcho import cmd_reconcile_delivery
+
+        args = self._parse("r1", "--apply", "--commit", "abc", "--note", "n", "--json")
+        assert args.func is cmd_reconcile_delivery
+        assert args.apply is True
+        assert args.commit == "abc"
+        assert args.note == "n"
+        assert args.json is True
+
+    def test_dry_run_reports_the_unrecorded_commit_and_writes_nothing(
+        self, workspace: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_reconcile_delivery
+
+        repo, sha = self._repo_with_delivery(workspace, "20260907_100016_02dcb1")
+        run_dir = self._run_dir(workspace, "20260907_100016_02dcb1", {
+            "status": "failed", "project": str(repo),
+        })
+        rc = cmd_reconcile_delivery(
+            self._parse("20260907_100016_02dcb1", "--workspace", str(workspace)),
+        )
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert sha in out
+        assert "legacy_commit" in out
+        assert "does not record" in out
+        assert not (run_dir / "commit_decisions").exists()
+        assert json.loads(run_dir.joinpath("meta.json").read_text()) == {
+            "status": "failed", "project": str(repo),
+        }
+
+    def test_apply_requires_commit(self, workspace: Path, capsys) -> None:
+        from cli.orcho import cmd_reconcile_delivery
+
+        repo, _sha = self._repo_with_delivery(workspace, "r1")
+        self._run_dir(workspace, "r1", {"status": "failed", "project": str(repo)})
+        rc = cmd_reconcile_delivery(
+            self._parse("r1", "--apply", "--workspace", str(workspace)),
+        )
+        assert rc == 2
+        assert "--commit" in capsys.readouterr().err
+
+    def test_apply_records_the_commit_then_dry_run_agrees(
+        self, workspace: Path, capsys,
+    ) -> None:
+        from cli.orcho import cmd_reconcile_delivery
+
+        repo, sha = self._repo_with_delivery(workspace, "r1")
+        run_dir = self._run_dir(workspace, "r1", {"status": "failed", "project": str(repo)})
+        rc = cmd_reconcile_delivery(self._parse(
+            "r1", "--apply", "--commit", sha[:10], "--operator", "Eugen",
+            "--note", "verified by hand", "--workspace", str(workspace),
+        ))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Accepted:        yes" in out
+        assert sha in out
+        meta = json.loads(run_dir.joinpath("meta.json").read_text())
+        assert meta["commit_delivery"]["provenance"] == "reconciled"
+        assert meta["commit_delivery"]["commit_sha"] == sha
+        artifact = json.loads(
+            (run_dir / "commit_decisions" / "r1.json").read_text(encoding="utf-8"),
+        )
+        assert artifact["operator"] == "Eugen"
+        assert artifact["note"] == "verified by hand"
+
+        rc = cmd_reconcile_delivery(self._parse("r1", "--workspace", str(workspace)))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "already agrees" in out
+
+    def test_json_dry_run_emits_the_state(self, workspace: Path, capsys) -> None:
+        from cli.orcho import cmd_reconcile_delivery
+
+        repo, sha = self._repo_with_delivery(workspace, "r1")
+        self._run_dir(workspace, "r1", {"status": "failed", "project": str(repo)})
+        rc = cmd_reconcile_delivery(
+            self._parse("r1", "--json", "--workspace", str(workspace)),
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 3
+        assert payload["commit_sha"] == sha
+        assert payload["consistent"] is False
+        assert payload["commit"]["files"] == 1

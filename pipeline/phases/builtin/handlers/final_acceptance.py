@@ -308,6 +308,10 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
     approved = parsed.approved
     verdict = parsed.verdict
     ship_ready = parsed.ship_ready
+    # The model's own verdict, kept apart from the engine verdict below so a
+    # backstop override is always attributable (ADR 0191).
+    model_verdict = parsed.verdict
+    model_ship_ready = parsed.ship_ready
     verification_gaps = parsed.gaps_as_dicts()
     task_language = AppConfig.load().task_language
     body = render_release_markdown(parsed, language=task_language)
@@ -391,6 +395,11 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
                 else "acceptance_criteria_open"
             ),
             "gaps": all_engine_gaps,
+            # What the model said before the engine forced REJECTED. Readers
+            # must never present the engine verdict as the model's, or the
+            # model's as the release verdict.
+            "model_verdict": model_verdict,
+            "model_ship_ready": model_ship_ready,
         }
     # F2 canonical durable evidence: the single source of truth is
     # ``phase_log['final_acceptance']['scope_expansion']`` — the phase-end /
