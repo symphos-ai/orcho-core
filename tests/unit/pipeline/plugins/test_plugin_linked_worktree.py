@@ -93,3 +93,43 @@ def test_the_main_worktree_and_plain_directories_are_unchanged(tmp_path: Path) -
     plain = tmp_path / "plain"
     plain.mkdir()
     assert load_plugin(str(plain)).loaded_plugin_path == ""
+
+
+# ── read-only git probe: every failure shape means "not a linked worktree" ─────
+
+
+class _Result:
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        OSError("git missing"),
+        _Result(128, ""),
+        _Result(0, ".git\n"),
+        _Result(0, "/elsewhere/worktrees/x\n/elsewhere/repo.bare\n"),
+    ],
+    ids=["oserror", "nonzero", "one-line", "bare-common-dir"],
+)
+def test_git_probe_failures_never_inherit(tmp_path: Path, monkeypatch, outcome) -> None:
+    from pipeline import plugins
+
+    def _fake_run(*_a, **_kw):
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(plugins.subprocess, "run", _fake_run)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert plugins._linked_worktree_main_root(plain) is None
+    assert load_plugin(str(plain)).loaded_plugin_path == ""
+
+
+def test_git_probe_skips_a_missing_directory(tmp_path: Path) -> None:
+    from pipeline import plugins
+
+    assert plugins._linked_worktree_main_root(tmp_path / "absent") is None
