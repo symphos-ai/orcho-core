@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- A linked git worktree inherits its repository's plugin. `.orcho/` is
+  normally ignored or excluded, so a checkout created with `git worktree add`
+  never contains `.orcho/multiagent/plugin.py`; the loader used to read the
+  worktree as a plugin-less project — no verification contract, no
+  scheduled-gate ledger, and every executable criterion left with nothing to
+  bind to. `load_plugin` now falls back to the main working tree's plugin
+  (recorded as `loaded_plugin_path`) when the project is a linked worktree
+  without its own; a plugin inside the worktree still wins.
+
 - A deferred delivery parked by the producer is decidable in place (ADR 0175
   addendum). `decide_delivery` / `delivery_decision_state` no longer answer
   `delivery_decision_requires_resume` for the producer's own
