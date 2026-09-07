@@ -488,6 +488,12 @@ def _stopped_delivery_gate_reason(meta: dict[str, Any]) -> str | None:
     intentionally imports the canonical status vocabularies instead of owning
     a parallel terminal-status literal.  A gate is durable context, not an
     authorization to execute after its lifecycle has stopped.
+
+    One stopped shape is exempt (ADR 0175 addendum): the deferred-delivery
+    producer's own park — ``halted`` / ``commit_delivery_pending`` with a
+    ``pending`` gate whose action is still ``none`` — is the decision the
+    lifecycle deliberately handed to the operator, so it is decidable in
+    place; a resume would only re-park the same gate.
     """
     status = meta.get("status")
     context = meta.get("commit_delivery")
