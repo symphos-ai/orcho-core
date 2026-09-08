@@ -45,6 +45,9 @@ the full argparse dump for every subcommand.
 | `orcho workspace init` | Connect a project or initialise a shared workspace; interactive terminals may offer starter project plugin-configs |
 | `orcho workspace mcp` | Print the complete read-only MCP client setup for a resolved workspace |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
+| `orcho reconcile-delivery` | Record a delivery commit a run stopped without recording (dry-run by default) |
+| `orcho delivery gate` | Read-only projection of a parked delivery gate: kind, decidable, available / blocked actions, gate facts; exit 0 decidable, 3 not decidable right now, 1 no gate |
+| `orcho delivery decide` | Resolve a parked delivery gate with `approve` / `apply` / `skip` / `halt` / `fix` through the SDK executor; exit 0 accepted, 1 refused, 2 usage error |
 | `orcho update` | Upgrade Orcho via the manager that installed it |
 
 ---
@@ -299,16 +302,48 @@ surface, `--from-run-plan`, `--no-worktree-isolation`, `--attach`,
 ```bash
 orcho status              # latest run
 orcho status <run-id>     # a specific run by id
+orcho status <run-id> -v  # also dump the durable meta record
 ```
 
 Output:
 ```
-Run: 20260503_104135
-Status: DONE ✓
-Phases: plan ✓  implement ✓  review_changes ✓  final_acceptance ✓
-Gates: passed x2  skipped x1
-Duration: 4m 32s
+  Run:     20260503_104135
+  Project: project
+  Task:    Add health endpoint
+  Status:  done
+  Profile: feature
+  Time:    2026-05-03T10:41:35
+
+  Phases completed: plan, implement, review_changes, final_acceptance
+
+  Paths:
+    Source:   /path/to/project
+    Run dir:  /path/to/workspace/runspace/runs/20260503_104135
+
+  Next: inspect only — orcho evidence 20260503_104135
 ```
+
+The output ends with a `Next:` block: the operator's next step, derived
+from the run diagnosis (`sdk.run_control.run_diagnosis`, the same read-model
+MCP exposes). `orcho status` asks that one owner exactly once per invocation
+and prints what it says; it never classifies the run on its own, so the
+`Stalled:` line, the `Next:` block, and MCP can never disagree. Typical
+shapes:
+
+| Run situation | `Next:` |
+|---------------|---------|
+| parked delivery gate | `decide the parked delivery gate — orcho delivery decide <run-id> <action>`, then an indented `available actions: approve, apply, skip, halt` line taken from the gate state and a pointer to `orcho delivery gate <run-id>` |
+| correction gate that dead-ended | the diagnosis reason, which already names the follow-up run to start |
+| delivery commit in Git the run does not record | `record the existing delivery commit — orcho reconcile-delivery <run-id> --commit <sha> --apply` |
+| paused phase handoff | `decide the pending phase handoff <handoff-id> (actions: …) then orcho run --resume <run-id>` |
+| `running` record whose process is gone | a `Stalled:` line with the reason, and `Next: orcho repair-state <run-id>` |
+| resumable stop (`halted` / `failed` / `interrupted`) | `orcho run --resume <run-id>` |
+| terminal run, or one closed by a successful follow-up | `inspect only — orcho evidence <run-id>` (never a resume) |
+| active run | no `Next:` block |
+
+The diagnosis is an enrichment. If it cannot be computed the rest of the
+status is printed unchanged and the block degrades to
+`Next: (diagnosis unavailable: <reason>)` — no traceback, exit code `0`.
 
 ---
 
@@ -483,6 +518,54 @@ orcho prompts tasks/plan --verbose
 Inspect and safely apply known repairs to run state (for example after
 an interrupted process). Read `orcho repair-state --help` before using
 it; repairs are explicit and listed, never guessed.
+
+---
+
+## `orcho delivery` — decide a parked delivery gate
+
+A run whose delivery is deferred finishes its phases and parks: the diff is
+held in the run's worktree, `meta.status` is `halted` with
+`halt_reason=commit_delivery_pending`, and nothing has touched the target
+checkout. `orcho status` reports such a run with a `Next:` pointing here.
+
+```bash
+orcho delivery gate <run-id>                    # read-only: what may be decided
+orcho delivery gate <run-id> --json             # one JSON object on stdout
+orcho delivery decide <run-id> approve --note "reviewed the diff by hand"
+orcho delivery decide <run-id> halt --json      # give up; the worktree is kept
+```
+
+`gate` prints the gate exactly as core projects it: the gate kind
+(`delivery` or `correction`), whether it is decidable, the actions that are
+available and the ones a guard currently blocks, the default action, the
+reason for any block, and the persisted gate facts (checkout, baseline ref,
+changed and untracked paths, scope blocker). Exit `0` when the gate is
+decidable, `3` when a gate exists but cannot be decided right now (a stopped
+run that must be resumed first, or a gate with every shipping action
+blocked), `1` when the run has no gate.
+
+`decide` applies one action — `approve`, `apply`, `skip`, `halt`, or `fix` —
+through the same SDK executor MCP uses (`sdk.run_control.decide_delivery`).
+The gate state and every refusal are computed by core: the release verdict,
+required verification, and delivery scope guards the live run enforced are
+re-checked before anything is written, and the CLI never overrides or
+pre-filters them. A refusal is printed with core's `blocker` and `reason`.
+When those preliminary checks refuse the action (for example
+`release_blocked`, `verification_required`, or `status_not_stopped`), nothing
+is written: the run, the checkout, and the durable record stay as they were.
+A failure that happens while an accepted action is executing is different: a
+commit error after the diff was applied (`commit_failed`) or a dirty target
+(`target_dirty`) is also reported with `accepted: false` and exit `1`, but the
+checkout may already carry the applied changes and the run is re-parked with
+its new `commit_delivery` record, so read the printed result and the run
+artifacts before acting again. Exit `0` when the decision was accepted, `1`
+when core refused or failed it, `2` on a usage error (unknown run, invalid
+action). With `--json` both subcommands print a
+single JSON object on stdout; errors go to stderr.
+
+`orcho run --resume` is not the way to resolve this gate: resuming a
+producer-parked run only parks the same gate again. Decide it here (or via
+MCP), then `orcho status` shows the run as `done` with no resume hint.
 
 ---
 

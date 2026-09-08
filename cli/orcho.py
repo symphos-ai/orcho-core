@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -49,6 +50,13 @@ guard_against_retained_worktree_install(_CORE_DIR)
 
 # ruff: noqa: E402
 
+from cli._delivery_cli import (
+    delivery_decision_to_json,
+    delivery_gate_to_json,
+    format_delivery_decision,
+    format_delivery_gate,
+    gate_exit_code,
+)
 from cli._evidence_cli import format_evidence_cli
 from cli._formatters import (
     colorize_evidence_markdown,
@@ -89,6 +97,7 @@ from cli._quality_gates import cmd_quality_gates
 from cli._reconcile_delivery import format_reconcile_result, format_reconcile_state
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
+from cli._status_next import diagnosis_unavailable_line, next_step_lines
 from cli._task_prompt import prompt_for_task_if_needed
 from cli._update_cli import cmd_update
 from cli._workspace_mcp import format_workspace_mcp_setup
@@ -130,6 +139,11 @@ from sdk import (
     write_evidence_bundle,
 )
 from sdk.errors import OrchoError, PromptNotFound
+from sdk.run_control.diagnosis import (
+    CONDITION_NEEDS_DELIVERY_DECISION,
+    CONDITION_STALLED,
+)
+from sdk.run_control.types import RunDiagnosis
 from sdk.workspace_mcp import build_workspace_mcp_setup
 
 
@@ -293,38 +307,63 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Runs dir: {rd}")
         return 1
     app_cfg = config.AppConfig.load()
+    diagnosis, failure = _status_diagnosis(status, workspace=workspace)
+    stalled_reason: str | None = None
+    next_lines: list[str] = []
+    if diagnosis is not None:
+        if diagnosis.condition == CONDITION_STALLED:
+            stalled_reason = diagnosis.reason
+        next_lines = next_step_lines(diagnosis)
+    elif failure is not None:
+        next_lines = [diagnosis_unavailable_line(failure)]
     print(format_status(
         status,
         verbose=verbose,
         publish_gate=app_cfg.commit.get("publish"),
-        stalled_reason=_stalled_reason(status, workspace=workspace),
+        stalled_reason=stalled_reason,
+        next_lines=next_lines,
     ))
     return 0
 
 
-def _stalled_reason(status, *, workspace) -> str | None:
-    """Core's explanation for a ``running`` run whose process is gone, or None.
+def _status_diagnosis(status, *, workspace) -> tuple[RunDiagnosis | None, str | None]:
+    """Ask core once what this run's situation is; never let it break status.
 
-    A run that dies without writing a terminal event keeps saying ``running``
-    forever, so the status line alone can describe a run that ceased to exist
-    hours ago as working. ``run_diagnosis`` already owns that verdict (and the
-    conservative predicate behind it); status asks rather than deciding, so
-    the two surfaces can never disagree.
+    ``run_diagnosis`` owns every verdict ``orcho status`` reports about a
+    run's next step: whether a ``running`` record is lying (the ``Stalled:``
+    line) and what the operator should do now (the ``Next:`` block). Status
+    asks that single owner exactly once per invocation and reads both from
+    the same result, so the two lines can never disagree with each other or
+    with MCP.
 
-    Only a ``running`` record can be lying about it, so nothing else pays for
-    the probe. Diagnosis is an enrichment: a failure to reach a verdict must
-    leave the status output intact, never replace it with an error.
+    Diagnosis is an enrichment: a failure to reach a verdict returns
+    ``(None, "<ExcType>: <message>")`` so the renderer can print the
+    degraded ``Next:`` line while the rest of the status stays intact. A run
+    without a meta record has nothing to diagnose and yields ``(None, None)``.
+
+    On a parked delivery gate, core fills ``available_actions`` from
+    ``delivery_decision_state``; when that projection is empty the facade
+    asks the same SDK surface once so the hint can name the actions.
     """
-    meta = getattr(status, "meta", None)
-    if getattr(meta, "status", None) != "running":
-        return None
+    if getattr(status, "meta", None) is None:
+        return None, None
     try:
         from sdk.run_control import run_diagnosis
 
         diagnosis = run_diagnosis(status.run_ref.run_id, workspace=workspace)
-    except Exception:  # noqa: BLE001 — enrichment must never break status
-        return None
-    return diagnosis.reason if diagnosis.condition == "stalled" else None
+        if (
+            diagnosis.condition == CONDITION_NEEDS_DELIVERY_DECISION
+            and not diagnosis.available_actions
+        ):
+            from sdk.run_control.delivery import delivery_decision_state
+
+            state = delivery_decision_state(diagnosis.run_id, workspace=workspace)
+            diagnosis = dataclasses.replace(
+                diagnosis, available_actions=tuple(state.available_actions),
+            )
+    except Exception as exc:  # noqa: BLE001 — enrichment must never break status
+        return None, f"{type(exc).__name__}: {exc}"
+    return diagnosis, None
 
 
 def cmd_history(args: argparse.Namespace) -> int:
@@ -789,6 +828,85 @@ def cmd_reconcile_delivery(args: argparse.Namespace) -> int:
         )
     else:
         print(format_reconcile_result(result))
+    return 0 if result.accepted else 1
+
+
+def cmd_delivery_gate(args: argparse.Namespace) -> int:
+    """Show the parked delivery gate of a run exactly as core projects it.
+
+    Read-only. The gate state (kind, available / blocked actions, default
+    action, reason) is computed by ``sdk.run_control.delivery`` and displayed
+    verbatim; the persisted ``meta.commit_delivery`` facts ride along for
+    context. ``--json`` prints one JSON object on stdout. Exit codes: 0 when
+    the gate is decidable, 1 when the run has no gate, 3 when a gate exists
+    but cannot be decided right now (stopped run, blocked actions).
+    """
+    from sdk.run_control.delivery import delivery_decision_state
+
+    want_json = bool(getattr(args, "json", False))
+    workspace = getattr(args, "workspace", None)
+    try:
+        ref = find_run(args.run_id, workspace=workspace)
+    except OrchoError as exc:
+        print(format_error(exc), file=sys.stderr)
+        return exc.exit_code
+
+    state = delivery_decision_state(ref.run_id, workspace=workspace)
+    meta = load_meta(ref.run_dir)
+    gate_facts = meta.get("commit_delivery") or {}
+    if want_json:
+        sys.stdout.write(
+            json.dumps(
+                delivery_gate_to_json(state, gate_facts),
+                indent=2, sort_keys=True, ensure_ascii=False,
+            )
+            + "\n"
+        )
+    else:
+        print(format_delivery_gate(
+            state, gate_facts=gate_facts, current_status=meta.get("status"),
+        ))
+    return gate_exit_code(state)
+
+
+def cmd_delivery_decide(args: argparse.Namespace) -> int:
+    """Apply an operator action to a parked delivery gate through the SDK.
+
+    The action is handed to ``decide_delivery`` as-is: the SDK re-checks the
+    release / verification / scope guards and either executes the decision or
+    returns a typed refusal (``blocker`` + ``reason``), which is printed
+    verbatim. ``--json`` prints one JSON object on stdout. Exit codes: 0 when
+    the decision was accepted, 1 when the SDK refused it, 2 on a usage error
+    (unknown run, invalid action).
+    """
+    from sdk.run_control.delivery import decide_delivery
+
+    want_json = bool(getattr(args, "json", False))
+    workspace = getattr(args, "workspace", None)
+    try:
+        ref = find_run(args.run_id, workspace=workspace)
+    except OrchoError as exc:
+        print(f"delivery decide: {format_error(exc)}", file=sys.stderr)
+        return 2
+
+    try:
+        result = decide_delivery(
+            ref.run_id, args.action, note=getattr(args, "note", None),
+            workspace=workspace,
+        )
+    except ValueError as exc:
+        print(f"delivery decide: {exc}", file=sys.stderr)
+        return 2
+    if want_json:
+        sys.stdout.write(
+            json.dumps(
+                delivery_decision_to_json(result),
+                indent=2, sort_keys=True, ensure_ascii=False,
+            )
+            + "\n"
+        )
+    else:
+        print(format_delivery_decision(result))
     return 0 if result.accepted else 1
 
 
@@ -1504,6 +1622,76 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
     )
     p_reconcile.set_defaults(func=cmd_reconcile_delivery)
+
+    # ── delivery ──────────────────────────────────────────────────────────────
+    p_delivery = sub.add_parser(
+        "delivery",
+        help="Inspect and decide a parked delivery gate",
+        description=(
+            "Work with a run parked on a deferred delivery gate: the run "
+            "finished its phases and is waiting for an operator to decide "
+            "what happens to the produced diff. 'gate' shows the gate exactly "
+            "as core projects it (which actions are available, which are "
+            "blocked and why); the command never overrides that state. "
+            "'decide' is the CLI way to resolve the parked gate; the same "
+            "release / verification / scope guards the live run enforced are "
+            "re-checked by core before anything is written."
+        ),
+    )
+    delivery_sub = p_delivery.add_subparsers(dest="delivery_cmd", required=True)
+    p_delivery_gate = delivery_sub.add_parser(
+        "gate",
+        help="Show the parked delivery gate and the actions core allows",
+        description=(
+            "Read-only. Prints the gate kind, the available / blocked actions, "
+            "the default action, the reason for any block, and the persisted "
+            "gate facts (checkout, baseline, changed paths). Exit 0 when the "
+            "gate is decidable, 1 when the run has no gate, 3 when a gate "
+            "exists but cannot be decided right now."
+        ),
+    )
+    p_delivery_gate.add_argument("run_id", help="Run id to inspect")
+    p_delivery_gate.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit a single JSON object on stdout instead of a text report",
+    )
+    p_delivery_gate.add_argument(
+        "--workspace", default=None,
+        help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
+    )
+    p_delivery_gate.set_defaults(func=cmd_delivery_gate)
+    p_delivery_decide = delivery_sub.add_parser(
+        "decide",
+        help="Resolve the parked delivery gate with one operator action",
+        description=(
+            "Apply approve / apply / skip / halt / fix to the parked gate. "
+            "Core decides whether the action is allowed; a refusal is printed "
+            "with its blocker and reason. A refusal from core's preliminary "
+            "checks writes nothing; a failure while executing an accepted "
+            "action (for example a commit error after the diff was applied) "
+            "can leave the checkout changed and the run re-parked, so inspect "
+            "the printed result and artifacts. Exit 0 when accepted, 1 when "
+            "refused, 2 on a usage error."
+        ),
+    )
+    p_delivery_decide.add_argument("run_id", help="Run id parked on a delivery gate")
+    p_delivery_decide.add_argument(
+        "action", choices=("approve", "apply", "skip", "halt", "fix"),
+        help="Operator decision to apply to the gate",
+    )
+    p_delivery_decide.add_argument(
+        "--note", default=None,
+        help="Free-text note stored with the decision record",
+    )
+    p_delivery_decide.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit a single JSON object on stdout instead of a text report",
+    )
+    p_delivery_decide.add_argument(
+        "--workspace", default=None,
+        help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
+    )
+    p_delivery_decide.set_defaults(func=cmd_delivery_decide)
 
     # ── update ────────────────────────────────────────────────────────────────
     p_update = sub.add_parser(
