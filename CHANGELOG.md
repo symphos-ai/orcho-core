@@ -4,6 +4,35 @@
 
 ### Added
 
+- `orcho status` ends with a `Next:` block naming the operator's next
+  command. It is rendered from `sdk.run_control.run_diagnosis` — the same
+  read-model MCP exposes — which status now asks exactly once per run and
+  reads both the `Stalled:` line and the `Next:` block from, so the CLI keeps
+  no classifier of its own and the two surfaces cannot disagree. A parked
+  delivery gate points at `orcho delivery decide <run_id> <action>` with the
+  actions core allows; an unrecorded delivery commit points at
+  `orcho reconcile-delivery`; a stalled run at `orcho repair-state`; a
+  terminal run at `orcho evidence` (never a resume). When the diagnosis
+  cannot be computed the block degrades to `Next: (diagnosis unavailable:
+  <reason>)` with the rest of the status intact and no traceback.
+
+- `orcho delivery gate <run_id>` and `orcho delivery decide <run_id>
+  <approve|apply|skip|halt|fix>` — the CLI surface for a parked deferred
+  delivery gate, as thin facades over `delivery_decision_state` and
+  `decide_delivery` (`sdk.run_control`). `gate` is read-only and exits `0`
+  when the gate is decidable, `3` when it exists but cannot be decided right
+  now, `1` when there is no gate. `decide` exits `0` when core accepted the
+  action, `1` when core refused or failed it (the `blocker` / `reason` are
+  printed verbatim; a refusal from the preliminary guards writes nothing,
+  while a failure during execution such as `commit_failed` can leave the
+  checkout changed and the run re-parked, so the result and artifacts must
+  be inspected), `2` on a usage error. Both take `--json`
+  and `--workspace`; `decide` takes `--note`. The CLI decides nothing itself:
+  release, verification, and scope guards live in the SDK executor. Known,
+  separate issue not addressed here: `decide_delivery` replays the commit
+  config through `_replay_commit_config`, which reads `branch_policy` from
+  the process-level `AppConfig` rather than the run's persisted context.
+
 - Delivery ledger and `orcho reconcile-delivery` (ADR 0191). Every delivery
   commit now leaves a durable intent / fact record next to its audit
   artifact, written before `git add` and right after `git commit`, so a run
