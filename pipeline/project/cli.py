@@ -1574,6 +1574,15 @@ Examples:
                 and _result_session.get("status") == "awaiting_phase_handoff"
             ):
                 sys.exit(4)
+            # A halted run is not a success either: a parked delivery gate
+            # (``commit_delivery_pending``), an operator halt, a rejected
+            # release. Exit 3 so scripts and CI never take "halted" for
+            # "done" — the DONE tail alone was too easy to misread. ``4``
+            # stays reserved for the phase-handoff pause; ``meta.halt_reason``
+            # carries the cause (supervisors must read it from meta, not
+            # synthesize an abnormal-exit reason for rc=3).
+            if _result_session and _result_session.get("status") == "halted":
+                sys.exit(3)
         except RunIdCollisionError as exc:
             print_error(str(exc))
             sys.exit(2)

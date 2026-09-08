@@ -223,12 +223,32 @@ def test_delivery_line_halted_reports_not_delivered() -> None:
     )
 
 
-def test_delivery_line_absent_or_pending_renders_nothing() -> None:
+def test_delivery_line_absent_renders_nothing() -> None:
     assert render_delivery_destination_lines({}) == ()
-    assert render_delivery_destination_lines(
-        {"commit_delivery": {"status": "pending", "pr_url": None}}
-    ) == ()
     assert render_delivery_destination_lines({"commit_delivery": None}) == ()
+
+
+def test_delivery_line_pending_park_says_not_delivered() -> None:
+    # The DONE tail after a deferred park used to print "Release: approved"
+    # and nothing about delivery, so the run read as shipped.
+    (line,) = render_delivery_destination_lines(
+        {"commit_delivery": {"status": "pending", "action": "none", "pr_url": None}}
+    )
+    assert line.startswith("Delivery: not delivered — decision pending")
+    assert "orcho_delivery_decide" in line
+
+
+def test_delivery_line_existing_unrecorded_commit_points_at_reconcile() -> None:
+    (line,) = render_delivery_destination_lines({"commit_delivery": {
+        "status": "not_applicable", "provenance": "existing_commit",
+        "commit_sha": "787c24e58f910177901ee4eb29e12baf7aee0ce7", "pr_url": None,
+    }})
+    assert line.startswith("Delivery: not delivered — commit 787c24e already in the checkout")
+    assert "orcho reconcile-delivery" in line
+    # A plain not_applicable (nothing to deliver) still prints nothing.
+    assert render_delivery_destination_lines(
+        {"commit_delivery": {"status": "not_applicable", "pr_url": None}}
+    ) == ()
 
 
 # ── omit when no advice ─────────────────────────────────────────────────────
