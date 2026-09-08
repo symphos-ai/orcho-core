@@ -51,16 +51,16 @@
   before touching the checkout, the producer parks on the decision itself,
   and the audit artifact is validated before any mutation.
 
-- Plan review rejects an executable acceptance criterion the run could never
-  prove (ADR 0191). An implied (ref-less) executable criterion on a run that
-  declares no scheduled gate — or only gates resolved as not selected — has
-  nothing to bind to; it used to pass `validate_plan` and surface only as a
-  final-acceptance backstop REJECT after the whole run. The rejection names
-  the fix (reclassify as `agent_assertion` / `human`, or declare the check as
-  a gate), the criterion matrix says why an unbound row is `missing`, and the
-  plan contract tells the planner up front that `executable` needs declared
-  gates, so a project without a verification contract does not spend a
-  planning round learning it.
+- A project with no verification contract no longer fails on its executable
+  acceptance criteria (ADR 0191 addendum). An implied (ref-less) executable
+  criterion on a run that declares no scheduled gate has nothing to bind to;
+  it used to stay `missing` for the whole run and force a final-acceptance
+  backstop REJECT after the entire implement / review budget. The criterion
+  matrix now reports it `advisory` and non-blocking, saying what would make it
+  provable; plan review resolves explicit gate refs only; the plan contract
+  tells the planner up front that without declared gates `agent_assertion`
+  with the exact command in the intent is the better class. A declared
+  contract keeps the strict binding and blocking rules.
 
 - The final-acceptance session record keeps the engine backstop and the
   model's own verdict (`engine_backstop.model_verdict`), so a backstop REJECT

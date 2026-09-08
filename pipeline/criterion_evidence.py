@@ -120,6 +120,9 @@ def collect_criterion_matrix(
         )),
         claims=reducer_claims(run_dir, findings=findings),
         human_decisions=human_decision_facts(run_dir),
+        # An absent ledger means the project declares no verification gate:
+        # implied executable criteria are advisory there, not blocking.
+        gates_declared=identities is not None,
     )
 
 

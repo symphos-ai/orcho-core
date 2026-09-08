@@ -148,3 +148,31 @@ would bind it.
   run-owned diff it judged, and the matrix reports it `stale` when the diff
   changes.
 - Automatic adoption of a `legacy_commit`.
+
+## Addendum — 2026-09-08: no declared gates means advisory, not rejected
+
+Section 5 withdrew too much. A project may run with no plugin at all — the
+plugin is optional by design and the first run of a fresh project must work
+out of the box — and the plan contract's own example uses
+`verify: "executable"`, so a planner in a plugin-less project naturally
+emits executable criteria. Rejecting such a plan at review, or the run at
+final acceptance, punishes the zero-config path for a fact about the
+*project* (no verification contract), not about the plan.
+
+The engine now says what it can honestly say and moves on:
+
+- `plan_gate_ref_problems` / `validate_criterion_gate_refs` resolve **explicit**
+  gate refs only; an implied executable criterion is never a plan-review
+  problem.
+- When the run declares no verification gate at all (no contract, hence no
+  scheduled-gate ledger), the criterion matrix reports an implied executable
+  criterion as `advisory` and non-blocking, with a reason naming what would
+  make it provable (a plugin `verification` contract). `advisory` joins the
+  executable state vocabulary for that one case; the final-acceptance backstop
+  therefore does not fire on it, and readiness is not blocked by it.
+- With a declared contract nothing changes: implied criteria bind to the
+  selected gates, and an unbound row stays `missing` / `not_selected` and
+  blocking (ADR 0188 addendum).
+- The plan contract tells the planner that without declared gates an
+  executable criterion is advisory and `agent_assertion` with the exact
+  command in the intent is the better class.
