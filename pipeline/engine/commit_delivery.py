@@ -557,7 +557,7 @@ def resolve_commit_delivery(
         # be called on this decision (its action is unresolved). The diff
         # context (source_path / baseline_ref / changed_paths / untracked_paths)
         # is what ``decide_delivery`` later replays to reconstruct the patch.
-        return CommitDeliveryDecision(
+        parked = CommitDeliveryDecision(
             action="none",
             status="pending",
             run_id=run_id,
@@ -574,6 +574,19 @@ def resolve_commit_delivery(
             **v_fields,
             **scope_fields,
             **release_fields,
+        )
+        # The commit message is authored NOW, while the run's own agent is
+        # available and the diff is final, and travels with the parked gate:
+        # the out-of-band decision (SDK / MCP) has no generator and used to
+        # fall back to the release summary in the operator's plan language —
+        # a Russian commit and PR title on a public repository (ADR 0121:
+        # outward artifacts follow content_language). Same rule as the
+        # in-process approve: forced when a PR will be opened.
+        return replace(
+            parked,
+            **_parked_commit_message_fields(
+                parked, cfg=cfg, generator=commit_message_generator,
+            ),
         )
 
     if (
@@ -2067,6 +2080,38 @@ def _resolve_final_commit_message(
                 _commit_message_fallback_warning(generated.reason),
             )
     return fallback, "release_summary", ()
+
+
+def _parked_commit_message_fields(
+    decision: CommitDeliveryDecision,
+    *,
+    cfg: Mapping[str, Any],
+    generator: CommitMessageGenerator | None,
+) -> dict[str, Any]:
+    """Message fields for a deferred park: authored at park time or empty.
+
+    Generates only when the configured strategy asks for it or a PR will be
+    opened (the same trigger the in-process approve uses); a run without a
+    generator, or one whose config keeps ``release_summary`` for a local
+    commit, parks without a message and the replay falls back as before.
+    """
+    configured = _commit_message_strategy(cfg)
+    force_llm = _will_open_pr(cfg) and generator is not None
+    if generator is None or not (configured == "llm_generate" or force_llm):
+        return {}
+    message, strategy, warnings = _resolve_final_commit_message(
+        decision,
+        configured_strategy=configured,
+        generator=generator,
+        force_llm=force_llm,
+    )
+    return {
+        "final_message": message,
+        "commit_message_strategy": strategy,
+        "delivery_warnings": _merge_delivery_diagnostics(
+            decision.delivery_warnings, warnings,
+        ),
+    }
 
 
 def _commit_message_fallback_warning(reason: str) -> str:

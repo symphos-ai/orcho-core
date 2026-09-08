@@ -25,6 +25,7 @@ diff against the held worktree.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -846,7 +847,7 @@ def _reresolve(
             "final_acceptance": release_entry,
         }
 
-    return resolve_commit_delivery(
+    decision = resolve_commit_delivery(
         project_dir=Path(str(ctx.get("project_path"))),
         source_worktree=Path(str(ctx.get("source_path"))),
         run_dir=run_dir,
@@ -858,6 +859,25 @@ def _reresolve(
         decision_action=action,
         verification_gate=None,
     )
+    # The commit message was authored at park time by the run's own agent in
+    # content_language and persisted on the gate (``final_message`` +
+    # ``strategy``). This replay has no generator, so pin it here instead of
+    # falling back to the release summary in the plan language (ADR 0121).
+    pinned = ctx.get("final_message")
+    if (
+        action == "approve"
+        and decision.status == "pending"
+        and isinstance(pinned, str)
+        and pinned.strip()
+    ):
+        decision = replace(
+            decision,
+            final_message=pinned.strip(),
+            commit_message_strategy=(
+                str(ctx.get("strategy")) if ctx.get("strategy") else decision.commit_message_strategy
+            ),
+        )
+    return decision
 
 
 def _replay_commit_config(ctx: dict[str, Any]) -> dict[str, Any]:
