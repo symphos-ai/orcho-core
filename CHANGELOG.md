@@ -26,6 +26,15 @@
 
 ### Fixed
 
+- Closing stdin at the interactive delivery menu no longer crashes the run.
+  `Ctrl-D` (or a launcher that presented a pty and then closed its input)
+  raised `EOFError` out of `input()` inside finalize: the run died with
+  `meta.status=running`, no delivery record and no halt reason — the torn
+  shape of the ADR 0191 incident, minus the commit. Both delivery prompts
+  (the action menu and the target-dirty menu) now treat a missing answer as
+  `halt`: nothing is delivered, the run settles as `halted` /
+  `commit_decision_halt` with its worktree retained.
+
 - A linked git worktree inherits its repository's plugin. `.orcho/` is
   normally ignored or excluded, so a checkout created with `git worktree add`
   never contains `.orcho/multiagent/plugin.py`; the loader used to read the

@@ -2732,7 +2732,19 @@ def _prompt_action(
             f"  Choose [{bold(default_action, color=color)}] "
             f"({choices}): "
         )
-        raw = input_fn(prompt_text).strip().lower()
+        try:
+            raw = input_fn(prompt_text).strip().lower()
+        except EOFError:
+            # Stdin closed under the operator's prompt (Ctrl-D, a piped
+            # launcher that lied about being a TTY). Never deliver on a
+            # missing answer: halt is the one choice that touches nothing
+            # and stays recoverable, and the run must settle instead of
+            # dying in finalize with no delivery record.
+            output_fn("")
+            output_fn(
+                f"  {help_line('No answer (stdin closed) — halting without delivering.', color=color)}",
+            )
+            return "halt"
         action = aliases.get(raw)
         if action:
             # Choosing to deliver despite a require-policy verification block is
@@ -2822,7 +2834,14 @@ def _prompt_target_dirty(
             f"  Choose [{bold('retry', color=color)}] "
             f"(1/2/3 or name): "
         )
-        raw = input_fn(prompt_text).strip().lower()
+        try:
+            raw = input_fn(prompt_text).strip().lower()
+        except EOFError:
+            output_fn("")
+            output_fn(
+                f"  {help_line('No answer (stdin closed) — halting without delivering.', color=color)}",
+            )
+            return "halt"
         action = _TARGET_DIRTY_ALIASES.get(raw)
         if action is not None:
             return action
