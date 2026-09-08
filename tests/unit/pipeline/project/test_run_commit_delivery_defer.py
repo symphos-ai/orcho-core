@@ -28,6 +28,9 @@ def _stub(run_dir: Path, project_dir: Path, *, no_interactive: bool = True) -> S
         worktree_context=None,
         session_ts="20260623_000000",
         _commit_delivery_baseline=lambda: "HEAD",
+        # The park now authors the commit message through the run's generator
+        # when the configured strategy asks for it; no agent → no message.
+        phase_config=SimpleNamespace(final_acceptance_agent=None),
     )
 
 

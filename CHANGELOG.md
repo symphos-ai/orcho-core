@@ -39,6 +39,16 @@
 
 ### Fixed
 
+- A deferred delivery gate now carries the commit message the run's own
+  agent authored. `resolve_commit_delivery` used to park the gate before
+  generating the message, and the out-of-band decision (`decide_delivery`,
+  `orcho_delivery_decide`) has no generator, so an approve fell back to the
+  release summary in the plan language — a Russian commit and PR title on a
+  public repository despite `default_strategy: llm_generate` and an English
+  `content_language`. The message is generated at park time under the same
+  rule as the in-process approve (configured `llm_generate`, or forced when a
+  PR will be opened), persisted on the gate as `final_message` / `strategy`
+  with any fallback warning, and the SDK replay pins it for `approve`.
 - Closing stdin at the interactive delivery menu no longer crashes the run.
   `Ctrl-D` (or a launcher that presented a pty and then closed its input)
   raised `EOFError` out of `input()` inside finalize: the run died with
