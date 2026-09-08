@@ -277,3 +277,65 @@ def test_audit_is_validated_before_any_git_mutation(
         apply_commit_delivery(broken, run_dir=run_dir, commit_config=_CFG)
 
     _assert_untouched(repo, head, run_dir)
+
+
+# ── stdin closed under the interactive prompt (Ctrl-D, a pipe behind a pty) ──
+#
+# Found by a stable-CLI UX walkthrough: ``script`` handed the run a pty whose
+# stdin closed at the delivery menu, ``input()`` raised EOFError, and the run
+# died inside finalize — meta left on ``running``, no delivery record, the
+# same torn shape as the original incident. A missing answer must never
+# deliver and must settle the run.
+
+
+def _eof(_prompt: str) -> str:
+    raise EOFError
+
+
+def test_delivery_prompt_treats_eof_as_halt() -> None:
+    lines: list[str] = []
+    action = cd._prompt_action(
+        default_action="approve",
+        release_summary="feat: x",
+        changed_paths=("app.txt",),
+        untracked_paths=(),
+        input_fn=_eof,
+        output_fn=lines.append,
+    )
+    assert action == "halt"
+    assert any("stdin closed" in line for line in lines)
+
+
+def test_target_dirty_prompt_treats_eof_as_halt() -> None:
+    lines: list[str] = []
+    action = cd._prompt_target_dirty(
+        dirty_paths=("other.txt",),
+        retries=0,
+        input_fn=_eof,
+        output_fn=lines.append,
+    )
+    assert action == "halt"
+
+
+def test_interactive_resolve_with_closed_stdin_halts_and_keeps_git_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cd, "stdio_interactive", lambda: True)
+    repo, run_dir, worktree, head = _seed(tmp_path)
+    decision = resolve_commit_delivery(
+        project_dir=repo,
+        source_worktree=worktree,
+        run_dir=run_dir,
+        run_id="r1",
+        session=_session("APPROVED"),
+        commit_config=_CFG,
+        no_interactive=False,
+        input_fn=_eof,
+        output_fn=lambda _line: None,
+    )
+    assert decision.action == "halt"
+    assert decision.status == "pending"
+    applied = apply_commit_delivery(decision, run_dir=run_dir, commit_config=_CFG)
+    assert applied.status == "halted"
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "status", "--porcelain") == ""
