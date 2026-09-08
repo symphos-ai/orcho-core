@@ -214,7 +214,7 @@ def decide_delivery(
 
     release_verdict = str(ctx.get("release_verdict") or "")
     release_blocked = is_release_blocked(release_verdict, empty_blocks=False)
-    verification_blocked = _verification_blocked(meta, ctx, ref.run_dir)
+    verification_blocked, verification_reason = _verification_gate(meta, ctx, ref.run_dir)
     scope_blocked = bool(ctx.get("scope_blocker"))
     scope_disclosure = _scope_disclosure(ctx)
 
@@ -241,6 +241,7 @@ def decide_delivery(
             status="verification_blocked",
             terminal_outcome="halted",
             blocker="verification_blocked",
+            reason=verification_reason,
         )
     if action in _SHIPPING_ACTIONS and release_blocked:
         return DeliveryDecisionResult(
@@ -408,7 +409,7 @@ def delivery_decision_state(
             scope_disclosure=scope_disclosure,
         )
 
-    verification_blocked = _verification_blocked(meta, ctx, ref.run_dir)
+    verification_blocked, verification_reason = _verification_gate(meta, ctx, ref.run_dir)
     scope_blocked = bool(ctx.get("scope_blocker"))
     patch_invalid, patch_invalid_path = _patch_invalid_blocked(meta, ctx, ref.run_dir)
     # ``fix_requested`` is handled above (follow-up required); the only correction
@@ -457,7 +458,7 @@ def delivery_decision_state(
         if blocker_reason:
             reason = f"{reason}; {blocker_reason}"
     elif verification_blocked:
-        reason = "required verification incomplete — receipt or waiver needed"
+        reason = verification_reason
     elif scope_blocked:
         reason = (
             "delivery_scope_violation — sibling-repo changes outside strict "
@@ -720,10 +721,13 @@ def _patch_invalid_reason(patch_path: str | None) -> str:
     )
 
 
-def _verification_blocked(
+_VERIFICATION_BLOCK_REASON = "required verification incomplete — receipt or waiver needed"
+
+
+def _verification_gate(
     meta: dict[str, Any], ctx: dict[str, Any], run_dir: Path,
-) -> bool:
-    """Whether a required verification gap still blocks shipping, re-checked fresh.
+) -> tuple[bool, str | None]:
+    """``(blocked, reason)`` for the required-verification guard, re-checked fresh.
 
     The persisted ``verification_*`` fields are a snapshot from park time; a
     receipt materialized or a durable waiver recorded *after* parking must
@@ -732,11 +736,53 @@ def _verification_blocked(
     rebuilt (no recorded project, plugin load failure) it conservatively falls
     back to the persisted fields — an unverifiable gate keeps its recorded
     block rather than silently shipping.
+
+    ``reason`` names the gap commands and carries the exact ``orcho verify
+    run`` line the assessment suggests, so an operator never has to guess
+    whether ``--required`` covers a path-selected gate; ``None`` when not
+    blocked.
     """
     assessment, reconstructed = _reassess_delivery_verification(meta, ctx, run_dir)
     if reconstructed:
-        return assessment is not None and assessment.blocking
-    return _persisted_verification_blocked(ctx)
+        if assessment is None or not assessment.blocking:
+            return False, None
+        return True, _verification_block_reason(
+            missing=tuple(assessment.required_missing),
+            failed=tuple(assessment.required_failed),
+            stale=tuple(assessment.required_stale),
+            suggested=tuple(assessment.suggested_commands),
+        )
+    if not _persisted_verification_blocked(ctx):
+        return False, None
+    return True, _verification_block_reason(
+        missing=_str_tuple(ctx.get("verification_missing")),
+        failed=_str_tuple(ctx.get("verification_failed")),
+        stale=_str_tuple(ctx.get("verification_stale")),
+        suggested=(),
+    )
+
+
+def _verification_block_reason(
+    *,
+    missing: tuple[str, ...],
+    failed: tuple[str, ...],
+    stale: tuple[str, ...],
+    suggested: tuple[str, ...],
+) -> str:
+    parts = [_VERIFICATION_BLOCK_REASON]
+    for label, names in (("missing", missing), ("failed", failed), ("stale", stale)):
+        if names:
+            parts.append(f"{label}: {', '.join(names)}")
+    run_hint = next((line for line in suggested if line.startswith("orcho verify run")), None)
+    if run_hint:
+        parts.append(f"run: {run_hint}")
+    return "; ".join(parts)
+
+
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(v) for v in value if v)
 
 
 def _persisted_verification_blocked(ctx: dict[str, Any]) -> bool:
@@ -803,6 +849,21 @@ def _reassess_delivery_verification(
         waivers = meta.get(WAIVER_KEY)
         if waivers is not None:
             extras[WAIVER_KEY] = waivers
+        # A correction follow-up inherits its parent's valid receipts for the
+        # same subject (ADR 0089). The in-run gate reads them from the extras
+        # key state_setup stamps; this out-of-band re-check has no live extras
+        # and used to search only the child's run dir — so a child that changed
+        # no code was refused with "required verification incomplete" even
+        # though the parent had just verified the identical tree. Rebuild the
+        # same single source from the persisted parent linkage.
+        from pipeline.verification_receipt_index import (
+            VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
+            parent_sources_from_meta,
+        )
+
+        parent_sources = parent_sources_from_meta(meta)
+        if parent_sources:
+            extras[VERIFICATION_PARENT_RUNS_EXTRAS_KEY] = parent_sources
 
         assessment = assess_delivery_verification(
             contract,

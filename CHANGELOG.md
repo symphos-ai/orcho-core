@@ -68,6 +68,15 @@
 
 ### Fixed
 
+- An out-of-band delivery decision (`decide_delivery`, `orcho delivery
+  decide`, `orcho_delivery_decide`) on a correction follow-up now inherits
+  the parent run's valid receipts for the identical subject, as the in-run
+  gate already did (ADR 0089 addendum). The SDK re-check searched only the
+  child's run dir, so a child that changed no code was refused with
+  "required verification incomplete" and the operator re-ran every gate by
+  hand. The refusal reason now names the missing / failed / stale commands
+  and the exact `orcho verify run …` line the assessment suggests, so
+  `--required` is never guessed for a path-selected gate.
 - The DONE tail of a run parked at a deferred delivery gate names
   `orcho delivery decide <run_id> <action>` first; the MCP tool and the TTY
   resume stay as alternatives.
