@@ -155,7 +155,8 @@ def render_delivery_destination_lines(
         # in the same block, or the DONE tail reads as shipped.
         return (
             "Delivery: not delivered — decision pending "
-            "(approve / apply / skip / halt: orcho_delivery_decide, or resume at a TTY)",
+            "(approve / apply / skip / halt: `orcho delivery decide <run_id> <action>`, "
+            "orcho_delivery_decide over MCP, or resume at a TTY)",
         )
     if status == "not_applicable" and record.get("provenance") == "existing_commit":
         sha = str(record.get("commit_sha") or "")
