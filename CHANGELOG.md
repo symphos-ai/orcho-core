@@ -68,6 +68,9 @@
 
 ### Fixed
 
+- The DONE tail of a run parked at a deferred delivery gate names
+  `orcho delivery decide <run_id> <action>` first; the MCP tool and the TTY
+  resume stay as alternatives.
 - A deferred delivery gate now carries the commit message the run's own
   agent authored. `resolve_commit_delivery` used to park the gate before
   generating the message, and the out-of-band decision (`decide_delivery`,

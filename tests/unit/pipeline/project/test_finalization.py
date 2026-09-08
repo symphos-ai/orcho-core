@@ -235,6 +235,8 @@ def test_delivery_line_pending_park_says_not_delivered() -> None:
         {"commit_delivery": {"status": "pending", "action": "none", "pr_url": None}}
     )
     assert line.startswith("Delivery: not delivered — decision pending")
+    # A CLI-only operator gets the CLI command first; MCP and TTY follow.
+    assert "orcho delivery decide <run_id> <action>" in line
     assert "orcho_delivery_decide" in line
 
 
