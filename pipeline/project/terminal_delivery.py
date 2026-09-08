@@ -149,4 +149,18 @@ def render_delivery_destination_lines(
         return ("Delivery: skipped — diff retained",)
     if status in _DESTINATION_NOT_DELIVERED_STATUSES:
         return (f"Delivery: not delivered ({status})",)
+    if status == "pending":
+        # The deferred-delivery park (ADR 0099 / 0191): the release verdict
+        # above may read "approved", but nothing reached the checkout. Say so
+        # in the same block, or the DONE tail reads as shipped.
+        return (
+            "Delivery: not delivered — decision pending "
+            "(approve / apply / skip / halt: orcho_delivery_decide, or resume at a TTY)",
+        )
+    if status == "not_applicable" and record.get("provenance") == "existing_commit":
+        sha = str(record.get("commit_sha") or "")
+        return (
+            f"Delivery: not delivered — commit {sha[:7]} already in the checkout "
+            "but unrecorded; record it with `orcho reconcile-delivery`",
+        )
     return ()

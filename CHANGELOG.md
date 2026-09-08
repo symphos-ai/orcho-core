@@ -24,6 +24,19 @@
   only trace was a one-shot stderr warning and a total that was silently
   smaller (ADR 0189). Fully priced runs are unchanged.
 
+### Changed
+
+- `orcho run` exits `3` when the run ends `halted` — a parked delivery gate
+  (`commit_delivery_pending`), an operator halt, or a rejected release. It
+  used to exit `0`, and the DONE tail after a deferred park still printed
+  `Release: approved` with no delivery line, so a parked run read as shipped.
+  `4` stays the phase-handoff pause; `meta.halt_reason` carries the cause.
+  The DONE tail now prints `Delivery: not delivered — decision pending …` for
+  a parked gate and `Delivery: not delivered — commit <sha> already in the
+  checkout but unrecorded …` when the resolve refused to repeat an existing
+  delivery. A supervisor that maps exit codes must treat `3` as halted, not as
+  an abnormal exit (orcho-mcp does).
+
 ### Fixed
 
 - Closing stdin at the interactive delivery menu no longer crashes the run.
