@@ -44,7 +44,6 @@ __all__ = [
     "official_gate_identities",
     "plan_gate_ref_problems",
     "render_gate_ref_rejection",
-    "unprovable_implied_criteria",
     "unresolved_gate_refs",
     "validate_criterion_gate_refs",
     "validate_plan_gate_refs",
@@ -133,91 +132,41 @@ def unresolved_gate_refs(
     return problems
 
 
-def unprovable_implied_criteria(
-    criteria: Sequence[AcceptanceCriterion],
-    identities: OfficialGateIdentities | None,
-    *,
-    cause: str | None = None,
-) -> list[str]:
-    """One problem per implied executable criterion no official gate can prove.
-
-    An executable criterion with no ``gate_refs`` is bound by the engine to the
-    run's *selected* gates (ADR 0188 addendum). That binding needs something to
-    bind to: when the run declares no gate at all (no scheduled-gate ledger —
-    the project has no verification contract, ``identities is None``) or every
-    declared gate is already resolved as not selected, the criterion can never
-    reach ``proven`` and the run is doomed to an engine-backstop REJECT at final
-    acceptance, after the whole implement / review budget was spent. Diagnosing
-    it at plan review costs one planning round instead (ADR 0191, E2).
-    ``cause`` names why the ledger could not be read, when that is the reason.
-    """
-    bindable: frozenset[tuple[str, str, str]] = (
-        identities.declared - identities.rejected if identities is not None
-        else frozenset()
-    )
-    if bindable:
-        return []
-    if identities is None:
-        why = (
-            "this run declares no official verification gate to bind it to"
-            + (f" ({cause})" if cause else "")
-        )
-    else:
-        why = (
-            "every gate this run declares is already resolved as not selected, "
-            "so there is nothing to bind it to"
-        )
-    return [
-        f"{criterion.id} is executable but names no gate, and {why}; it could "
-        "never be proven. Reclassify it as agent_assertion (inspected by the "
-        "reviewer) or human (decided by an operator), or have the project "
-        "declare the check it relies on as a verification gate"
-        for criterion in criteria
-        if criterion.verify == "executable" and not criterion.gate_refs
-    ]
-
-
 def _gate_ref_problems(
     criteria: Sequence[AcceptanceCriterion], run_dir: Path | str | None,
 ) -> list[str]:
-    """The single rule behind the raising and the data-returning twins."""
-    executable = [c for c in criteria if c.verify == "executable"]
-    if not executable:
+    """The single rule behind the raising and the data-returning twins.
+
+    Only EXPLICIT gate refs are resolved here. An implied executable criterion
+    (no ``gate_refs``) is never a plan-review problem: with declared gates the
+    engine binds it to the run's selected gates (ADR 0188 addendum); with no
+    gates at all the criterion matrix reports it ``advisory`` — the engine
+    cannot prove it and says so without rejecting a plugin-less project's plan
+    (ADR 0191 addendum).
+    """
+    explicit = [c for c in criteria if c.verify == "executable" and c.gate_refs]
+    if not explicit:
         return []
-    explicit = [c for c in executable if c.gate_refs]
-    implied = [c for c in executable if not c.gate_refs]
     if run_dir is None:
-        # No run directory means no ledger can exist yet (a plan-only context,
-        # not a run): explicit refs are unresolvable, implied ones are left to
-        # the run that will own them (ADR 0188 addendum).
-        if explicit:
-            return [
-                "this run has no output directory, so its scheduled-gate ledger "
-                "cannot be read; an executable criterion cannot be resolved"
-            ]
-        return []
+        return [
+            "this run has no output directory, so its scheduled-gate ledger "
+            "cannot be read; an executable criterion cannot be resolved"
+        ]
     try:
         identities = official_gate_identities(run_dir)
     except CriterionGateRefError as e:
-        problems = [str(e)] if explicit else []
-        # An absent ledger on a real run means the project declares no gates at
-        # all: an implied criterion has nothing to bind to, ever.
-        return problems + unprovable_implied_criteria(implied, None, cause=str(e))
-    return (
-        unresolved_gate_refs(explicit, identities)
-        + unprovable_implied_criteria(implied, identities)
-    )
+        return [str(e)]
+    return unresolved_gate_refs(explicit, identities)
 
 
 def validate_criterion_gate_refs(
     criteria: Sequence[AcceptanceCriterion], run_dir: Path | str | None,
 ) -> None:
-    """Raise :class:`CriterionGateRefError` when any executable criterion cannot resolve.
+    """Raise :class:`CriterionGateRefError` when any explicit ref fails to resolve.
 
-    A plan with no explicit gate refs needs no ledger in a plan-only context
-    (``run_dir is None``) and is accepted without touching one; on a real run an
-    implied executable criterion still needs at least one declared, selectable
-    gate to bind to (see :func:`unprovable_implied_criteria`).
+    A plan with no explicit gate refs needs no ledger and is accepted without
+    touching one; implied criteria are bound (or reported advisory) by the
+    criterion matrix, never rejected here.
     """
     problems = _gate_ref_problems(criteria, run_dir)
     if problems:
@@ -232,15 +181,14 @@ def validate_plan_gate_refs(plan: Any, run_dir: Path | str | None) -> None:
 def plan_gate_ref_problems(
     plan: Any, run_dir: Path | str | None,
 ) -> list[str]:
-    """Return one problem per unresolvable / unprovable criterion, without raising.
+    """Return one problem per unresolvable explicit ref, without raising.
 
     The raising twin (:func:`validate_plan_gate_refs`) states the same
     fail-closed rule as an exception. Plan review needs the rule as *data*: an
-    unresolvable ref — or an implied executable criterion the run has no gate
-    to bind to — is a fixable mistake in the plan's own text, so it is routed
-    to the planner as a rejection verdict and costs one more round rather than
-    ending the run. Every fail-closed condition of the raising path is
-    preserved here as a problem string, including a missing or unreadable
+    unresolvable ref is a fixable mistake in the plan's own text, so it is
+    routed to the planner as a rejection verdict and costs one more round
+    rather than ending the run. Every fail-closed condition of the raising path
+    is preserved here as a problem string, including a missing or unreadable
     ledger.
     """
     criteria = getattr(plan, "acceptance_criteria", ()) or ()
@@ -274,12 +222,10 @@ def render_gate_ref_rejection(
         )
     else:
         required_fix = (
-            "This run declares no verification gate, so no criterion can be "
-            "'executable' here. Reclassify each such criterion as "
-            "agent_assertion (the reviewer inspects it) or human (an operator "
-            "decides it), and state the exact command in its intent so the "
-            "implementer still runs it; alternatively the project must declare "
-            "that command as a verification gate before the run starts."
+            "This run declares no verification gate, so no explicit gate_ref "
+            "can resolve: omit gate_refs (the criterion is then recorded as "
+            "advisory), or reclassify the criterion as agent_assertion with "
+            "the exact command in its intent."
         )
     return json.dumps({
         "verdict": "REJECTED",
@@ -294,9 +240,7 @@ def render_gate_ref_rejection(
             "body": (
                 "; ".join(problems)
                 + ". A gate_ref names a scheduled gate by its declared "
-                "name, not by the shell command that gate runs; an executable "
-                "criterion without gate_refs is bound to the run's selected gates "
-                "and needs at least one to exist."
+                "name, not by the shell command that gate runs."
             ),
             "required_fix": required_fix,
         }],

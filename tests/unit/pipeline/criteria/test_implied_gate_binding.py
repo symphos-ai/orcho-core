@@ -181,3 +181,41 @@ def test_an_unbound_implied_row_says_why_and_what_to_do():
     assert row.blocking
     assert row.reason.startswith("missing: no official gate is bound")
     assert "reclassify" in row.reason
+
+
+# ── ADR 0191 addendum: no declared gates → advisory, never a rejected run ─────
+
+
+def test_no_declared_gates_makes_an_implied_criterion_advisory():
+    matrix = build_criterion_matrix([CRITERION], gates_declared=False)
+    row = matrix.rows[0]
+    assert row.state == "advisory"
+    assert row.blocking is False
+    assert row.method == {"kind": "gates", "gate_refs": [], "implied": True}
+    assert row.proof_refs == ()
+    assert "declares no verification gate" in row.reason
+    assert matrix.summary.ready
+    # An explicit ref keeps strict resolution even without gates.
+    explicit = build_criterion_matrix(
+        [replace(CRITERION, gate_refs=(UNIT,))], gates_declared=False,
+    ).rows[0]
+    assert explicit.state == "missing"
+    assert explicit.blocking
+
+
+def test_a_run_without_a_ledger_reports_advisory_end_to_end(tmp_path):
+    from pipeline.verification_ledger_store import ledger_path
+    from pipeline.verification_readiness import criterion_release_gaps
+
+    run = _run(tmp_path)
+    ledger_path(run).unlink()  # the project declares no verification contract
+
+    matrix = criterion_matrix_for_run(run)
+    assert matrix.rows[0].state == "advisory"
+    assert matrix.summary.ready
+    assert criterion_release_gaps(run) == []
+    bundle = collect_evidence(run)
+    validate_bundle(bundle)
+    row = bundle["criterion_matrix"]["rows"][0]
+    assert row["state"] == "advisory"
+    assert row["blocking"] is False

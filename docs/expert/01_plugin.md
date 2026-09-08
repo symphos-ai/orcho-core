@@ -13,6 +13,13 @@ your-project/
 └── .orcho/multiagent/plugin.py
 ```
 
+A linked git worktree of that project (`git worktree add …`) inherits this
+plugin: `.orcho/` is usually ignored or excluded from git, so the worktree
+does not contain it, but it is the same project under the same contract.
+When a worktree carries no plugin of its own, Orcho loads the one from the
+repository's main working tree and reports that path as the plugin file. A
+`plugin.py` inside the worktree always takes precedence.
+
 ## All PluginConfig fields
 
 Fields are defined in `pipeline/plugins.py::PluginConfig`. All are optional;

@@ -327,3 +327,28 @@ def test_the_backstop_reads_the_validated_chain_head(
     assert head.decision_id == "hd-C2-2"
     gaps = _criterion_backstop(state)
     assert (gaps == []) is (decision == "accept")
+
+
+# ── ADR 0191 addendum: a project with no contract is not rejected for it ─────
+
+
+def test_an_executable_criterion_without_any_contract_is_advisory_not_a_gap(
+    tmp_path: Path,
+) -> None:
+    # No plugin, no verification contract, no ledger — the zero-config path.
+    # The planner still wrote an executable criterion (the contract's own
+    # example does); the engine cannot prove it and must not reject the run.
+    plan = {
+        "short_summary": "s",
+        "planning_context": "p",
+        "acceptance_criteria": [
+            {"id": "C1", "intent": "the docs read coherently",
+             "verify": "agent_assertion"},
+            {"id": "C3", "intent": "npm test passes", "verify": "executable"},
+        ],
+        "tasks": [{"id": "t1", "goal": "g", "acceptance_refs": ["C3"]}],
+    }
+    state = _state(tmp_path, contract=None, plan=plan)
+
+    assert _required_receipt_backstop(state) == []
+    assert _criterion_backstop(state) == []

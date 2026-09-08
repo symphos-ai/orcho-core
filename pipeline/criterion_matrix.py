@@ -85,7 +85,11 @@ EXECUTABLE_STATE_PRECEDENCE: tuple[str, ...] = (
     "proven",
 )
 
-EXECUTABLE_STATES: frozenset[str] = frozenset(EXECUTABLE_STATE_PRECEDENCE)
+#: ``advisory`` on an executable row means the run declares no verification
+#: gate at all (no contract, no scheduled-gate ledger): the engine cannot
+#: prove the criterion and says so without blocking — a project may run with
+#: no plugin. It is not part of the multi-gate precedence.
+EXECUTABLE_STATES: frozenset[str] = frozenset(EXECUTABLE_STATE_PRECEDENCE) | {"advisory"}
 AGENT_STATES: frozenset[str] = frozenset({"advisory", "pending"})
 HUMAN_STATES: frozenset[str] = frozenset({"accepted", "rejected", "pending"})
 CRITERION_STATES: frozenset[str] = frozenset(CRITERION_STATE_ORDER)
@@ -265,8 +269,16 @@ def build_criterion_matrix(
     selection_pending: bool = False,
     claims: Sequence[CriterionClaim] = (),
     human_decisions: Mapping[str, HumanDecisionFact] | None = None,
+    gates_declared: bool = True,
 ) -> CriterionMatrix:
     """Reduce typed facts into exactly one row per criterion, in plan order.
+
+    ``gates_declared`` is ``False`` when the run declares no verification gate
+    at all (no contract, hence no scheduled-gate ledger). An implied executable
+    criterion then has nothing to bind to, ever: it is reported ``advisory``
+    and non-blocking — the engine cannot prove it and says so, without turning
+    a plugin-less project into a rejected run. Explicit refs keep their strict
+    resolution (``missing`` against an empty gate set).
 
     ``gate_states`` maps a complete ``(command, hook, phase)`` identity to a
     canonical executable state (see :func:`gate_state_from_disposition`); an
@@ -290,7 +302,7 @@ def build_criterion_matrix(
             rows.append(
                 _executable_row(
                     criterion, owners, states, receipts,
-                    selected_gate_refs, selection_pending,
+                    selected_gate_refs, selection_pending, gates_declared,
                 ),
             )
         elif criterion.verify == "agent_assertion":
@@ -321,10 +333,31 @@ def _executable_row(
     receipts: Mapping[tuple[str, str, str], str],
     selected_gate_refs: Sequence[GateRef],
     selection_pending: bool,
+    gates_declared: bool = True,
 ) -> CriterionRow:
     per_ref: list[tuple[GateRef, str, str | None]] = []
     unreceipted: list[GateRef] = []
     implied = not criterion.gate_refs
+    if implied and not gates_declared:
+        # No verification contract: there is no gate to bind to and never
+        # will be in this run. Say it, do not block on it — a project runs
+        # without a plugin; the reviewer and final acceptance still see the
+        # criterion and the implementer still runs ``commands_to_run``.
+        return CriterionRow(
+            criterion_id=criterion.id,
+            intent=criterion.intent,
+            verify=criterion.verify,
+            executors=_executors_for(criterion, owners, REVIEWER_EXECUTOR),
+            method={"kind": "gates", "gate_refs": [], "implied": True},
+            proof_refs=(),
+            state="advisory",
+            reason=(
+                "advisory: this run declares no verification gate, so the "
+                "engine cannot prove the criterion; declare a verification "
+                "contract (plugin `verification`) to make it provable"
+            ),
+            blocking=False,
+        )
     refs = tuple(selected_gate_refs) if implied else criterion.gate_refs
     for ref in refs:
         state = states.get(ref.identity, "missing")

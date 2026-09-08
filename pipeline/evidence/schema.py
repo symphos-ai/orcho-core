@@ -591,7 +591,9 @@ def _validate_criterion_row(row: Any, loc: str) -> None:
         )
 
     expected_blocking = {
-        "executable": row["state"] != "proven",
+        # ``advisory`` on an executable row: the run declares no gate at all,
+        # so the engine cannot prove it and does not block on it.
+        "executable": row["state"] not in ("proven", "advisory"),
         "agent_assertion": False,
         "human": row["state"] != "accepted",
     }[row["verify"]]

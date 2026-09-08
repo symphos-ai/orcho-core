@@ -278,79 +278,54 @@ class TestPlanReviewRouting:
         assert validate_review_dict(json.loads(raw))["verdict"] == "REJECTED"
 
 
-class TestImpliedCriteriaNeedABindableGate:
-    """ADR 0191 (E2): an implied executable criterion needs something to bind to.
+class TestImpliedCriteriaAreNeverAPlanReviewProblem:
+    """ADR 0191 addendum: a project may run with no plugin at all.
 
-    The engine binds a ref-less executable criterion to the run's selected
-    gates (ADR 0188 addendum). On a run that declares no gate at all — or
-    whose declared gates are all resolved as not selected — that binding can
-    never happen, and the run would only learn it from the final-acceptance
-    backstop after the whole implement / review budget was spent.
+    An implied executable criterion (no ``gate_refs``) is bound by the engine
+    when the run declares gates and reported ``advisory`` by the criterion
+    matrix when it declares none — it is never a reason to reject the plan.
+    Only explicit refs are resolved here.
     """
 
     def _implied(self):
         return AcceptanceCriterion("C1", "web acceptance is green", "executable")
 
-    def test_no_ledger_on_a_real_run_is_a_problem(self, tmp_path) -> None:
+    def test_no_ledger_is_not_a_problem_for_an_implied_criterion(self, tmp_path) -> None:
         from pipeline.criterion_gate_refs import plan_gate_ref_problems
 
         plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
-        problems = plan_gate_ref_problems(plan, tmp_path)
-
-        assert len(problems) == 1
-        assert problems[0].startswith("C1 is executable but names no gate")
-        assert "could never be proven" in problems[0]
-        assert "agent_assertion" in problems[0]
-        with pytest.raises(CriterionGateRefError, match="names no gate"):
-            validate_criterion_gate_refs([self._implied()], tmp_path)
+        assert plan_gate_ref_problems(plan, tmp_path) == []
+        validate_criterion_gate_refs([self._implied()], tmp_path)
 
     def test_a_ledger_with_a_selectable_gate_binds(self, run_dir) -> None:
         from pipeline.criterion_gate_refs import plan_gate_ref_problems
 
         plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
         assert plan_gate_ref_problems(plan, run_dir) == []
-        validate_criterion_gate_refs([self._implied()], run_dir)
 
-    def test_a_pending_selection_is_still_bindable(self, tmp_path) -> None:
-        from pipeline.criterion_gate_refs import plan_gate_ref_problems
-
-        write_ledger(tmp_path, ScheduledGateLedger(rows=(
-            _row("conditional", selected=None),
-        )))
-        plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
-        assert plan_gate_ref_problems(plan, tmp_path) == []
-
-    def test_every_declared_gate_rejected_is_a_problem(self, tmp_path) -> None:
+    def test_every_declared_gate_rejected_is_still_not_a_plan_problem(self, tmp_path) -> None:
+        # The matrix reports such a row ``not_selected`` at readiness time;
+        # plan review does not second-guess gate selection.
         from pipeline.criterion_gate_refs import plan_gate_ref_problems
 
         write_ledger(tmp_path, ScheduledGateLedger(rows=(
             _row("slow", selected=False),
         )))
         plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
-        problems = plan_gate_ref_problems(plan, tmp_path)
-        assert len(problems) == 1
-        assert "not selected" in problems[0]
+        assert plan_gate_ref_problems(plan, tmp_path) == []
 
-    def test_a_plan_only_context_stays_permissive(self) -> None:
-        from pipeline.criterion_gate_refs import plan_gate_ref_problems
-
-        plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
-        assert plan_gate_ref_problems(plan, None) == []
-        validate_criterion_gate_refs([self._implied()], None)
-
-    def test_the_rejection_names_the_reclassification_fix(self, tmp_path) -> None:
-        import json as _json
-
+    def test_an_explicit_ref_without_a_ledger_is_still_rejected(self, tmp_path) -> None:
         from pipeline.criterion_gate_refs import (
             plan_gate_ref_problems,
             render_gate_ref_rejection,
         )
 
-        plan = SimpleNamespace(acceptance_criteria=(self._implied(),))
+        plan = SimpleNamespace(acceptance_criteria=(
+            _criterion(GateRef("unit", "after_phase", "implement")),
+        ))
         problems = plan_gate_ref_problems(plan, tmp_path)
-        review = _json.loads(render_gate_ref_rejection(problems, frozenset()))
+        assert len(problems) == 1
+        assert "no scheduled-gate ledger" in problems[0]
+        review = json.loads(render_gate_ref_rejection(problems, frozenset()))
         assert review["verdict"] == "REJECTED"
-        finding = review["findings"][0]
-        assert "C1 is executable but names no gate" in finding["body"]
-        assert "agent_assertion" in finding["required_fix"]
-        assert "human" in finding["required_fix"]
+        assert "omit gate_refs" in review["findings"][0]["required_fix"]
