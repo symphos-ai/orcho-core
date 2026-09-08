@@ -47,6 +47,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("command", "run long agent commands with duplicate admission"),
         ("repair-state", "inspect and safely apply known run-state repairs"),
         ("reconcile-delivery", "record a delivery commit a run stopped without recording"),
+        ("delivery", "inspect and decide a parked delivery gate"),
         ("update", "upgrade Orcho via the manager that installed it"),
     ]),
     # NOTE: the ``tui`` and ``web`` interface commands are intentionally
