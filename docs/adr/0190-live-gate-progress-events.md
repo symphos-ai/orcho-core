@@ -100,3 +100,35 @@ repos' schema snapshots together.
 - The wire contract is single-owned in
   `pipeline/verification_progress.py`, so producer and reader cannot
   drift.
+
+## Addendum — 2026-09-09: the required-receipt auto-run is a visible gate too
+
+Observed on the Orcho-on-Orcho dogfood (parent `20260908_131908_4064f0`):
+seven silent minutes between `repair_changes` (skipped, review clean) and
+`final_acceptance`. The pre-final required-receipt auto-run (ADR 0094) ran
+`cli-sdk-unit` and `broad-non-e2e` through `sdk.verify.verify_run`, which
+emitted neither the `gate.start` / `gate.end` boundary (ADR 0095) nor
+`gate.progress`; `events.jsonl` was silent, `orcho_run_live_status` read
+"starting" with `active_gate=null`. The scheduled after-phase gates already
+had both — the auto-run was the one engine-owned gate execution without a
+boundary.
+
+Rule: every engine-owned gate execution is bracketed by the paired
+boundary and publishes progress, whichever producer runs it.
+
+- `pipeline/project/gate_events.py` is the single owner of the boundary
+  payload (`emit_gate_start` / `emit_gate_end`); `gate_repair` delegates.
+- `sdk.verify.verify_run` gains an internal `observer` seam
+  (`CommandObserver`: `start(command) -> GateProgressContext | None`,
+  `end(command, outcome | None)`), called around each executed command; the
+  progress context returned by `start` is threaded into `run_command`. Absent
+  observer (CLI / SDK default): unchanged.
+- `verification_autorun.materialize_required_receipts` passes a
+  `_GateBoundaryObserver(hook, phase, presenter)`: `start` emits `gate.start`
+  with a fresh `invocation_id` and builds the progress context, `end` emits
+  the paired `gate.end` (`failed` when the executor raised), and any boundary
+  the executor left open is settled `failed` before the result is built. The
+  run-level adapter labels the pre-final pass `hook="before_phase"` /
+  `phase=<final phase>` (the correction pre-review pass likewise) and enables
+  the terminal presenter only under TERMINAL presentation, as the scheduled
+  gates do. The single batched `verify_run` call is kept.

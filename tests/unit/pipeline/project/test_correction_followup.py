@@ -1157,6 +1157,9 @@ class TestCorrectionRouteWiring:
             )
 
         def _verify_run(**kwargs):
+            # The gate boundary observer (ADR 0190 addendum) always rides
+            # along; the exact-kwargs assertions below compare the rest.
+            assert kwargs.pop("observer") is not None
             calls.append(("run", kwargs))
             return SimpleNamespace(
                 all_passed=True,
