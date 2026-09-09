@@ -461,3 +461,31 @@ cross substrate of [ADR 0047](0047-cross-project-application-boundary.md)
 and preserves the [ADR 0090](0090-require-gate-no-silent-green.md) /
 [ADR 0108](0108-verification-provenance-gate-consistency.md) backstops the
 reducer routes but never softens.
+
+## Slice 3b-4 — out-of-band child delivery supersedes the parent (delivered, 2026-09-09)
+
+Observed on the Orcho-on-Orcho dogfood: parent `20260908_131908_4064f0`
+parked as `halted / commit_decision_fix`, its correction child
+`20260908_140152_173bb8` parked on a deferred delivery gate and was decided
+through `orcho_delivery_decide approve` (#313 was opened by that decision).
+The child's own finalization had run with `commit_delivery.status='pending'`,
+so `_supersede_parent_correction_after_followup` was a no-op; the SDK settle
+later closed the child and never revisited the parent. The parent kept reading
+`blocked_worktree` / `start_followup` in diagnosis and `orcho status Next:`
+instead of `closed_by_followup`.
+
+- **One seam, two producers.** The guards + file IO of the finalization
+  supersede move to `pipeline/project/followup_supersede.py::
+  supersede_parent_after_child_delivery(child_meta, child_run_dir, *,
+  child_run_id, parent_run_id)`; `finalization._supersede_parent_correction_
+  after_followup(run)` is a thin adapter (session + extras fallback for the
+  parent id). The pure parent-meta mutation stays in
+  `terminal_outcome.supersede_parent_meta`, unchanged.
+- **SDK settle calls the same seam.** `sdk/run_control/delivery.py::_finalize`
+  invokes it right after the reducer settles the child to `done` (delivered or
+  skipped); `halt` / `fix` leave the parent untouched. All guards (follow-up
+  lineage, correction profile, `correction_context.md`, delivered status,
+  parent genuinely a fix / rejected-FA terminal, idempotency) are the seam's.
+- **Wire-form unchanged.** `DeliveryDecisionResult` / `delivery_decision_state`
+  shapes are byte-stable; `run_diagnosis(parent)` flips to `closed_by_followup`
+  with `recommended_run_id=<child>` through the existing marker read.

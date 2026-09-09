@@ -7072,6 +7072,12 @@
           "default": "None",
           "kind": "KEYWORD_ONLY",
           "name": "subject_checkout"
+        },
+        {
+          "annotation": "CommandObserver | None",
+          "default": "None",
+          "kind": "KEYWORD_ONLY",
+          "name": "observer"
         }
       ],
       "return": "VerifyRunResult"
