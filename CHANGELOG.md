@@ -68,6 +68,14 @@
 
 ### Fixed
 
+- An out-of-band delivery decision on a correction follow-up child now
+  closes the parent it was launched to fix (ADR 0115 slice 3b-4). A child
+  parked on a deferred delivery gate finalizes as `pending`, so the live
+  supersede seam had nothing to do; `decide_delivery` / `orcho delivery
+  decide` / `orcho_delivery_decide` settled only the child and the parent kept
+  reading `blocked_worktree` / `start_followup` instead of
+  `closed_by_followup`. The finalization seam moved to
+  `pipeline/project/followup_supersede.py` and the SDK settle calls it.
 - A parked delivery gate now pins the run's delivery policy (ADR 0099
   addendum). The out-of-band decision (`decide_delivery`, `orcho delivery
   decide`, `orcho_delivery_decide`) took `branch_policy` / `branch_name` /

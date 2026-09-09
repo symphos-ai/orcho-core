@@ -1057,6 +1057,18 @@ def _finalize(
 
     _write_meta(run_dir, meta)
 
+    if terminal_outcome == "done":
+        # A delivered correction child closes its parent. The live run does
+        # this in its own finalization; a child parked on a deferred gate
+        # finalized as ``pending`` and only lands here, so the same seam runs
+        # now (no-op unless this is a correction follow-up of a fix /
+        # rejected-FA parent).
+        from pipeline.project.followup_supersede import (
+            supersede_parent_after_child_delivery,
+        )
+
+        supersede_parent_after_child_delivery(meta, run_dir, child_run_id=run_id)
+
     return DeliveryDecisionResult(
         run_id=run_id,
         action=action,
