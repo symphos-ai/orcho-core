@@ -924,6 +924,11 @@ def _reresolve(
     # content_language and persisted on the gate (``final_message`` +
     # ``strategy``). This replay has no generator, so pin it here instead of
     # falling back to the release summary in the plan language (ADR 0121).
+    if not isinstance(ctx.get("commit_policy"), dict) and decision.status == "pending":
+        decision = replace(
+            decision,
+            delivery_warnings=(*decision.delivery_warnings, _LEGACY_POLICY_WARNING),
+        )
     pinned = ctx.get("final_message")
     if (
         action == "approve"
@@ -951,12 +956,28 @@ def _replay_commit_config(ctx: dict[str, Any]) -> dict[str, Any]:
     produces an applicable pending decision rather than re-parking it.
     """
     from core.infra import config
+    from pipeline.engine.commit_policy import overlay_commit_policy
 
+    # ``commit_policy`` is the normalised snapshot the producer stamped at park
+    # time (branch_policy / publish / default_strategy / branch_name /
+    # publish_provider). It wins over the deciding process's config, whose
+    # ``AppConfig`` resolves from THIS process's env and cwd, not the run's
+    # workspace. A gate parked before snapshots existed carries none and keeps
+    # the process config (the replay records that as a delivery warning).
     return {
-        **config.AppConfig.load().commit,
+        **overlay_commit_policy(
+            config.AppConfig.load().commit, ctx.get("commit_policy"),
+        ),
         "decision_mode": "auto",
         "add_untracked": bool(ctx.get("include_untracked")),
     }
+
+
+_LEGACY_POLICY_WARNING = (
+    "delivery policy (branch_policy / publish / default_strategy) taken from "
+    "the deciding process's config: this gate was parked without a "
+    "commit_policy snapshot"
+)
 
 
 def _finalize(

@@ -91,6 +91,35 @@ start a follow-up) is expressed by the combination
 (`drive_correction_followups` is TTY-only), so `followup_run_id` is always
 `None` from this surface.
 
+## Addendum — 2026-09-09: the parked gate pins the run's delivery policy
+
+Observed on stable: a gate parked under a workspace config saying
+`branch_policy: bypass, publish: off`, then decided through `decide_delivery`
+from a shell outside that workspace (no `ORCHO_WORKSPACE`), was committed onto
+a published `orcho/deliver/*` branch with a failed push — the reverse
+configuration would have committed straight onto the target checkout. The
+replay pinned `add_untracked` from the persisted gate (`include_untracked`)
+but took `branch_policy` / `branch_name` / `publish` / `publish_provider` /
+`default_strategy` from the deciding process's `AppConfig`, which resolves
+from *its* env and cwd. MCP was unaffected only because the server carries
+`ORCHO_WORKSPACE`.
+
+Rule: the decision on a parked gate applies the same delivery policy the run
+would have applied, regardless of the caller's environment. The producer
+stamps a normalised `commit_policy` snapshot on the parked decision
+(`pipeline.engine.commit_policy.snapshot_commit_policy`, serialised only when
+present so in-process decisions stay byte-identical); the replay overlays it
+on the process config (`overlay_commit_policy`) and forces only
+`decision_mode=auto` and `add_untracked` as before. Values are normalised
+through the same helpers the engine reads at delivery, never a second table.
+A gate parked before snapshots existed keeps the process policy and records a
+`delivery_warnings` entry saying so. No new source of truth: the replay never
+reads the run's workspace config by path.
+
+Fixed alongside: the published-branch persist path replaced the decision's
+diagnostics with the publication's; it now merges them, so park-time notes
+(message fallback, policy provenance) survive into `meta.commit_delivery`.
+
 ## Consequences
 
 - The public packages gain a sanctioned, TTY-free delivery decision surface

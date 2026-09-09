@@ -198,15 +198,9 @@ def test_reassessment_passes_parent_sources_in_extras(
 
 
 def test_child_without_code_changes_inherits_parent_receipt_and_ships(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     runs, repo, _wt, _parent_dir = _park_child(tmp_path, link_parent=True)
-    # The replay applies the caller process's delivery policy (tracked
-    # separately); pin ``bypass`` so the commit lands in the checkout.
-    monkeypatch.setattr(
-        "core.infra.config.AppConfig.load",
-        lambda: type("Cfg", (), {"commit": {"branch_policy": "bypass", "publish": "off"}})(),
-    )
 
     state = delivery_decision_state("child", runs_dir=runs, cwd=None)
     assert "approve" in state.available_actions, state

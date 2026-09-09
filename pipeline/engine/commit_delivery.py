@@ -34,6 +34,10 @@ from core.io.journey_prompt import (
 )
 from core.io.terminal_input import stdio_interactive
 from pipeline.engine import delivery_branch as _delivery_branch, delivery_ledger as _ledger
+from pipeline.engine.commit_policy import (
+    normalize_commit_message_strategy,
+    snapshot_commit_policy,
+)
 from pipeline.engine.delivery_branch import (
     DeliveryBranchOutcome,
     DeliveryPrIntent,
@@ -194,6 +198,12 @@ class CommitDeliveryDecision:
     # ordinary resolve→apply path produced. Serialised only when non-empty so
     # every existing decision shape stays byte-identical.
     provenance: str = ""
+    # The delivery policy this gate was parked under (branch_policy / publish /
+    # default_strategy / optional branch_name, publish_provider), normalised
+    # by ``pipeline.engine.commit_policy``. Stamped on a deferred park so an
+    # out-of-band decision applies the run's policy, never the deciding
+    # process's config. ``None`` on in-process decisions (never serialised).
+    commit_policy: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -280,6 +290,8 @@ class CommitDeliveryDecision:
             out["delivery_notices"] = list(self.delivery_notices)
         if self.provenance:
             out["provenance"] = self.provenance
+        if self.commit_policy:
+            out["commit_policy"] = dict(self.commit_policy)
         return out
 
 
@@ -571,6 +583,9 @@ def resolve_commit_delivery(
             untracked_paths=untracked_paths,
             include_untracked=bool(cfg.get("add_untracked", True)),
             decided_at=datetime.now(UTC).isoformat(),
+            # Pin the delivery policy the run parked under; the out-of-band
+            # replay overlays it on its own process config.
+            commit_policy=snapshot_commit_policy(cfg),
             **v_fields,
             **scope_fields,
             **release_fields,
@@ -1339,8 +1354,15 @@ def _deliver_published_branch(
         delivery_branch=facts.delivery_branch,
         pr_intent=facts.pr_intent,
         pr_url=facts.pr_url,
-        delivery_warnings=facts.delivery_warnings,
-        delivery_notices=facts.delivery_notices,
+        # Publication diagnostics are added to what the decision already
+        # carries (park-time message fallback, replay policy notes) — the
+        # published path must not drop them.
+        delivery_warnings=_merge_delivery_diagnostics(
+            decision.delivery_warnings, facts.delivery_warnings,
+        ),
+        delivery_notices=_merge_delivery_diagnostics(
+            decision.delivery_notices, facts.delivery_notices,
+        ),
     )
     _ledger.record_delivery_audit(run_dir, ledger_record)
     return persisted
@@ -2033,10 +2055,7 @@ def _safe_relative_path(path: str) -> bool:
 
 
 def _commit_message_strategy(cfg: Mapping[str, Any]) -> str:
-    raw = str(cfg.get("default_strategy") or "release_summary").strip()
-    if raw in {"release_summary", "llm_generate", "operator_typed"}:
-        return raw
-    return "release_summary"
+    return normalize_commit_message_strategy(cfg.get("default_strategy"))
 
 
 def _will_open_pr(cfg: Mapping[str, Any]) -> bool:

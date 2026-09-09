@@ -68,6 +68,16 @@
 
 ### Fixed
 
+- A parked delivery gate now pins the run's delivery policy (ADR 0099
+  addendum). The out-of-band decision (`decide_delivery`, `orcho delivery
+  decide`, `orcho_delivery_decide`) took `branch_policy` / `branch_name` /
+  `publish` / `publish_provider` / `default_strategy` from the deciding
+  process's `AppConfig`, so the same gate could commit into the checkout from
+  one shell and onto a published branch from another. The producer stamps a
+  normalised `commit_policy` snapshot on the parked decision and the replay
+  overlays it; a gate parked before snapshots existed keeps the process policy
+  and records a delivery warning. The published-branch path no longer drops
+  the decision's earlier warnings and notices.
 - An out-of-band delivery decision (`decide_delivery`, `orcho delivery
   decide`, `orcho_delivery_decide`) on a correction follow-up now inherits
   the parent run's valid receipts for the identical subject, as the in-run
