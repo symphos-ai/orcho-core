@@ -107,16 +107,10 @@ def test_park_authors_the_message_with_the_run_agent(tmp_path: Path) -> None:
     assert block["strategy"] == "llm_generate"
 
 
-def test_out_of_band_approve_commits_the_pinned_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_out_of_band_approve_commits_the_pinned_message(tmp_path: Path) -> None:
     runs, repo, wt, _ = _park(tmp_path, generator=lambda _d: _ENGLISH, cfg=_BYPASS)
-    # The replay process has a config of its own; pin the policy it needs.
-    monkeypatch.setattr(
-        "core.infra.config.AppConfig.load",
-        lambda: type("Cfg", (), {"commit": dict(_BYPASS)})(),
-    )
-
+    # The replay process has a config of its own (worktree_branch by default);
+    # the parked gate's commit_policy snapshot carries the run's ``bypass``.
     result = decide_delivery("r1", "approve", runs_dir=runs, cwd=None)
 
     assert result.accepted, result
