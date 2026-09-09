@@ -141,6 +141,9 @@ def materialize_required_receipts(
     dry_run: bool = False,
     reason: str,
     on_targets_resolved: Callable[[tuple[str, ...]], None] | None = None,
+    hook: str = "before_phase",
+    phase: str = "",
+    progress_presenter: Callable[..., None] | None = None,
 ) -> ReceiptAutoRunResult:
     """Regenerate a run's missing/stale required receipts in a single pass.
 
@@ -170,6 +173,15 @@ def materialize_required_receipts(
     ``on_targets_resolved`` is an optional observation hook invoked once, after
     authoritative selection and immediately before any environment or command
     execution. It receives only the commands that will actually run.
+
+    Each surviving target runs under its own paired ``gate.start`` /
+    ``gate.end`` boundary (``hook`` / ``phase`` name the position this
+    materialization guards, e.g. ``before_phase`` / ``final_acceptance``) with
+    a live ``gate.progress`` stream keyed by a fresh ``invocation_id`` (ADR
+    0095 / 0190) — the same visibility a scheduled after-phase gate has, so a
+    multi-minute suite before a final phase is never a silent gap.
+    ``progress_presenter`` is the optional terminal line renderer; ``None``
+    keeps the durable events only.
 
     No-op (``attempted=False``) when ``dry_run`` is set, no contract is declared,
     or the resolved delivery-required set is empty (no required delivery command
@@ -358,6 +370,9 @@ def materialize_required_receipts(
             receipt_paths.append(str(env_result.receipt_path))
 
     if targets:
+        boundary = _GateBoundaryObserver(
+            hook=hook, phase=phase, presenter=progress_presenter,
+        )
         try:
             assert verify_run is not None
             run_result = verify_run(
@@ -368,10 +383,13 @@ def materialize_required_receipts(
                 commands=list(targets),
                 # Both receipt kinds receive the same resolved physical subject.
                 subject_checkout=checkout or None,
+                observer=boundary,
             )
         except Exception as exc:  # noqa: BLE001 — degrade to evidence, never raise
+            boundary.close_open("failed")
             errors.append(f"verify_run {type(exc).__name__}: {exc}")
         else:
+            boundary.close_open("failed")
             for outcome in run_result.outcomes:
                 ran_commands.append(outcome.command)
                 if outcome.receipt_path is not None:
@@ -432,6 +450,74 @@ def materialize_required_receipts(
     )
 
 
+class _GateBoundaryObserver:
+    """The ``sdk.verify.CommandObserver`` that brackets each auto-run target.
+
+    ``start`` emits ``gate.start`` and hands the executor a live
+    ``gate.progress`` context keyed by a fresh ``invocation_id``; ``end``
+    emits the paired ``gate.end`` (``failed`` when the executor raised).
+    ``close_open`` settles a boundary the executor left open (a raise between
+    ``start`` and ``end`` outside the command itself), so a reader never sees
+    a gate that started and never ended. Boundaries go through
+    :mod:`pipeline.project.gate_events`, the same owner the scheduled
+    after-phase gates use.
+    """
+
+    def __init__(
+        self, *, hook: str, phase: str, presenter: Callable[..., None] | None,
+    ) -> None:
+        self._hook = hook
+        self._phase = phase
+        self._presenter = presenter
+        self._open: dict[str, tuple[str, float]] = {}
+
+    def start(self, command: str) -> Any:
+        import time
+
+        from pipeline.project.gate_events import emit_gate_start
+        from pipeline.verification_progress import (
+            build_gate_progress_context,
+            new_invocation_id,
+        )
+
+        invocation_id = new_invocation_id()
+        self._open[command] = (invocation_id, time.monotonic())
+        emit_gate_start(
+            command, hook=self._hook, phase=self._phase, invocation_id=invocation_id,
+        )
+        return build_gate_progress_context(
+            invocation_id=invocation_id, name=command, hook=self._hook,
+            phase=self._phase, presenter=self._presenter,
+        )
+
+    def end(self, command: str, outcome: Any) -> None:
+        exit_code = getattr(outcome, "exit_code", None)
+        self._close(
+            command,
+            outcome="passed" if outcome is not None and exit_code == 0 else "failed",
+            duration_s=getattr(outcome, "duration_s", None),
+        )
+
+    def close_open(self, outcome: str) -> None:
+        for command in list(self._open):
+            self._close(command, outcome=outcome, duration_s=None)
+
+    def _close(self, command: str, *, outcome: str, duration_s: Any) -> None:
+        import time
+
+        from pipeline.project.gate_events import emit_gate_end
+
+        opened = self._open.pop(command, None)
+        if opened is None:
+            return
+        invocation_id, started = opened
+        emit_gate_end(
+            command, hook=self._hook, phase=self._phase, outcome=outcome,
+            duration_s=float(duration_s) if duration_s else time.monotonic() - started,
+            invocation_id=invocation_id,
+        )
+
+
 def _autorun_source(phase: str, reason: str) -> str:
     """Derive the additive durable ``source`` tag for one auto-run entry.
 
@@ -451,6 +537,22 @@ def _autorun_source(phase: str, reason: str) -> str:
     if phase == "review_changes" or "pre-review" in lowered:
         return "correction_pre_review"
     return "stage9_autorun"
+
+
+def _progress_presenter_for(run: Any) -> Callable[..., None] | None:
+    """The terminal gate-progress line renderer, only under TERMINAL presentation.
+
+    Mirrors the scheduled-gate rule (``gate_repair._gate_progress_on``): the
+    durable ``gate.progress`` event is always emitted; only the stdout line is
+    presentation-gated so SILENT / MCP-stdio runs write nothing.
+    """
+    from pipeline.project.types import PresentationPolicy
+
+    if getattr(run, "_presentation", None) is not PresentationPolicy.TERMINAL:
+        return None
+    from pipeline.project.gate_progress_view import gate_progress_presenter
+
+    return gate_progress_presenter()
 
 
 def _record_autorun_evidence(run: Any, phase: str, result: ReceiptAutoRunResult) -> None:
@@ -644,6 +746,9 @@ def auto_run_required_receipts(
         dry_run=False,
         reason=reason,
         on_targets_resolved=on_targets_resolved,
+        hook="before_phase",
+        phase=phase,
+        progress_presenter=_progress_presenter_for(run),
     )
     # The final-phase caller selected ``delivery_plan`` durably before invoking
     # sdk.verify. Correction pre-review passes no plan and cannot create a

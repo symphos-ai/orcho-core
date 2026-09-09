@@ -982,22 +982,15 @@ def _emit_scheduled_gate_start(
 ) -> None:
     """Persist the engine-owned gate boundary before its blocking command.
 
-    The optional ``invocation_id`` pairs this boundary with the ``gate.progress``
-    stream of the same execution (ADR 0190); it is omitted (readers tolerant)
-    when unknown.
+    Thin adapter over :func:`pipeline.project.gate_events.emit_gate_start` (the
+    single owner of the boundary payload, shared with the required-receipt
+    auto-run).
     """
-    from core.observability.events import emit
+    from pipeline.project.gate_events import emit_gate_start
 
-    emit(
-        "gate.start",
-        name=entry.command,
-        gate_kind="scheduled",
-        command=entry.command,
-        hook=hook,
-        phase=phase,
-        ownership="engine",
-        **({"project_alias": project_alias} if project_alias else {}),
-        **({"invocation_id": invocation_id} if invocation_id else {}),
+    emit_gate_start(
+        entry.command, hook=hook, phase=phase, project_alias=project_alias,
+        invocation_id=invocation_id,
     )
 
 
@@ -1014,33 +1007,14 @@ def _emit_scheduled_gate_end(
 ) -> None:
     """Close the typed gate boundary after the command returns or raises.
 
-    ``outcome`` stays the historic pass/fail rollup. ``receipt_status`` /
-    ``failure_kind`` carry the classification alongside it, so the durable
-    stream distinguishes a command that failed from one that ran clean but
-    could not be proven against the current checkout. Both are omitted when
-    the boundary closes on a raise, where no classification exists.
-
-    The optional ``invocation_id`` pairs this settled boundary with the
-    ``gate.progress`` stream of the same execution (ADR 0190). ``gate.end``
-    remains authoritative for the settled outcome; progress never overrides it.
+    Thin adapter over :func:`pipeline.project.gate_events.emit_gate_end`.
     """
-    from core.observability.events import emit
+    from pipeline.project.gate_events import emit_gate_end
 
-    status = str(getattr(classification, "status", "") or "")
-    failure_kind = str(getattr(classification, "failure_kind", "") or "")
-    emit(
-        "gate.end",
-        name=entry.command,
-        outcome=outcome,
-        duration_s=duration_s,
-        command=entry.command,
-        hook=hook,
-        phase=phase,
-        ownership="engine",
-        **({"project_alias": project_alias} if project_alias else {}),
-        **({"receipt_status": status} if status else {}),
-        **({"failure_kind": failure_kind} if failure_kind else {}),
-        **({"invocation_id": invocation_id} if invocation_id else {}),
+    emit_gate_end(
+        entry.command, hook=hook, phase=phase, outcome=outcome,
+        duration_s=duration_s, project_alias=project_alias,
+        classification=classification, invocation_id=invocation_id,
     )
 
 

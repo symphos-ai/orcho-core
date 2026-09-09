@@ -68,6 +68,13 @@
 
 ### Fixed
 
+- The required-receipt auto-run before a final phase (ADR 0094) now runs
+  each command under the paired `gate.start` / `gate.end` boundary with a
+  live `gate.progress` stream, like the scheduled after-phase gates (ADR 0190
+  addendum). A multi-minute suite before `final_acceptance` used to leave
+  `events.jsonl` silent and the MCP live status on "starting" with no active
+  gate. `pipeline/project/gate_events.py` owns the boundary payload;
+  `sdk.verify.verify_run` gains an internal `observer` seam.
 - An out-of-band delivery decision on a correction follow-up child now
   closes the parent it was launched to fix (ADR 0115 slice 3b-4). A child
   parked on a deferred delivery gate finalizes as `pending`, so the live
