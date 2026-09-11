@@ -89,6 +89,7 @@
 
 ### Fixed
 
+
 - Plan criteria must trace to the task. The planner prompt no longer
   licenses "derive acceptance criteria if the task omits them" without a
   bound: criteria come only from the task's own acceptance and contract,
@@ -98,6 +99,14 @@
   rejects such criteria as plan defects instead of reading them as
   diligence (dogfood `20260911_120115_bc8aa7`: two unrequested criteria
   cost two handoffs and two operator waivers).
+- The phase-handoff advisor now sees the subtask receipts. On an
+  `implement` handoff it received only findings, last output and the
+  working-tree summary — an incomplete delivery with no findings read as
+  "nothing was implemented" (dogfood `20260911_120115_bc8aa7`: five `done`
+  receipts, one open criterion, advice to re-implement everything). The
+  advice context carries an authoritative subtask-status block (receipt
+  state per subtask, why each open one is open, the unmet done-criteria with
+  their recorded evidence) and the advisor prompt names it as authoritative.
 - A run paused on a phase handoff now names its open `human` criteria and
   tells the operator to decide them before resuming — in the diagnosis
   (`RunDiagnosis.pending_human_criteria` and `reason`), the `orcho status`

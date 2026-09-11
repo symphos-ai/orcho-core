@@ -434,3 +434,111 @@ def test_invoke_advisor_usage_not_double_counted_into_totals(
     assert data["total_tokens"] == 0
     assert data["total_tokens_in"] == 0
     assert data["total_tokens_out"] == 0
+
+
+# ── implement handoff: the advisor sees the subtask receipts ─────────────────
+#
+# Dogfood 20260911_120115_bc8aa7: an implement handoff carried no findings,
+# only ``incomplete_subtasks=[T6]`` and one unmet done-criterion; the advisor
+# saw findings + last output only and concluded "only T1 was implemented"
+# while five subtask receipts said done. The status block is authoritative.
+
+
+def _implement_signal(artifacts: dict) -> PhaseHandoffRequested:
+    return PhaseHandoffRequested(
+        handoff_id="implement:implement_handoff:1",
+        phase="implement",
+        type=PhaseHandoffType.HUMAN_FEEDBACK_ON_REJECT,
+        trigger="incomplete",
+        verdict="INCOMPLETE",
+        approved=False,
+        round_extras_key="implement_handoff",
+        round=1,
+        loop_max_rounds=1,
+        available_actions=("retry_feedback", "continue_with_waiver", "halt"),
+        artifacts=artifacts,
+        last_output="",
+    )
+
+
+def _run_with_receipts(receipts: list[dict]) -> SimpleNamespace:
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            task="Disclose runs without a contract",
+            phase_log={"implement": {"implementation_receipts": receipts}},
+        ),
+        git_cwd="",
+        session_ts="20260911_120115_bc8aa7",
+    )
+
+
+def test_implement_handoff_context_carries_subtask_status_and_unmet_criterion() -> None:
+    run = _run_with_receipts([
+        {"subtask_id": "T1", "state": "done"},
+        {"subtask_id": "T2", "state": "done"},
+        {"subtask_id": "T6", "state": "incomplete"},
+    ])
+    sig = _implement_signal({
+        "findings": None,
+        "incomplete_subtasks": ["T6"],
+        "attestation_incomplete": {"T6": "done_criteria not met (by index): [2]"},
+        "missing_subtask_receipts": [],
+        "unmet_done_criteria": [{
+            "subtask_id": "T6", "index": 2,
+            "criterion": "grep for load_plugin in the readers returns nothing",
+            "evidence": "Four of five files are clean; delivery.py:840 is pre-existing.",
+        }],
+    })
+
+    ctx = build_advice_context(run, sig)
+
+    assert ctx.subtask_status == (
+        "- T1: done\n"
+        "- T2: done\n"
+        "- T6: incomplete — done_criteria not met (by index): [2]\n"
+        "  unmet T6 #2: grep for load_plugin in the readers returns nothing\n"
+        "    evidence: Four of five files are clean; delivery.py:840 is pre-existing."
+    )
+    prompt = build_advice_prompt(ctx)
+    assert "## Subtask status (authoritative — from receipts)" in prompt
+    assert "- T1: done" in prompt and "- T6: incomplete" in prompt
+    assert "recorded subtask status\nis authoritative" in prompt
+
+
+def test_implement_handoff_names_a_subtask_with_no_receipt_at_all() -> None:
+    run = _run_with_receipts([{"subtask_id": "T1", "state": "done"}])
+    sig = _implement_signal({
+        "incomplete_subtasks": [],
+        "attestation_incomplete": {},
+        "missing_subtask_receipts": ["T3"],
+        "unmet_done_criteria": [],
+    })
+
+    ctx = build_advice_context(run, sig)
+
+    assert ctx.subtask_status == "- T1: done\n- T3: missing receipt"
+
+
+def test_receipts_fall_back_to_the_persisted_session() -> None:
+    run = SimpleNamespace(
+        state=SimpleNamespace(task="t", phase_log={}),
+        session={"phases": {"implement": {"implementation_receipts": [
+            {"subtask_id": "T1", "state": "done"},
+        ]}}},
+        git_cwd="",
+        session_ts="r",
+    )
+    ctx = build_advice_context(run, _implement_signal({"incomplete_subtasks": []}))
+    assert ctx.subtask_status == "- T1: done"
+
+
+def test_review_handoff_without_subtask_facts_renders_no_status_block() -> None:
+    run = SimpleNamespace(
+        state=SimpleNamespace(task="Fix the bug", phase_log={}),
+        git_cwd="",
+        session_ts="r",
+    )
+    ctx = build_advice_context(run, _signal(artifacts={"findings": [], "short_summary": "x"}))
+
+    assert ctx.subtask_status == ""
+    assert "Subtask status" not in build_advice_prompt(ctx)
