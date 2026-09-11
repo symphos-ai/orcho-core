@@ -211,6 +211,8 @@ def render_handoff_findings(ctx: Any) -> str:
                 lines.append(f"    required_fix: {finding['required_fix']}")
             if finding.get("body"):
                 lines.append(f"    {finding['body']}")
+    if getattr(ctx, "subtask_status", ""):
+        lines += ["", "## Subtask status (authoritative — from receipts)", ctx.subtask_status]
     if ctx.last_output:
         lines += ["", "## Last output", ctx.last_output]
     if ctx.correction_context:

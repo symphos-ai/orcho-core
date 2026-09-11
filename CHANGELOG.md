@@ -89,6 +89,14 @@
 
 ### Fixed
 
+- The phase-handoff advisor now sees the subtask receipts. On an
+  `implement` handoff it received only findings, last output and the
+  working-tree summary — an incomplete delivery with no findings read as
+  "nothing was implemented" (dogfood `20260911_120115_bc8aa7`: five `done`
+  receipts, one open criterion, advice to re-implement everything). The
+  advice context carries an authoritative subtask-status block (receipt
+  state per subtask, why each open one is open, the unmet done-criteria with
+  their recorded evidence) and the advisor prompt names it as authoritative.
 - A run paused on a phase handoff now names its open `human` criteria and
   tells the operator to decide them before resuming — in the diagnosis
   (`RunDiagnosis.pending_human_criteria` and `reason`), the `orcho status`
