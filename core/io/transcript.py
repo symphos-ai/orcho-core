@@ -137,6 +137,7 @@ def render_run_header(
     plugin_line: str | None = None,
     skills_line: str | None = None,
     verification: VerificationHeaderView | None = None,
+    verification_absent_line: str | None = None,
     resumed: bool = False,
     completed_phases: Iterable[str] = (),
     parent_run_id: str | None = None,
@@ -173,6 +174,12 @@ def render_run_header(
     [<alias>]" chip and ``Task`` is relabeled ``Subtask`` so a reviewer
     can tell at a glance that they're looking at one slice of a larger
     cross-project run rather than a standalone run.
+
+    ``verification_absent_line`` is rendered as a single ``Verification``
+    row **only** when ``verification`` is None — the "this run declared no
+    verification contract" fact, pre-worded by the caller. ``core`` sits
+    below ``pipeline`` in the layering, so the wording is passed in rather
+    than imported; omit it and the block stays absent exactly as before.
 
     ``followup_parent_run_id`` + ``followup_base_task`` mark a
     ``--resume`` follow-up: a new run that uses an earlier run as
@@ -253,6 +260,10 @@ def render_run_header(
     if verification is not None:
         from core.io.verification_header import render_verification_header
         parts.append(render_verification_header(verification))
+    elif verification_absent_line:
+        # No contract to tabulate: say so in one line where the gate matrix
+        # would have been, instead of silently dropping the whole block.
+        parts.append(_kv("Verification", verification_absent_line, C.CYAN))
 
     parts.append("")
     parts.append(_line(C.CYAN + C.BOLD, "Agents"))

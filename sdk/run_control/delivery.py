@@ -30,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pipeline.project.verification_disclosure import VerificationContractPresence
 from pipeline.run_state.release_verdict import is_release_blocked
 from pipeline.run_state.status_vocab import (
     RESUMABLE_TERMINAL_STATUSES,
@@ -348,6 +349,11 @@ def delivery_decision_state(
         meta = load_meta(ref.run_dir)
     ctx = meta.get("commit_delivery") if isinstance(meta, dict) else None
     resolved_run_id = _resolved_run_id(ctx, ref.run_dir, run_id)
+    # The durable "did this run declare a verification contract?" fact, read
+    # once from the persisted block and published on every branch below. A run
+    # written before the block existed projects ``None``.
+    presence = VerificationContractPresence.from_mapping(meta)
+    declared = presence.declared if presence else None
 
     if not isinstance(ctx, dict):
         return DeliveryDecisionState(
@@ -355,6 +361,7 @@ def delivery_decision_state(
             decidable=False,
             kind="none",
             reason="no pending delivery gate",
+            verification_contract_declared=declared,
         )
 
     if (
@@ -366,6 +373,7 @@ def delivery_decision_state(
             decidable=False,
             kind="none",
             reason="no pending delivery gate",
+            verification_contract_declared=declared,
         )
 
     # Checked only after the gate block itself proved decision-shaped: a
@@ -378,6 +386,7 @@ def delivery_decision_state(
             decidable=False,
             kind=_delivery_gate_kind(ctx),
             reason=stopped_reason,
+            verification_contract_declared=declared,
         )
 
     requested_at = _durable_decided_at(ctx)
@@ -407,6 +416,7 @@ def delivery_decision_state(
             reason=_followup_correction_reason(resolved_run_id, ref.run_dir),
             requested_at=requested_at,
             scope_disclosure=scope_disclosure,
+            verification_contract_declared=declared,
         )
 
     verification_blocked, verification_reason = _verification_gate(meta, ctx, ref.run_dir)
@@ -477,6 +487,7 @@ def delivery_decision_state(
         reason=reason,
         requested_at=requested_at,
         scope_disclosure=scope_disclosure,
+        verification_contract_declared=declared,
     )
 
 

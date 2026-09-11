@@ -630,3 +630,91 @@ def test_decide_is_exact_payload_idempotent_per_id(tmp_path: Path) -> None:
             run_id, id2, "retry_feedback", feedback="different",
             runs_dir=runs, cwd=None,
         )
+
+
+# ── verification-contract presence in the Gates section (T5) ────────────────
+
+
+def _gate_status(tmp_path: Path, *, raw_meta: dict, gates: tuple = ()) -> RunStatus:
+    return RunStatus(
+        run_ref=RunRef(
+            run_id="20260612_presence",
+            run_dir=tmp_path / "runs" / "20260612_presence",
+        ),
+        meta=RunMeta(
+            project="/repo/demo",
+            task="contract presence",
+            status="done",
+            profile="task",
+            timestamp="2026-06-12T10:00:00",
+        ),
+        quality_gates=gates,
+        raw_meta=raw_meta,
+    )
+
+
+def test_cli_status_creates_a_gates_section_for_the_missing_contract(
+    tmp_path: Path,
+) -> None:
+    """No gate ledger at all is exactly the case today's empty section hides."""
+    from pipeline.project.verification_disclosure import status_line
+
+    status = _gate_status(
+        tmp_path, raw_meta={"verification_contract_presence": {"declared": False}},
+    )
+
+    rendered = strip_ansi(format_status(status))
+
+    assert "Gates:" in rendered
+    assert status_line() in rendered
+
+
+def test_cli_status_puts_the_fact_first_under_gates(tmp_path: Path) -> None:
+    from pipeline.project.verification_disclosure import status_line
+
+    status = _gate_status(
+        tmp_path,
+        raw_meta={"verification_contract_presence": {"declared": False}},
+        gates=(
+            GateStatus(
+                name="lint", kind="computational", outcome="passed", duration_s=1.25,
+            ),
+        ),
+    )
+
+    rendered = strip_ansi(format_status(status, verbose=True))
+    lines = [line.strip() for line in rendered.split("\n")]
+    header = lines.index("Gates:")
+
+    assert lines[header + 1] == status_line()
+    assert "passed x1" in lines[header + 2]
+    assert "lint" in rendered
+
+
+@pytest.mark.parametrize(
+    "raw_meta",
+    [
+        {},
+        {"verification_contract_presence": {"declared": True}},
+        {"verification_contract_presence": {"declared": "no"}},
+    ],
+)
+def test_cli_status_gates_unchanged_without_the_missing_contract_fact(
+    tmp_path: Path, raw_meta: dict,
+) -> None:
+    from pipeline.project.verification_disclosure import status_line
+
+    empty = _gate_status(tmp_path, raw_meta=raw_meta)
+    rendered_empty = strip_ansi(format_status(empty))
+    assert "Gates:" not in rendered_empty
+    assert status_line() not in rendered_empty
+
+    gates = (
+        GateStatus(name="lint", kind="computational", outcome="passed", duration_s=1.0),
+    )
+    with_gates = _gate_status(tmp_path, raw_meta=raw_meta, gates=gates)
+    rendered_gates = strip_ansi(format_status(with_gates, verbose=True))
+    lines = [line.strip() for line in rendered_gates.split("\n")]
+    header = lines.index("Gates:")
+    assert "passed x1" in lines[header + 1]
+    assert status_line() not in rendered_gates

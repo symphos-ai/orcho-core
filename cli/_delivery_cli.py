@@ -37,6 +37,10 @@ def format_delivery_gate(
     out.append(f"  Default action:  {state.default_action or '-'}")
     if state.reason:
         out.append(f"  Reason:          {state.reason}")
+    if state.verification_contract_declared is False:
+        from pipeline.project.verification_disclosure import delivery_gate_line
+
+        out.append(f"  Verification:    {delivery_gate_line()}")
     out.append(f"  Release verdict: {gate_facts.get('release_verdict') or '-'}")
     if state.requested_at:
         out.append(f"  Requested at:    {state.requested_at}")

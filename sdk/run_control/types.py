@@ -338,6 +338,16 @@ class DeliveryDecisionState:
             ),
         },
     )
+    verification_contract_declared: bool | None = field(
+        default=None,
+        metadata={
+            "description": (
+                "False when the run recorded no verification contract (engine "
+                "ran no gates); True when a contract was declared; None for "
+                "runs without the durable presence block."
+            ),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)

@@ -217,12 +217,16 @@ def _verification_readiness_text(state: PipelineState) -> str:
     """Render the Stage 5 readiness block for ``final_acceptance`` (ADR 0082).
 
     Dry-run short-circuits FIRST — before any receipt loader is touched — so
-    a dry run never reads the run directory. The no-contract path returns
-    ``""`` (the builder then adds no part and the wire prompt stays
-    byte-identical to the pre-Stage-5 prompt). The delivery gate plan is
-    resolved inside :func:`build_final_acceptance_readiness` from the
-    executable ``before_delivery`` routing epoch or a fresh selection over the
-    current checkout — never from the advisory prompt-preview cache.
+    a dry run never reads the run directory. The no-contract path renders the
+    disclosure block when this run recorded the fact that no contract was
+    declared (``verification_disclosure.readiness_block``): the reviewer must
+    read "0 receipts because nothing was scheduled", not an absent block it
+    could mistake for proof. A run that never recorded the fact still returns
+    ``""``, keeping the wire prompt byte-identical to the pre-Stage-5 prompt.
+    The delivery gate plan is resolved inside
+    :func:`build_final_acceptance_readiness` from the executable
+    ``before_delivery`` routing epoch or a fresh selection over the current
+    checkout — never from the advisory prompt-preview cache.
     """
     if getattr(state, "dry_run", False):
         return ""
@@ -231,6 +235,14 @@ def _verification_readiness_text(state: PipelineState) -> str:
         return ""
     contract = state.extras.get("verification_contract")
     if contract is None:
+        from pipeline.project.verification_disclosure import (
+            VerificationContractPresence,
+            readiness_block,
+        )
+
+        presence = VerificationContractPresence.from_mapping(state.extras)
+        if presence is not None and not presence.declared:
+            return readiness_block()
         return ""
     from pipeline.verification_contract import PlaceholderContext
     from pipeline.verification_readiness import (

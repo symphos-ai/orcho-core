@@ -347,3 +347,63 @@ def test_decide_without_gate_is_a_typed_refusal(tmp_path: Path, capsys) -> None:
     out = strip_ansi(capsys.readouterr().out)
     assert rc == 1
     assert "Blocker:         no_pending_delivery_gate" in out
+
+
+# ── verification-contract presence on the gate report (T5) ───────────────────
+
+
+def _stamp_presence(runs_dir: Path, declared: bool | None, run_id: str = "r1") -> None:
+    from pipeline.project.verification_disclosure import META_KEY
+
+    meta = _meta(runs_dir, run_id)
+    meta.pop(META_KEY, None)
+    if declared is not None:
+        meta[META_KEY] = {"declared": declared}
+    (runs_dir / run_id / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+
+def test_gate_text_names_the_missing_verification_contract(
+    tmp_path: Path, capsys,
+) -> None:
+    from pipeline.project.verification_disclosure import delivery_gate_line
+
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, False)
+
+    rc = cmd_delivery_gate(_parse("gate", "r1"))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert rc == 0
+    assert "Verification:" in out
+    assert delivery_gate_line() in out
+
+
+@pytest.mark.parametrize("declared", [None, True])
+def test_gate_text_stays_silent_without_the_missing_contract_fact(
+    tmp_path: Path, capsys, declared: bool | None,
+) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, declared)
+
+    rc = cmd_delivery_gate(_parse("gate", "r1"))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert rc == 0
+    assert "Verification:" not in out
+
+
+@pytest.mark.parametrize("declared", [None, False, True])
+def test_gate_json_always_carries_the_presence_key(
+    tmp_path: Path, capsys, declared: bool | None,
+) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, declared)
+
+    rc = cmd_delivery_gate(_parse("gate", "r1", "--json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert "verification_contract_declared" in payload
+    assert payload["verification_contract_declared"] is declared

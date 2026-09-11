@@ -288,6 +288,62 @@ def test_run_header_omits_verification_block_without_contract() -> None:
     assert "Verification" not in out
 
 
+def test_run_header_states_the_fact_when_no_contract_was_declared() -> None:
+    """Without a contract there is no gate matrix — say so, don't go silent."""
+    line = "contract: none — engine runs no gates"
+    out = _strip(render_run_header(
+        run_id="R1",
+        project="/tmp/proj",
+        task="Split work",
+        agents=[],
+        profile="advanced",
+        session_mode="auto",
+        repair_rounds=1,
+        plan=True,
+        verification_absent_line=line,
+    ))
+
+    assert "Verification" in out
+    assert line in out
+    # One row where the matrix would have been — not a table.
+    assert len([ln for ln in out.splitlines() if line in ln]) == 1
+
+
+def test_run_header_absent_line_is_ignored_when_a_contract_is_declared() -> None:
+    """A declared contract renders its own block; the fallback stays out."""
+    view = VerificationHeaderView(
+        mode="governed",
+        envs=("ci",),
+        gates=(
+            GateRowView(
+                gate="lint",
+                timing="after_implement",
+                run_mode="auto",
+                policy="require",
+                cost="fast",
+                when="after_implement",
+            ),
+        ),
+        policy_source="auto-derived from mode/plugin defaults",
+        effect="warn on missing/failed receipts",
+    )
+    out = _strip(render_run_header(
+        run_id="R1",
+        project="/tmp/proj",
+        task="Split work",
+        agents=[],
+        profile="advanced",
+        session_mode="auto",
+        repair_rounds=1,
+        plan=True,
+        verification=view,
+        verification_absent_line="contract: none — engine runs no gates",
+    ))
+
+    assert "engine runs no gates" not in out
+    assert "lint" in out
+
+
 def test_cross_run_header_lists_projects_and_agents() -> None:
     out = _strip(render_cross_run_header(
         run_id="20260513_184335",
