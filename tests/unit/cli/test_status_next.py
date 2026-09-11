@@ -400,3 +400,19 @@ def test_status_next_block_precedes_detailed_meta(runs_dir: Path, capsys) -> Non
 
     out = strip_ansi(capsys.readouterr().out)
     assert out.index("Paths:") < out.index("Next:") < out.index("Detailed Meta:")
+
+
+def test_needs_decision_adds_the_open_human_criteria_line() -> None:
+    lines = next_step_lines(_diag(
+        CONDITION_NEEDS_DECISION,
+        handoff_id="implement:implement_handoff:1",
+        available_actions=("retry_feedback", "halt"),
+        pending_human_criteria=("C6", "C7"),
+    ))
+    assert lines == [
+        "decide the pending phase handoff implement:implement_handoff:1 "
+        f"(actions: retry_feedback, halt) then orcho run --resume {RUN}",
+        "open human criteria: C6, C7 — record each with "
+        f"`orcho criterion decide {RUN} --criterion <id> --decision accept|reject` "
+        "before resuming, so final acceptance sees them",
+    ]

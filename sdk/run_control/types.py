@@ -465,6 +465,13 @@ class RunDiagnosis:
     blocked: bool = False
     block_message: str | None = None
     recovery: RecoveryLineage | None = None
+    # ``human`` acceptance criteria still awaiting an operator verdict while
+    # the run is paused (``needs_decision``). Deciding them BEFORE resuming
+    # (``orcho criterion decide`` / ``orcho_criterion_decide``) lets final
+    # acceptance see a ready matrix instead of rejecting into a correction
+    # cycle. Empty when the run has no accepted plan, no human criteria, or
+    # the matrix cannot be composed.
+    pending_human_criteria: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -175,6 +175,24 @@ Write access: `sdk.record_criterion_decision` and
 `orcho criterion decide --criterion C3 --decision accept`. Neither accepts a
 caller-supplied `decision_id` or `recorded_at`.
 
+### Decide before resuming
+
+A `human` criterion that is still `pending` when `final_acceptance` runs makes
+the release REJECTED by the criterion backstop, and the only way forward is a
+correction follow-up — a fresh child run with its full gate set. That cost is
+avoidable whenever the run is already paused before the closing gate (a phase
+handoff, `needs_decision`): record the verdicts first, resume second.
+
+The run diagnosis names the open criteria on that pause
+(`RunDiagnosis.pending_human_criteria`, and the same sentence in `reason`);
+`orcho status` prints it as a second `Next:` line and the MCP live status
+carries it in `pending_handoff`. The operator — a person or a delegated agent
+acting as one — exercises each criterion, records it with
+`orcho criterion decide <run_id> --criterion <id> --decision accept|reject`
+(or `orcho_criterion_decide`), and only then resumes. Final acceptance then
+reads a ready matrix. Nothing is inferred: the tool still refuses a verdict the
+operator does not hold.
+
 ## 5. Projections
 
 | Surface | Shape |

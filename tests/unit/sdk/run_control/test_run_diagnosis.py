@@ -1081,3 +1081,93 @@ def test_a_running_run_is_never_probed_for_delivery(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     _mk(runs, "r", {"status": "running", "project": str(repo)})
     assert _diag(runs, "r").condition == diag.CONDITION_ACTIVE
+
+
+# ── needs_decision names the open human criteria ─────────────────────────────
+#
+# A paused run whose accepted plan has ``human`` criteria without a recorded
+# verdict must say so on the pause — deciding them BEFORE resuming is what
+# keeps final acceptance from rejecting into a correction follow-up.
+
+_HUMAN_PLAN = {
+    "short_summary": "s",
+    "planning_context": "p",
+    "acceptance_criteria": [
+        {"id": "C1", "intent": "docs read coherently", "verify": "agent_assertion"},
+        {"id": "C2", "intent": "operator accepts the journey", "verify": "human",
+         "human_instructions": "Exercise the journey and record the outcome."},
+        {"id": "C3", "intent": "operator checks the MCP payload", "verify": "human",
+         "human_instructions": "Call the tool and record the outcome."},
+    ],
+    "tasks": [{"id": "t1", "goal": "g"}],
+}
+
+
+def _paused_with_plan(runs: Path, run_id: str) -> None:
+    from pipeline.plan_artifacts import write_parsed_plan_artifact
+    from pipeline.plan_parser import parse_plan
+
+    _mk(runs, run_id, {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "review_changes:repair_round:1",
+                          "available_actions": ["continue", "halt"]},
+        "project": "/x",
+    })
+    write_parsed_plan_artifact(runs / run_id, parse_plan(json.dumps(_HUMAN_PLAN)), attempt=1)
+
+
+def test_needs_decision_names_open_human_criteria(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _paused_with_plan(runs, "r")
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_NEEDS_DECISION
+    assert d.pending_human_criteria == ("C2", "C3")
+    assert d.reason == (
+        "run is paused awaiting a phase-handoff decision (review_changes:repair_round:1); "
+        "open human criteria: C2, C3 — record each with "
+        "`orcho criterion decide r --criterion <id> --decision accept|reject` "
+        "before resuming, so final acceptance sees them"
+    )
+
+
+def test_needs_decision_drops_decided_human_criteria(tmp_path: Path) -> None:
+    from pipeline.criterion_decisions import record_human_decision
+
+    runs = tmp_path / "runs"
+    _paused_with_plan(runs, "r")
+    record_human_decision(runs / "r", run_id="r", criterion_id="C2", decision="accept")
+
+    d = _diag(runs, "r")
+
+    assert d.pending_human_criteria == ("C3",)
+    assert "open human criteria: C3 —" in d.reason
+
+
+def test_needs_decision_without_plan_names_no_criteria(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "h1", "available_actions": ["continue", "halt"]},
+        "project": "/x",
+    })
+
+    d = _diag(runs, "r")
+
+    assert d.pending_human_criteria == ()
+    assert d.reason == "run is paused awaiting a phase-handoff decision (h1)"
+
+
+def test_needs_decision_unreadable_matrix_is_silent_not_fatal(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "h1", "available_actions": ["halt"]},
+        "project": "/x",
+    }, files={"parsed_plan.json": "{not json"})
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_NEEDS_DECISION
+    assert d.pending_human_criteria == ()
