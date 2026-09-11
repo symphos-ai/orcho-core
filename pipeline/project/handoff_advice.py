@@ -128,6 +128,13 @@ class AdviceContext:
     correction_context: str = ""
     response_language: str = ""
     contract_snapshot: AdviceContractSnapshot | None = None
+    # Authoritative per-subtask status for an implement handoff, rendered from
+    # the subtask receipts (``done`` / ``incomplete``) and the handoff
+    # artifacts (unmet done-criteria with their evidence). Empty for handoffs
+    # that carry no subtask facts (a review rejection). Without it the advisor
+    # has only findings and output to judge scope from — and an implement
+    # handoff with no findings reads as "nothing was implemented".
+    subtask_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +351,7 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
         _FINDING_BODY_CHAR_LIMIT,
     )
     contract_snapshot = build_advice_contract_snapshot(run, signal)
+    subtask_status = _subtask_status_block(run, artifacts)
     return AdviceContext(
         run_id=str(getattr(run, "session_ts", "") or ""),
         handoff_id=str(getattr(signal, "handoff_id", "") or ""),
@@ -367,7 +375,82 @@ def build_advice_context(run: Any, signal: PhaseHandoffRequested) -> AdviceConte
             correction_context,
         ),
         contract_snapshot=contract_snapshot,
+        subtask_status=subtask_status,
     )
+
+
+#: Bound on one unmet-criterion evidence line inside the subtask status block.
+_SUBTASK_EVIDENCE_CHAR_LIMIT = 400
+
+
+def _subtask_status_block(run: Any, artifacts: Mapping[str, Any]) -> str:
+    """Render the authoritative subtask picture for an implement handoff.
+
+    Sources, in this order: the subtask receipts on
+    ``phase_log["implement"]["implementation_receipts"]`` (or the persisted
+    ``session["phases"]["implement"]`` twin) for every subtask's ``state``;
+    the handoff artifacts ``incomplete_subtasks`` /
+    ``missing_subtask_receipts`` / ``attestation_incomplete`` for why a
+    subtask is open; and ``unmet_done_criteria`` for the exact criterion text
+    and the evidence the implementer recorded. Returns ``""`` when none of
+    these carry a fact, so review-phase handoffs render byte-identically.
+    """
+    receipts = _implementation_receipts(run)
+    incomplete = tuple(str(x) for x in (artifacts.get("incomplete_subtasks") or ()) if x)
+    missing = tuple(str(x) for x in (artifacts.get("missing_subtask_receipts") or ()) if x)
+    reasons = artifacts.get("attestation_incomplete")
+    reasons = dict(reasons) if isinstance(reasons, Mapping) else {}
+    unmet = tuple(
+        item for item in (artifacts.get("unmet_done_criteria") or ())
+        if isinstance(item, Mapping)
+    )
+    if not (receipts or incomplete or missing or unmet):
+        return ""
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for receipt in receipts:
+        sid = str(receipt.get("subtask_id") or "").strip()
+        if not sid:
+            continue
+        seen.add(sid)
+        state = str(receipt.get("state") or "unknown").strip()
+        reason = reasons.get(sid)
+        suffix = f" — {reason}" if reason and state != "done" else ""
+        lines.append(f"- {sid}: {state}{suffix}")
+    for sid in (*incomplete, *missing):
+        if sid in seen:
+            continue
+        seen.add(sid)
+        label = "missing receipt" if sid in missing and sid not in incomplete else "incomplete"
+        reason = reasons.get(sid)
+        suffix = f" — {reason}" if reason else ""
+        lines.append(f"- {sid}: {label}{suffix}")
+    for item in unmet:
+        sid = str(item.get("subtask_id") or "?")
+        index = item.get("index")
+        criterion = str(item.get("criterion") or "").strip()
+        evidence = _truncate(str(item.get("evidence") or "").strip(), _SUBTASK_EVIDENCE_CHAR_LIMIT)
+        head = f"  unmet {sid} #{index}" if index is not None else f"  unmet {sid}"
+        lines.append(f"{head}: {criterion}" if criterion else head)
+        if evidence:
+            lines.append(f"    evidence: {evidence}")
+    return "\n".join(lines)
+
+
+def _implementation_receipts(run: Any) -> tuple[Mapping[str, Any], ...]:
+    """Subtask receipts from live phase_log first, persisted session second."""
+    state = getattr(run, "state", None)
+    phase_log = getattr(state, "phase_log", None)
+    entry = phase_log.get("implement") if isinstance(phase_log, Mapping) else None
+    if not isinstance(entry, Mapping):
+        session = getattr(run, "session", None)
+        phases = session.get("phases") if isinstance(session, Mapping) else None
+        entry = phases.get("implement") if isinstance(phases, Mapping) else None
+    receipts = entry.get("implementation_receipts") if isinstance(entry, Mapping) else None
+    if not isinstance(receipts, (list, tuple)):
+        return ()
+    return tuple(r for r in receipts if isinstance(r, Mapping))
 
 
 def build_advice_prompt(ctx: AdviceContext) -> str:
