@@ -258,8 +258,26 @@ def _append_status_phases(
 
 
 def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) -> None:
+    from pipeline.project.verification_disclosure import (
+        VerificationContractPresence,
+        status_line,
+    )
+
     gates = status.quality_gates
+    # A run that declared no verification contract has no gate ledger at all —
+    # today's empty section silently reads as "nothing to report". Disclose the
+    # fact instead, creating the section when there are no gate rows to carry
+    # it. Runs without the durable block (and runs that did declare a contract)
+    # render exactly as before.
+    presence = VerificationContractPresence.from_mapping(status.raw_meta)
+    no_contract = presence is not None and not presence.declared
+    if not gates and not no_contract:
+        return
+
     if not gates:
+        out.append("")
+        out.append(_status_section("  Gates:"))
+        out.append(f"    {status_line()}")
         return
 
     counts: dict[str, int] = {}
@@ -269,6 +287,8 @@ def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) ->
 
     out.append("")
     out.append(_status_section("  Gates:"))
+    if no_contract:
+        out.append(f"    {status_line()}")
     out.append(
         "    "
         + " · ".join(

@@ -4,6 +4,27 @@
 
 ### Added
 
+- A run without a declared verification contract now says so on every
+  operator surface instead of silently omitting the gate report. The fact is
+  decided once per run from the resolved contract and persisted as the
+  additive `meta.json` block `verification_contract_presence`
+  (`{"declared": <bool>}`); every reader projects that block and none of them
+  loads the project plugin or re-derives the fact from the (necessarily
+  empty) scheduled-gate ledger. The surfaces: the run header prints the fact
+  where the gate matrix would have been; the DONE/HALTED tail carries one
+  line naming `docs/architecture/verification_contract.md`; the
+  `final_acceptance` readiness block states "0 receipts" so the closing
+  reviewer reads an explained zero rather than an absent block it could
+  mistake for proof; `orcho status` names it under `Gates:`; and
+  `orcho delivery gate` shows it on the parked gate. The SDK gains one
+  additive tri-state field, `DeliveryDecisionState.verification_contract_declared`
+  (`False` no contract / `True` declared / `None` a run written before the
+  block existed), populated on every branch including `kind="none"`. It is
+  optional on the wire: the `orcho_delivery_gate` MCP consumer reads the same
+  `asdict` → JSON payload and publishes its own selected fields, so it is
+  unaffected whether the key is absent, `null`, `false`, or `true`. Runs that
+  did declare a contract are byte-identical on all of these surfaces.
+
 - `orcho status` ends with a `Next:` block naming the operator's next
   command. It is rendered from `sdk.run_control.run_diagnosis` — the same
   read-model MCP exposes — which status now asks exactly once per run and

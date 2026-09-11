@@ -71,6 +71,7 @@ from pipeline.project.state_setup import (
     build_pipeline_state,
 )
 from pipeline.project.types import PresentationPolicy, ProjectRunRequest
+from pipeline.project.verification_disclosure import VerificationContractPresence
 
 __all__ = ["load_plugin", "run_project_pipeline_session"]
 
@@ -113,6 +114,9 @@ class _ProjectRunContext:
     agent_registry: Any
     # ── verification contract (read-only Stage 1 projection) ─────────
     verification_contract: Any = None
+    #: The run's decided "is a contract declared?" fact — the single copy
+    #: threaded to the header and to session init.
+    contract_presence: VerificationContractPresence | None = None
     # ── isolation / session / checkpoint / state ─────────────────────
     session: dict | None = None
     git_cwd: Any = None
@@ -266,6 +270,12 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         profile=_profile.v2_profile,
         cli_mode=os.environ.get("ORCHO_WORK_MODE") or None,
     )
+    # The run's verification-contract fact is decided HERE, once, from the
+    # already-resolved contract — and from nothing else. Every downstream
+    # surface reads the persisted projection instead of re-deriving it.
+    contract_presence = VerificationContractPresence.from_contract(
+        verification_contract,
+    )
     from pipeline.project.verification_ledger_runtime import initialize_contract
 
     if not request.resume_from:
@@ -315,6 +325,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         phase_identities=phase_identities,
         resume_from=request.resume_from,
         contract=verification_contract,
+        contract_presence=contract_presence,
     )
 
     return _ProjectRunContext(
@@ -344,6 +355,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         phase_config=_runtime.phase_config,
         agent_registry=_runtime.agent_registry,
         verification_contract=verification_contract,
+        contract_presence=contract_presence,
     )
 
 
@@ -387,6 +399,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         followup_parent_status=request.followup_parent_status,
         followup_base_task=request.followup_base_task,
         plan_source_run_id=_iso_inputs.plan_source_run_id,
+        verification_contract_presence=ctx.contract_presence,
     )
     ctx.session = session
     if checkpoint_startup_watchdog(session):

@@ -1121,6 +1121,13 @@
           "description": "Offset-aware ISO-8601 durable delivery-decision timestamp; published verbatim only when the durable value is aware.",
           "name": "requested_at",
           "type": "str | None"
+        },
+        {
+          "default": "None",
+          "default_factory": null,
+          "description": "False when the run recorded no verification contract (engine ran no gates); True when a contract was declared; None for runs without the durable presence block.",
+          "name": "verification_contract_declared",
+          "type": "bool | None"
         }
       ],
       "frozen": true,

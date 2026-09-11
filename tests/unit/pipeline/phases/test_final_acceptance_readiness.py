@@ -16,6 +16,7 @@ import pytest
 from pipeline.evidence.verification_receipt import write_command_receipt
 from pipeline.phases.builtin.review_support import _verification_readiness_text
 from pipeline.plugins import PluginConfig
+from pipeline.project.verification_disclosure import META_KEY
 from pipeline.prompts.builders import runtime_review_uncommitted_prompt
 from pipeline.runtime import PipelineState
 from pipeline.verification_contract import (
@@ -121,11 +122,47 @@ class TestReadinessText:
         )
         assert "(none — declared proof complete)" in text
 
-    def test_empty_without_contract(self, tmp_path: Path) -> None:
+    def test_empty_without_contract_and_without_recorded_fact(
+        self, tmp_path: Path,
+    ) -> None:
+        """A run that never recorded the presence fact keeps today's silence
+        — the prompt stays byte-identical to the pre-Stage-5 prompt."""
         run_dir = _write_missing_receipt_run(tmp_path)
         assert _verification_readiness_text(
             _state(output_dir=run_dir, contract=None),
         ) == ""
+
+    def test_recorded_absent_contract_renders_zero_receipts_block(
+        self, tmp_path: Path,
+    ) -> None:
+        """declared=False → a non-empty block naming '0 receipts', so the
+        reviewer cannot read the empty ledger as proof."""
+        run_dir = _write_missing_receipt_run(tmp_path)
+        state = _state(output_dir=run_dir, contract=None)
+        state.extras[META_KEY] = {"declared": False}
+        text = _verification_readiness_text(state)
+        assert _BLOCK_MARKER in text
+        assert "0 receipts" in text
+
+    def test_recorded_absent_contract_still_empty_under_dry_run(
+        self, tmp_path: Path,
+    ) -> None:
+        """The dry-run short-circuit stays FIRST: the block never renders."""
+        run_dir = _write_missing_receipt_run(tmp_path)
+        state = _state(output_dir=run_dir, contract=None, dry_run=True)
+        state.extras[META_KEY] = {"declared": False}
+        assert _verification_readiness_text(state) == ""
+
+    def test_recorded_declared_contract_without_object_is_empty(
+        self, tmp_path: Path,
+    ) -> None:
+        """declared=True but no resolved contract object in extras is NOT the
+        no-contract disclosure — it renders nothing rather than a false
+        'no contract declared' claim."""
+        run_dir = _write_missing_receipt_run(tmp_path)
+        state = _state(output_dir=run_dir, contract=None)
+        state.extras[META_KEY] = {"declared": True}
+        assert _verification_readiness_text(state) == ""
 
     def test_empty_without_output_dir(self) -> None:
         assert _verification_readiness_text(

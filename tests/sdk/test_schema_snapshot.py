@@ -216,3 +216,33 @@ def test_check_mode_drift_returns_1(tmp_path: Path) -> None:
     stale = tmp_path / "stale.json"
     stale.write_text("{}", encoding="utf-8")
     assert dumper.main(["--check", "--out", str(stale)]) == 1
+
+
+def test_verification_contract_declared_is_an_optional_tri_state_field() -> None:
+    """The additive delivery-gate presence field: optional, defaulting to null.
+
+    Pinned in the snapshot so an embedder (``orcho-mcp``'s
+    ``orcho_delivery_gate``) can rely on the field being absent-or-null-safe:
+    a payload that omits it, or carries ``null``, stays valid.
+    """
+    dumper = _load_dumper()
+    schema = dumper.build_schema()
+
+    delivery_state = next(
+        e for e in schema["exports"] if e["name"] == "DeliveryDecisionState"
+    )
+    field = next(
+        f
+        for f in delivery_state["fields"]
+        if f["name"] == "verification_contract_declared"
+    )
+    assert field["type"] == "bool | None"
+    assert field["default"] == "None"
+    assert field["description"] == (
+        "False when the run recorded no verification contract (engine ran no "
+        "gates); True when a contract was declared; None for runs without the "
+        "durable presence block."
+    )
+    # Last field: the addition is append-only, so positional construction of
+    # the pre-existing fields is unchanged.
+    assert delivery_state["fields"][-1]["name"] == "verification_contract_declared"

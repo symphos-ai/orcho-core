@@ -56,6 +56,9 @@ from pipeline.engine.declared_write_scope import (
 from pipeline.plugins import PluginConfig
 from pipeline.project.resume_artifacts import bootstrap_resume_artifacts
 from pipeline.project.types import PresentationPolicy
+from pipeline.project.verification_disclosure import (
+    META_KEY as _CONTRACT_PRESENCE_KEY,
+)
 from pipeline.runtime import PipelineState
 from pipeline.runtime.run_shape import OperatingMode, coerce_operating_mode
 from pipeline.verification_receipt_index import (
@@ -532,12 +535,20 @@ def hydrate_state_extras_from_session(
     No-op when ``session`` is missing the key or when the runtime copy is
     already present (the same-process resume branch sets it first; we do
     not overwrite a live copy with the persisted snapshot).
+
+    The verification-contract presence block rides the same rule: it is the
+    in-process channel through which phase-time readers (final_acceptance
+    readiness) see the fact that ``meta.json`` already carries, without
+    re-deriving it from the project plugin.
     """
     if not isinstance(session, Mapping):
         return
     waiver = session.get(_PHASE_HANDOFF_WAIVER_KEY)
     if isinstance(waiver, Mapping) and _PHASE_HANDOFF_WAIVER_KEY not in state.extras:
         state.extras[_PHASE_HANDOFF_WAIVER_KEY] = dict(waiver)
+    presence = session.get(_CONTRACT_PRESENCE_KEY)
+    if isinstance(presence, Mapping) and _CONTRACT_PRESENCE_KEY not in state.extras:
+        state.extras[_CONTRACT_PRESENCE_KEY] = dict(presence)
 
 
 def hydrate_parsed_plan_from_output_dir(state: Any, output_dir: Path | None) -> bool:

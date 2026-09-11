@@ -35,6 +35,11 @@ written, what shape they carry, and what changes per terminal status.
 
 ## Scheduled-gate ledger
 
+The ledger exists only for a run that declared a contract; the
+`meta.json` `verification_contract_presence` block is written for every run,
+declared or not, and is the thing to read when asking "was there a contract at
+all?". An absent ledger alone does not answer that question.
+
 Runs with a verification contract persist `scheduled_gate_ledger.json`. It is
 schema version `"2"`, ordered by `(command, hook, phase)`, and contains the
 declaration/selection/execution axes plus an append-only identity trail. Each
@@ -222,6 +227,36 @@ stays the run's own `checkpoints.db` (`run_meta.config_json`, read through
 `read_run_config` by `pipeline/control/resume_budget.py`). No resume path reads
 the budget back out of `meta.json`. Use this key to audit the recorded budget,
 not to predict what a future resume will restore.
+
+### `verification_contract_presence`
+
+```json
+{ "verification_contract_presence": { "declared": false } }
+```
+
+**Writer:** `pipeline/project/bootstrap.py:init_session_with_atexit`, reached
+through `pipeline/project/run_setup.py:init_run_session`. The fact is decided
+once per run in `pipeline/project/session_run.py`, from the resolved
+verification contract, and stamped onto the session dict *before* its first
+`save_session` — so it is present from the first durable write and survives an
+abnormal exit (the atexit hook holds the same dict). A resume re-stamps the
+same fact from the freshly resolved contract.
+
+`declared` is `true` when the project declared a verification contract and
+`false` when it did not. That is the whole payload: this block is **not** a
+ledger, not a gate list, and not a result. It says only whether the engine had
+a contract to execute gates from — a run with `declared: false` ran no
+engine-owned gates at all, so it has no `scheduled_gate_ledger.json` and no
+command receipts to read.
+
+A **missing** block means the run never recorded the fact — runs written before
+the block existed. Readers must treat absent as "unknown" and behave exactly as
+they did before the block was introduced; they must never fall back to loading
+the project plugin to re-derive it.
+
+Wording and key are owned by `pipeline/project/verification_disclosure.py`; the
+header, DONE/HALTED tail, final_acceptance readiness block, `orcho status`, and
+the delivery-decision state all project this block rather than recomputing it.
 
 ### Status field semantics
 

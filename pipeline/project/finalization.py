@@ -76,6 +76,10 @@ from pipeline.project.terminal_delivery import (
     project_terminal_delivery,
     render_delivery_destination_lines,
 )
+from pipeline.project.verification_disclosure import (
+    VerificationContractPresence,
+    tail_line,
+)
 from pipeline.run_state.release_verdict import (
     is_approved,
     is_rejected,
@@ -2320,6 +2324,14 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
                     "(shipping allowed by policy)",
                     *rest,
                 )
+
+    # A run that declared no verification contract executed no engine-owned
+    # gates, so the block above is empty and the tail would simply skip it.
+    # State the fact instead — one line, first, pointing at how to declare one.
+    # The fact is read from the persisted session block, never re-derived.
+    _presence = VerificationContractPresence.from_mapping(run.session)
+    if _presence is not None and not _presence.declared:
+        verification_gate_lines = (tail_line(), *verification_gate_lines)
 
     return FinalizationResult(
         status=run.session["status"],

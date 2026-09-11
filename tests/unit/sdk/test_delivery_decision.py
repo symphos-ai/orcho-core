@@ -1137,7 +1137,12 @@ def test_state_approved_pending_serialization_is_byte_identical(
     tmp_path: Path,
 ) -> None:
     """The non-rejected (approved-pending) gate projection stays byte/structure-
-    identical to the baseline — the follow-up routing never touches this path."""
+    identical to the baseline — the follow-up routing never touches this path.
+
+    T5 adds one additive field, ``verification_contract_declared``, which is
+    ``None`` here because this fixture writes no durable presence block; every
+    other key and value is unchanged.
+    """
     from sdk._jsonable import to_jsonable
 
     runs_dir, _, _ = _park(tmp_path)  # verdict defaults to APPROVED
@@ -1153,6 +1158,7 @@ def test_state_approved_pending_serialization_is_byte_identical(
         "reason": None,
         "requested_at": "2026-07-29T09:31:22+00:00",
         "scope_disclosure": [],
+        "verification_contract_declared": None,
     }
 
 
@@ -1366,3 +1372,183 @@ def test_producer_pending_halt_accepts_explicit_delivery_decision(tmp_path: Path
     ledger = list((runs_dir / "r1" / "commit_decisions").glob("*.delivery.json"))
     assert len(ledger) == 1
     assert json.loads(ledger[0].read_text())["stage"] == "recorded"
+
+
+# ── verification-contract presence on the state (T5) ─────────────────────────
+
+
+def _stamp_presence(runs_dir: Path, declared: bool | None, run_id: str = "r1") -> None:
+    """Write (or omit) the durable presence block on an existing parked run."""
+    from pipeline.project.verification_disclosure import META_KEY
+
+    meta = _meta(runs_dir, run_id)
+    meta.pop(META_KEY, None)
+    if declared is not None:
+        meta[META_KEY] = {"declared": declared}
+    (runs_dir / run_id / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+
+def test_state_reports_no_contract_declared(tmp_path: Path) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, False)
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.decidable is True
+    assert state.verification_contract_declared is False
+
+
+def test_state_reports_declared_contract(tmp_path: Path) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, True)
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.verification_contract_declared is True
+
+
+def test_state_without_presence_block_publishes_none(tmp_path: Path) -> None:
+    """A run written before the block existed asserts nothing either way."""
+    runs_dir, _, _ = _park(tmp_path)
+    _stamp_presence(runs_dir, None)
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.verification_contract_declared is None
+
+
+def test_malformed_presence_block_reads_as_none(tmp_path: Path) -> None:
+    from pipeline.project.verification_disclosure import META_KEY
+
+    runs_dir, _, _ = _park(tmp_path)
+    meta = _meta(runs_dir)
+    meta[META_KEY] = {"declared": "no"}
+    (runs_dir / "r1" / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.verification_contract_declared is None
+
+
+def test_no_gate_branch_still_carries_the_presence_fact(tmp_path: Path) -> None:
+    """``kind='none'`` is exactly where the fact is most easily lost."""
+    from pipeline.project.verification_disclosure import META_KEY
+
+    runs_dir, _, _ = _park(tmp_path)
+    (runs_dir / "r1" / "meta.json").write_text(
+        json.dumps({"status": "done", META_KEY: {"declared": False}}) + "\n",
+        encoding="utf-8",
+    )
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.kind == "none"
+    assert state.decidable is False
+    assert state.verification_contract_declared is False
+
+
+def test_stopped_gate_branch_carries_the_presence_fact(tmp_path: Path) -> None:
+    runs_dir, _, _ = _park(tmp_path)
+    meta = _meta(runs_dir)
+    meta["status"] = "failed"
+    meta["halt_reason"] = "operator_halt"
+    meta["verification_contract_presence"] = {"declared": False}
+    (runs_dir / "r1" / "meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8",
+    )
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.decidable is False
+    assert state.kind == "delivery"
+    assert state.verification_contract_declared is False
+
+
+def test_correction_branch_carries_the_presence_fact(tmp_path: Path) -> None:
+    runs_dir, _, _ = _park(tmp_path, verdict="REJECTED")
+    _stamp_presence(runs_dir, False)
+
+    state = delivery_decision_state("r1", runs_dir=runs_dir, cwd=None)
+
+    assert state.kind == "correction"
+    assert state.verification_contract_declared is False
+
+
+# ── wire compatibility: absent / null / false / true ─────────────────────────
+
+
+def test_legacy_payload_without_the_field_still_constructs() -> None:
+    """The pre-field wire shape round-trips into the dataclass, field ``None``."""
+    import dataclasses as _dc
+
+    from sdk.run_control.types import DeliveryDecisionState
+
+    payload = {
+        "run_id": "r1",
+        "decidable": True,
+        "kind": "delivery",
+        "available_actions": ["approve", "halt"],
+        "blocked_actions": [],
+        "default_action": "approve",
+        "reason": None,
+        "scope_disclosure": [],
+        "requested_at": "2026-07-29T09:31:22+00:00",
+    }
+    assert "verification_contract_declared" not in payload
+
+    state = DeliveryDecisionState(**payload)
+
+    assert state.verification_contract_declared is None
+    assert _dc.asdict(state)["verification_contract_declared"] is None
+
+
+@pytest.mark.parametrize(
+    ("declared", "wire"), [(None, "null"), (False, "false"), (True, "true")],
+)
+def test_field_round_trips_through_json(declared: bool | None, wire: str) -> None:
+    import dataclasses as _dc
+
+    from sdk.run_control.types import DeliveryDecisionState
+
+    state = DeliveryDecisionState(
+        run_id="r1",
+        decidable=True,
+        kind="delivery",
+        available_actions=("approve", "halt"),
+        blocked_actions=(),
+        default_action="approve",
+        verification_contract_declared=declared,
+    )
+
+    encoded = json.dumps(_dc.asdict(state))
+    assert f'"verification_contract_declared": {wire}' in encoded
+
+    decoded = json.loads(encoded)
+    assert decoded["verification_contract_declared"] is declared
+    # Tuples serialize as lists; restore them so equality compares like for like.
+    decoded["available_actions"] = tuple(decoded["available_actions"])
+    decoded["blocked_actions"] = tuple(decoded["blocked_actions"])
+    decoded["scope_disclosure"] = tuple(decoded["scope_disclosure"])
+    assert DeliveryDecisionState(**decoded) == state
+
+
+@pytest.mark.parametrize("declared", [None, False, True])
+def test_delivery_gate_json_always_carries_the_key(declared: bool | None) -> None:
+    from cli._delivery_cli import delivery_gate_to_json
+    from sdk.run_control.types import DeliveryDecisionState
+
+    state = DeliveryDecisionState(
+        run_id="r1",
+        decidable=True,
+        kind="delivery",
+        verification_contract_declared=declared,
+    )
+
+    payload = delivery_gate_to_json(state, {"status": "pending"})
+
+    assert "verification_contract_declared" in payload
+    assert payload["verification_contract_declared"] is declared

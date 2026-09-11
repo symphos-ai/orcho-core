@@ -61,6 +61,10 @@ from pipeline.project.finalization import (
 )
 from pipeline.project.run import _PipelineRun
 from pipeline.project.types import PresentationPolicy
+from pipeline.project.verification_disclosure import (
+    META_KEY as _PRESENCE_KEY,
+    tail_line,
+)
 
 
 def test_outcome_line_precedes_done_banner_on_skip(
@@ -1616,6 +1620,152 @@ def test_done_tail_shows_skipped_delivery(
 
     out = strip_ansi(capsys.readouterr().out)
     assert "Delivery: skipped — diff retained" in out
+
+
+# ── verification-contract disclosure in the terminal tail ────────────────
+#
+# A run that declared no contract ran no engine-owned gates, so the gate block
+# is empty and today's tail silently omits it. The fact is stated instead — one
+# line, sourced from the session block the run persisted, never re-derived.
+
+
+def _presence_tail_lines(out: str) -> list[str]:
+    return [
+        line for line in out.splitlines()
+        if "no verification contract declared" in line
+    ]
+
+
+def test_done_tail_states_the_fact_when_no_contract_was_declared(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir, project_dir, commit_delivery={"status": "skipped", "pr_url": None},
+    )
+    stub.session[_PRESENCE_KEY] = {"declared": False}
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    # Exactly one line — no gate timeline exists to expand into a block.
+    assert result.verification_gate_lines == (tail_line(),)
+    assert len(_presence_tail_lines(out)) == 1
+    assert "docs/architecture/verification_contract.md" in out
+
+
+def test_done_tail_omits_the_fact_when_the_session_has_no_block(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runs written before the block existed keep today's tail."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir, project_dir, commit_delivery={"status": "skipped", "pr_url": None},
+    )
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert result.verification_gate_lines == ()
+    assert _presence_tail_lines(out) == []
+
+
+def test_done_tail_omits_the_fact_when_a_contract_was_declared(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir, project_dir, commit_delivery={"status": "skipped", "pr_url": None},
+    )
+    stub.session[_PRESENCE_KEY] = {"declared": True}
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert result.verification_gate_lines == ()
+    assert _presence_tail_lines(out) == []
+
+
+def test_fact_leads_an_existing_gate_block_without_reshaping_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With rows to show, the fact goes first and the block below is intact."""
+    from pipeline.project import verification_timeline as _vt
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+    block = ("Verification gates: 1 executed", "  lint: pass")
+    timeline = SimpleNamespace(warning_residual=(), blocking_residual=())
+    monkeypatch.setattr(
+        _vt, "build_verification_timeline", lambda **_kwargs: timeline,
+    )
+    monkeypatch.setattr(
+        _vt, "render_verification_gate_done_block", lambda _timeline: block,
+    )
+
+    stub = _delivery_done_stub(
+        run_dir, project_dir, commit_delivery={"status": "skipped", "pr_url": None},
+    )
+    stub.session[_PRESENCE_KEY] = {"declared": False}
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    capsys.readouterr()
+    assert result.verification_gate_lines == (tail_line(), *block)
+
+
+def test_halted_tail_states_the_fact_when_no_contract_was_declared(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HALTED runs go through the same renderer, so they carry it too."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True)
+    _patch_finalization_side_effects(monkeypatch, run_dir)
+
+    stub = _delivery_done_stub(
+        run_dir, project_dir, commit_delivery={"status": "skipped", "pr_url": None},
+    )
+    stub.session[_PRESENCE_KEY] = {"declared": False}
+    stub.state = SimpleNamespace(
+        halt=True, halt_reason="stopped on purpose", extras={}, phase_log={},
+    )
+
+    result = finalize_with_terminal_output(FinalizationContext(run=stub))
+
+    out = strip_ansi(capsys.readouterr().out)
+    assert result.status == "halted"
+    assert result.verification_gate_lines == (tail_line(),)
+    assert len(_presence_tail_lines(out)) == 1
 
 
 @pytest.fixture(autouse=True)
