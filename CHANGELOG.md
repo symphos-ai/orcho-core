@@ -89,6 +89,15 @@
 
 ### Fixed
 
+- Plan criteria must trace to the task. The planner prompt no longer
+  licenses "derive acceptance criteria if the task omits them" without a
+  bound: criteria come only from the task's own acceptance and contract,
+  and a criterion that widens scope (work in another repository, a human
+  verdict the task did not request, an invariant over files the task did
+  not name) is a risk or a note, not a criterion. The plan validator now
+  rejects such criteria as plan defects instead of reading them as
+  diligence (dogfood `20260911_120115_bc8aa7`: two unrequested criteria
+  cost two handoffs and two operator waivers).
 - A run paused on a phase handoff now names its open `human` criteria and
   tells the operator to decide them before resuming — in the diagnosis
   (`RunDiagnosis.pending_human_criteria` and `reason`), the `orcho status`

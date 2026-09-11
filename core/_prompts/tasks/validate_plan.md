@@ -10,6 +10,11 @@ Reject only concrete defects:
 - implementation order that violates real dependencies;
 - missing risks, assumptions, or falsifiers for risky scope;
 - speculative refactors or scope beyond the task;
+- acceptance criteria that do not trace to the task: a criterion the task
+  never asked for that widens scope (work in another repository, a human
+  verdict the task did not request, an invariant over files the task did not
+  name) is a defect of the plan — name it as one, do not treat it as
+  diligence;
 - steps that do not deliver the required behavior;
 - milestone-sized work that is presented as a flat task list without coherent
   execution slices, checkpoint commands, deferred/externally blocked evidence,
