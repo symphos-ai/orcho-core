@@ -89,6 +89,14 @@
 
 ### Fixed
 
+- A run paused on a phase handoff now names its open `human` criteria and
+  tells the operator to decide them before resuming — in the diagnosis
+  (`RunDiagnosis.pending_human_criteria` and `reason`), the `orcho status`
+  `Next:` block, and the MCP live status. Recording the verdicts first lets
+  final acceptance read a ready matrix instead of rejecting into a
+  correction follow-up with a full gate set (observed on dogfood runs
+  `20260908_131908_4064f0` and `20260911_120115_bc8aa7`).
+
 - The required-receipt auto-run before a final phase (ADR 0094) now runs
   each command under the paired `gate.start` / `gate.end` boundary with a
   live `gate.progress` stream, like the scheduled after-phase gates (ADR 0190

@@ -29,6 +29,7 @@ from sdk.run_control.diagnosis import (
     CONDITION_RESUME_INERT_TERMINAL,
     CONDITION_STALLED,
     CONDITION_SUPERSEDED_BY_CHILD,
+    pending_human_criteria_hint,
 )
 from sdk.run_control.recovery_lineage import (
     ACTION_PLAN_ARTIFACT_CONTINUATION,
@@ -77,10 +78,14 @@ def next_step_lines(diagnosis: Any) -> list[str]:
     if condition == CONDITION_NEEDS_DECISION:
         handoff = diagnosis.handoff_id or "?"
         actions = ", ".join(diagnosis.available_actions) or "-"
-        return [
+        lines = [
             f"decide the pending phase handoff {handoff} (actions: {actions}) "
             f"then orcho run --resume {run_id}",
         ]
+        pending = tuple(getattr(diagnosis, "pending_human_criteria", ()) or ())
+        if pending:
+            lines.append(pending_human_criteria_hint(run_id, pending))
+        return lines
 
     if condition == CONDITION_STALLED:
         return [f"orcho repair-state {run_id}"]

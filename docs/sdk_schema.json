@@ -3024,6 +3024,12 @@
           "default_factory": null,
           "name": "recovery",
           "type": "RecoveryLineage | None"
+        },
+        {
+          "default": "()",
+          "default_factory": null,
+          "name": "pending_human_criteria",
+          "type": "tuple[str, ...]"
         }
       ],
       "frozen": true,

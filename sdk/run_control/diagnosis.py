@@ -409,7 +409,10 @@ def _classify(
 
     # (1) needs_decision — paused (or torn-interrupted) awaiting a phase handoff.
     if _is_decidable_handoff_status(status, active):
-        return _needs_decision(run_id, status, halt_reason, active)
+        return _needs_decision(
+            run_id, status, halt_reason, active,
+            pending_human=_pending_human_criteria(run_dir, meta),
+        )
 
     # (2) superseded_by_child — a newer unfinished follow-up child is live.
     child = _safe_active_child(run_id, run_dir.parent)
@@ -625,24 +628,76 @@ def _stalled_diagnosis(
 
 
 def _needs_decision(
-    run_id: str, status: str | None, halt_reason: str | None, active: Any,
+    run_id: str,
+    status: str | None,
+    halt_reason: str | None,
+    active: Any,
+    *,
+    pending_human: tuple[str, ...] = (),
 ) -> RunDiagnosis:
-    """Build the ``needs_decision`` diagnosis from the active handoff payload."""
+    """Build the ``needs_decision`` diagnosis from the active handoff payload.
+
+    ``pending_human`` names the ``human`` criteria still awaiting an operator
+    verdict. They ride on the diagnosis and its reason so every surface
+    (``orcho status`` Next:, MCP live status) can tell the operator to decide
+    them before resuming — the cheap path that keeps final acceptance from
+    rejecting into a correction follow-up for a verdict nobody recorded.
+    """
     handoff_id = None
     available_actions: tuple[str, ...] = ()
     if isinstance(active, dict):
         handoff_id = _optional_str(active.get("id"))
         available_actions = _str_tuple(active.get("available_actions"))
     id_suffix = f" ({handoff_id})" if handoff_id else ""
+    reason = f"run is paused awaiting a phase-handoff decision{id_suffix}"
+    if pending_human:
+        reason = f"{reason}; {pending_human_criteria_hint(run_id, pending_human)}"
     return RunDiagnosis(
         run_id=run_id,
         condition=CONDITION_NEEDS_DECISION,
-        reason=f"run is paused awaiting a phase-handoff decision{id_suffix}",
+        reason=reason,
         status=status,
         halt_reason=halt_reason,
         handoff_id=handoff_id,
         available_actions=available_actions,
+        pending_human_criteria=pending_human,
     )
+
+
+def pending_human_criteria_hint(run_id: str, ids: tuple[str, ...]) -> str:
+    """The one sentence every surface prints for open ``human`` criteria.
+
+    Single owner of the wording (CLI ``Next:`` and the MCP mirror reuse it),
+    naming the exact CLI form so it is copy-paste runnable.
+    """
+    listed = ", ".join(ids)
+    return (
+        f"open human criteria: {listed} — record each with "
+        f"`orcho criterion decide {run_id} --criterion <id> --decision accept|reject` "
+        "before resuming, so final acceptance sees them"
+    )
+
+
+def _pending_human_criteria(run_dir: Path, meta: Mapping[str, Any]) -> tuple[str, ...]:
+    """``human`` criteria without a recorded verdict, from the run's own matrix.
+
+    Composed through the same reducer every other surface uses
+    (``criterion_matrix_for_run``); never raises — a run with no accepted
+    plan, no human criteria, or an unreadable matrix simply reports none.
+    """
+    try:
+        from pipeline.criterion_evidence import criterion_matrix_for_run
+        from pipeline.evidence.collector import project_findings
+
+        matrix = criterion_matrix_for_run(
+            run_dir, findings=project_findings(dict(meta)),
+        )
+    except Exception:  # noqa: BLE001 — diagnosis is read-only and must never fail here
+        return ()
+    if matrix is None:
+        return ()
+    summary = getattr(matrix, "summary", None)
+    return tuple(str(cid) for cid in getattr(summary, "pending_human_ids", ()) or ())
 
 
 def _delivery_branch(
