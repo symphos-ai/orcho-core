@@ -186,9 +186,11 @@ def materialize_required_receipts(
     No-op (``attempted=False``) when ``dry_run`` is set, no contract is declared,
     or the resolved delivery-required set is empty (no required delivery command
     survives plan resolution). Otherwise classification selects ``missing`` +
-    ``stale`` required commands; ``failed`` receipts are left untouched,
-    ``present`` ones land in ``skipped_fresh``, and manual/operator-only ones in
-    ``skipped_manual``. Each needed env runs once via :func:`sdk.verify.verify_env`
+    ``stale`` required commands; ``failed`` receipts owned by this run are left
+    untouched (an inherited parent ``failed`` with no receipt owned by this run
+    is materialized like ``missing``), ``present`` ones land in
+    ``skipped_fresh``, and manual/operator-only ones in ``skipped_manual``.
+    Each needed env runs once via :func:`sdk.verify.verify_env`
     and the surviving target commands run once via :func:`sdk.verify.verify_run`.
     Any :mod:`sdk.verify` exception is captured in ``errors`` and never raised.
     """
@@ -316,9 +318,17 @@ def materialize_required_receipts(
         if status.status == "present":
             skipped_fresh.append(command)
             continue
-        # Same-subject and unverifiable failed receipts remain failed and are
-        # intentionally left out of every execution bucket.
-        if status.status in ("missing", "stale", "unverifiable"):
+        # Same-subject and unverifiable failed receipts owned by THIS run remain
+        # failed and are intentionally left out of every execution bucket. A
+        # ``failed`` classification with no receipt owned by this run comes from
+        # a parent source (ADR 0089 continuity): that is read-only evidence the
+        # command failed *there*, not proof for this run, so the command is
+        # materialized exactly like ``missing`` — a correction child created to
+        # rerun a failed gate must actually rerun it.
+        inherited_failed = (
+            status.status == "failed" and current_receipts.get(command) is None
+        )
+        if inherited_failed or status.status in ("missing", "stale", "unverifiable"):
             if command in operator_commands:
                 skipped_manual.append(command)
             else:
