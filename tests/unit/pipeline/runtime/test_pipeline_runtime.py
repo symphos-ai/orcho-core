@@ -1050,8 +1050,10 @@ class TestFsmMetricsOutcomeBridge:
             assert pm.cost_usd_equivalent == pytest.approx(0.123)
             assert pm.cost_estimated is True
             assert pm.tokens_in_cache_read == 9_000
+            # Priced by the model the invocation actually ran with (the
+            # outcome's ``gpt-5.5``), not the slot→model default.
             assert seen == {
-                "model": "claude-opus-4-7",
+                "model": "gpt-5.5",
                 "tokens_in": 10_000,
                 "tokens_out": 620,
                 "cached_tokens_in": 9_000,
@@ -1830,3 +1832,90 @@ class TestPricingWriteUser:
         assert table["gpt-5.4"].cached_input_per_1m_usd == 0.25
         assert table["gpt-5.4"].output_per_1m_usd == 10.0
         assert table["o4-mini"].source == "user"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  metrics attribution: the model of the actual invocation, and the
+#  correction_triage slot (run 20260912_101558)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class TestFsmMetricsAttribution:
+    """``metrics.json`` prices a phase by the model that actually ran it and
+    reads the correction-triage usage from the reviewer slot it invokes."""
+
+    def test_phase_model_is_the_invocations_model_not_the_slot_map(self):
+        """``final_acceptance`` ran on ``gpt-5.6-sol`` while the static
+        slot→model map says the review model (``gpt-6-astra``). The recorded
+        phase (and its price) must follow the invocation."""
+        from types import SimpleNamespace
+
+        agent = SimpleNamespace(
+            last_invocation_outcome=_make_outcome(
+                runtime="codex", model="gpt-5.6-sol",
+                tokens_in=107_249, tokens_out=517, tokens_total=107_766,
+                tokens_exact=True, usage_source="runtime_reported",
+            ),
+        )
+        metrics = _call_fsm_metrics(
+            agent, phase="final_acceptance", model="gpt-6-astra",
+            log_entry={"output": "out"},
+        )
+        pm = metrics.phases[-1]
+        assert pm.phase == "final_acceptance"
+        assert pm.model == "gpt-5.6-sol"
+        assert pm.tokens_in == 107_249
+        assert metrics.as_dict()["phase_attempts"][-1]["model"] == "gpt-5.6-sol"
+
+    def test_slot_map_model_remains_the_fallback_without_an_outcome(self):
+        from types import SimpleNamespace
+
+        agent = SimpleNamespace(last_tokens_in=10, last_tokens_out=5)
+        metrics = _call_fsm_metrics(
+            agent, phase="final_acceptance", model="gpt-6-astra",
+            log_entry={"output": "out"},
+        )
+        assert metrics.phases[-1].model == "gpt-6-astra"
+
+    def test_correction_triage_usage_is_read_from_the_reviewer_slot(self):
+        """Producer→consumer: the triage handler invokes
+        ``review_changes_agent``; the metrics callback must resolve that same
+        slot, so the provider-reported usage lands in ``metrics.json`` instead
+        of a 0-token estimate over an empty prompt."""
+        from types import SimpleNamespace
+
+        from core.observability.metrics import MetricsCollector
+        from pipeline.project.run import _PipelineRun
+
+        reviewer = SimpleNamespace(
+            runtime="codex",
+            model="gpt-6-astra",
+            last_invocation_outcome=_make_outcome(
+                runtime="codex", model="gpt-6-astra",
+                tokens_in=302_488, tokens_in_cache_read=293_888,
+                tokens_out=824, tokens_total=303_312,
+                tokens_exact=True, usage_source="runtime_reported",
+            ),
+        )
+        metrics = MetricsCollector(default_model="gpt-6-astra")
+        fake = SimpleNamespace(
+            state=SimpleNamespace(
+                phase_config=SimpleNamespace(review_changes_agent=reviewer),
+            ),
+            _metrics=metrics,
+        )
+        fake._agent_for_phase = lambda name: _PipelineRun._agent_for_phase(fake, name)
+        fake._model_for_phase = lambda name: "gpt-6-astra"
+        fake._runtime_for_phase = lambda name: _PipelineRun._runtime_for_phase(fake, name)
+        st = SimpleNamespace(
+            extras={}, phase_log={"correction_triage": {"output": "{}"}},
+        )
+
+        _PipelineRun._fsm_metrics(fake, "correction_triage", st)
+
+        record = metrics.as_dict()["phase_attempts"][-1]
+        assert record["phase"] == "correction_triage"
+        assert record["tokens_in"] == 302_488
+        assert record["tokens_out"] == 824
+        assert record["tokens_exact"] is True
+        assert record["runtime"] == "codex"

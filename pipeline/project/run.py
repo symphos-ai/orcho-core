@@ -861,6 +861,10 @@ class _PipelineRun:
             "review_changes":   "review_changes_agent",
             "repair_changes":   "repair_changes_agent",
             "final_acceptance": "final_acceptance_agent",
+            # The correction-triage handler invokes the read-only reviewer
+            # slot (ADR 0085); without this row its usage was never read and
+            # the phase recorded 0 tokens estimated from an empty prompt.
+            "correction_triage": "review_changes_agent",
             "decompose":        "plan_agent",
             "decompose_qa":     "validate_plan_agent",
             "integrate_qa":     "review_changes_agent",
@@ -1239,12 +1243,21 @@ class _PipelineRun:
                 tool_calls,
                 int(composite_usage.get("tool_calls") or 0),
             )
+        # The model is the one the invocation actually ran with (stamped on
+        # the outcome from the invoked agent), not the static slot→model map:
+        # ``final_acceptance`` and ``correction_triage`` run their own agents
+        # and were priced as the review model. The map stays the fallback for
+        # the last_* path, where no outcome names the model.
+        actual_model = (
+            str(getattr(outcome, "model", "") or "").strip()
+            if outcome is not None else ""
+        )
         self._metrics.record_phase(
             name,
             prompt=prompt,
             output=output,
             duration_s=duration_s,
-            model=self._model_for_phase(name),
+            model=actual_model or self._model_for_phase(name),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             tokens_total=tokens_total,
