@@ -52,6 +52,11 @@ except for `phase_handoff_unattended_halt`: ADR 0154 keeps that ledger open
 while the preserved handoff awaits its first checkpoint re-arm and operator
 decision.
 
+The `before_delivery:` epoch is the delivery view; it replays recorded
+`after_phase:implement` selections and, for a run that never resolved that
+boundary (a correction child whose `implement` was skipped), selects the
+unrecorded delivery rows from the live checkout and records them, so the view
+is never empty merely because the boundary did not happen in this run.
 Resume reuses the snapshot and epoch decisions. Evidence copies the validated
 artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
 project plugin. Every row has a typed `cost` of `fast`, `moderate`, `slow`, or

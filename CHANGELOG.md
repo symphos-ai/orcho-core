@@ -89,6 +89,24 @@
 
 ### Fixed
 
+- A correction child that skipped `implement` (the `gate_rerun` route) no
+  longer approves a release over a `require` gate that failed in its parent.
+  Two owners were wrong. The ledger's `before_delivery:` epoch published an
+  empty delivery view because it is reconstructed only from recorded
+  `after_phase:implement` selections, and the child never had that boundary;
+  the empty view was cached and hid the path-selected gate from readiness,
+  the engine backstop, and the pre-final auto-run. Now an unrecorded delivery
+  position is selected at the `before_delivery:` epoch from the live checkout
+  and recorded in the trail (replayed on resume; a recorded implement decision
+  is never re-selected). Second, the receipt materializer left every `failed`
+  classification untouched, including one inherited from the parent run for
+  which this run owns no receipt at all, so the gate the child existed to
+  rerun was never run and `required_passed` read green on zero receipts. An
+  inherited `failed` with no receipt owned by this run is now materialized
+  like `missing`: the rerun writes this run's own receipt, a pass proves the
+  gate, a failure stays a release gap and forces `REJECTED` (ADR 0141's
+  "failed stays failed" is about receipts this run owns; see its amendment).
+
 
 - Plan criteria must trace to the task. The planner prompt no longer
   licenses "derive acceptance criteria if the task omits them" without a

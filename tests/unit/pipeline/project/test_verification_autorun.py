@@ -3096,3 +3096,107 @@ def test_timeline_no_parent_present_receipt_has_no_inherited_line(
     assert timeline.inherited == ()
     block = "\n".join(render_verification_gate_done_block(timeline))
     assert "inherited:" not in block
+
+
+# ── inherited failed parent receipt with no receipt owned by this run ─────
+
+
+@pytest.mark.parametrize("rerun_exit", [0, 1], ids=["fixed", "still-failing"])
+def test_inherited_failed_parent_receipt_without_own_receipt_is_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rerun_exit: int,
+) -> None:
+    """A ``failed`` classification inherited from a parent source, with no
+    receipt owned by this run, is materialized like ``missing`` (ADR 0141's
+    "failed stays failed" is about receipts this run owns). The rerun writes
+    this run's own receipt, so a pass proves the gate and a failure stays
+    authoritative — ``required_passed`` is never green on an unrun gate."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=project, project=project,
+               workspace=workspace, run_dir=run_dir)
+    parent_dir = tmp_path / "parent"
+    _write_receipt(parent_dir, "lint", exit_code=1, checkout=project)
+    extras = {VERIFICATION_PARENT_RUNS_EXTRAS_KEY: (("parent", str(parent_dir)),)}
+    assert classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(project), extras=extras,
+    )["lint"].status == "failed"
+    rec = _Recorder(run_dir, exit_codes={"lint": rerun_exit}).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(project), contract=contract, ctx=ctx,
+        workspace=str(workspace), extras=extras, reason="gate rerun",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert rec.run_calls[0]["commands"] == ["lint"]
+    after = classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(project), extras=extras,
+    )["lint"]
+    from pipeline.project.correction_gate_rerun import _execution_from_result
+
+    execution = _execution_from_result(result, env="ci")
+    if rerun_exit == 0:
+        assert result.failed == ()
+        assert after.status == "present"
+        assert execution.required_passed is True
+    else:
+        assert result.failed == ("lint",)
+        assert after.status == "failed"
+        assert execution.required_passed is False
+
+
+@pytest.mark.parametrize("rerun_exit", [1, 0], ids=["still-failing", "fixed"])
+def test_correction_child_without_implement_epoch_reruns_inherited_failed_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rerun_exit: int,
+) -> None:
+    """Producer→consumer, the shape of run 20260912_101558: a correction child
+    on the ``gate_rerun`` route skipped ``implement``, so its ledger recorded no
+    delivery selection, while the parent's path-selected required gate failed.
+    The child's ``before_delivery`` epoch must still carry that gate, the
+    pre-final auto-run must rerun it, and readiness / the engine backstop must
+    read the child's own result — a red gate stays a release gap, a green one
+    clears it. Before the fix the child published an empty delivery view, the
+    gate vanished from readiness and the backstop, and acceptance approved."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _prefinal_path_contract()
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    run.state.output_dir = run_dir
+    parent_dir = workspace / "runspace" / "runs" / "parent"
+    _write_receipt(parent_dir, "cli-sdk-unit", exit_code=1, checkout=project)
+    run.state.extras[VERIFICATION_PARENT_RUNS_EXTRAS_KEY] = (("parent", str(parent_dir)),)
+    monkeypatch.setattr(
+        "core.io.git_helpers.git_changed_files",
+        lambda _cwd: ["tests/unit/cli/test_gate.py"],
+    )
+
+    # No ``after_phase:implement`` epoch ever ran in this child.
+    plan = select_before_delivery_epoch(run)
+    assert ("cli-sdk-unit", "after_phase", "implement") in [
+        (e.command, e.hook, e.phase) for e in plan.entries
+    ]
+
+    recorder = _Recorder(run_dir, exit_codes={"cli-sdk-unit": rerun_exit}).install(monkeypatch)
+    result = auto_run_required_receipts(
+        run, "final_acceptance", reason="pre-final", delivery_plan=plan,
+    )
+    assert result.ran_commands == ("cli-sdk-unit",)
+    assert recorder.run_calls[0]["commands"] == ["cli-sdk-unit"]
+
+    from pipeline.verification_readiness import (
+        build_final_acceptance_readiness,
+        required_receipt_gaps,
+    )
+
+    readiness = build_final_acceptance_readiness(
+        contract, run_dir, ctx, extras=run.state.extras,
+    )
+    gaps = required_receipt_gaps(contract, run_dir, ctx, extras=run.state.extras)
+    if rerun_exit:
+        assert "cli-sdk-unit" in readiness.required_failed
+        assert [g["required_check"] for g in gaps] == ["true"]
+    else:
+        assert "cli-sdk-unit" not in readiness.required_failed
+        assert "cli-sdk-unit" not in readiness.required_missing
+        assert gaps == []

@@ -56,6 +56,19 @@ transcript inference, or execution inside `final_acceptance`.
 - The command-receipt schema, `ReceiptAutoRunResult.to_evidence()` keys,
   persisted extras, SDK payloads, and MCP payloads do not change.
 
+## Amendment (2026-09-12): inherited failed receipts
+
+The fail-closed list above says an absent current-run receipt paired with a
+parent/inherited receipt is not eligible for *refresh*. That is still true for
+the refresh exception, but it must not be read as "never executed": a `failed`
+classification that comes only from a parent source, with **no receipt owned
+by this run**, is read-only continuity (ADR 0089), not this run's proof. The
+materializer treats such a command exactly like `missing` and runs it once,
+writing this run's own official receipt. A correction child created to rerun a
+failed gate therefore actually reruns it; a same-subject failed receipt owned by
+this run remains ineligible, as before. Parent continuity is still not an
+execution authority — the absence of an owned receipt is.
+
 ## Alternatives considered
 
 ### Never refresh failed receipts
