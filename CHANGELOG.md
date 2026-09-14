@@ -89,6 +89,19 @@
 
 ### Fixed
 
+- `metrics.json` (and therefore `orcho metrics` / `orcho cost`) now prices a
+  phase by the model that actually ran it and no longer drops the
+  correction-triage usage. The per-phase record took its `model` from a static
+  slot→model map, so `final_acceptance` (its own agent, e.g. `gpt-5.6-sol`)
+  was attributed and priced as the review model; the model now comes from the
+  invocation outcome the invoked agent stamped, with the map kept only as the
+  fallback when no outcome names a model. Separately, `correction_triage`
+  had no row in the phase→agent-slot map, so the metrics callback never read
+  the reviewer slot it invokes and recorded 0 tokens estimated from an empty
+  prompt (run `20260912_101558`: 302k input tokens reported by the runtime,
+  `tokens_in: 0` in metrics). The row is added; the usage, runtime and model
+  of the triage invocation now land in the record.
+
 - A correction child that skipped `implement` (the `gate_rerun` route) no
   longer approves a release over a `require` gate that failed in its parent.
   Two owners were wrong. The ledger's `before_delivery:` epoch published an
