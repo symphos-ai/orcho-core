@@ -58,7 +58,7 @@ Use the inspection commands by question, not by file shape:
 
 | Question | Command | Leads with |
 |----------|---------|------------|
-| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths |
+| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths; `--json` for one machine-readable object |
 | What happened / what proves it? | `orcho evidence` | proof summary; use `--view full` for the plan, task/DAG shape, phase timeline, receipts, findings, and acceptance |
 | How much did it consume? | `orcho metrics`, `orcho cost` | tokens, time, retries, cost-reference usage |
 | What changed? | `orcho diff` | captured patch, preview, stats, path filtering |
@@ -303,6 +303,7 @@ surface, `--from-run-plan`, `--no-worktree-isolation`, `--attach`,
 orcho status              # latest run
 orcho status <run-id>     # a specific run by id
 orcho status <run-id> -v  # also dump the durable meta record
+orcho status <run-id> --json  # machine-readable snapshot + next step
 ```
 
 Output:
@@ -344,6 +345,76 @@ shapes:
 The diagnosis is an enrichment. If it cannot be computed the rest of the
 status is printed unchanged and the block degrades to
 `Next: (diagnosis unavailable: <reason>)` — no traceback, exit code `0`.
+
+### `--json`
+
+For scripts and agents. `orcho status <run-id> --json` writes exactly one
+JSON object to stdout and exits `0`. Keys are sorted, nothing is ever
+painted (no ANSI escapes, even where color is forced), and the object is
+built from the same single `run_diagnosis` call the text report uses — the
+two surfaces cannot disagree.
+
+Top-level keys; every one is always present, `null` standing in for absence:
+
+| Key | Value |
+|-----|-------|
+| `run_id` | the resolved run id |
+| `run_dir` | absolute path to the run directory |
+| `status` | the full `RunStatus` projection — the same payload MCP's `orcho_run_status` returns, including `meta`, `run_ref`, `sub_projects`, `quality_gates`, `worktree`, `raw_meta`, `raw_metrics`, `next_actions`, `continuation_decision`, `artefacts`, the `total_*` usage fields, and `last_event_seq` / `last_event_ts` |
+| `stalled_reason` | the `Stalled:` line's reason when a `running` record's process is gone, else `null` |
+| `diagnosis` | the full `RunDiagnosis` projection from `sdk.run_control.run_diagnosis` — the same read-model MCP's `orcho_run_diagnose` returns; `null` when the diagnosis could not be computed |
+| `diagnosis_error` | `"<ExcType>: <message>"` when the diagnosis failed, else `null` |
+| `next_step` | the structured form of the `Next:` block (below) |
+
+`next_step` fields:
+
+| Field | Value |
+|-------|-------|
+| `condition` | `diagnosis.condition` — `stalled`, `needs_decision`, `resume_inert_terminal`, … |
+| `action` | `diagnosis.recommended_next_action`, the typed next step |
+| `run_id` | `diagnosis.recommended_run_id` when the diagnosis redirects to another run (a child, a source run), else the run's own id |
+| `available_actions` | the decidable actions for a parked delivery gate or a pending handoff; `[]` otherwise |
+| `handoff_id` | the pending phase handoff's id, else `null` |
+| `lines` | exactly the lines the text `Next:` block prints — empty for an active run, one `(diagnosis unavailable: …)` line when the diagnosis failed |
+
+Without a diagnosis every `next_step` field except `lines` is `null` / `[]`.
+
+A `done` run, abbreviated:
+
+```json
+{
+  "diagnosis": {
+    "condition": "resume_inert_terminal",
+    "reason": "run is terminal (status=done); resume is inert",
+    "recommended_next_action": "start_followup",
+    "run_id": "20260503_104135",
+    "status": "done"
+  },
+  "diagnosis_error": null,
+  "next_step": {
+    "action": "start_followup",
+    "available_actions": [],
+    "condition": "resume_inert_terminal",
+    "handoff_id": null,
+    "lines": ["inspect only — orcho evidence 20260503_104135"],
+    "run_id": "20260503_104135"
+  },
+  "run_dir": "/path/to/workspace/runspace/runs/20260503_104135",
+  "run_id": "20260503_104135",
+  "stalled_reason": null,
+  "status": { "meta": { "status": "done", "...": "..." }, "...": "..." }
+}
+```
+
+Caveats:
+
+- `-v` does not affect the JSON. The durable meta record it dumps in text
+  mode is already inside `status`, so both forms emit the same object.
+- An empty workspace or an unknown run id leaves stdout empty: the
+  `No run found…` / `Runs dir: …` lines go to stderr and the exit code is
+  `1`, the same as in text mode. A parse of stdout never sees prose.
+- A failed diagnosis is data, not an error: `diagnosis` is `null`,
+  `diagnosis_error` carries the reason, and the exit code stays `0`.
 
 ---
 

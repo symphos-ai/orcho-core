@@ -97,6 +97,7 @@ from cli._quality_gates import cmd_quality_gates
 from cli._reconcile_delivery import format_reconcile_result, format_reconcile_state
 from cli._repair_state import format_repair_report, repair_report_to_json
 from cli._run import _run_cli
+from cli._status_json import status_to_json
 from cli._status_next import diagnosis_unavailable_line, next_step_lines
 from cli._task_prompt import prompt_for_task_if_needed
 from cli._update_cli import cmd_update
@@ -287,10 +288,16 @@ def cmd_tui(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    """Status of a run. Preserves the legacy two-line empty-state output."""
+    """Status of a run. Preserves the legacy two-line empty-state output.
+
+    With ``--json`` the same resolved state is emitted as a single JSON
+    object on stdout instead of the text report; ``--verbose`` has no effect
+    there, and the empty-state lines move to stderr so stdout stays empty.
+    """
     run_id = getattr(args, "run_id", None)
     workspace = getattr(args, "workspace", None)
     verbose = bool(getattr(args, "verbose", False))
+    want_json = bool(getattr(args, "json", False))
     try:
         status = load_status(run_id, workspace=workspace)
     except OrchoError:
@@ -303,8 +310,9 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(format_error(exc), file=sys.stderr)
             return exc.exit_code
         suffix = f" for id={run_id}" if run_id else ""
-        print(f"No run found{suffix}.")
-        print(f"Runs dir: {rd}")
+        stream = sys.stderr if want_json else sys.stdout
+        print(f"No run found{suffix}.", file=stream)
+        print(f"Runs dir: {rd}", file=stream)
         return 1
     app_cfg = config.AppConfig.load()
     diagnosis, failure = _status_diagnosis(status, workspace=workspace)
@@ -316,6 +324,23 @@ def cmd_status(args: argparse.Namespace) -> int:
         next_lines = next_step_lines(diagnosis)
     elif failure is not None:
         next_lines = [diagnosis_unavailable_line(failure)]
+    if want_json:
+        sys.stdout.write(
+            json.dumps(
+                status_to_json(
+                    status,
+                    diagnosis=diagnosis,
+                    diagnosis_error=failure,
+                    stalled_reason=stalled_reason,
+                    next_lines=next_lines,
+                ),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        return 0
     print(format_status(
         status,
         verbose=verbose,
@@ -1443,6 +1468,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Run ID (default: last run)")
     p_status.add_argument("--verbose", "-v", action="store_true",
                           help="Show full session JSON data")
+    p_status.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit a single JSON object on stdout instead of a text report",
+    )
     p_status.add_argument(
         "--workspace", default=None,
         help="Override workspace dir (else $ORCHO_WORKSPACE / cwd walk-up)",
