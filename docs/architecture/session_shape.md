@@ -66,9 +66,75 @@ network sockets — adapters are deterministic shape translators only.
 | `ValidatePlanAdapter` | `validate_plan` | `session["phases"]["validate_plan"]` | list (per-round attempts) |
 | `BuildAdapter` | `implement` | `session["phases"]["implement"]` | dict (single) |
 | `RoundAdapter` | `rounds` (+ `repair_changes` v2-dispatch alias) | `session["phases"]["rounds"]` | list (per review_changes↔repair_changes round) |
+| `ReviewRoundAdapter` | `review_changes` | sub-record **inside** the matching `session["phases"]["rounds"]` entry | one per review attempt (`review` / `reverify`) |
 | `FinalAcceptanceAdapter` | `final_acceptance` | `session["phases"]["final_acceptance"]` | dict (single) |
 | `CorrectionTriageAdapter` | `correction_triage` | `session["phases"]["correction_triage"]` | dict (single; ADR 0085 correction profile triage verdict) |
 | `HypothesisAdapter` | `hypothesis` | `session["phases"]["hypothesis"]` | dict (single, optional) |
+
+### `ReviewRoundAdapter` writes into the round, not a phase key
+
+`ReviewRoundAdapter` is the one built-in that writes **no**
+`session["phases"][<its phase>]` key. Every `review_changes` dispatch is
+persisted as a sub-record inside the round entry it belongs to
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)):
+
+```json
+{
+  "round": 1,
+  "critique": "…",
+  "repair_receipt": { },
+  "review":   { "pass": "review",   "attempt": 1, "verdict": "REJECTED",
+                "approved": false, "clean": false, "repair_preceded": false,
+                "short_summary": "…", "findings": [ ] },
+  "reverify": { "pass": "reverify", "attempt": 1, "verdict": "APPROVED",
+                "approved": true,  "clean": true,  "repair_preceded": true,
+                "short_summary": "…", "findings": [] }
+}
+```
+
+- `pass` names the attempt: `review` is the round's first review pass,
+  `reverify` the post-repair re-verify pass of
+  [ADR 0039](../adr/0039-review-repair-phase-handoff.md). `attempt` is the loop
+  round number, so `(round, pass)` is the attempt's identity.
+- `repair_preceded` states whether a repair pass had already run in this round
+  when the attempt was recorded — the producer reads it off the round entry
+  instead of deriving it from the pass. The ordinary in-loop `review` pass
+  reviews a pre-repair subject (`false`); a `reverify` is post-repair by
+  definition, and so is the operator-feedback retry round, which runs
+  `repair_changes -> review_changes` and still stores the round's first
+  `review` pass (`true`). Readers use this — not the pass — to say whether a
+  round's repair is unverified or already reviewed.
+- `parse_error` is added when the attempt's output never parsed. The record is
+  written anyway: a reader must be able to see both that the attempt happened
+  **and** that its verdict is unusable.
+- `session_id` / `continue_session` are copied from the attempt's `meta` when
+  present, per-attempt rather than per-round.
+- Writing the same `(round, pass)` twice overwrites the same key, so a replayed
+  attempt never grows the attempt list.
+
+**Where the pass comes from.** The adapter reads an explicit runner signal that
+the current dispatch is the post-repair re-verify pass — never "a `review` key
+already exists". Inferring the pass from key presence would relabel a re-run of
+the first attempt as a second opinion nobody gave.
+
+**Why not `session["phases"]["review_changes"]`.** The checkpoint callback saves
+any phase that *has* a session entry as a completed checkpoint phase, and stamps
+a loop cursor for phases in the active loop. `review_changes` is a loop phase, so
+creating that key would start writing checkpoint rows and loop cursors for it and
+change what loop resume restores. Keeping the record inside `rounds` is purely
+additive and invisible to checkpoint/resume.
+
+**Merge order.** The review adapter runs first in the loop and may append a
+*provisional* entry (`{"round": n, "review": {…}}`) before any repair happened.
+`RoundAdapter` later fills that entry **in place** — matching on `round` and on
+the absence of `critique` — carrying the `review` / `reverify` sub-records over
+instead of appending a second entry for the same round. A round that already has
+a `critique` is a completed round and is never reused.
+
+`FinalAcceptanceAdapter` copies an optional `review_context` key: the
+prior-review evidence the closing gate was handed, resolved from these
+sub-records. Its shape is documented in
+[Run artifacts](../reference/run_artifacts.md#phasesfinal_acceptancereview_context).
 
 ## Per-round invocation pattern
 

@@ -21,6 +21,7 @@ from pipeline.phases.builtin.review_support import _store_repair_receipt
 from pipeline.plan_parser import ParsedPlan
 from pipeline.plugins import PluginConfig
 from pipeline.repair_protocol import build_repair_receipt
+from pipeline.review_round_record import REVERIFY_FLAG, ReviewRoundAdapter
 from pipeline.runtime import PhaseRegistry, PipelineState
 from pipeline.runtime.profile import ExecutionPolicy
 from pipeline.runtime.steps import PhaseStep
@@ -73,10 +74,19 @@ class TestSessionAdapterRegistry:
         with pytest.raises(ValueError, match="non-empty string"):
             SessionAdapterRegistry().register("", PlanAdapter())
 
-    def test_default_registry_has_all_six(self) -> None:
+    def test_default_registry_has_every_builtin(self) -> None:
         reg = default_session_adapter_registry()
-        for name in ("plan", "validate_plan", "implement", "rounds", "final_acceptance", "hypothesis"):
+        for name in ("plan", "validate_plan", "implement", "rounds",
+                     "repair_changes", "review_changes", "final_acceptance",
+                     "correction_triage", "hypothesis"):
             assert reg.has(name)
+
+    def test_review_changes_maps_to_the_per_attempt_adapter(self) -> None:
+        """``review_changes`` records attempts inside the round entry — it
+        must not share RoundAdapter (which composes the round itself)."""
+        reg = default_session_adapter_registry()
+        assert isinstance(reg.get("review_changes"), ReviewRoundAdapter)
+        assert reg.get("repair_changes") is reg.get("rounds")
 
     def test_default_registry_is_singleton(self) -> None:
         a = default_session_adapter_registry()
@@ -85,7 +95,8 @@ class TestSessionAdapterRegistry:
 
     def test_protocol_satisfied_by_all_builtins(self) -> None:
         for adapter in (PlanAdapter(), ValidatePlanAdapter(), BuildAdapter(),
-                        RoundAdapter(), FinalAcceptanceAdapter(), HypothesisAdapter()):
+                        RoundAdapter(), ReviewRoundAdapter(),
+                        FinalAcceptanceAdapter(), HypothesisAdapter()):
             assert isinstance(adapter, SessionAdapter)
 
 
@@ -438,6 +449,85 @@ class TestRoundAdapter:
         assert e["session_id"] == "repair-abc"
         assert e["test_result"]["passed"] is True
 
+    def test_fills_provisional_entry_left_by_the_review_adapter(self) -> None:
+        """The reviewer stamps its attempt before any repair ran, so the
+        round entry already exists — fill it, don't append a twin."""
+        s = _state()
+        s.phase_log["review_changes"] = {
+            "verdict": "REJECTED", "approved": False, "clean": False,
+            "short_summary": "blocker", "findings": [{"id": "F1"}],
+            "meta": {},
+        }
+        sess = _session()
+        ReviewRoundAdapter().write("review_changes", s, sess, round_n=1)
+
+        s.phase_log["rounds_pending"] = {
+            "critique": "fix tests", "repair_output": "patched",
+        }
+        RoundAdapter().write("repair_changes", s, sess, round_n=1)
+
+        rounds = sess["phases"]["rounds"]
+        assert len(rounds) == 1
+        entry = rounds[0]
+        assert list(entry)[:2] == ["round", "critique"]
+        assert entry["repair_output"] == "patched"
+        assert entry["review"]["verdict"] == "REJECTED"
+
+    def test_critique_only_round_keeps_the_review_sub_record(self) -> None:
+        """Clean-review short-circuit: the round stays repair-free while
+        still carrying the APPROVED attempt."""
+        s = _state()
+        s.phase_log["review_changes"] = {
+            "verdict": "APPROVED", "approved": True, "clean": True,
+            "short_summary": "all good", "findings": [], "meta": {},
+        }
+        sess = _session()
+        ReviewRoundAdapter().write("review_changes", s, sess, round_n=1)
+        s.phase_log["rounds_pending"] = {"critique": ""}
+        RoundAdapter().write("repair_changes", s, sess, round_n=1)
+
+        entry = sess["phases"]["rounds"][0]
+        assert "repair_output" not in entry
+        assert entry["review"]["verdict"] == "APPROVED"
+
+    def test_carries_both_attempts_of_a_reverified_round(self) -> None:
+        s = _state()
+        sess = _session()
+        s.phase_log["review_changes"] = {
+            "verdict": "REJECTED", "approved": False, "clean": False,
+            "short_summary": "blocker", "findings": [{"id": "F1"}],
+            "meta": {},
+        }
+        ReviewRoundAdapter().write("review_changes", s, sess, round_n=1)
+        s.phase_log["rounds_pending"] = {
+            "critique": "fix tests", "repair_output": "patched",
+        }
+        RoundAdapter().write("repair_changes", s, sess, round_n=1)
+        s.phase_log["review_changes"] = {
+            "verdict": "APPROVED", "approved": True, "clean": True,
+            "short_summary": "repair verified", "findings": [], "meta": {},
+        }
+        s.extras[REVERIFY_FLAG] = True
+        ReviewRoundAdapter().write("review_changes", s, sess, round_n=1)
+
+        entry = sess["phases"]["rounds"][0]
+        assert len(sess["phases"]["rounds"]) == 1
+        assert entry["review"]["verdict"] == "REJECTED"
+        assert entry["reverify"]["verdict"] == "APPROVED"
+
+    def test_completed_round_is_never_reused_for_a_later_round(self) -> None:
+        """A round that already has a critique is done: a same-numbered
+        follow-on round appends rather than overwriting it."""
+        s = _state()
+        sess = _session()
+        s.phase_log["rounds_pending"] = {"critique": "first"}
+        RoundAdapter().write("repair_changes", s, sess, round_n=1)
+        s.phase_log["rounds_pending"] = {"critique": "second"}
+        RoundAdapter().write("repair_changes", s, sess, round_n=1)
+        assert [e["critique"] for e in sess["phases"]["rounds"]] == [
+            "first", "second",
+        ]
+
     def test_missing_round_n_raises(self) -> None:
         s = _state()
         s.phase_log["rounds_pending"] = {"critique": "x"}
@@ -586,6 +676,43 @@ class TestFinalQAAdapter:
         entry = sess["phases"]["final_acceptance"]
         assert "scope_expansion" not in entry
         assert "scope_expansion_sanction" not in entry
+
+    def test_persists_the_prior_review_context(self) -> None:
+        """The evidence the closing gate was handed is durable, not in-memory:
+        a reader must be able to see which review attempt applied — and what it
+        superseded — without re-resolving it from the rounds."""
+        s = _state()
+        s.phase_log["final_acceptance"] = {
+            "output":   "# Release gate\nShip-ready.",
+            "verdict":  "APPROVED",
+            "approved": True,
+            "review_context": {
+                "run_id": "20260916_000301",
+                "latest": {"round": 2, "pass": "reverify", "verdict": "APPROVED"},
+                "superseded": [
+                    {"round": 2, "pass": "review", "verdict": "REJECTED"},
+                ],
+            },
+        }
+        sess = _session()
+        FinalAcceptanceAdapter().write("final_acceptance", s, sess)
+        context = sess["phases"]["final_acceptance"]["review_context"]
+        assert context["latest"] == {
+            "round": 2, "pass": "reverify", "verdict": "APPROVED",
+        }
+        assert [a["pass"] for a in context["superseded"]] == ["review"]
+
+    def test_omits_the_review_context_when_absent(self) -> None:
+        """A run with no prior review keeps the persisted entry byte-identical."""
+        s = _state()
+        s.phase_log["final_acceptance"] = {
+            "output":   "# Release gate\nShip-ready.",
+            "verdict":  "APPROVED",
+            "approved": True,
+        }
+        sess = _session()
+        FinalAcceptanceAdapter().write("final_acceptance", s, sess)
+        assert "review_context" not in sess["phases"]["final_acceptance"]
 
 
 # ── HypothesisAdapter ─────────────────────────────────────────────────────────

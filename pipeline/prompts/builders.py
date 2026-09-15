@@ -41,6 +41,7 @@ from pipeline.prompts.contracts import (
     plan_artifact_boundary_contract,
     plan_json_contract,
     release_json_contract,
+    review_context_evidence_text,
     review_json_contract,
     review_target_strategy,
     skill_routing_strategy,
@@ -725,6 +726,36 @@ def _verification_readiness_part(body: str) -> PromptPart | None:
     )
 
 
+def _review_context_part(body: str) -> PromptPart | None:
+    """Wrap the latest applicable prior-review evidence for the closing gate.
+
+    Carries the verdict, findings and provenance of the review attempts that
+    already ran on this run, so the final reviewer weighs what a reviewer
+    actually reported instead of re-deriving it. Sibling of
+    ``verification_readiness`` on the same TURN layer, and deliberately
+    subordinate to it: the reconciliation framing (how the gate must treat
+    superseded / invalid attempts, and that none of this proves a check ran)
+    is composed by the caller from the code-owned contract; this part only
+    carries the body.
+
+    Empty body returns ``None`` (no prior review → no part, wire prompt
+    byte-identical to a run that never had one).
+    """
+    if not body or not body.strip():
+        return None
+    return PromptPart(
+        kind="review_context",
+        name="final_acceptance",
+        source="artifact",
+        body=body,
+        layer=PromptLayer.TURN,
+        stability=PromptStability.TURN,
+        cache_scope=PromptCacheScope.NONE,
+        volatile_reason="latest prior-review evidence; per-turn",
+        id="review_context:final_acceptance",
+    )
+
+
 def _current_review_subject_part(body: str) -> PromptPart | None:
     """Wrap the fresh subject that the next reviewer must verify."""
     if not body or not body.strip():
@@ -1071,6 +1102,7 @@ def runtime_review_uncommitted_prompt(
     current_review_subject: str = "",
     verification_receipt: str = "",
     verification_readiness: str = "",
+    review_context: str = "",
     operator_waiver: str = "",
     professional_prompt_mode: "ProfessionalPromptMode | str | None" = None,
     output_contract: "OutputContract" = "review",
@@ -1109,16 +1141,37 @@ def runtime_review_uncommitted_prompt(
     policy (:func:`operator_waiver_reconciliation_text`) into a typed
     TURN ``operator_waiver`` part so the reviewer does not reopen the
     waived findings; empty string adds no part.
+
+    ``review_context`` carries the rendered evidence of the prior review
+    attempts on this run. When non-empty it is composed with the code-owned
+    framing (:func:`review_context_evidence_text`) into a typed TURN
+    ``review_context`` part, ordered right after ``verification_readiness``
+    so the readiness digest stays the leading proof surface and the review
+    evidence reads as subordinate to it; empty string adds no part and
+    leaves the wire prompt byte-identical.
     """
     mode = coerce_professional_prompt_mode(professional_prompt_mode)
     if isinstance(focus, PromptTurn):
         focus = focus.text
     focus, embedded_tail = _split_embedded_system_tail(focus)
+    cfg = AppConfig.load()
+    # Prior-review evidence: prepend the code-owned framing so the closing
+    # gate reads the attempts as reported history with provenance, never as
+    # a live blocker list or as proof that a check ran. Ordered after the
+    # readiness digest, which stays the leading proof surface.
+    review_context_body = ""
+    if review_context and review_context.strip():
+        review_context_body = (
+            review_context_evidence_text(body_language=cfg.task_language)
+            + "\n\n"
+            + review_context
+        )
     re_review_parts = tuple(
         p for p in (
             _repair_receipt_part(repair_receipt),
             _verification_receipt_part(verification_receipt),
             _verification_readiness_part(verification_readiness),
+            _review_context_part(review_context_body),
             _current_review_subject_part(current_review_subject),
         )
         if p is not None
@@ -1154,7 +1207,6 @@ def runtime_review_uncommitted_prompt(
             )
         else:
             rendered = intent
-    cfg = AppConfig.load()
     # ``continue_with_waiver`` operator waiver: prepend the code-owned
     # reconciliation policy to the operator verdict body so the reviewer
     # does not reopen the waived findings. JSON contract / output schema

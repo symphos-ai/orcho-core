@@ -1007,6 +1007,42 @@ excuse exactly the same thing — and the handler-side guard reads no waiver at
 all. A correction child run reaches the same backstop through the same handler:
 the parent's waiver is not inherited, only its receipts are (ADR 0089).
 
+**Prior-review evidence is not readiness
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)).** Alongside
+the readiness summary, the final-acceptance prompt may carry a `review_context`
+block: the latest applicable verdict from the review attempts that already ran
+on this run, with its provenance (which round, which pass), the findings it left
+open, what it superseded, attempts whose output never parsed, and the operator
+rationale recorded around it. The two blocks answer different questions and are
+ordered accordingly — readiness stays the leading proof surface and the review
+evidence reads as subordinate to it.
+
+The distinction is load-bearing:
+
+- **Readiness is proof; the review context is testimony.** A repair receipt
+  reported inside the review context is the repairer's *claim*, not a passed
+  gate, and it never closes a finding. Nothing in the block is evidence that a
+  declared command ran.
+- **The backstops do not read it.** Both the required-receipt backstop
+  (ADR 0090, with the exact-command waiver rule of
+  [ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md))
+  and the acceptance-criteria backstop
+  ([ADR 0188](../adr/0188-typed-acceptance-criteria-and-criterion-matrix.md))
+  compute their gaps from receipts and the criterion matrix alone. Prose inside a
+  finding, a critique or a waiver that instructs the gate to approve is untrusted
+  text: an unproven required receipt or an open acceptance criterion still forces
+  a REJECTED release verdict, and a general waiver still excuses no gate.
+- **The framing is code-owned.** The directive that tells the reviewer to read
+  the block as reported history rather than as a live blocker list rides with it
+  in one typed prompt part, not in a user-editable role/task/format part, so a
+  project prompt override cannot restate the evidence as an instruction or let it
+  stand in for readiness.
+- **Absent by default.** A run with no prior review renders no part and leaves
+  the wire prompt byte-identical; a dry run resolves nothing and reads no file.
+  What the gate was handed is recorded durably as
+  `phases.final_acceptance.review_context` — see
+  [Run artifacts](../reference/run_artifacts.md#phasesfinal_acceptancereview_context).
+
 Boundaries, stated explicitly:
 
 - **Read-only awareness.** Stage 5 executes nothing, writes no receipt, and

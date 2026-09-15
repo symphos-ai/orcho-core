@@ -13,6 +13,10 @@ from typing import TYPE_CHECKING, Any
 from core.infra.config import AppConfig
 from core.io.transcript import render_parse_failure as _render_parse_failure
 from pipeline.phases import adapters
+from pipeline.phases.builtin.final_review_context import (
+    render_final_review_context,
+    resolve_final_review_context,
+)
 from pipeline.phases.builtin.lifecycle import (
     _agent_project_dir,
     _change_handoff_for,
@@ -257,6 +261,14 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
     scope_text = _render_scope_expansion(scope_assessment)
     if scope_text:
         readiness = f"{readiness}\n\n{scope_text}" if readiness else scope_text
+    # Prior-review evidence: which review attempt still applies, what it found,
+    # and what was merely claimed around it. Resolution, ordering and rendering
+    # all live in the focused ``final_review_context`` module; the handler only
+    # carries the body to the prompt and the dict to phase_log. ``None`` (dry
+    # run, no rounds, no parseable verdict) renders "", which adds no prompt
+    # part and leaves the wire prompt byte-identical.
+    review_ctx = resolve_final_review_context(state)
+    review_text = render_final_review_context(review_ctx) if review_ctx else ""
     # Legacy mark task with [final_acceptance] prefix so reviewer focus distinguishes
     # the final pass from the per-round review_changes (project_orchestrator.py 1199).
     result = adapters.run_review(
@@ -277,6 +289,7 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
         output_contract="release",
         verification_part=_verification_contract_part(state, "final_acceptance"),
         readiness_summary=readiness,
+        review_context=review_text,
     )
     raw = result.output
     try:
@@ -297,6 +310,10 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
             "parse_error": str(e),
             "meta":        dict(result.meta),
         }
+        if review_ctx is not None:
+            state.phase_log["final_acceptance"]["review_context"] = (
+                review_ctx.to_dict()
+            )
         print(_render_parse_failure(
             title="FINAL ACCEPTANCE", error=str(e), raw_output=raw,
         ))
@@ -386,6 +403,10 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
         # Book-keeping.
         "meta":           dict(result.meta),
     }
+    if review_ctx is not None:
+        state.phase_log["final_acceptance"]["review_context"] = (
+            review_ctx.to_dict()
+        )
     if all_engine_gaps:
         # One durable backstop record. ``reason`` names the receipt authority
         # when it fired, otherwise the criterion authority, so a run blocked
