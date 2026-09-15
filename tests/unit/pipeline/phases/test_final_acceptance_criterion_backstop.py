@@ -6,7 +6,10 @@ backstop, and it is gated on strictly less:
 
 * it fires without a declared verification contract;
 * it is NOT disarmed by an operator waiver — a general "continue with waiver"
-  is not the per-criterion human decision a ``human`` criterion requires;
+  is not the per-criterion human decision a ``human`` criterion requires (and
+  since ADR 0192 a general waiver does not disarm the receipt backstop either,
+  so the two remain independent authorities rather than one gated on the
+  other);
 * it also guards the no-diff shortcut, which otherwise auto-approves on
   implement evidence alone.
 """
@@ -95,6 +98,27 @@ def _contract() -> VerificationContract:
     return contract
 
 
+def _required_contract() -> VerificationContract:
+    """A contract that actually *requires* ``test`` before delivery.
+
+    ``_contract`` declares the command without requiring it, so the receipt
+    backstop has nothing to report; this one gives it a real required gate.
+    """
+    contract = VerificationContract.from_plugin(PluginConfig(
+        work_mode="pro",
+        verification={
+            "commands": {"test": {"run": ["pytest", "-q"]}},
+            "required": ["test"],
+            "schedule": [
+                {"before_delivery": True, "policy": "require",
+                 "commands": ["test"]},
+            ],
+        },
+    ))
+    assert contract is not None
+    return contract
+
+
 def _state(
     tmp_path: Path,
     *,
@@ -153,8 +177,13 @@ class TestCriterionBackstopGuard:
     def test_an_operator_waiver_does_not_disarm_the_criterion_backstop(
         self, tmp_path: Path,
     ) -> None:
-        state = _state(tmp_path, contract=_contract(), waiver=True)
-        assert _required_receipt_backstop(state) == []
+        state = _state(tmp_path, contract=_required_contract(), waiver=True)
+        # Both authorities are independent of a *general* waiver (ADR 0192):
+        # the receipt backstop still reports its unproven required gate, and
+        # the criterion backstop still reports the pending human criterion.
+        assert [g["risk"] for g in _required_receipt_backstop(state)] == [
+            "Required verification gate 'test' is unproven: receipt missing.",
+        ]
         assert [g["risk"] for g in _criterion_backstop(state)] == [
             "acceptance criterion C2 is pending",
         ]

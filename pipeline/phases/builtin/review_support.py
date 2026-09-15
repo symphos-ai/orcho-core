@@ -269,9 +269,16 @@ def _required_receipt_backstop(
     stale, return one release-gap dict per command so ``final_acceptance``
     can merge them and force a REJECTED verdict — a ``require`` gate that was
     silently skipped must never end in a green acceptance. Empty under
-    dry-run, without a contract / run dir, or when an operator waiver is
-    active (``continue_with_waiver`` IS the explicit human decision the
-    backstop must respect).
+    dry-run and without a contract / run dir.
+
+    This guard deliberately does **not** consult
+    :func:`_operator_waiver_text`. A general ``continue_with_waiver`` accepts a
+    reviewer's findings; it is not evidence that a required command ran, and
+    letting it silence the backstop turned "the operator read the critique"
+    into "the gate passed" (ADR 0192). The one waiver that *is* gate evidence —
+    an operator accepting a named failing gate — is applied by the gap builder
+    itself (:func:`pipeline.verification_readiness.required_receipt_gaps`),
+    which owns that rule alone and shares it with the delivery guard.
     """
     if getattr(state, "dry_run", False):
         return []
@@ -280,8 +287,6 @@ def _required_receipt_backstop(
         return []
     contract = state.extras.get("verification_contract")
     if contract is None:
-        return []
-    if _operator_waiver_text(state):
         return []
     from pipeline.verification_contract import PlaceholderContext
     from pipeline.verification_readiness import required_receipt_gaps

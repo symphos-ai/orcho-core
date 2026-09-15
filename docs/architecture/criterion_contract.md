@@ -208,10 +208,14 @@ operator does not hold.
 ### The criterion backstop is its own authority
 
 `criterion_release_gaps` is separate from ADR 0090's `required_receipt_gaps`:
-it fires without a declared verification contract, it is not disarmed by an
-operator waiver, and it also guards the no-diff shortcut in
-`final_acceptance`. A general "continue with waiver" never satisfies a `human`
-criterion.
+it fires without a declared verification contract, it is not waivable in any
+form, and it also guards the no-diff shortcut in `final_acceptance`. A general
+"continue with waiver" never satisfies a `human` criterion — and, since
+[ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md),
+it does not excuse a required receipt either, so the two backstops are
+independent authorities rather than one gated on the other. The receipt
+backstop still honours a waiver naming its exact gate command; no waiver of any
+kind reaches a criterion.
 
 ### Unreadable is not absent
 

@@ -179,6 +179,16 @@ The contract intentionally splits the two operations:
      bundle as a `phase_handoff_waiver` error entry for audit. See
      ADR 0072.
 
+     A waiver reconciles reviewer *findings*; it is not proof that a
+     required verification command ran. A general waiver therefore
+     does not disarm the `final_acceptance` receipt backstop: a
+     required receipt that is missing, failed, or stale still forces a
+     REJECTED release verdict. Only a waiver naming that exact gate
+     command — the record written by a verification-gate pause, whose
+     `handoff_id` is `gate:<command>:<round>` — excuses that one
+     command, and only when its receipt is `failed` or `missing`
+     (`stale` is never excused). See ADR 0192.
+
 Decisions are exact-payload idempotent: replaying the same
 `(handoff_id, action, feedback, note)` returns the persisted record
 unchanged (artifact not rewritten, `decided_at` not refreshed). Any

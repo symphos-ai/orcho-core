@@ -319,13 +319,15 @@ def _phase_final_acceptance(state: PipelineState) -> PipelineState:
     # ADR 0090 engine backstop: a required delivery gate whose receipt is
     # missing / failed / stale must surface as a release gap and force a
     # REJECTED verdict — regardless of what the reviewer model emitted. The
-    # helper is empty under dry-run, without a contract, or when an operator
-    # waiver is active, so every other run is byte-identical.
+    # helper is empty under dry-run and without a contract. A general operator
+    # waiver does NOT disarm it (ADR 0192); only a waiver naming that exact
+    # gate command excuses its failed/missing receipt, and that rule lives in
+    # the gap builder, not here.
     engine_gaps = _required_receipt_backstop(state, language=task_language)
     # ADR 0188 criterion backstop: a separate authority with separate gating.
-    # It applies without a declared verification contract and is NOT waived by
-    # an operator waiver — a general "continue" never satisfies a per-criterion
-    # human decision or an unproven executable criterion.
+    # It applies without a declared verification contract and is not waivable at
+    # all — no waiver, general or per-gate, satisfies a per-criterion human
+    # decision or proves an unproven executable criterion.
     criterion_gaps = _criterion_backstop(state)
     # Scope expansion is evidence, not a release gap: fast continues silently,
     # pro continues with a disclosure, and governed opens a delivery handoff.

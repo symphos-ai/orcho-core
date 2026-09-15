@@ -991,8 +991,21 @@ release verdict, the `final_acceptance` handler merges engine-computed
 missing/failed/stale, via `required_receipt_gaps`) and forces
 `approved=False / ship_ready=False` — a reviewer model that omits an unproven
 required gate cannot produce a green acceptance. The backstop is inert under
-dry-run, without a contract, and when an operator waiver
-(`continue_with_waiver`) is active.
+dry-run and without a contract.
+
+A waiver does **not** make it inert. Per
+[ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md),
+a general `continue_with_waiver` — over reviewer findings, a plan, or an
+incomplete implement — reconciles *findings*; it is not evidence that a required
+command ran, and it removes no gap. Only a waiver that names the gate command
+exactly excuses that one command, and only for a `failed` or `missing` receipt;
+a `stale` receipt is never excused. Identity comes from the durable record's
+structure (a `gate_command` field, or a `gate:<command>:<round>` handoff id),
+never from waiver prose. That rule lives in `required_receipt_gaps` itself — the
+same reader the Stage 6 delivery gate uses, so the closing gate and delivery
+excuse exactly the same thing — and the handler-side guard reads no waiver at
+all. A correction child run reaches the same backstop through the same handler:
+the parent's waiver is not inherited, only its receipts are (ADR 0089).
 
 Boundaries, stated explicitly:
 
@@ -1033,7 +1046,10 @@ moves no schema, mode flag, or gate primitive.
   `blocker` (unaligned public wire/schema, persistence/state, security/secret,
   destructive/mass-delete, large diff, repeated-across-corrections) forces
   REJECTED — merged into the same `verification_gaps` list as a *parallel* engine
-  gap source, inert under dry-run / no contract / active operator waiver. The
+  gap source, inert under dry-run / no contract / active operator waiver. That
+  waiver gating is the scope-expansion gate's own policy over out-of-plan
+  *files*; it is not the receipt backstop's rule, which excuses only an
+  exactly-named gate command (ADR 0192). The
   verification gates keep their full authority; scope expansion only adds
   rejection reasons for the blocker tier and never softens a required gate.
 - **Single canonical durable path.** The handler writes
