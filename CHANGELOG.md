@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 1.0.0 - 2026-09-15
+## 0.10.0 - 2026-09-15
 
 This release connects acceptance criteria to durable evidence and makes paused,
 interrupted, and deferred delivery observable and actionable through the CLI
@@ -64,7 +64,7 @@ and SDK. Upgrade the complete Orcho package set together.
 ### Upgrade Notes
 
 - Upgrade `orcho`, `orcho-core`, and `orcho-mcp` together, then restart MCP
-  server processes. The supported package-family range is `>=1.0.0,<2.0`.
+  server processes. The supported package-family range is `>=0.10.0,<0.11`.
 - Update clients that consume acceptance criteria as strings, assume every
   delivery outcome is boolean, or treat every nonzero exit code as a crash.
 - Declare and review the project's verification contract before relying on
