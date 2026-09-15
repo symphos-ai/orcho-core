@@ -219,7 +219,7 @@ wheels = [
 
 [[package]]
 name = "orcho-core"
-version = "0.9.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "pywin32", marker = "sys_platform == 'win32'" },

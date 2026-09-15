@@ -2,441 +2,85 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-09-15
+
+This release connects acceptance criteria to durable evidence and makes paused,
+interrupted, and deferred delivery observable and actionable through the CLI
+and SDK. Upgrade the complete Orcho package set together.
+
 ### Added
 
-- A run without a declared verification contract now says so on every
-  operator surface instead of silently omitting the gate report. The fact is
-  decided once per run from the resolved contract and persisted as the
-  additive `meta.json` block `verification_contract_presence`
-  (`{"declared": <bool>}`); every reader projects that block and none of them
-  loads the project plugin or re-derives the fact from the (necessarily
-  empty) scheduled-gate ledger. The surfaces: the run header prints the fact
-  where the gate matrix would have been; the DONE/HALTED tail carries one
-  line naming `docs/architecture/verification_contract.md`; the
-  `final_acceptance` readiness block states "0 receipts" so the closing
-  reviewer reads an explained zero rather than an absent block it could
-  mistake for proof; `orcho status` names it under `Gates:`; and
-  `orcho delivery gate` shows it on the parked gate. The SDK gains one
-  additive tri-state field, `DeliveryDecisionState.verification_contract_declared`
-  (`False` no contract / `True` declared / `None` a run written before the
-  block existed), populated on every branch including `kind="none"`. It is
-  optional on the wire: the `orcho_delivery_gate` MCP consumer reads the same
-  `asdict` → JSON payload and publishes its own selected fields, so it is
-  unaffected whether the key is absent, `null`, `false`, or `true`. Runs that
-  did declare a contract are byte-identical on all of these surfaces.
-
-- `orcho status` ends with a `Next:` block naming the operator's next
-  command. It is rendered from `sdk.run_control.run_diagnosis` — the same
-  read-model MCP exposes — which status now asks exactly once per run and
-  reads both the `Stalled:` line and the `Next:` block from, so the CLI keeps
-  no classifier of its own and the two surfaces cannot disagree. A parked
-  delivery gate points at `orcho delivery decide <run_id> <action>` with the
-  actions core allows; an unrecorded delivery commit points at
-  `orcho reconcile-delivery`; a stalled run at `orcho repair-state`; a
-  terminal run at `orcho evidence` (never a resume). When the diagnosis
-  cannot be computed the block degrades to `Next: (diagnosis unavailable:
-  <reason>)` with the rest of the status intact and no traceback.
-
-- `orcho delivery gate <run_id>` and `orcho delivery decide <run_id>
-  <approve|apply|skip|halt|fix>` — the CLI surface for a parked deferred
-  delivery gate, as thin facades over `delivery_decision_state` and
-  `decide_delivery` (`sdk.run_control`). `gate` is read-only and exits `0`
-  when the gate is decidable, `3` when it exists but cannot be decided right
-  now, `1` when there is no gate. `decide` exits `0` when core accepted the
-  action, `1` when core refused or failed it (the `blocker` / `reason` are
-  printed verbatim; a refusal from the preliminary guards writes nothing,
-  while a failure during execution such as `commit_failed` can leave the
-  checkout changed and the run re-parked, so the result and artifacts must
-  be inspected), `2` on a usage error. Both take `--json`
-  and `--workspace`; `decide` takes `--note`. The CLI decides nothing itself:
-  release, verification, and scope guards live in the SDK executor. Known,
-  separate issue not addressed here: `decide_delivery` replays the commit
-  config through `_replay_commit_config`, which reads `branch_policy` from
-  the process-level `AppConfig` rather than the run's persisted context.
-
-- Delivery ledger and `orcho reconcile-delivery` (ADR 0191). Every delivery
-  commit now leaves a durable intent / fact record next to its audit
-  artifact, written before `git add` and right after `git commit`, so a run
-  that stops between the commit and the audit can be resumed idempotently
-  (the commit is adopted, never repeated). Run diagnosis reports
-  `delivery_inconsistent` with the commit sha when the target checkout
-  carries a delivery the run does not record; `orcho reconcile-delivery
-  <run_id> --apply --commit <sha>` records such a commit with operator
-  attribution and settles the terminal through the finalization reducers.
-  A reconciled delivery of a rejected release reads as a reconciliation,
-  never as an operator override.
-
-- `metrics.json` says when its cost total is partial. An invocation on a
-  model the pricing table does not know is marked `cost_unpriced` on its
-  record, the run lists such models under `unpriced_models`, and
-  `total_cost_usd_equivalent` is accompanied by `total_cost_partial`; the
-  DONE summary names the unpriced models next to the total. Until now the
-  only trace was a one-shot stderr warning and a total that was silently
-  smaller (ADR 0189). Fully priced runs are unchanged.
+- Typed acceptance criteria with stable IDs and a criterion evidence matrix.
+  Executable criteria reference verification receipts, agent assertions remain
+  advisory, and human criteria require a recorded per-criterion decision.
+  Status, evidence, and delivery readiness share the same criterion projection.
+- A delivery ledger records intent and committed facts. `orcho reconcile-delivery`
+  can record a discovered existing delivery without creating another commit.
+- `orcho delivery gate` and `orcho delivery decide` inspect and decide deferred
+  delivery through the SDK. `orcho status` names the next available action.
+- `orcho status --json` exposes machine-readable status for automation.
+- Verification gates publish bounded live progress and preserve diagnostic
+  output on timeout, including checks run before final acceptance.
+- Runs disclose an absent verification contract. A run with no declared gates
+  does not claim receipt-backed verification.
+- `orcho update` upgrades through the detected installation manager. Run
+  metadata records the installed package versions for diagnostics.
+- Cost reports identify unpriced models and partial totals.
 
 ### Changed
 
-- `orcho run` exits `3` when the run ends `halted` — a parked delivery gate
-  (`commit_delivery_pending`), an operator halt, or a rejected release. It
-  used to exit `0`, and the DONE tail after a deferred park still printed
-  `Release: approved` with no delivery line, so a parked run read as shipped.
-  `4` stays the phase-handoff pause; `meta.halt_reason` carries the cause.
-  The DONE tail now prints `Delivery: not delivered — decision pending …` for
-  a parked gate and `Delivery: not delivered — commit <sha> already in the
-  checkout but unrecorded …` when the resolve refused to repeat an existing
-  delivery. A supervisor that maps exit codes must treat `3` as halted, not as
-  an abnormal exit (orcho-mcp does).
+- A halted `orcho run` exits with code `3`; phase-handoff pauses retain code
+  `4`. A deferred delivery is reported as not delivered until its decision is
+  completed. Supervisors must handle the new exit-code contract.
+- The plan and evidence interfaces carry typed criteria rather than prose-only
+  acceptance strings. Consumers should read verification class, proof references,
+  and readiness instead of inferring completion from text.
+- Delivery state distinguishes an unknown commit outcome from a recorded
+  negative outcome. Consumers must preserve that distinction.
 
 ### Fixed
 
-- `metrics.json` (and therefore `orcho metrics` / `orcho cost`) now prices a
-  phase by the model that actually ran it and no longer drops the
-  correction-triage usage. The per-phase record took its `model` from a static
-  slot→model map, so `final_acceptance` (its own agent, e.g. `gpt-5.6-sol`)
-  was attributed and priced as the review model; the model now comes from the
-  invocation outcome the invoked agent stamped, with the map kept only as the
-  fallback when no outcome names a model. Separately, `correction_triage`
-  had no row in the phase→agent-slot map, so the metrics callback never read
-  the reviewer slot it invokes and recorded 0 tokens estimated from an empty
-  prompt (run `20260912_101558`: 302k input tokens reported by the runtime,
-  `tokens_in: 0` in metrics). The row is added; the usage, runtime and model
-  of the triage invocation now land in the record.
+- Correction follow-ups cannot approve over an inherited failed required gate
+  merely because implementation was skipped and the child has no receipts.
+- Out-of-band delivery decisions inherit valid parent verification evidence
+  and retain the delivery policy and authored commit message from the parked run.
+- Unresolved delivery actions are rejected before Git mutation. Existing
+  unrecorded delivery commits are detected instead of blindly repeated.
+- Linked worktrees inherit their repository's project plugin. A project with
+  no verification contract follows the explicitly advisory path.
+- Missing gate references can bind to declared gates; invalid plan contracts
+  return to planning, and open criterion matrices read their current evidence.
+- Repair receives the complete gate failure set and source-aware feedback.
+- CLI and SDK resume preserve the run's recorded round budget; cross-project
+  retries retain the plan and task context.
+- Plan prompts constrain criteria to the task's scope. Handoff advice includes
+  subtask receipts, and paused-run guidance names pending human decisions.
+- Provider-side transient failures, long startup bootstraps, streamed child
+  cancellation, and closed delivery-menu stdin are handled more predictably.
+- Metrics attribute phases to the model that actually ran them and include
+  correction-triage usage. Historical metrics are not rewritten automatically.
+- Retired runtime wrappers are excluded from wheels.
 
-- A correction child that skipped `implement` (the `gate_rerun` route) no
-  longer approves a release over a `require` gate that failed in its parent.
-  Two owners were wrong. The ledger's `before_delivery:` epoch published an
-  empty delivery view because it is reconstructed only from recorded
-  `after_phase:implement` selections, and the child never had that boundary;
-  the empty view was cached and hid the path-selected gate from readiness,
-  the engine backstop, and the pre-final auto-run. Now an unrecorded delivery
-  position is selected at the `before_delivery:` epoch from the live checkout
-  and recorded in the trail (replayed on resume; a recorded implement decision
-  is never re-selected). Second, the receipt materializer left every `failed`
-  classification untouched, including one inherited from the parent run for
-  which this run owns no receipt at all, so the gate the child existed to
-  rerun was never run and `required_passed` read green on zero receipts. An
-  inherited `failed` with no receipt owned by this run is now materialized
-  like `missing`: the rerun writes this run's own receipt, a pass proves the
-  gate, a failure stays a release gap and forces `REJECTED` (ADR 0141's
-  "failed stays failed" is about receipts this run owns; see its amendment).
+### Upgrade Notes
 
+- Upgrade `orcho`, `orcho-core`, and `orcho-mcp` together, then restart MCP
+  server processes. The supported package-family range is `>=1.0.0,<2.0`.
+- Update clients that consume acceptance criteria as strings, assume every
+  delivery outcome is boolean, or treat every nonzero exit code as a crash.
+- Declare and review the project's verification contract before relying on
+  required checks. Human acceptance still needs explicit recorded decisions.
 
-- Plan criteria must trace to the task. The planner prompt no longer
-  licenses "derive acceptance criteria if the task omits them" without a
-  bound: criteria come only from the task's own acceptance and contract,
-  and a criterion that widens scope (work in another repository, a human
-  verdict the task did not request, an invariant over files the task did
-  not name) is a risk or a note, not a criterion. The plan validator now
-  rejects such criteria as plan defects instead of reading them as
-  diligence (dogfood `20260911_120115_bc8aa7`: two unrequested criteria
-  cost two handoffs and two operator waivers).
-- The phase-handoff advisor now sees the subtask receipts. On an
-  `implement` handoff it received only findings, last output and the
-  working-tree summary — an incomplete delivery with no findings read as
-  "nothing was implemented" (dogfood `20260911_120115_bc8aa7`: five `done`
-  receipts, one open criterion, advice to re-implement everything). The
-  advice context carries an authoritative subtask-status block (receipt
-  state per subtask, why each open one is open, the unmet done-criteria with
-  their recorded evidence) and the advisor prompt names it as authoritative.
-- A run paused on a phase handoff now names its open `human` criteria and
-  tells the operator to decide them before resuming — in the diagnosis
-  (`RunDiagnosis.pending_human_criteria` and `reason`), the `orcho status`
-  `Next:` block, and the MCP live status. Recording the verdicts first lets
-  final acceptance read a ready matrix instead of rejecting into a
-  correction follow-up with a full gate set (observed on dogfood runs
-  `20260908_131908_4064f0` and `20260911_120115_bc8aa7`).
+### Known Notes
 
-- The required-receipt auto-run before a final phase (ADR 0094) now runs
-  each command under the paired `gate.start` / `gate.end` boundary with a
-  live `gate.progress` stream, like the scheduled after-phase gates (ADR 0190
-  addendum). A multi-minute suite before `final_acceptance` used to leave
-  `events.jsonl` silent and the MCP live status on "starting" with no active
-  gate. `pipeline/project/gate_events.py` owns the boundary payload;
-  `sdk.verify.verify_run` gains an internal `observer` seam.
-- An out-of-band delivery decision on a correction follow-up child now
-  closes the parent it was launched to fix (ADR 0115 slice 3b-4). A child
-  parked on a deferred delivery gate finalizes as `pending`, so the live
-  supersede seam had nothing to do; `decide_delivery` / `orcho delivery
-  decide` / `orcho_delivery_decide` settled only the child and the parent kept
-  reading `blocked_worktree` / `start_followup` instead of
-  `closed_by_followup`. The finalization seam moved to
-  `pipeline/project/followup_supersede.py` and the SDK settle calls it.
-- A parked delivery gate now pins the run's delivery policy (ADR 0099
-  addendum). The out-of-band decision (`decide_delivery`, `orcho delivery
-  decide`, `orcho_delivery_decide`) took `branch_policy` / `branch_name` /
-  `publish` / `publish_provider` / `default_strategy` from the deciding
-  process's `AppConfig`, so the same gate could commit into the checkout from
-  one shell and onto a published branch from another. The producer stamps a
-  normalised `commit_policy` snapshot on the parked decision and the replay
-  overlays it; a gate parked before snapshots existed keeps the process policy
-  and records a delivery warning. The published-branch path no longer drops
-  the decision's earlier warnings and notices.
-- An out-of-band delivery decision (`decide_delivery`, `orcho delivery
-  decide`, `orcho_delivery_decide`) on a correction follow-up now inherits
-  the parent run's valid receipts for the identical subject, as the in-run
-  gate already did (ADR 0089 addendum). The SDK re-check searched only the
-  child's run dir, so a child that changed no code was refused with
-  "required verification incomplete" and the operator re-ran every gate by
-  hand. The refusal reason now names the missing / failed / stale commands
-  and the exact `orcho verify run …` line the assessment suggests, so
-  `--required` is never guessed for a path-selected gate.
-- The DONE tail of a run parked at a deferred delivery gate names
-  `orcho delivery decide <run_id> <action>` first; the MCP tool and the TTY
-  resume stay as alternatives.
-- A deferred delivery gate now carries the commit message the run's own
-  agent authored. `resolve_commit_delivery` used to park the gate before
-  generating the message, and the out-of-band decision (`decide_delivery`,
-  `orcho_delivery_decide`) has no generator, so an approve fell back to the
-  release summary in the plan language — a Russian commit and PR title on a
-  public repository despite `default_strategy: llm_generate` and an English
-  `content_language`. The message is generated at park time under the same
-  rule as the in-process approve (configured `llm_generate`, or forced when a
-  PR will be opened), persisted on the gate as `final_message` / `strategy`
-  with any fallback warning, and the SDK replay pins it for `approve`.
-- Closing stdin at the interactive delivery menu no longer crashes the run.
-  `Ctrl-D` (or a launcher that presented a pty and then closed its input)
-  raised `EOFError` out of `input()` inside finalize: the run died with
-  `meta.status=running`, no delivery record and no halt reason — the torn
-  shape of the ADR 0191 incident, minus the commit. Both delivery prompts
-  (the action menu and the target-dirty menu) now treat a missing answer as
-  `halt`: nothing is delivered, the run settles as `halted` /
-  `commit_decision_halt` with its worktree retained.
-
-- A linked git worktree inherits its repository's plugin. `.orcho/` is
-  normally ignored or excluded, so a checkout created with `git worktree add`
-  never contains `.orcho/multiagent/plugin.py`; the loader used to read the
-  worktree as a plugin-less project — no verification contract, no
-  scheduled-gate ledger, and every executable criterion left with nothing to
-  bind to. `load_plugin` now falls back to the main working tree's plugin
-  (recorded as `loaded_plugin_path`) when the project is a linked worktree
-  without its own; a plugin inside the worktree still wins.
-
-- A deferred delivery parked by the producer is decidable in place (ADR 0175
-  addendum). `decide_delivery` / `delivery_decision_state` no longer answer
-  `delivery_decision_requires_resume` for the producer's own
-  `halted` / `commit_delivery_pending` record (`action=none`, `pending`);
-  `run_diagnosis` classifies it `needs_delivery_decision`. Every other stopped
-  gate keeps the resume-first rule.
-
-- An unresolved delivery action can no longer reach Git (ADR 0191). A
-  `decision_mode=defer` run launched without `--no-interactive` and without
-  a TTY parked its delivery as `action=none`, and the producer applied it
-  anyway: the patch was transported and committed — for a rejected release —
-  before the audit schema refused the action, leaving a real commit the run
-  never recorded. `apply_commit_delivery` now refuses any unresolved action
-  before touching the checkout, the producer parks on the decision itself,
-  and the audit artifact is validated before any mutation.
-
-- A project with no verification contract no longer fails on its executable
-  acceptance criteria (ADR 0191 addendum). An implied (ref-less) executable
-  criterion on a run that declares no scheduled gate has nothing to bind to;
-  it used to stay `missing` for the whole run and force a final-acceptance
-  backstop REJECT after the entire implement / review budget. The criterion
-  matrix now reports it `advisory` and non-blocking, saying what would make it
-  provable; plan review resolves explicit gate refs only; the plan contract
-  tells the planner up front that without declared gates `agent_assertion`
-  with the exact command in the intent is the better class. A declared
-  contract keeps the strict binding and blocking rules.
-
-- The final-acceptance session record keeps the engine backstop and the
-  model's own verdict (`engine_backstop.model_verdict`), so a backstop REJECT
-  over a model APPROVED is readable from meta / checkpoints, not only from the
-  in-memory phase log.
-
-- Run metadata records the effective `max_rounds` budget for mono runs and
-  cross-project parents. This is an audit projection; resume continues to
-  read the authoritative checkpoint configuration.
-
-- Executable acceptance criteria can omit gate references. The engine binds
-  them to selected verification gates and records the binding in evidence;
-  explicit references retain strict validation (ADR 0188 addendum).
-
-- The criterion matrix read while a run is still open now agrees with the
-  one read at run end. Gate rows in the scheduled-gate ledger carry a
-  disposition that only `finalize` rewrites from the trail, so mid-run the
-  persisted row still said `residual_missing` for a gate the trail already
-  recorded as passed. `final_acceptance` consumes the matrix before finalize:
-  a dogfood run had every gate pass and review approve, and the release was
-  rejected because the reviewer was told the executable criteria were
-  `missing` while end-of-run evidence reported them `proven`. The reader now
-  reduces an open ledger from its trail with the same reducer `finalize`
-  uses (`ScheduledGateLedger.reduced_rows`); a finalized ledger's rows are
-  already that reduction and are used as-is.
-
-- A plan that fails to parse or violates the plan contract no longer ends the
-  run at the plan phase. The violation is recorded and `validate_plan` renders
-  it as a synthesized `REJECTED` verdict, so the planner receives the exact
-  error as critique on its next round and no reviewer call is spent on a
-  question the engine already answered. The run stops only when no replan or
-  operator-decision path remains, through the same fail-closed check that
-  already governed verification-ownership conflicts; that check now also
-  covers unresolvable gate refs on the final round. Two consecutive dogfood
-  runs had died at round 1 of 2 on fixable output mistakes: a gate named by
-  its shell command, then an executable criterion no task referenced.
-
-- A plan whose acceptance criterion names a gate the project does not declare
-  no longer ends the run. The reference is resolved at plan review, next to the
-  existing verification-ownership check, and an unresolvable one is a
-  synthesized `REJECTED` verdict carrying the declared identities, so the
-  planner fixes it on the next planning round. It previously raised inside the
-  plan phase and halted before implement, spending a full planning round and
-  the run on a fixable naming mistake: a first dogfood run died on
-  `C1 references gate 'python -m ruff check .'`, where the contract declares
-  that gate as `lint`. The resolution stays fail-closed and still happens
-  before implement.
-
-
-### Added
-
-- `orcho update` upgrades the CLI through the package manager that installed
-  it. Orcho ships as an ordinary Python distribution, so the correct upgrade
-  command depends on the installer that owns the environment; the command
-  resolves that from on-disk evidence (pipx venv metadata, a `uv tool`
-  receipt, virtualenv layout, PEP 610 `direct_url.json`) and delegates.
-  A pip install is upgraded with its own interpreter, never with whatever
-  `python` is first on `PATH`. Source checkouts, editable installs, a missing
-  manager binary, and installs built from a local path rather than an index
-  are reported with the command rather than upgraded, because upgrading would
-  discard or fight the code actually running. `--dry-run` reports only.
-
-- `meta.json` records `versions`: every installed distribution whose name
-  starts with `orcho`, mapped to its version, as seen by the interpreter that
-  wrote the run (`orcho-core` always present). Until now a run artifact
-  carried no record of which engine produced it, so a behaviour observed in a
-  run could not be matched to a release. Cross-project parent runs carry the
-  same key; golden session snapshots mask its value.
-
-### Fixed
-
-- The cross-run header no longer reports the repair budget as if it were the
-  planning budget either. Companion to the mono header fix above, on the
-  surface it left behind: `orcho cross --max-rounds 4` printed
-  `rounds_per_project=4` and the transcript then bannered
-  `CROSS-PLAN -- Round 1/2`, because the cross plan loop's budget is the
-  projection's own `LoopStep.max_rounds` and `--max-rounds` never reached it
-  (ADR 0031). The header now names the repair cap for the loop it caps
-  (`repair_rounds_per_project=4`) and carries the planning budget on the
-  `Plan source` row (`cross  (2 rounds)`). `find_cross_plan_loop` becomes the
-  single owner of "which projected LoopStep is the plan loop": the run flow
-  and the header both read it there, which they must, since the header is
-  assembled before the run flow resolves its own step handles. Behaviour is
-  unchanged.
-
-- The run header no longer reports the repair budget as if it were the
-  planning budget. The State line rendered a bare `rounds=<max_rounds>`
-  immediately next to `plan=yes`, so an operator who passed `--max-rounds 4`
-  read the planning budget as 4 and was then surprised when the run paused at
-  `validate_plan automatic round 2/2`. `--max-rounds` caps only the
-  implement/review/repair loop; the plan/validate_plan budget is the active
-  profile's plan `LoopStep.max_rounds` and has no per-run override (ADR 0031
-  rejected global round overrides). The line now names both budgets and reads
-  `plan=yes  (2 rounds)  repair_rounds=4`, with the plan budget read off the
-  resolved profile through the existing `find_plan_loop` owner and omitted
-  entirely when the profile is unresolved. Behaviour is unchanged — this was
-  a labelling defect, not a scheduling one.
-
-- `orcho run --resume <run_id>` no longer resets the round budget either.
-  The entry directly below covers the SDK launcher that *builds* a resume
-  argv; the CLI an operator types is the other half. Both `orcho run
-  --max-rounds` and the orchestrator's own `--max-rounds` carried an argparse
-  `default=1`, so neither could tell "the operator did not pass the flag" from
-  "the operator asked for one round": `orcho run` re-materialised
-  `--max-rounds 1` on every
-  resume, and the orchestrator then fed that into the run config and wrote it
-  back over the run's persisted `checkpoints.db` `run_meta.config_json`. Both
-  defaults are now `None`, and the resume resolves explicit flag → the budget
-  persisted for the resumed run → 1, announcing an inherited value so a
-  changed budget is never silent. An explicit `--max-rounds` on the resume
-  command line still wins, including `--max-rounds 1` against a larger
-  persisted budget — re-passing the flag is how an operator deliberately
-  narrows the remaining loop. A run with nothing persisted, or with a
-  degenerate recorded value, resumes exactly as before.
-  `pipeline.control.resume_budget` is the single owner of that rule; the SDK
-  launcher now reads through it too, so the two resume frontends cannot drift
-  on what counts as "nothing to inherit". Follow-up runs (a *new* run) and
-  fresh runs inherit nothing, as before.
-
-- Resuming a run no longer discards the operator's `max_rounds` budget. A run
-  started with `max_rounds=4` reached its first subprocess correctly, but the
-  resume argv carried no `--max-rounds`, so the orchestrator's argparse default
-  of 1 applied: the repair loop silently shrank to a single round, and the
-  shrunken value was then written back over the run's persisted
-  `checkpoints.db` `run_meta.config_json`, destroying the record of what was
-  originally requested. `resume_run` now reads the budget back from that store
-  and re-emits the flag, alongside the `mock` / `output_mode` / profile values
-  a resume already inherited. A run with nothing persisted still omits the flag
-  and keeps the previous behaviour. `pipeline.checkpoint.read_run_config` is
-  the read-only probe behind this: it never creates a checkpoint store, so a
-  launcher cannot fabricate one for a run that never wrote one.
-
-- The unsafe-process-polling guardrail no longer re-flags a command from the
-  stream records that merely echo it. Claude stream-json `system`
-  `task_started` / `task_notification` lines repeat an issued Bash command in
-  `description` / `summary`; the shared guard treated every line's raw text as
-  a command candidate, so one `pkill -f` produced extra `agent.guardrail`
-  warns and non-terminal `agent.command_stalled` events. A JSON record now
-  contributes only its structured tool-use commands (Claude `Bash`, Gemini
-  `run_shell_command`, and Codex `command_execution` `item.command`, which the
-  guard previously matched only through the raw JSON text); raw text is a
-  candidate only for non-JSON lines. The non-terminal `command_preview` keeps
-  the tail of an over-long command so a trailing poll stays visible, and
-  `elapsed_s` is documented as time since the agent subprocess spawned, not
-  the command's own runtime.
-
-- The destructive-git guardrail now covers the Codex runtime. `codex exec
-  --json` streams each shell command as a `command_execution` JSON record,
-  which never starts with `git `, so the shared guard's human-readable text
-  path never saw it and a Codex `git reset --hard HEAD` streamed straight
-  through while the runtime docstring assumed coverage. The guard now
-  inspects the `item.started` / `item.completed` records directly, mirroring
-  the Claude and Gemini structured paths; `worktree_cwd_path` relaxes it the
-  same way. Codex emits those records only after launching the command, so
-  the verdict is a run halt (abort, `agent.guardrail` diagnostic,
-  `ORCHO_GUARDRAIL_BLOCKED` sentinel), not a prevention.
-
-- `run_diagnosis` / `recovery_lineage` no longer recommend resuming a source
-  run that the launch preflight would refuse. A terminal recovery child whose
-  source had a finalized `scheduled_gate_ledger.json` (written at every
-  runner-side `run.end`) was diagnosed `recover_via_source_run` / "resume the
-  source", and `orcho run resume` then rejected exactly that with "same-run
-  resume is blocked: parent has a finalized scheduled-gate ledger". Source
-  resumability is now the canonical `preflight_continuation` answer (a
-  paused or live source is refused the same way); when the source cannot be
-  resumed in place but preflight accepts a `from_run_plan` launch off its
-  persisted plan, the diagnosis recommends `plan_artifact_continuation` with
-  the source as `recommended_run_id` — the exit operators were already using
-  by hand. Source-candidate facts moved to `sdk/run_control/recovery_source.py`.
-
-- A provider-side HTTP 5xx (`API Error: 529 Overloaded`, `500 Internal
-  server error`, 502/503/504, `server_error`) now classifies as the transient
-  `ApiConnectionError` and gets the bounded connection retry budget. It used
-  to fall into the never-retried "unrecognized error" bucket and halt the run
-  with a bare `exit=1`; the failure line now carries the provider's own
-  status text.
-- The rate-limit classifier no longer matches a bare `429`, which also occurs
-  inside UUIDs and hashes in provider stream output and mis-typed a 500
-  failure as a rate limit. Only anchored forms (`api error: 429`, `http 429`,
-  `status 429`) count.
-- A plan (or any assistant reply) larger than the 96 KiB per-line model
-  output cap no longer halts the run with `plan rejected before implement:
-  raw JSON parse failed: Extra data: line 2 column 1`. The stdout line cap
-  was byte-middle-cutting every oversized line that was JSON but not a
-  tool-result envelope, which destroyed the stream-json `assistant` and
-  `result` events carrying the reply; the text extractor then skipped the
-  malformed lines and the phase received raw NDJSON. Non-tool JSON lines now
-  pass through unchanged; tool-result lines and non-JSON blobs keep the cap.
-  As defense in depth, the Claude runtime now raises a typed
-  `AgentCallError` naming the real cause when a stream-json reply carries no
-  assistant text at all, instead of silently returning the raw stream.
-- A worktree bootstrap that outlived `startup_stall_seconds` (a long
-  `npm ci`, for example) completed successfully and was then halted as
-  `startup_stalled` at the next checkpoint, because bootstrap steps emit no
-  event and write no `output.log`, the watchdog's only progress signals. The
-  bootstrap path now reports a heartbeat to the startup watchdog per completed
-  step and after success; the heartbeat restarts the idle budget and refreshes
-  `startup_command.json` (`armed_at` is the start of the current idle window)
-  while keeping the watchdog armed for a hang before the first phase
-  (ADR 0180 addendum).
+- A general phase-handoff waiver currently bypasses the required-receipt
+  backstop in final acceptance. It must not be interpreted as proof that the
+  waived run's required checks passed.
+- Final acceptance does not yet receive the latest rejected review as a
+  dedicated verdict-and-findings input. Operators must inspect that review
+  before accepting residual findings.
+- Legacy delivery reconciliation can miss a commit found only on a retained
+  worktree branch when no delivery ledger exists. An explicit commit argument
+  does not bypass discovery.
 
 ## 0.9.0 - 2026-08-29
 
