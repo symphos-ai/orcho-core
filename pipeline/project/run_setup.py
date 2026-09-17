@@ -50,6 +50,10 @@ from pipeline.project.bootstrap import (
 )
 from pipeline.project.profile_setup import _profile_phase_names
 from pipeline.project.types import PresentationPolicy
+from pipeline.project.verification_disclosure import (
+    HEADER_VALUE,
+    VerificationContractPresence,
+)
 from pipeline.runtime.work_kind_detection import AutoDetectResolution
 from pipeline.verification_contract import VerificationContract
 
@@ -134,6 +138,7 @@ def init_run_session(
     project_path: Path,
     plugin: PluginConfig,
     model: str,
+    max_rounds: int,
     profile_name: str,
     session_mode: SessionMode,
     change_handoff: str,
@@ -146,6 +151,7 @@ def init_run_session(
     followup_parent_status: str | None,
     followup_base_task: str | None,
     plan_source_run_id: str | None,
+    verification_contract_presence: VerificationContractPresence | None = None,
 ) -> dict:
     """Initialise the persisted session dict + atexit graceful-exit hook.
 
@@ -164,9 +170,15 @@ def init_run_session(
     ``delivery_projects`` / ``topology_reason`` / ``delivery_scope`` — rides
     along automatically. ``delivery_scope`` + ``delivery_projects`` are the
     durable input that delivery-scope enforcement (T4) reads back.
+
+    ``verification_contract_presence`` is passed straight through: the fact is
+    decided once by the caller (``session_run``) and stamped onto the session
+    inside ``init_session_with_atexit``, before its first ``save_session``.
+    This function neither decides it nor re-derives it from the plugin.
     """
     session = init_session_with_atexit(
         task=task, project_path=project_path, plugin=plugin, model=model,
+        max_rounds=max_rounds,
         profile_name=profile_name, session_mode=session_mode,
         change_handoff=change_handoff,
         output_dir=output_dir,
@@ -178,6 +190,7 @@ def init_run_session(
         followup_parent_status=followup_parent_status,
         followup_base_task=followup_base_task,
         plan_source_run_id=plan_source_run_id,
+        verification_contract_presence=verification_contract_presence,
     )
     auto_detect = _read_autodetect_meta()
     if auto_detect is not None:
@@ -358,6 +371,7 @@ def print_pipeline_header(
     phase_identities: dict[str, Any] | None = None,
     resume_from: str | None = None,
     contract: VerificationContract | None = None,
+    contract_presence: VerificationContractPresence | None = None,
 ) -> None:
     """Emit the run-header banner via :mod:`core.io.transcript`.
 
@@ -368,12 +382,20 @@ def print_pipeline_header(
     :func:`init_run_session`.
 
     Renders the same data the legacy header carried — model names, effort
-    levels, profile, session mode, max rounds, plan toggle, plugin line,
-    run-dir path — as a scannable table block. When ``profile_obj`` is
+    levels, profile, session mode, retry budgets, plan toggle, plugin line,
+    run-dir path — as a scannable table block. ``max_rounds`` is the
+    implement/review/repair cap only; the plan/validate_plan budget is read
+    off ``profile_obj``'s plan LoopStep and rendered separately. When ``profile_obj`` is
     supplied, a static pipeline progress block is rendered under the header
     showing every phase in the profile; ``completed_phases`` (peeked from
     the checkpoint DB on a ``--resume``) highlights phases already finished
     so the operator can see where the run is about to pick up.
+
+    ``contract_presence`` is the run's already-decided verification-contract
+    fact (``session_run`` owns the decision). When it says no contract was
+    declared, the header renders the one-line disclosure in place of the gate
+    matrix; a declared contract and an unrecorded fact both leave the header
+    byte-identical. Nothing here consults the plugin or the ledger for it.
     """
     if presentation is not PresentationPolicy.TERMINAL:
         return
@@ -464,8 +486,23 @@ def print_pipeline_header(
     verification_view = build_verification_header_view(
         contract, has_final_phase=has_final_phase, ledger_rows=ledger_rows,
     )
+    # Only the negative case reaches the renderer: a declared contract renders
+    # its own block, and an unrecorded fact (older runs) keeps today's silence.
+    absent_line = (
+        HEADER_VALUE
+        if contract_presence is not None and not contract_presence.declared
+        else None
+    )
     output_log = str(output_dir / "output.log") if output_dir is not None else None
     events_log = str(output_dir / "events.jsonl") if output_dir is not None else None
+    # Two independent retry budgets reach the header. ``max_rounds`` is the
+    # per-run implement/review/repair cap; the plan/validate_plan budget is
+    # declared by the profile's plan LoopStep and has no runtime override
+    # (ADR 0031). Read it through the existing single owner of "which
+    # LoopStep is the plan loop" rather than re-deriving the key here.
+    from pipeline.project.handoff import find_plan_loop
+    plan_loop = find_plan_loop(profile_obj) if profile_obj is not None else None
+    plan_rounds = int(plan_loop.max_rounds) if plan_loop is not None else None
 
     print(render_run_header(
         run_id=output_dir.name if output_dir is not None else None,
@@ -474,13 +511,15 @@ def print_pipeline_header(
         agents=agents_block,
         profile=profile_name,
         session_mode=session_mode.value,
-        rounds=max_rounds,
+        repair_rounds=max_rounds,
         plan=do_plan,
+        plan_rounds=plan_rounds,
         output_log=output_log,
         events_log=events_log,
         plugin_line=plugin_line,
         skills_line=skills_line,
         verification=verification_view,
+        verification_absent_line=absent_line,
         resumed=resumed,
         completed_phases=completed_phases,
         parent_run_id=parent_run_id,

@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from agents.entities import SubTask
+from core.contracts.criteria import AcceptanceCriterion
 from pipeline.plan_artifacts import (
     LATEST_FILENAME,
     PARSED_PLAN_ARTIFACT_VERSION,
@@ -76,8 +77,16 @@ def _full_plan() -> ParsedPlan:
         source="json",
         goal="Fix the X bug without breaking Y",
         acceptance_criteria=(
-            "X no longer reproduces with the original repro",
-            "Y still works for the documented case",
+            AcceptanceCriterion(
+                id="C1",
+                intent="X no longer reproduces with the original repro",
+                verify="agent_assertion",
+            ),
+            AcceptanceCriterion(
+                id="C2",
+                intent="Y still works for the documented case",
+                verify="agent_assertion",
+            ),
         ),
         owned_files=("src/handler.py", "tests/test_handler.py"),
         commands_to_run=("pytest tests/test_handler.py -q",),
@@ -154,16 +163,20 @@ class TestRoundTrip:
         payload = parsed_plan_to_dict(_full_plan())
         assert payload["artifact_version"] == PARSED_PLAN_ARTIFACT_VERSION
 
-    def test_empty_contract_fields_are_omitted_from_payload(self) -> None:
-        """Optional REA-1 contract fields should not appear in the
-        serialised envelope when empty — the validator treats absent
-        and empty as equivalent, and omitting keeps the artefact
-        compact."""
+    def test_empty_contract_fields_preserve_the_criterion_presence_marker(
+        self,
+    ) -> None:
+        """Only criteria remain explicit when the contract is otherwise empty.
+
+        ADR 0188 uses ``acceptance_criteria: []`` to distinguish a new-format
+        plan with an empty criterion contract from a legacy plan that predates
+        the field. The remaining optional REA-1 fields stay compact.
+        """
         payload = parsed_plan_to_dict(_minimal_plan())
         body = payload["plan"]
+        assert body["acceptance_criteria"] == []
         for omitted in (
             "goal",
-            "acceptance_criteria",
             "owned_files",
             "commands_to_run",
             "risks",

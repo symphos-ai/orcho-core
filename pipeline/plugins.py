@@ -4,10 +4,21 @@ plugin_loader.py — Plugin discovery and loading.
 A plugin lives in: {project_dir}/.orcho/multiagent/plugin.py
 It must define a PLUGIN dict with any subset of PluginConfig fields.
 
+A linked git worktree inherits the plugin of its repository's main working
+tree: ``.orcho/`` is typically kept out of git (ignored or excluded), so a
+worktree created with ``git worktree add`` does not contain it, yet it is the
+same project under the same contract. When ``{project_dir}`` carries no
+plugin and is a linked worktree, the loader reads
+``{main_working_tree}/.orcho/multiagent/plugin.py`` instead and records that
+path as ``loaded_plugin_path``. A plugin present in the worktree itself
+always wins.
+
 The core works without any plugin (graceful degradation).
 """
 
 import importlib.util
+import os
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -313,7 +324,18 @@ def load_plugin(project_dir: str) -> PluginConfig:
     :data:`ARTIFACT_PROFILES` (unknown profiles fall back to
     ``"none"`` with a warning).
     """
-    plugin_path = Path(project_dir) / PLUGIN_RELATIVE_PATH
+    plugin_root = Path(project_dir)
+    plugin_path = plugin_root / PLUGIN_RELATIVE_PATH
+
+    if not plugin_path.exists():
+        # A linked git worktree inherits the main working tree's plugin: the
+        # ``.orcho/`` directory is normally ignored / excluded, so the worktree
+        # cannot contain it, but it is the same project under the same
+        # contract (see the module docstring).
+        inherited = _linked_worktree_main_root(plugin_root)
+        if inherited is not None and (inherited / PLUGIN_RELATIVE_PATH).exists():
+            plugin_root = inherited
+            plugin_path = inherited / PLUGIN_RELATIVE_PATH
 
     if not plugin_path.exists():
         # No plugin.py, but skills may still exist on their own — discover
@@ -404,9 +426,10 @@ def load_plugin(project_dir: str) -> PluginConfig:
         # Auto-discover skills via the canonical multi-source chain
         # (project / compat / workspace / user / entry_points). Failures
         # inside discover never raise; an empty dict means the runner
-        # stays in flat developer-agent mode.
+        # stays in flat developer-agent mode. Project skills live next to
+        # the plugin, so an inherited plugin brings its skills along.
         config.skill_registry = _discover_skills_for_plugin(
-            project_dir, config.skill_trust,
+            str(plugin_root), config.skill_trust,
         )
 
         return config
@@ -422,6 +445,43 @@ def load_plugin(project_dir: str) -> PluginConfig:
             project_dir, config.skill_trust,
         )
         return config
+
+
+def _linked_worktree_main_root(project_dir: Path) -> Path | None:
+    """The repository's main working tree when ``project_dir`` is a linked worktree.
+
+    Read-only (``git rev-parse``), never raises. ``None`` for a non-git
+    directory, the main worktree itself, or a bare repository (which has no
+    main working tree to inherit from).
+    """
+    if not project_dir.is_dir():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10.0,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) != 2:
+        return None
+    try:
+        git_dir = (project_dir / lines[0]).resolve()
+        common_dir = (project_dir / lines[1]).resolve()
+    except OSError:
+        return None
+    if git_dir == common_dir or common_dir.name != ".git":
+        return None
+    main_root = common_dir.parent
+    return main_root if main_root.is_dir() else None
 
 
 def describe_plugin(plugin: PluginConfig) -> str:

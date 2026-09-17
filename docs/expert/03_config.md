@@ -33,13 +33,13 @@ The canonical override is the per-phase variable `MODEL_<PHASE>` (see `_PHASE_EN
 
 | Variable | Default | Phase |
 |-----------|-------------|------|
-| `MODEL_PLAN` | `claude-opus-4-8[1m]` | plan |
-| `MODEL_VALIDATE_PLAN` | `gpt-5.5` | validate_plan |
-| `MODEL_IMPLEMENT` | `claude-opus-4-8[1m]` | implement |
-| `MODEL_REVIEW_CHANGES` | `gpt-5.5` (codex) | review_changes |
-| `MODEL_REPAIR_CHANGES` | `claude-opus-4-8[1m]` | repair_changes |
-| `MODEL_REPAIR_ESCALATION` | `claude-opus-4-8[1m]` | repair_escalation |
-| `MODEL_FINAL_ACCEPTANCE` | `gpt-5.5` | final_acceptance |
+| `MODEL_PLAN` | `claude-fable-5-1[1m]` | plan |
+| `MODEL_VALIDATE_PLAN` | `gpt-6-astra` | validate_plan |
+| `MODEL_IMPLEMENT` | `claude-opus-5[1m]` | implement |
+| `MODEL_REVIEW_CHANGES` | `gpt-5.6-sol` (codex) | review_changes |
+| `MODEL_REPAIR_CHANGES` | `claude-opus-5[1m]` | repair_changes |
+| `MODEL_REPAIR_ESCALATION` | `claude-fable-5-1[1m]` | repair_escalation |
+| `MODEL_FINAL_ACCEPTANCE` | `gpt-5.6-sol` | final_acceptance |
 
 `CODEX_MODEL` (env var) is the fallback for `MODEL_REVIEW_CHANGES` when the latter is unset.
 
@@ -159,12 +159,13 @@ Example:
 ```json
 {
   "phases": {
-    "plan":             {"runtime": "claude", "model": "claude-opus-4-8[1m]", "effort": "high"},
-    "validate_plan":    {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "implement":        {"runtime": "claude-glm", "model": "glm-5.3", "effort": "medium"},
-    "review_changes":   {"runtime": "codex",  "model": "gpt-5.5",         "effort": "medium"},
-    "repair_changes":   {"runtime": "claude-glm", "model": "glm-5.3", "effort": "medium"},
-    "final_acceptance": {"runtime": "codex",  "model": "gpt-5.5",         "effort": "low"}
+    "plan":              {"runtime": "claude", "model": "claude-fable-5-1[1m]", "effort": "high"},
+    "validate_plan":     {"runtime": "codex",  "model": "gpt-6-astra",          "effort": "high"},
+    "implement":         {"runtime": "claude", "model": "claude-opus-5[1m]",    "effort": "medium"},
+    "review_changes":    {"runtime": "codex",  "model": "gpt-5.6-sol",          "effort": "medium"},
+    "repair_changes":    {"runtime": "claude", "model": "claude-opus-5[1m]",    "effort": "medium"},
+    "repair_escalation": {"runtime": "claude", "model": "claude-fable-5-1[1m]", "effort": "high"},
+    "final_acceptance":  {"runtime": "codex",  "model": "gpt-5.6-sol",          "effort": "low"}
   },
   "timeouts": {
     "claude_idle_seconds": 1800,

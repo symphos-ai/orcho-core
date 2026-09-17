@@ -160,10 +160,10 @@ def resolve_phase_models(
             phase_config.review_changes_agent.model,
         )
     return (
-        config.phase_model("plan", "claude-opus-4-8[1m]"),
+        config.phase_model("plan", "claude-fable-5-1[1m]"),
         config.phase_model("implement", fallback_code_model),
         config.phase_model("repair_changes", fallback_code_model),
-        config.phase_model("repair_escalation", "claude-opus-4-8[1m]"),
+        config.phase_model("repair_escalation", "claude-fable-5-1[1m]"),
         config.phase_model("review_changes", config.CODEX_MODEL),
     )
 

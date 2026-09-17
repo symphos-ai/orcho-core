@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -216,12 +217,16 @@ def _verification_readiness_text(state: PipelineState) -> str:
     """Render the Stage 5 readiness block for ``final_acceptance`` (ADR 0082).
 
     Dry-run short-circuits FIRST — before any receipt loader is touched — so
-    a dry run never reads the run directory. The no-contract path returns
-    ``""`` (the builder then adds no part and the wire prompt stays
-    byte-identical to the pre-Stage-5 prompt). The delivery gate plan is
-    resolved inside :func:`build_final_acceptance_readiness` from the
-    executable ``before_delivery`` routing epoch or a fresh selection over the
-    current checkout — never from the advisory prompt-preview cache.
+    a dry run never reads the run directory. The no-contract path renders the
+    disclosure block when this run recorded the fact that no contract was
+    declared (``verification_disclosure.readiness_block``): the reviewer must
+    read "0 receipts because nothing was scheduled", not an absent block it
+    could mistake for proof. A run that never recorded the fact still returns
+    ``""``, keeping the wire prompt byte-identical to the pre-Stage-5 prompt.
+    The delivery gate plan is resolved inside
+    :func:`build_final_acceptance_readiness` from the executable
+    ``before_delivery`` routing epoch or a fresh selection over the current
+    checkout — never from the advisory prompt-preview cache.
     """
     if getattr(state, "dry_run", False):
         return ""
@@ -230,6 +235,14 @@ def _verification_readiness_text(state: PipelineState) -> str:
         return ""
     contract = state.extras.get("verification_contract")
     if contract is None:
+        from pipeline.project.verification_disclosure import (
+            VerificationContractPresence,
+            readiness_block,
+        )
+
+        presence = VerificationContractPresence.from_mapping(state.extras)
+        if presence is not None and not presence.declared:
+            return readiness_block()
         return ""
     from pipeline.verification_contract import PlaceholderContext
     from pipeline.verification_readiness import (
@@ -256,9 +269,16 @@ def _required_receipt_backstop(
     stale, return one release-gap dict per command so ``final_acceptance``
     can merge them and force a REJECTED verdict — a ``require`` gate that was
     silently skipped must never end in a green acceptance. Empty under
-    dry-run, without a contract / run dir, or when an operator waiver is
-    active (``continue_with_waiver`` IS the explicit human decision the
-    backstop must respect).
+    dry-run and without a contract / run dir.
+
+    This guard deliberately does **not** consult
+    :func:`_operator_waiver_text`. A general ``continue_with_waiver`` accepts a
+    reviewer's findings; it is not evidence that a required command ran, and
+    letting it silence the backstop turned "the operator read the critique"
+    into "the gate passed" (ADR 0192). The one waiver that *is* gate evidence —
+    an operator accepting a named failing gate — is applied by the gap builder
+    itself (:func:`pipeline.verification_readiness.required_receipt_gaps`),
+    which owns that rule alone and shares it with the delivery guard.
     """
     if getattr(state, "dry_run", False):
         return []
@@ -267,8 +287,6 @@ def _required_receipt_backstop(
         return []
     contract = state.extras.get("verification_contract")
     if contract is None:
-        return []
-    if _operator_waiver_text(state):
         return []
     from pipeline.verification_contract import PlaceholderContext
     from pipeline.verification_readiness import required_receipt_gaps
@@ -279,6 +297,58 @@ def _required_receipt_backstop(
     return required_receipt_gaps(
         contract, output_dir, ctx, extras=state.extras, language=language,
     )
+
+
+def _record_criterion_finding_links(
+    state: PipelineState, findings: list[dict[str, Any]], *, actor: str,
+) -> None:
+    """Persist any ADR 0188 criterion link a reviewer typed on its findings.
+
+    Inert unless a finding actually carries ``criterion_id``, so a run whose
+    reviewer never links a criterion writes no artifact. Never raises: the
+    link is redundant with the evidence findings rollup, so failing to mirror
+    it must not fail the phase.
+    """
+    if getattr(state, "dry_run", False):
+        return
+    from pipeline.criterion_claims import record_finding_links
+
+    run_id = str(state.extras.get("run_id") or "") or None
+    output_dir = getattr(state, "output_dir", None)
+    if output_dir is None or run_id is None:
+        return
+    with suppress(Exception):
+        record_finding_links(
+            output_dir, run_id=run_id, findings=findings, actor=actor,
+        )
+
+
+def _criterion_backstop(state: PipelineState) -> list[dict[str, Any]]:
+    """Engine gaps for blocking acceptance criteria (ADR 0188 §3).
+
+    Deliberately **not** the same backstop as
+    :func:`_required_receipt_backstop`, and gated on strictly less:
+
+    * it does not require a declared verification contract — a project without
+      one still has plan criteria, and a ``human`` or unproven ``executable``
+      criterion must still block;
+    * it does not honour an operator waiver — ``continue_with_waiver`` is a
+      decision about *continuing the phase*, not the per-criterion human
+      decision an ADR 0188 ``human`` criterion requires. Letting a general
+      waiver satisfy a criterion is exactly the implicit approval the contract
+      forbids.
+
+    Empty under dry-run, without a run dir, and for a run whose plan artifact
+    is absent. Unreadable durable facts produce a blocking integrity gap.
+    """
+    if getattr(state, "dry_run", False):
+        return []
+    output_dir = getattr(state, "output_dir", None)
+    if output_dir is None:
+        return []
+    from pipeline.verification_readiness import criterion_release_gaps
+
+    return criterion_release_gaps(output_dir)
 
 
 def _scope_expansion_assessment(state: PipelineState):

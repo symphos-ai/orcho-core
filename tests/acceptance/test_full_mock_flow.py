@@ -3632,9 +3632,13 @@ class TestStage5_PhaseHandoffResume:
         on every non-handoff halt; the actual reason hides under
         ``meta.halt.reason``.
 
-        Triggers the plan-parse-failure branch in
-        ``pipeline/phases/builtin/`` (round-1 ``state.stop``) by
-        forcing the architect to emit un-parseable plan output.
+        Forces the architect to emit un-parseable plan output on every
+        round. A plan-contract violation is no longer a round-1 halt: the
+        plan handler records it and ``validate_plan`` synthesizes a
+        ``REJECTED`` verdict, so the planner gets another round. The run
+        stops only when no replan or operator path remains, which is why
+        this uses ``small_task`` (``human_bypass`` on validate_plan): on
+        the final round the rejection must fail closed into a halt.
         """
         from agents.runtimes import MockAgentProvider
 
@@ -3673,7 +3677,7 @@ class TestStage5_PhaseHandoffResume:
                 task="trigger plan parse failure",
                 project_dir=str(project),
                 output_dir=run_dir,
-                profile_name="feature",
+                profile_name="small_task",
                 hypothesis_enabled=False,
                 provider=provider,
             )

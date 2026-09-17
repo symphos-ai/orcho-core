@@ -6,6 +6,7 @@ Tests use :memory: SQLite — zero filesystem, instant execution.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from pipeline.checkpoint import (
     LoopCursorRecord,
     PipelineState,
     PipelineStatus,
+    read_run_config,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,3 +435,89 @@ class TestAgentSessions:
             "plan_agent": "sid-86481484",
             "validate_plan_agent": "sid-d19b8eca",
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# read_run_config — read-only probe for launchers
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestReadRunConfig:
+    """``read_run_config`` reads ``run_meta.config_json`` without building a store.
+
+    Used by ``sdk.run_control.resume_run`` to recover the run's own
+    ``max_rounds`` budget. Every failure mode must degrade to ``None``
+    (meaning "nothing persisted to inherit") rather than raise: the caller
+    is a launcher on the resume path, and an exception there would turn a
+    silently-shrunk budget into a failed resume.
+    """
+
+    def test_reads_persisted_config(self, tmp_path: Path) -> None:
+        db = tmp_path / "checkpoints.db"
+        s = CheckpointStore(db, run_id="run_a")
+        s.save_config({"task": "t", "max_rounds": 4})
+        s.close()
+
+        assert read_run_config(db, "run_a") == {"task": "t", "max_rounds": 4}
+
+    def test_does_not_create_the_store(self, tmp_path: Path) -> None:
+        """The probe must never fabricate a checkpoint DB for a run that
+        never wrote one — that is why this is not a ``CheckpointStore``
+        method (constructing one applies the schema and creates the file)."""
+        db = tmp_path / "absent" / "checkpoints.db"
+
+        assert read_run_config(db, "run_a") is None
+        assert not db.exists()
+        assert not db.parent.exists()
+
+    def test_unknown_run_id_returns_none(self, tmp_path: Path) -> None:
+        db = tmp_path / "checkpoints.db"
+        s = CheckpointStore(db, run_id="run_a")
+        s.save_config({"task": "t"})
+        s.close()
+
+        assert read_run_config(db, "run_b") is None
+
+    def test_non_sqlite_file_returns_none(self, tmp_path: Path) -> None:
+        """A truncated / corrupt store is "nothing to inherit", not a crash."""
+        db = tmp_path / "checkpoints.db"
+        db.write_text("not a database", encoding="utf-8")
+
+        assert read_run_config(db, "run_a") is None
+
+    def test_connect_failure_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        db = tmp_path / "checkpoints.db"
+        CheckpointStore(db, run_id="run_a").close()
+
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(sqlite3, "connect", _boom)
+        assert read_run_config(db, "run_a") is None
+
+    @pytest.mark.parametrize(
+        ("stored", "expected"),
+        [
+            pytest.param('{"task": "t"}', {"task": "t"}, id="object"),
+            pytest.param("not json", None, id="malformed-json"),
+            pytest.param('["task"]', None, id="json-but-not-an-object"),
+            pytest.param("null", None, id="json-null"),
+        ],
+    )
+    def test_config_json_payload_shapes(
+        self, tmp_path: Path, stored: str, expected: dict | None,
+    ) -> None:
+        """Only a JSON object is a config; anything else reads as absent."""
+        db = tmp_path / "checkpoints.db"
+        CheckpointStore(db, run_id="run_a").close()
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "INSERT OR REPLACE INTO run_meta (run_id, config_json, status) "
+            "VALUES (?, ?, 'running')",
+            ("run_a", stored),
+        )
+        conn.commit()
+        conn.close()
+
+        assert read_run_config(db, "run_a") == expected

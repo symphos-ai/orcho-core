@@ -22,7 +22,7 @@ code-generation seam.
 ``core.infra.config``) — but it must NOT import from
 ``pipeline.project_orchestrator``. The orchestrator currently imports
 ``run_pipeline``'s defaults at module load (e.g. ``config.phase_model(
-"implement", "claude-opus-4-8[1m]")``); the dataclass below preserves
+"implement", "claude-opus-5[1m]")``); the dataclass below preserves
 that legacy import-time evaluation by calling the same function at
 this module's import time so the default value matches.
 """
@@ -65,7 +65,7 @@ class ProjectRunRequest:
     Notes on defaults:
 
     * ``model`` is set via ``config.phase_model("implement",
-      "claude-opus-4-8[1m]")`` at module load time. ``run_pipeline``
+      "claude-opus-5[1m]")`` at module load time. ``run_pipeline``
       uses the same expression at its function definition time. As
       long as both modules import in the same process, the strings
       match — locked by the Phase B signature test.
@@ -82,7 +82,7 @@ class ProjectRunRequest:
     task: str
     project_dir: str
     max_rounds: int = 1
-    model: str = config.phase_model("implement", "claude-opus-4-8[1m]")
+    model: str = config.phase_model("implement", "claude-opus-5[1m]")
     output_dir: Path | None = None
     dry_run: bool = False
     phase_config: PhaseAgentConfig | None = None

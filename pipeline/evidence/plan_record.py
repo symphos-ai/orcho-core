@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.contracts.criteria import (
+    CriterionSchemaError,
+    coerce_acceptance_criteria,
+    criteria_to_wire,
+)
 from core.contracts.cross_plan_schema import validate_cross_plan_dict
 
 
@@ -93,9 +98,7 @@ def _build_mono_plan_record(payload: dict[str, Any]) -> dict[str, Any]:
         "subtask_count": int(payload.get("subtask_count", 0)),
         "has_contract": bool(payload.get("has_contract", False)),
         "goal": payload.get("goal") or None,
-        "acceptance_criteria": _string_list_from_payload(
-            payload, "acceptance_criteria", "acceptance_criteria_count",
-        ),
+        "acceptance_criteria": _acceptance_criteria_from_payload(payload),
         "owned_files": _string_list_from_payload(
             payload, "owned_files", "owned_files_count",
         ),
@@ -111,6 +114,27 @@ def _build_mono_plan_record(payload: dict[str, Any]) -> dict[str, Any]:
             dict(x) for x in payload.get("subtasks", []) if isinstance(x, dict)
         ],
     }
+
+
+def _acceptance_criteria_from_payload(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project typed acceptance criteria, routing legacy payloads through ingress.
+
+    ADR 0188: the durable ``plan.parsed`` payload carries typed criterion
+    objects. A pre-contract event still carries ``list[str]``; the single
+    ingress normalizer turns it into the same typed shape so every evidence
+    reader sees exactly one form. A payload carrying only a count (an event
+    written without the full list) degrades to no criteria rather than
+    fabricating placeholder rows with invented ids.
+    """
+    value = payload.get("acceptance_criteria")
+    if not isinstance(value, list) or not value:
+        return []
+    try:
+        return criteria_to_wire(coerce_acceptance_criteria(value))
+    except CriterionSchemaError:
+        return []
 
 
 def _string_list_from_payload(

@@ -49,10 +49,19 @@ class TestClassifyConnection:
             "stream disconnected before completion",
             "failed to lookup address information: nodename nor servname provided",
             "503 service unavailable",
+            "API Error: 529 Overloaded. This is a server-side issue, usually temporary",
+            "API Error: 500 Internal server error. This is a server-side issue",
+            "API Error: 502 Bad Gateway",
+            '{"type":"error","error":{"type":"overloaded_error"}}',
+            '{"error":{"type":"server_error","message":"The server had an error"}}',
         ],
     )
     def test_connection_signatures_map_to_api_connection_error(self, text: str) -> None:
         assert isinstance(classify_error(RuntimeError("x"), stderr=text), ApiConnectionError)
+
+    def test_nonzero_exit_with_server_error_in_stdout(self) -> None:
+        err = classify_from_exit(1, "", stdout="API Error: 529 Overloaded")
+        assert isinstance(err, ApiConnectionError)
 
     def test_nonzero_exit_with_connection_text(self) -> None:
         err = classify_from_exit(1, "Unable to connect to API (ConnectionRefused)")
@@ -220,6 +229,16 @@ def _stream(stdout: str = "", returncode: int = 0, stderr: str = ""):
     return (stdout, returncode, stderr, 0.01)
 
 
+# Claude Code stream-json as captured in the field: init plumbing, then the
+# provider status as the assistant's final text, exit 1, empty stderr.
+_OVERLOADED_STREAM = (
+    '{"type":"system","subtype":"init","cwd":"/project","session_id":"3f2b429c-1"}\n'
+    '{"type":"assistant","message":{"content":[{"type":"text","text":'
+    '"API Error: 529 Overloaded. This is a server-side issue, usually temporary '
+    '\u2014 try again in a moment. If it persists, check https://status.claude.com."}]}}\n'
+)
+
+
 @pytest.fixture(autouse=True)
 def _runtime_test_environment(
     monkeypatch: pytest.MonkeyPatch,
@@ -345,6 +364,39 @@ class TestRuntimesHaltOnApiFailure:
         out = ClaudeAgent(model="claude-test").invoke("hi", "/project")
         assert out == "recovered output"
         assert calls["n"] == 2
+
+    def test_claude_overloaded_then_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Field regression: exit 1 with "API Error: 529 Overloaded" in the
+        # stream-json assistant line used to be the never-retried generic
+        # bucket; it is transient and must get the connection retry budget.
+        calls = {"n": 0}
+
+        def _fake(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _stream(returncode=1, stdout=_OVERLOADED_STREAM)
+            return _stream(stdout="recovered output")
+
+        monkeypatch.setattr(agents_module, "_stream_run", _fake)
+        out = ClaudeAgent(model="claude-test").invoke("hi", "/project")
+        assert out == "recovered output"
+        assert calls["n"] == 2
+
+    def test_claude_overloaded_is_retried_then_raised(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+
+        def _fake(*a, **k):
+            calls["n"] += 1
+            return _stream(returncode=1, stdout=_OVERLOADED_STREAM)
+
+        monkeypatch.setattr(agents_module, "_stream_run", _fake)
+        with pytest.raises(ApiConnectionError) as info:
+            ClaudeAgent(model="claude-test").invoke("hi", "/project")
+        # connection_max_retries=2 → 1 initial attempt + 2 retries = 3 calls.
+        assert calls["n"] == 3
+        assert "529 Overloaded" in str(info.value)
 
     def test_codex_sets_last_call_id_on_success(
         self, monkeypatch: pytest.MonkeyPatch,

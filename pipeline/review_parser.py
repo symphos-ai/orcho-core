@@ -34,6 +34,9 @@ class ReviewFinding:
     required_fix: str = ""
     file: str | None = None
     line: int | None = None
+    # ADR 0188: optional link to a plan-level acceptance criterion id. Absent
+    # when the reviewer did not type the link — a reader never guesses it.
+    criterion_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -47,6 +50,8 @@ class ReviewFinding:
             out["file"] = self.file
         if self.line is not None:
             out["line"] = self.line
+        if self.criterion_id is not None:
+            out["criterion_id"] = self.criterion_id
         return out
 
 
@@ -137,4 +142,7 @@ def _finding_from_dict(f: dict[str, Any]) -> ReviewFinding:
         required_fix=f.get("required_fix") or "",
         file=f.get("file"),
         line=f.get("line"),
+        criterion_id=(str(f["criterion_id"]).strip() or None)
+        if f.get("criterion_id")
+        else None,
     )

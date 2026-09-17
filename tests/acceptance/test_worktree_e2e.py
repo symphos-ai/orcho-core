@@ -420,10 +420,21 @@ class TestWorktreeEnabled:
         assert (project / "src.py").read_text(encoding="utf-8") == (
             "x = 1\n# R1-regression-marker\n"
         )
-        artifacts = list((run_dir / "commit_decisions").glob("*.json"))
+        decisions = run_dir / "commit_decisions"
+        # ADR 0191: the audit artifact plus the delivery ledger sit side by side.
+        artifacts = [
+            p for p in decisions.glob("*.json")
+            if not p.name.endswith(".delivery.json")
+        ]
         assert len(artifacts) == 1
         artifact = json.loads(artifacts[0].read_text(encoding="utf-8"))
         assert artifact["commit_status"] == "committed"
+        ledgers = list(decisions.glob("*.delivery.json"))
+        assert len(ledgers) == 1
+        ledger = json.loads(ledgers[0].read_text(encoding="utf-8"))
+        assert ledger["stage"] == "recorded"
+        assert ledger["commit_sha"] == new_head
+        assert ledger["head_before"] == old_head
 
     def test_untracked_implement_file_delivered_on_approve(
         self, tmp_path: Path,
@@ -482,10 +493,13 @@ class TestWorktreeEnabled:
             check=True,
         ).stdout.splitlines()
         assert "created.py" in files
+        # The audit artifact, not the ADR 0191 ledger (``*.delivery.json``)
+        # that now sits next to it.
         artifact = json.loads(
-            next((run_dir / "commit_decisions").glob("*.json")).read_text(
-                encoding="utf-8",
-            )
+            next(
+                p for p in (run_dir / "commit_decisions").glob("*.json")
+                if not p.name.endswith(".delivery.json")
+            ).read_text(encoding="utf-8")
         )
         assert artifact["commit_status"] == "committed"
         assert "created.py" in artifact["untracked_delivered"]

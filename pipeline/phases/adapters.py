@@ -322,11 +322,16 @@ def run_review(
     output_contract: Literal["review", "release"] = "review",
     verification_part: PromptPart | None = None,
     readiness_summary: str = "",
+    review_context: str = "",
 ) -> PhaseResult:
     """review_changes / final_acceptance / validate_plan runner.
 
     ``readiness_summary`` (ADR 0082, final_acceptance only) carries the
     pre-rendered Stage 5 verification-readiness block; empty adds no part.
+
+    ``review_context`` (final_acceptance only) carries the rendered
+    evidence of the prior review attempts on this run; the builder pairs it
+    with the code-owned "evidence only" framing. Empty adds no part.
 
     The reviewer receives both typed plan handoff views: the
     plan-level contract and the concrete subtask decomposition.
@@ -383,6 +388,7 @@ def run_review(
         repair_receipt=repair_receipt,
         current_review_subject=current_review_subject,
         verification_readiness=readiness_summary,
+        review_context=review_context,
         operator_waiver=operator_waiver,
         output_contract=output_contract,
     )
@@ -407,6 +413,8 @@ def run_fix(
     *,
     test_failures: str = "",
     write_style: str = "",
+    operator_feedback: str = "",
+    verification_failure: str = "",
     continue_session: bool = False,
     hybrid_codemap: str = "",
     plan_contract: str = "",
@@ -427,6 +435,10 @@ def run_fix(
     ``hybrid_codemap`` re-primes the prompt with a repo outline when running
     HYBRID (different model than implement, can't reuse session). Empty
     string is a no-op.
+
+    ``operator_feedback`` is operator instruction from a phase-handoff
+    retry decision; it reaches the prompt as its own ``human_feedback``
+    part, separate from the reviewer/verification critique body.
     """
     if dry_run:
         return PhaseResult(name="repair_changes", output="[DRY RUN]", meta={"dry_run": True})
@@ -435,6 +447,8 @@ def run_fix(
         task, critique, project_dir, plugin,
         test_failures=test_failures,
         write_style=write_style,
+        operator_feedback=operator_feedback,
+        verification_failure=verification_failure,
         plan_contract=plan_contract,
         plan_tasks=plan_tasks,
         handoff_contract=handoff_contract,

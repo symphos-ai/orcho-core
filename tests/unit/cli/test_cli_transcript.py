@@ -170,7 +170,7 @@ def test_run_header_contains_all_model_and_effort_fields() -> None:
         ],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         output_log="/runs/REAL_ADV_2/output.log",
         events_log="/runs/REAL_ADV_2/events.jsonl",
@@ -191,8 +191,11 @@ def test_run_header_contains_all_model_and_effort_fields() -> None:
         assert effort in out
     # State fields.
     assert "session" in out and "auto" in out
-    assert "rounds=1" in out
+    # The two retry budgets are labelled separately: the repair cap is
+    # never rendered as a bare ``rounds=`` next to ``plan=``.
+    assert "repair_rounds=1" in out
     assert "plan=yes" in out
+    assert "rounds=1" not in out.replace("repair_rounds=1", "")
     # Log paths preserved.
     assert "/runs/REAL_ADV_2/output.log" in out
     assert "/runs/REAL_ADV_2/events.jsonl" in out
@@ -206,7 +209,7 @@ def test_run_header_surfaces_discovered_skills_line() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         plugin_line="Project",
         skills_line="2: quant-analytics-atas, quant-analytics-theory",
@@ -251,7 +254,7 @@ def test_run_header_surfaces_verification_block_when_present() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         verification=view,
     ))
@@ -278,11 +281,67 @@ def test_run_header_omits_verification_block_without_contract() -> None:
         agents=[],
         profile="advanced",
         session_mode="auto",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
     ))
 
     assert "Verification" not in out
+
+
+def test_run_header_states_the_fact_when_no_contract_was_declared() -> None:
+    """Without a contract there is no gate matrix — say so, don't go silent."""
+    line = "contract: none — engine runs no gates"
+    out = _strip(render_run_header(
+        run_id="R1",
+        project="/tmp/proj",
+        task="Split work",
+        agents=[],
+        profile="advanced",
+        session_mode="auto",
+        repair_rounds=1,
+        plan=True,
+        verification_absent_line=line,
+    ))
+
+    assert "Verification" in out
+    assert line in out
+    # One row where the matrix would have been — not a table.
+    assert len([ln for ln in out.splitlines() if line in ln]) == 1
+
+
+def test_run_header_absent_line_is_ignored_when_a_contract_is_declared() -> None:
+    """A declared contract renders its own block; the fallback stays out."""
+    view = VerificationHeaderView(
+        mode="governed",
+        envs=("ci",),
+        gates=(
+            GateRowView(
+                gate="lint",
+                timing="after_implement",
+                run_mode="auto",
+                policy="require",
+                cost="fast",
+                when="after_implement",
+            ),
+        ),
+        policy_source="auto-derived from mode/plugin defaults",
+        effect="warn on missing/failed receipts",
+    )
+    out = _strip(render_run_header(
+        run_id="R1",
+        project="/tmp/proj",
+        task="Split work",
+        agents=[],
+        profile="advanced",
+        session_mode="auto",
+        repair_rounds=1,
+        plan=True,
+        verification=view,
+        verification_absent_line="contract: none — engine runs no gates",
+    ))
+
+    assert "engine runs no gates" not in out
+    assert "lint" in out
 
 
 def test_cross_run_header_lists_projects_and_agents() -> None:
@@ -300,7 +359,7 @@ def test_cross_run_header_lists_projects_and_agents() -> None:
             {"role": "REVIEW_CHANGES", "model": "gpt-5.4",          "effort": "medium"},
         ],
         cross_mode="full",
-        rounds=2,
+        repair_rounds=2,
         output_log="/runs/x/output.log",
         events_log="/runs/x/events.jsonl",
     ))
@@ -327,7 +386,9 @@ def test_cross_run_header_lists_projects_and_agents() -> None:
     assert "claude-sonnet-4-6" in out
     assert "high" in out and "medium" in out
     # State + log paths preserved.
-    assert "rounds_per_project=2" in out
+    # The repair cap is named for the loop it caps; the planning budget
+    # is a separate number and never hides behind this one.
+    assert "repair_rounds_per_project=2" in out
     assert "/runs/x/events.jsonl" in out
 
 
@@ -342,7 +403,7 @@ def test_cross_run_header_surfaces_profile_projection() -> None:
         projects={"api": "/tmp/api"},
         agents=[{"role": "CROSS_PLAN", "model": "claude-opus-4-7", "effort": "high"}],
         cross_mode="full",
-        rounds=2,
+        repair_rounds=2,
         profile="advanced",
         plan_source="cross",
         projection="global + per-project",
@@ -457,7 +518,7 @@ def test_run_header_surfaces_followup_parent() -> None:
         agents=[{"role": "PLAN", "model": "mock", "effort": "high"}],
         profile="lite",
         session_mode="stateless",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
         followup_parent_run_id="20260518_173520",
         followup_base_task="first task",
@@ -477,7 +538,7 @@ def test_run_header_surfaces_followup_parent() -> None:
         agents=[{"role": "PLAN", "model": "mock", "effort": "high"}],
         profile="lite",
         session_mode="stateless",
-        rounds=1,
+        repair_rounds=1,
         plan=True,
     ))
     assert "follow-up" not in fresh.lower()
@@ -491,7 +552,7 @@ def test_cross_run_header_surfaces_followup_parent() -> None:
         projects={"api": "/tmp/api"},
         agents=[{"role": "CROSS_PLAN", "model": "mock", "effort": "high"}],
         cross_mode="full",
-        rounds=1,
+        repair_rounds=1,
         followup_parent_run_id="20260518_170000",
         followup_base_task="original cross task",
     ))
@@ -504,7 +565,7 @@ def test_cross_run_header_surfaces_followup_parent() -> None:
 def test_run_header_does_not_print_giant_banner() -> None:
     out = _strip(render_run_header(
         run_id=None, project="/p", task="t", agents=[], profile="lite",
-        session_mode="stateless", rounds=0, plan=False,
+        session_mode="stateless", repair_rounds=0, plan=False,
     ))
     # Heavy ════ × 60+ banners are gone — only the thin rule (and shorter
     # variants) remain.

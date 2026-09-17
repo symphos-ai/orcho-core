@@ -169,7 +169,7 @@ def _patch_gate_results(monkeypatch, results: list[dict]) -> dict:
     calls = {"gate": 0, "repair": 0}
     queue = list(results)
 
-    def fake_gate(run, contract, entry):
+    def fake_gate(run, contract, entry, *, invocation_id=None):
         calls["gate"] += 1
         return queue.pop(0) if queue else results[-1]
 
@@ -309,6 +309,9 @@ def test_exit0_import_assertion_handoff_has_provenance_evidence(monkeypatch) -> 
             "body": signal.artifacts["short_summary"],
             "required_fix": "Fix the verification environment outside the agent or choose an explicit waiver.",
             "failure_kind": "provenance_failure",
+            # Every finding names its command: a set-valued payload whose
+            # findings only carried receipt evidence would be unreadable.
+            "command": "test",
         }
     ]
     assert "expected='/work/pipeline/__init__.py'" in signal.last_output

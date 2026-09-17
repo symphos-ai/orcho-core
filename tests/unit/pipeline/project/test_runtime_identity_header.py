@@ -124,7 +124,7 @@ class TestRenderHeaderAccountHint:
     def _render(self, agents) -> str:
         return render_run_header(
             run_id="r1", project="/p", task="t", agents=agents,
-            profile="feature", session_mode="auto", rounds=2, plan=True,
+            profile="feature", session_mode="auto", repair_rounds=2, plan=True,
         )
 
     def test_available_account_is_shown(self) -> None:

@@ -27,13 +27,14 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from sdk.errors import OrchoError
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
 
 if TYPE_CHECKING:
     from pipeline.verification_contract import VerificationContract
+    from pipeline.verification_progress import GateProgressContext
     from sdk.types import RunRef
 
 
@@ -95,6 +96,20 @@ class CommandOutcome:
     # on no declared dependency. Derived from the receipt's ``dependencies``
     # block (entries with ``depends_on`` true). ADR 0084.
     dependencies: tuple[str, ...] = ()
+
+
+class CommandObserver(Protocol):
+    """Engine-side boundary around each command ``verify_run`` executes.
+
+    ``start`` runs before the command and may return the live progress
+    context the executor publishes ``gate.progress`` through; ``end`` runs
+    after it with the settled :class:`CommandOutcome`, or ``None`` when the
+    executor raised (the boundary must still close). Observational only.
+    """
+
+    def start(self, command: str) -> GateProgressContext | None: ...
+
+    def end(self, command: str, outcome: CommandOutcome | None) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -576,6 +591,7 @@ def verify_run(
     required_only: bool = False,
     include_manual: bool = False,
     subject_checkout: str | None = None,
+    observer: CommandObserver | None = None,
 ) -> VerifyRunResult:
     """Execute declared commands natively and persist one receipt each.
 
@@ -588,6 +604,13 @@ def verify_run(
     ``subject_checkout`` is an internal controller seam. It may confirm an
     isolated recorded identity or establish a non-canonical subject when the
     metadata is incomplete; it never overrides conflicting identity.
+
+    ``observer`` is an internal controller seam too: the engine's
+    required-receipt auto-run brackets every command with its gate boundary
+    (``start`` returns the live ``gate.progress`` context threaded into the
+    executor, ADR 0190; ``end`` receives the settled outcome, or ``None`` when
+    the executor raised). Purely observational; absent (the CLI / SDK
+    default) behavior is unchanged.
 
     Pass ``runs_dir`` to resolve a run beneath an explicit parent directory.
 
@@ -657,18 +680,25 @@ def verify_run(
     outcomes: list[CommandOutcome] = []
     for name in names:
         spec = contract.commands[name]
-        result = run_command(
-            name,
-            spec,
-            contract,
-            ctx,
-            required=name in contract.required,
-            baseline_head=baseline_head,
-            log_dir=log_dir,
-        )
-        receipt_path = write_command_receipt(output_dir=run_dir, result=result)
+        progress = observer.start(name) if observer is not None else None
+        try:
+            result = run_command(
+                name,
+                spec,
+                contract,
+                ctx,
+                required=name in contract.required,
+                baseline_head=baseline_head,
+                log_dir=log_dir,
+                progress=progress,
+            )
+            receipt_path = write_command_receipt(output_dir=run_dir, result=result)
+        except BaseException:
+            if observer is not None:
+                observer.end(name, None)
+            raise
         git = result.get("git") or {}
-        outcomes.append(CommandOutcome(
+        outcome = CommandOutcome(
             command=name,
             env=str(result.get("env", "")),
             exit_code=result.get("exit_code"),
@@ -681,7 +711,10 @@ def verify_run(
             checkout_head=git.get("checkout_head"),
             baseline_head=git.get("baseline_head"),
             dependencies=_dependency_tags(result.get("dependencies")),
-        ))
+        )
+        outcomes.append(outcome)
+        if observer is not None:
+            observer.end(name, outcome)
 
     all_passed = all(o.exit_code == 0 for o in outcomes)
     return VerifyRunResult(

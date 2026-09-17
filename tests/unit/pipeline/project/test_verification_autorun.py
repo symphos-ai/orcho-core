@@ -2453,6 +2453,106 @@ def test_materializer_refreshes_after_phase_delivery_identity(
     assert recorder.run_calls[0]["commands"] == ["lint"]
 
 
+@pytest.mark.parametrize("unattended", [True, False], ids=["unattended", "interactive"])
+def test_handoff_continuation_refreshes_repaired_receipts_before_acceptance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    fake_verification_subject_capture: FakeVerificationSubjectCapture,
+    unattended: bool,
+) -> None:
+    from pipeline.control.handoff_prompt import HandoffDecisionInput
+    from pipeline.lifecycle import default_lifecycle_context
+    from pipeline.project import gate_repair, handoff
+    from pipeline.project.handoff_advice_policy import HandoffAdvicePolicy
+    from pipeline.project.run import _PipelineRun
+    from pipeline.project.types import PresentationPolicy
+    from pipeline.runtime import LoopStep, PhaseRegistry, PhaseStep, PipelineState, Profile
+
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _routing_contract([
+        {"after_phase": "implement", "policy": "require", "commands": ["lint"]},
+    ])
+    contract.commands["lint"]["cost"] = "slow"
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    state = PipelineState(task="refresh after repair", project_dir=str(project), plugin=PluginConfig())
+    state.extras.update(run.state.extras)
+    state.output_dir = run_dir
+    run.state = state
+    run.no_interactive = unattended
+    run.unattended = unattended
+    run._presentation = PresentationPolicy.SILENT
+    run.profile_name = "feature"
+    run.session_ts = "rid"
+    run.git_cwd = str(project)
+    run._ckpt = None
+    run._dispatch_active = False
+    run.max_rounds = 2
+    run._on_phase_start = lambda *args: None
+    run._on_phase_pre = lambda name, st: _PipelineRun._on_phase_pre(run, name, st)
+    run._on_phase_end = lambda name, st: gate_repair.evaluate_post_phase_gates(run, name)
+    run._record_phase_failure = lambda *args, **kwargs: None
+    recorder = _Recorder(run_dir, production_writer=True).install(monkeypatch)
+
+    def execute_initial_gate(run, contract, entry, *, invocation_id=None):
+        command = entry.command
+        recorder.verify_run(commands=[command], subject_checkout=str(project), project=str(project))
+        return json.loads((run_dir / COMMAND_RECEIPTS_DIRNAME / f"{command}.json").read_text())
+
+    monkeypatch.setattr(gate_repair, "_run_gate_command", execute_initial_gate)
+    phases: list[str] = []
+    acceptance: list[str] = []
+
+    def handler(name, st):
+        if name == "repair_changes" and st.phase_log["review_changes"]["clean"]:
+            st.phase_log[name] = {"skipped": True}
+            return st
+        phases.append(name)
+        if name == "review_changes":
+            st.phase_log[name] = {"clean": phases.count(name) == 2}
+        if name == "repair_changes":
+            fake_verification_subject_capture.set_identity(project, tree_oid="9" * 40)
+            assert classify_required_receipts(
+                contract, run_dir, ctx, checkout=str(project), extras=st.extras,
+            )["lint"].status == "stale"
+        if name == "final_acceptance":
+            acceptance.append(classify_required_receipts(
+                contract, run_dir, ctx, checkout=str(project), extras=st.extras,
+            )["lint"].status)
+        return st
+
+    registry = PhaseRegistry()
+    for name in ("implement", "review_changes", "repair_changes", "final_acceptance"):
+        registry.register(name, lambda st, name=name: handler(name, st))
+    run.registry = registry
+    profile = Profile(name="refresh", kind="custom", steps=(
+        PhaseStep(phase="implement"),
+        LoopStep(steps=(PhaseStep(phase="review_changes"), PhaseStep(phase="repair_changes")),
+                 until="review_changes.clean", max_rounds=2, round_extras_key="repair_round"),
+        PhaseStep(phase="final_acceptance"),
+    ))
+    lifecycle = default_lifecycle_context(phase_registry=registry)
+    state.phase_handoff_request = SimpleNamespace(
+        handoff_id="validate_plan:plan_round:2", phase="validate_plan",
+        available_actions=("continue",), trigger="rejected", approved=False,
+    )
+    monkeypatch.setattr(handoff, "apply_phase_handoff_pause", lambda run: None)
+    monkeypatch.setattr(handoff, "should_prompt_for_phase_handoff", lambda **kw: not unattended)
+    monkeypatch.setattr(handoff, "prompt_phase_handoff_action", lambda *a, **k: HandoffDecisionInput(action="continue"))
+    monkeypatch.setattr("pipeline.project.handoff_advice_policy.resolve_handoff_advice_policy",
+                        lambda run: HandoffAdvicePolicy(auto_retry_with_agent=False))
+    monkeypatch.setattr("sdk.phase_handoff.phase_handoff_decide", lambda *a, **k: None)
+    monkeypatch.setattr(handoff, "apply_phase_handoff_resume_with_banners", lambda *a, **k:
+                        handoff.PhaseHandoffResumeOutcome(profile=profile, completed_phases=frozenset(), paused=False))
+
+    handoff.process_pending_phase_handoffs(run, profile, lifecycle)
+
+    assert phases == ["implement", "review_changes", "repair_changes", "review_changes", "final_acceptance"]
+    assert acceptance == (["present"] if unattended else ["stale"])
+    assert len(recorder.run_calls) == (2 if unattended else 1)
+    executions = [event for event in load_ledger(run_dir).trail if event.kind == "execution"]
+    assert [event.rerun for event in executions] == ([False, True] if unattended else [False])
+
+
 @pytest.mark.parametrize(
     ("policy", "executions", "paused"),
     (("manual", 0, False), ("suggest", 0, False), ("warn", 1, False), ("require", 1, True)),
@@ -2996,3 +3096,107 @@ def test_timeline_no_parent_present_receipt_has_no_inherited_line(
     assert timeline.inherited == ()
     block = "\n".join(render_verification_gate_done_block(timeline))
     assert "inherited:" not in block
+
+
+# ── inherited failed parent receipt with no receipt owned by this run ─────
+
+
+@pytest.mark.parametrize("rerun_exit", [0, 1], ids=["fixed", "still-failing"])
+def test_inherited_failed_parent_receipt_without_own_receipt_is_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rerun_exit: int,
+) -> None:
+    """A ``failed`` classification inherited from a parent source, with no
+    receipt owned by this run, is materialized like ``missing`` (ADR 0141's
+    "failed stays failed" is about receipts this run owns). The rerun writes
+    this run's own receipt, so a pass proves the gate and a failure stays
+    authoritative — ``required_passed`` is never green on an unrun gate."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _contract(["lint"])
+    ctx = _ctx(contract, checkout=project, project=project,
+               workspace=workspace, run_dir=run_dir)
+    parent_dir = tmp_path / "parent"
+    _write_receipt(parent_dir, "lint", exit_code=1, checkout=project)
+    extras = {VERIFICATION_PARENT_RUNS_EXTRAS_KEY: (("parent", str(parent_dir)),)}
+    assert classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(project), extras=extras,
+    )["lint"].status == "failed"
+    rec = _Recorder(run_dir, exit_codes={"lint": rerun_exit}).install(monkeypatch)
+
+    result = materialize_required_receipts(
+        run_id="rid", run_dir=run_dir, project_dir=str(project),
+        checkout=str(project), contract=contract, ctx=ctx,
+        workspace=str(workspace), extras=extras, reason="gate rerun",
+    )
+
+    assert result.ran_commands == ("lint",)
+    assert rec.run_calls[0]["commands"] == ["lint"]
+    after = classify_required_receipts(
+        contract, run_dir, ctx, checkout=str(project), extras=extras,
+    )["lint"]
+    from pipeline.project.correction_gate_rerun import _execution_from_result
+
+    execution = _execution_from_result(result, env="ci")
+    if rerun_exit == 0:
+        assert result.failed == ()
+        assert after.status == "present"
+        assert execution.required_passed is True
+    else:
+        assert result.failed == ("lint",)
+        assert after.status == "failed"
+        assert execution.required_passed is False
+
+
+@pytest.mark.parametrize("rerun_exit", [1, 0], ids=["still-failing", "fixed"])
+def test_correction_child_without_implement_epoch_reruns_inherited_failed_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rerun_exit: int,
+) -> None:
+    """Producer→consumer, the shape of run 20260912_101558: a correction child
+    on the ``gate_rerun`` route skipped ``implement``, so its ledger recorded no
+    delivery selection, while the parent's path-selected required gate failed.
+    The child's ``before_delivery`` epoch must still carry that gate, the
+    pre-final auto-run must rerun it, and readiness / the engine backstop must
+    read the child's own result — a red gate stays a release gap, a green one
+    clears it. Before the fix the child published an empty delivery view, the
+    gate vanished from readiness and the backstop, and acceptance approved."""
+    project, workspace, run_dir = _layout(tmp_path)
+    contract = _prefinal_path_contract()
+    ctx = _ctx(contract, checkout=project, project=project, workspace=workspace, run_dir=run_dir)
+    run = _stub_run(project, run_dir, contract, ctx)
+    run.state.output_dir = run_dir
+    parent_dir = workspace / "runspace" / "runs" / "parent"
+    _write_receipt(parent_dir, "cli-sdk-unit", exit_code=1, checkout=project)
+    run.state.extras[VERIFICATION_PARENT_RUNS_EXTRAS_KEY] = (("parent", str(parent_dir)),)
+    monkeypatch.setattr(
+        "core.io.git_helpers.git_changed_files",
+        lambda _cwd: ["tests/unit/cli/test_gate.py"],
+    )
+
+    # No ``after_phase:implement`` epoch ever ran in this child.
+    plan = select_before_delivery_epoch(run)
+    assert ("cli-sdk-unit", "after_phase", "implement") in [
+        (e.command, e.hook, e.phase) for e in plan.entries
+    ]
+
+    recorder = _Recorder(run_dir, exit_codes={"cli-sdk-unit": rerun_exit}).install(monkeypatch)
+    result = auto_run_required_receipts(
+        run, "final_acceptance", reason="pre-final", delivery_plan=plan,
+    )
+    assert result.ran_commands == ("cli-sdk-unit",)
+    assert recorder.run_calls[0]["commands"] == ["cli-sdk-unit"]
+
+    from pipeline.verification_readiness import (
+        build_final_acceptance_readiness,
+        required_receipt_gaps,
+    )
+
+    readiness = build_final_acceptance_readiness(
+        contract, run_dir, ctx, extras=run.state.extras,
+    )
+    gaps = required_receipt_gaps(contract, run_dir, ctx, extras=run.state.extras)
+    if rerun_exit:
+        assert "cli-sdk-unit" in readiness.required_failed
+        assert [g["required_check"] for g in gaps] == ["true"]
+    else:
+        assert "cli-sdk-unit" not in readiness.required_failed
+        assert "cli-sdk-unit" not in readiness.required_missing
+        assert gaps == []

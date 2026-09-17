@@ -54,6 +54,9 @@ class ReleaseBlocker:
     why_blocks_release: str
     file: str | None = None
     line: int | None = None
+    # ADR 0188: optional link to a plan-level acceptance criterion id. Absent
+    # when the reviewer did not type the link — a reader never guesses it.
+    criterion_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -68,6 +71,8 @@ class ReleaseBlocker:
             out["file"] = self.file
         if self.line is not None:
             out["line"] = self.line
+        if self.criterion_id is not None:
+            out["criterion_id"] = self.criterion_id
         return out
 
     def to_finding_dict(self) -> dict[str, object]:
@@ -91,6 +96,8 @@ class ReleaseBlocker:
             out["file"] = self.file
         if self.line is not None:
             out["line"] = self.line
+        if self.criterion_id is not None:
+            out["criterion_id"] = self.criterion_id
         return out
 
 
@@ -228,6 +235,9 @@ def _blocker_from_dict(b: dict[str, Any]) -> ReleaseBlocker:
         why_blocks_release=b["why_blocks_release"],
         file=b.get("file"),
         line=b.get("line"),
+        criterion_id=(str(b["criterion_id"]).strip() or None)
+        if b.get("criterion_id")
+        else None,
     )
 
 

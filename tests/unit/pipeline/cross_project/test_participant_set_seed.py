@@ -53,6 +53,7 @@ def test_setup_cross_run_seeds_provisional_per_alias(tmp_path: Path) -> None:
         projects={"core": core, "mcp": mcp},
         model="fake-model",
         mock=False,
+        max_rounds=1,
         output_dir=run_dir,
         cross_mode="full",
         resume_from=None,

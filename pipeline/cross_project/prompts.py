@@ -10,6 +10,7 @@ from core.infra.platform import workspace_dir as _resolve_workspace
 
 if TYPE_CHECKING:
     from pipeline.prompts.turn import PromptTurn
+    from pipeline.prompts.types import PromptPart
 
 # Workspace root for prompt overrides, resolved via core.platform so the
 # engine works from any install location.
@@ -177,7 +178,7 @@ def cross_plan_review_focus(
         )
         sections: list[str] = [
             "## Cross plan review",
-            f"TASK:\n{task[:300]}",
+            f"TASK:\n{task}",
         ]
         if aliases_str:
             sections.append(f"PROJECTS INVOLVED: {aliases_str}")
@@ -201,7 +202,7 @@ def cross_plan_review_focus(
         extra_parts = tuple(p for p in (ti, artifact_part) if p is not None)
     else:
         intent = minimal_intents.cross_plan_review_focus_intent(
-            task[:300],
+            task,
             aliases=aliases_str,
             artifact_block=plan_artifact,
         )
@@ -225,6 +226,36 @@ def cross_plan_review_focus(
         rendered,
         system_tail=(review_json_contract(body_language=cfg.task_language),),
         extra_upper_parts=extra_parts,
+    )
+
+
+def _previous_cross_plan_part(cross_artifacts_dir: Path) -> PromptPart | None:
+    """Carry the engine's latest valid plan into a fresh revision session."""
+    from pipeline.prompts.types import (
+        PromptCacheScope,
+        PromptLayer,
+        PromptPart,
+        PromptStability,
+    )
+
+    plan_path = cross_artifacts_dir / "cross_plan.md"
+    try:
+        plan = plan_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # The first attempt may have failed parsing before any valid artifact.
+        return None
+    return PromptPart(
+        kind="artifact", name="previous_cross_plan", source="artifact",
+        body=(
+            "Previous cross-plan revision baseline (not an approval). "
+            "Revise this plan using the feedback and the full task; preserve "
+            "unaffected requirements and reconcile changes throughout the plan.\n\n"
+            + plan
+        ),
+        artifact_path=str(plan_path), layer=PromptLayer.TURN,
+        stability=PromptStability.TURN, cache_scope=PromptCacheScope.NONE,
+        volatile_reason="previous cross-plan revision baseline",
+        id="artifact:previous_cross_plan",
     )
 
 
@@ -298,6 +329,9 @@ def cross_replan_prompt(
             )
         else:
             rendered = intent
+    previous_plan = _previous_cross_plan_part(cross_artifacts_dir)
+    if previous_plan is not None:
+        extra_parts = (*extra_parts, previous_plan)
     rendered = _append_path_alias_instruction(rendered, aliases)
     return _render_prompt_output(
         rendered,

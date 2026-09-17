@@ -16,6 +16,12 @@ The accepted plan contract is authoritative: check each published invariant
 before recommending a retry, and do not infer missing contract facts from the
 review prose.
 
+When the pause is an incomplete implement delivery, the recorded subtask status
+is authoritative for what has been implemented: read it before judging scope.
+A subtask whose receipt says done is done; do not infer from the findings, the
+last output, or the working-tree summary that work is missing. Advise on the
+subtasks and criteria the status block names as open, and nothing wider.
+
 Recommend exactly one path:
 
 - Retry the phase with corrective feedback, when the findings name a concrete,

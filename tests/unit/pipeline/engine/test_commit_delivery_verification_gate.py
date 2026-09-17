@@ -15,14 +15,21 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from core.infra.paths import CONFIG_DIR
 from core.io.git_helpers import create_worktree
 from pipeline.engine.commit_delivery import (
     apply_commit_delivery,
     resolve_commit_delivery,
 )
+from pipeline.plugins import PluginConfig
+from pipeline.profiles.loader import load_profiles_v2
+from pipeline.verification_contract import PlaceholderContext, VerificationContract
 from pipeline.verification_delivery import (
     DeliveryVerificationAssessment,
     WaivedGate,
+    assess_delivery_verification,
 )
 from pipeline.verification_policy import GapEntry
 
@@ -877,3 +884,88 @@ class TestIncidentBlockBannerCarriesDiagnostics:
         assert str(parent_dir) in err and str(child_dir) in err
         assert verify_env in err
         assert verify_run in err
+
+
+# Applicability is evaluated from the entire resolved recipe. Review-only
+# recipes still own the pre-existing diff, even though they never implement.
+@pytest.mark.parametrize("profile_name", [
+    "feature", "refactor", "migration", "delivery_audit", "code_review",
+])
+def test_real_delivery_subject_requires_receipts(tmp_path, profile_name):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _with_diff(repo)
+    before = _status(repo)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    gate = _missing_after_implement_receipt(repo, run_dir)
+    profile = load_profiles_v2(CONFIG_DIR / "pipeline_profiles_v2.json")[profile_name]
+    decision = resolve_commit_delivery(
+        project_dir=repo, source_worktree=repo, run_dir=run_dir, run_id="r1",
+        session={"status": "done", **_session()}, resolved_profile=profile,
+        commit_config={"enabled": True}, no_interactive=True,
+        verification_gate=gate,
+    )
+    assert decision.status == "verification_blocked"
+    assert decision.verification_missing == ("test",)
+    assert _status(repo) == before
+
+
+def _missing_after_implement_receipt(repo, run_dir):
+    contract = VerificationContract.from_plugin(PluginConfig(verification={
+        "commands": {"test": {"run": ["python", "-c", "pass"]}},
+        "required": ["test"],
+        "gate_sets": {"required": {"commands": ["test"]}},
+        "selection": [{"always": ["required"]}],
+        "schedule": [{"after_phase": "implement", "commands": ["test"],
+                      "policy": "require", "action": "handoff"}],
+    }))
+    gate = assess_delivery_verification(
+        contract=contract, run_dir=run_dir, extras={}, diff_cwd=repo,
+        ctx=PlaceholderContext(checkout=str(repo), project=str(repo)),
+    )
+    assert gate is not None and gate.blocking
+    assert gate.required_missing == ("test",)
+    return gate
+
+
+@pytest.mark.parametrize("subject", [
+    "tracked", "untracked", "unknown_profile", "invalid_baseline", "unreadable_untracked",
+])
+def test_plan_only_bypass_requires_proven_absence(tmp_path, monkeypatch, subject):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    profile = load_profiles_v2(CONFIG_DIR / "pipeline_profiles_v2.json")["planning"]
+    if subject == "tracked":
+        _with_diff(repo)
+    elif subject == "untracked":
+        (repo / "new.txt").write_text("deliver me\n")
+    elif subject == "unknown_profile":
+        profile = None
+    elif subject == "unreadable_untracked":
+        import pipeline.engine.commit_delivery as cd
+
+        real_git = cd._run_git
+
+        def unreadable(cwd, args):
+            if args[0] == "ls-files":
+                return cd._GitResult(ok=False, error="cannot inspect untracked files")
+            return real_git(cwd, args)
+
+        monkeypatch.setattr(cd, "_run_git", unreadable)
+    gate = _missing_after_implement_receipt(repo, run_dir)
+    decision = resolve_commit_delivery(
+        project_dir=repo, source_worktree=repo, run_dir=run_dir, run_id="r1",
+        resolved_profile=profile,
+        session={"status": "done", "phases": {
+            "plan": [{"total_atomic_tasks": 1}],
+            "validate_plan": [{"approved": True, "verdict": "APPROVED"}],
+        }},
+        baseline_ref="missing-baseline" if subject == "invalid_baseline" else "HEAD",
+        commit_config={"enabled": True, "add_untracked": True},
+        no_interactive=True, verification_gate=gate,
+    )
+    assert decision.status == "verification_blocked"
+    assert not decision.persist_no_delivery

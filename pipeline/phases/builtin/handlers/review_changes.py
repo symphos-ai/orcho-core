@@ -35,6 +35,7 @@ from pipeline.phases.builtin.review_support import (
     _current_change_review_subject,
     _operator_waiver_text,
     _print_review_preview,
+    _record_criterion_finding_links,
     _repair_receipt_text,
     _verification_receipt_text,
 )
@@ -339,6 +340,7 @@ def _phase_review_changes(state: PipelineState) -> PipelineState:
     if contract_repair is not None:
         entry["contract_repair"] = contract_repair
     state.phase_log["review_changes"] = entry
+    _record_criterion_finding_links(state, entry["findings"], actor="reviewer")
     review_meta = result.meta or {}
     rounds_pending = dict(state.phase_log.get("rounds_pending", {}) or {})
     review_session_id = review_meta.get("session_id")

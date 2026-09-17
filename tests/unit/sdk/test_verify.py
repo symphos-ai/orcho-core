@@ -839,3 +839,77 @@ class TestVerifyRunDependencyTags:
         assert result.outcomes[0].dependencies == (
             f"shared@{dep_head[:7]}+dirty",
         )
+
+
+class TestVerifyRunObserver:
+    """``observer`` brackets every executed command (the engine's gate boundary)."""
+
+    class _Observer:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.ended: list[tuple[str, object]] = []
+
+        def start(self, command: str):
+            from pipeline.verification_progress import build_gate_progress_context
+
+            self.started.append(command)
+            return build_gate_progress_context(
+                invocation_id=f"inv-{command}", name=command,
+                hook="before_phase", phase="final_acceptance",
+            )
+
+        def end(self, command: str, outcome) -> None:
+            self.ended.append((command, outcome))
+
+    def test_observer_sees_start_progress_and_settled_outcome(
+        self, tmp_path: Path, runs_dir: Path, monkeypatch,
+    ) -> None:
+        project = _write_project(tmp_path)
+        _write_meta_run(runs_dir, "20260101_000000", project=project, worktree=None)
+        emitted: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            "core.observability.events.emit",
+            lambda kind, **payload: emitted.append((kind, payload)),
+        )
+        observer = self._Observer()
+
+        result = verify_run(
+            project=str(project), run_id="20260101_000000",
+            commands=["echo_co", "echo_proj"], observer=observer,
+        )
+
+        assert observer.started == ["echo_co", "echo_proj"]
+        assert [c for c, _ in observer.ended] == ["echo_co", "echo_proj"]
+        assert [o.exit_code for _, o in observer.ended] == [0, 0]
+        assert [o.command for o in result.outcomes] == ["echo_co", "echo_proj"]
+        # The progress context handed back by ``start`` reached the executor:
+        # the live stream carries its invocation id.
+        progress_ids = {p.get("invocation_id") for k, p in emitted if k == "gate.progress"}
+        assert {"inv-echo_co", "inv-echo_proj"} <= progress_ids
+
+    def test_observer_end_gets_none_when_the_executor_raises(
+        self, tmp_path: Path, runs_dir: Path, monkeypatch,
+    ) -> None:
+        project = _write_project(tmp_path)
+        _write_meta_run(runs_dir, "20260101_000000", project=project, worktree=None)
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("executor exploded")
+
+        monkeypatch.setattr("pipeline.verification_command.run_command", boom)
+        observer = self._Observer()
+
+        with pytest.raises(RuntimeError, match="executor exploded"):
+            verify_run(
+                project=str(project), run_id="20260101_000000",
+                commands=["echo_co"], observer=observer,
+            )
+
+        assert observer.started == ["echo_co"]
+        assert observer.ended == [("echo_co", None)]
+
+    def test_without_observer_nothing_changes(self, tmp_path: Path, runs_dir: Path) -> None:
+        project = _write_project(tmp_path)
+        _write_meta_run(runs_dir, "20260101_000000", project=project, worktree=None)
+        result = verify_run(project=str(project), run_id="20260101_000000", commands=["echo_co"])
+        assert result.all_passed

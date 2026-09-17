@@ -25,3 +25,19 @@ returns `stalled` before `active`, with non-resume `inspect_or_cancel`.
 
 MCP/schema changes are intentionally absent. Windows hosted SIGBREAK/Job Object
 evidence is deferred to configured CI; local POSIX checks do not prove it.
+
+## Addendum 2026-09-04: setup heartbeat
+
+Field runs showed a successful worktree bootstrap (`npm ci`, ~270 s) being
+retro-halted as `startup_stalled` at the checkpoint that follows isolation
+setup: bootstrap steps emit no event and write no `output.log`, so the
+window's only progress signals never moved. The fix keeps the single owner.
+`StartupWatchdog.mark_progress()` restarts the idle budget, re-snapshots the
+baselines, and rewrites `startup_command.json` with a fresh `armed_at`, so
+`armed_at` now means "start of the current idle window" and diagnosis reads it
+unchanged. The module helper `heartbeat_startup_watchdog()` is called by the
+bootstrap path per completed step and once after a successful bootstrap. The
+watchdog stays armed across heartbeats; a recorded command timeout is not
+cleared. This is still not a heartbeat framework: no events, no schema change,
+and bootstrap `run` steps are not routed through the bounded service-command
+observer.

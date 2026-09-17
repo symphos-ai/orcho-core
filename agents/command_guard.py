@@ -3,7 +3,8 @@
 The prompts tell write-capable agents not to discard user-owned work, but
 prompts are advisory. This module is the runtime backstop for the specific
 class of failure that live repeated-run testing exposed: destructive git
-rollback commands issued through Claude's Bash tool.
+rollback commands issued through an agent's shell tool (Claude Bash, Gemini
+``run_shell_command``, Codex ``command_execution``).
 
 A second, *diagnostic-only* guard flags unsafe free-text process polling
 (``pgrep -f`` / ``pkill -f``). Unlike the destructive-git guard — which aborts
@@ -19,6 +20,7 @@ import shlex
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from agents.stall_protocol import StallReason
 
@@ -159,15 +161,38 @@ def blocked_unsafe_process_polling(
     return None
 
 
+def _stream_json_record(line: str) -> dict[str, Any] | None:
+    """Parse one stream line as a JSON object record, or ``None``.
+
+    Every structured provider (Claude, Gemini, Codex) streams one JSON object
+    per line. A line that does not start with ``{`` or does not parse is not a
+    record — it is human-readable text and takes the plain-text path instead.
+    """
+    text = (line or "").strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def claude_bash_commands_from_jsonl(line: str) -> Iterator[str]:
     """Yield Bash command strings from one Claude stream-json line."""
-    line = (line or "").strip()
-    if not line.startswith("{"):
-        return
-    try:
-        payload = json.loads(line)
-    except json.JSONDecodeError:
-        return
+    payload = _stream_json_record(line)
+    if payload is not None:
+        yield from _claude_bash_commands(payload)
+
+
+def _claude_bash_commands(payload: dict[str, Any]) -> Iterator[str]:
+    """Yield Bash ``tool_use`` commands from one parsed Claude record.
+
+    Only ``assistant`` records carry tool calls. Claude also echoes the same
+    command text in ``system`` records (``task_started`` / ``task_notification``
+    ``description`` / ``summary``) and in ``user`` tool-result records; those
+    are not commands being issued and must not be re-flagged.
+    """
     if payload.get("type") != "assistant":
         return
     message = payload.get("message")
@@ -210,14 +235,14 @@ def gemini_shell_commands_from_jsonl(line: str) -> Iterator[str]:
     yield is empty for every other tool (``read_file``, ``glob``, ...)
     and for malformed input.
     """
-    line = (line or "").strip()
-    if not line.startswith("{"):
-        return
-    try:
-        payload = json.loads(line)
-    except json.JSONDecodeError:
-        return
-    if not isinstance(payload, dict) or payload.get("type") != "tool_use":
+    payload = _stream_json_record(line)
+    if payload is not None:
+        yield from _gemini_shell_commands(payload)
+
+
+def _gemini_shell_commands(payload: dict[str, Any]) -> Iterator[str]:
+    """Yield ``run_shell_command`` commands from one parsed Gemini record."""
+    if payload.get("type") != "tool_use":
         return
     if payload.get("tool_name") != "run_shell_command":
         return
@@ -225,6 +250,35 @@ def gemini_shell_commands_from_jsonl(line: str) -> Iterator[str]:
     if not isinstance(params, dict):
         return
     command = params.get("command")
+    if isinstance(command, str) and command.strip():
+        yield command
+
+
+def codex_command_executions_from_jsonl(line: str) -> Iterator[str]:
+    """Yield shell command strings from one Codex ``exec --json`` line.
+
+    Codex streams ``item.started`` / ``item.completed`` records whose ``item``
+    of type ``command_execution`` carries the command under ``item.command``.
+    Both lifecycle records are yielded: ``item.started`` is the live moment a
+    poll loop begins (an ``item.completed`` never arrives while it hangs), and
+    ``item.completed`` covers a release that omits the start record. Consumers
+    that need one sighting per command de-duplicate by command text. The
+    yield is empty for every other item (``agent_message``, ``mcp_tool_call``,
+    ...) and for malformed input.
+    """
+    payload = _stream_json_record(line)
+    if payload is not None:
+        yield from _codex_command_executions(payload)
+
+
+def _codex_command_executions(payload: dict[str, Any]) -> Iterator[str]:
+    """Yield ``command_execution`` commands from one parsed Codex record."""
+    if payload.get("type") not in {"item.started", "item.completed"}:
+        return
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "command_execution":
+        return
+    command = item.get("command")
     if isinstance(command, str) and command.strip():
         yield command
 
@@ -244,6 +298,36 @@ def blocked_gemini_write_tool_use(
     return None
 
 
+def blocked_codex_write_tool_use(
+    line: str,
+    *,
+    worktree_cwd_path: str | Path | None = None,
+) -> BlockedCommand | None:
+    """Detect blocked ``command_execution`` in one Codex ``exec --json`` line.
+
+    Codex has no pre-execution hook: both ``item.started`` and
+    ``item.completed`` are emitted after the CLI has already launched the
+    command, so a block here is a run **halt**, not a prevention. The
+    destructive git command may have run to completion by the time the abort
+    lands; what the guard guarantees is that the run stops there, emits the
+    ``agent.guardrail`` abort diagnostic, and returns the
+    ``ORCHO_GUARDRAIL_BLOCKED`` sentinel instead of continuing to build on
+    top of discarded working-tree state.
+
+    Both lifecycle records are inspected and the first sighting aborts:
+    ``item.started`` is the earliest signal a release provides, and
+    ``item.completed`` covers a release that omits the start record. The
+    abort tears the stream down, so at most one verdict fires per command.
+    """
+    for command in codex_command_executions_from_jsonl(line):
+        blocked = blocked_destructive_git_command(
+            command, worktree_cwd_path=worktree_cwd_path,
+        )
+        if blocked is not None:
+            return blocked
+    return None
+
+
 def blocked_agent_stream_line(
     line: str,
     *,
@@ -251,15 +335,21 @@ def blocked_agent_stream_line(
 ) -> BlockedCommand | None:
     """Detect blocked commands in a write-agent stream line.
 
-    Claude and Gemini emit structured stream-json with tool calls;
-    Codex prints human-readable command lines. This function supports
-    every shape so provider wrappers can share one guardrail.
+    Claude, Gemini, and Codex emit structured stream-json with tool calls;
+    a runtime may also print human-readable command lines. This function
+    supports every shape so provider wrappers can share one guardrail. A
+    JSON record never starts with ``git``, so the structured extractors are
+    the only path that sees a provider's tool call; the text path exists for
+    human-readable lines only.
     """
     # Destructive-git guard first: it aborts the call and is worktree-relaxable.
     structured = blocked_claude_write_tool_use(line, worktree_cwd_path=worktree_cwd_path)
     if structured is not None:
         return structured
     structured = blocked_gemini_write_tool_use(line, worktree_cwd_path=worktree_cwd_path)
+    if structured is not None:
+        return structured
+    structured = blocked_codex_write_tool_use(line, worktree_cwd_path=worktree_cwd_path)
     if structured is not None:
         return structured
     for candidate in shell_command_candidates_from_text(line):
@@ -307,14 +397,28 @@ def shell_command_candidates_from_text(line: str) -> Iterator[str]:
 def agent_commands_from_stream_line(line: str) -> Iterator[str]:
     """Yield every candidate shell command from one stream line, any provider.
 
-    Unions the structured tool-use commands (Claude Bash, Gemini
-    ``run_shell_command``) with the cleaned human-readable text (Codex). Unlike
-    :func:`shell_command_candidates_from_text`, the text candidate is yielded
-    regardless of leading binary, because process-polling forms
-    (``pgrep -f`` / ``kill -0 $(pgrep -f ...)``) do not start with ``git``.
+    This is the single owner of "which text on this line is a command the
+    agent issued". A stream-json record yields only its structured tool-use
+    commands (Claude Bash, Gemini ``run_shell_command``, Codex
+    ``command_execution``); the raw record text is never a candidate, because
+    providers echo an issued command in non-command records — Claude
+    ``system`` ``task_started`` / ``task_notification`` lines repeat it in
+    ``description`` / ``summary`` — and re-flagging those echoes produced
+    duplicate ``agent.guardrail`` / ``agent.command_stalled`` diagnostics for
+    one command.
+
+    A line that is not a JSON record is human-readable text and is yielded
+    whole after cleaning. Unlike :func:`shell_command_candidates_from_text`,
+    that text candidate is yielded regardless of leading binary, because
+    process-polling forms (``pgrep -f`` / ``kill -0 $(pgrep -f ...)``) do not
+    start with ``git``.
     """
-    yield from claude_bash_commands_from_jsonl(line)
-    yield from gemini_shell_commands_from_jsonl(line)
+    payload = _stream_json_record(line)
+    if payload is not None:
+        yield from _claude_bash_commands(payload)
+        yield from _gemini_shell_commands(payload)
+        yield from _codex_command_executions(payload)
+        return
     text = _clean_stream_text(line)
     if text:
         yield text

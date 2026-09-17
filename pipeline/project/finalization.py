@@ -68,12 +68,17 @@ from pipeline.engine import save_session
 from pipeline.project.correction_route_display import (
     format_correction_route_summary,
 )
+from pipeline.project.followup_supersede import supersede_parent_after_child_delivery
 from pipeline.project.handoff_advice_evidence import collect_handoff_advice
 from pipeline.project.terminal_delivery import (
     TerminalDeliveryDisposition,
     TerminalDeliveryOutcome,
     project_terminal_delivery,
     render_delivery_destination_lines,
+)
+from pipeline.project.verification_disclosure import (
+    VerificationContractPresence,
+    tail_line,
 )
 from pipeline.run_state.release_verdict import (
     is_approved,
@@ -85,7 +90,6 @@ from pipeline.run_state.terminal_outcome import (
     normalize_engine_reason,
     resolve_rejected_release_terminal,
     resolve_terminal_outcome,
-    supersede_parent_meta,
     supersede_same_run_residue,
 )
 
@@ -1081,6 +1085,20 @@ def _finding_totals(phases: Mapping[str, Any]) -> tuple[int, int]:
     return summary.total, summary.active
 
 
+def _unpriced_model_names(metrics: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return the exact model ids the metrics writer recorded as unpriced.
+
+    Read-only. The unpriced fact is born once, in the metrics writer, which
+    knows whether pricing was actually attempted; a ``None`` cost seen from
+    here could mean several other things, so it is never re-derived. Legacy
+    ``metrics.json`` has no such key and yields nothing.
+    """
+    raw = metrics.get("unpriced_models")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(name for name in raw if isinstance(name, str) and name)
+
+
 def _render_roi_summary(
     session: Mapping[str, Any],
     metrics: Mapping[str, Any],
@@ -1130,12 +1148,17 @@ def _render_roi_summary(
         and not isinstance(cost, bool)
         and isinstance(cost, (int, float))
     ):
-        parts.append(
-            format_cost_reference_key_value(
-                float(cost),
-                estimated=metrics.get("cost_estimated") is True,
-            )
+        cost_part = format_cost_reference_key_value(
+            float(cost),
+            estimated=metrics.get("cost_estimated") is True,
         )
+        # Name what the number leaves out, right where the number is. Absent
+        # for a fully-priced run (and for legacy metrics.json without the
+        # key), so that line stays byte-identical.
+        unpriced = _unpriced_model_names(metrics)
+        if unpriced:
+            cost_part += f" (excl. unpriced: {', '.join(unpriced)})"
+        parts.append(cost_part)
     outcome_bits = [task_part]
     if release_part:
         outcome_bits.append(release_part)
@@ -1802,15 +1825,6 @@ def _apply_no_diff_final_acceptance_outcome(
     apply_no_diff_terminal(run.session, diff_path=diff_path)
 
 
-# Delivery executor outcomes that settle an ordinary correction follow-up as
-# successfully resolved (delivered or deliberately skipped). Reaching one of
-# these closes out (supersedes) a rejected-FA / correction parent — see
-# :func:`_supersede_parent_correction_after_followup`.
-_DELIVERY_DELIVERED_STATUSES = frozenset(
-    {"committed", "applied_uncommitted", "skipped"},
-)
-
-
 def _is_real_contract_final_acceptance(entry: Mapping[str, Any]) -> bool:
     """True only for a genuine release-contract verdict, not a stub.
 
@@ -1960,6 +1974,9 @@ def _apply_rejected_release_terminal_outcome(run: Any) -> None:
     delivery_status = (
         str(delivery.get("status")) if isinstance(delivery, Mapping) else ""
     )
+    delivery_provenance = (
+        str(delivery.get("provenance") or "") if isinstance(delivery, Mapping) else ""
+    )
 
     resolve_rejected_release_terminal(
         run.session,
@@ -1969,100 +1986,30 @@ def _apply_rejected_release_terminal_outcome(run: Any) -> None:
         blockers=blockers,
         short_summary=short_summary,
         engine_reason=engine_reason,
+        delivery_provenance=delivery_provenance,
     )
 
 
 def _supersede_parent_correction_after_followup(run: Any) -> None:
     """Close a rejected-FA / correction parent once its follow-up child delivers.
 
-    The cross-run analogue of :func:`_supersede_stale_rejection_residue` (which
-    reconciles a single run on its own approved retry). When THIS run is a
-    ordinary correction follow-up of a parent that dead-ended on a rejected final
-    acceptance (``final_acceptance_rejected`` / ``final_acceptance_no_diff``) or a
-    marked correction (``commit_decision_fix``), AND this child actually delivered
-    (``commit_delivery.status`` in ``committed`` / ``applied_uncommitted`` /
-    ``skipped``), reconcile the PARENT's ``meta.json`` so it stops reading as an
-    active correction candidate across every surface:
-
-    * evict the phantom rejected ``commit_delivery`` gate (and its
-      ``multi_project_delivery`` mirror) so ``delivery_decision_state(parent)`` is
-      no longer decidable as a correction and the parent's stale
-      ``release_blockers`` are no longer authoritative;
-    * evict the terminal-rejection residue (``rejected_outcome`` /
-      ``halt_reason`` / ``halted_at`` / ``halt`` / ``delivery_override``);
-    * settle the parent to ``done`` and stamp a durable ``superseded_by_followup``
-      marker referencing this child, so the delivery gate, diagnose, and live
-      status all read the parent as superseded/closed rather than active.
-
-    Idempotent and guarded: a no-op unless this is a valid ordinary correction
-    child (follow-up lineage, correction profile, and correction context), this
-    child's delivery succeeded, and the parent is genuinely a rejected-FA / fix
-    terminal. A re-run
-    finds the parent already settled to ``done`` (no longer a rejected/fix
-    terminal) and returns without change. Best-effort: any lookup / read / write
-    failure degrades to a no-op and never breaks the child's own finalization. The
-    same-run approved-retry path (:func:`_supersede_stale_rejection_residue`) is
-    untouched — this only fires for a distinct correction child.
+    Live-run adapter over
+    :func:`pipeline.project.followup_supersede.supersede_parent_after_child_delivery`
+    (the single seam, shared with the out-of-band delivery decision in
+    ``sdk.run_control.delivery``): the parent run id falls back to
+    ``state.extras`` when the session does not carry it. All guards, the
+    idempotency, and the best-effort IO live in the seam.
     """
     if not run.output_dir:
         return
-    parent_run_id = run.session.get("parent_run_id")
-    if not isinstance(parent_run_id, str) or not parent_run_id:
-        extras = getattr(getattr(run, "state", None), "extras", None)
-        if isinstance(extras, Mapping):
-            parent_run_id = extras.get("parent_run_id")
-    if not isinstance(parent_run_id, str) or not parent_run_id:
-        return
-    if (
-        run.session.get("resume_mode") != "followup"
-        or run.session.get("profile") != "correction"
-        or not (Path(run.output_dir) / "correction_context.md").is_file()
-    ):
-        return
-    delivery = run.session.get("commit_delivery")
-    delivery_status = (
-        str(delivery.get("status")) if isinstance(delivery, Mapping) else ""
+    extras = getattr(getattr(run, "state", None), "extras", None)
+    extras_parent = extras.get("parent_run_id") if isinstance(extras, Mapping) else None
+    supersede_parent_after_child_delivery(
+        run.session,
+        Path(run.output_dir),
+        child_run_id=run.session_ts or Path(run.output_dir).name,
+        parent_run_id=extras_parent if isinstance(extras_parent, str) else None,
     )
-    if delivery_status not in _DELIVERY_DELIVERED_STATUSES:
-        return
-
-    try:
-        from pipeline.control.resume_context import (
-            is_terminal_commit_decision_fix,
-            is_terminal_final_acceptance_rejected,
-        )
-        from sdk.runs import find_run, load_meta
-
-        runs_dir = Path(run.output_dir).parent
-        ref = find_run(parent_run_id, runs_dir=runs_dir, cwd=None)
-        parent_meta = load_meta(ref.run_dir)
-    except Exception:  # noqa: BLE001 — a cross-run reconcile must never break finalize
-        return
-    if not isinstance(parent_meta, MutableMapping):
-        return
-    # Guard + idempotency: only a genuine rejected-FA / fix terminal is
-    # superseded. A re-run sees the already-settled ``done`` parent and stops.
-    if not (
-        is_terminal_final_acceptance_rejected(parent_meta)
-        or is_terminal_commit_decision_fix(parent_meta)
-    ):
-        return
-
-    child_run_id = run.session_ts or Path(run.output_dir).name
-    # Pure parent-meta mutation lives in the reducer; this seam keeps only the
-    # file IO + guards (ADR 0115 slice 3b-1). The unconditional delivery-drop and
-    # the ``superseded_by_followup`` marker are owned by ``supersede_parent_meta``.
-    supersede_parent_meta(
-        parent_meta,
-        child_run_id=child_run_id,
-        child_status=str(run.session.get("status") or "done"),
-        delivery_status=delivery_status,
-    )
-
-    try:
-        save_session(ref.run_dir, parent_meta)
-    except Exception:  # noqa: BLE001 — a failed parent write must not break finalize
-        return
 
 
 def _run_plugin_worktree_teardown(run: Any) -> None:
@@ -2377,6 +2324,14 @@ def finalize_project_run(ctx: FinalizationContext) -> FinalizationResult:
                     "(shipping allowed by policy)",
                     *rest,
                 )
+
+    # A run that declared no verification contract executed no engine-owned
+    # gates, so the block above is empty and the tail would simply skip it.
+    # State the fact instead — one line, first, pointing at how to declare one.
+    # The fact is read from the persisted session block, never re-derived.
+    _presence = VerificationContractPresence.from_mapping(run.session)
+    if _presence is not None and not _presence.declared:
+        verification_gate_lines = (tail_line(), *verification_gate_lines)
 
     return FinalizationResult(
         status=run.session["status"],

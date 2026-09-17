@@ -442,3 +442,65 @@ def test_runtime_ledger_preserves_execution_facts_across_sdk_evidence_and_done(
     assert "cli-sdk-unit: selection=always trigger=pre_final executor=engine" in done
     assert "manual: selection=operator trigger=operator executor=operator" in done
     assert "suggested: selection=operator trigger=operator executor=operator" in done
+
+
+def test_delivery_epoch_selects_unrecorded_implement_rows_from_live_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that never resolved ``after_phase:implement`` (a correction child
+    whose implement was skipped) still publishes a non-empty delivery view: its
+    delivery rows are selected from the live context, recorded in the trail,
+    and replayed on resume instead of being re-derived."""
+    contract = _delivery_path_contract()
+    child = _run(tmp_path, contract)
+    initialize(child.state)
+
+    plan = select_epoch(
+        child, contract, epoch="before_delivery:",
+        context=SelectionContext(touched_paths=("tests/unit/cli/test_orcho.py",)),
+    )
+
+    expected = {
+        ("cli-sdk-unit", "after_phase", "implement"),
+        ("cli-sdk-unit", "before_delivery", ""),
+    }
+    assert {(e.command, e.hook, e.phase) for e in plan.entries} == expected
+    assert {
+        (event.hook, event.phase)
+        for event in load_ledger(tmp_path).trail
+        if event.kind == "selection"
+        and event.outcome == "selected"
+        and event.reason == "before_delivery:"
+    } == {("after_phase", "implement"), ("before_delivery", "")}
+
+    resumed = _run(tmp_path, contract, resume=True)
+    monkeypatch.setattr(
+        "pipeline.project.verification_ledger_runtime.build_scheduled_gate_plan",
+        lambda *_: pytest.fail("resume rebuilt a recorded delivery plan"),
+    )
+    replayed = select_epoch(
+        resumed, contract, epoch="before_delivery:",
+        context=SelectionContext(touched_paths=("unrelated.py",)),
+    )
+    assert {(e.command, e.hook, e.phase) for e in replayed.entries} == expected
+
+
+def test_delivery_epoch_keeps_a_recorded_implement_decision(tmp_path: Path) -> None:
+    """When ``after_phase:implement`` already decided (here: not selected), the
+    delivery epoch replays that decision and never re-selects the row from a
+    later context."""
+    contract = _delivery_path_contract()
+    run = _run(tmp_path, contract)
+    initialize(run.state)
+    select_epoch(
+        run, contract, epoch="after_phase:implement", context=SelectionContext(),
+    )
+
+    plan = select_epoch(
+        run, contract, epoch="before_delivery:",
+        context=SelectionContext(touched_paths=("tests/unit/cli/test_orcho.py",)),
+    )
+
+    assert [(e.command, e.hook, e.phase) for e in plan.entries] == [
+        ("cli-sdk-unit", "before_delivery", ""),
+    ]

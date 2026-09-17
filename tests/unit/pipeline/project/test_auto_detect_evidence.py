@@ -96,6 +96,7 @@ def _init_session(tmp_path: Path) -> dict:
         project_path=tmp_path,
         plugin=PluginConfig(),
         model="claude-opus-4-8",
+        max_rounds=1,
         profile_name="feature",
         session_mode=__import__(
             "agents.protocols", fromlist=["SessionMode"]
@@ -206,7 +207,7 @@ def test_f2_no_leak_into_later_manual_run(tmp_path: Path) -> None:
     auto_dir.mkdir()
     auto_session = init_run_session(
         task="t", project_path=auto_dir, plugin=PluginConfig(),
-        model="m", profile_name="feature",
+        model="m", max_rounds=1, profile_name="feature",
         session_mode=__import__(
             "agents.protocols", fromlist=["SessionMode"]
         ).SessionMode.AUTO,

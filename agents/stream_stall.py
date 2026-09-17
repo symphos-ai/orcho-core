@@ -28,6 +28,7 @@ from agents.command_guard import (
     blocked_unsafe_process_polling,
 )
 from agents.stall_protocol import (
+    COMMAND_PREVIEW_MAX,
     OUTPUT_TAIL_MAX,
     StallDiagnosticSink,
     StalledCommand,
@@ -88,7 +89,13 @@ class StreamStallMonitor:
         ``sink.record(...)`` immediately — during the stream event, never after
         the phase. It never kills, never raises, and never marks any foreign
         process: the verdict is text-only. Returns ``True`` when at least one
-        diagnostic was recorded (used by tests)."""
+        diagnostic was recorded (used by tests).
+
+        ``elapsed_s`` is ``_stream_run``'s clock: seconds since the agent
+        subprocess was spawned, not the flagged command's own runtime (the
+        stream cannot observe when the agent's inner command started). The
+        carrier's ``command_preview`` keeps the END of an over-long command so
+        a poll trailing a compound line stays visible."""
         recorded = False
         for command in agent_commands_from_stream_line(line):
             if blocked_unsafe_process_polling(command) is None:
@@ -100,7 +107,7 @@ class StreamStallMonitor:
                 StalledCommand(
                     phase=self._phase,
                     elapsed_s=elapsed_s,
-                    command_preview=command,
+                    command_preview=_tail_preview(command),
                     output_tail="",
                     reason=StallReason.UNSAFE_PROCESS_POLLING,
                     process_group=None,
@@ -142,6 +149,19 @@ class StreamStallMonitor:
             stdout_bytes_read=stdout_bytes_read,
             stderr_bytes_read=stderr_bytes_read,
         )
+
+
+def _tail_preview(command: str) -> str:
+    """Bound ``command`` to ``COMMAND_PREVIEW_MAX`` keeping its tail.
+
+    ``StalledCommand`` truncates a preview from the head, which suits the
+    terminal carrier (the runtime's own argv). A flagged polling command is
+    usually a compound line with the ``pgrep``/``pkill`` after setup steps, so
+    for this carrier the tail is the informative window.
+    """
+    if len(command) <= COMMAND_PREVIEW_MAX:
+        return command
+    return command[-COMMAND_PREVIEW_MAX:]
 
 
 __all__ = ["StreamStallMonitor"]

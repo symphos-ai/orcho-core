@@ -29,6 +29,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.contracts.review_schema import (
+    ReviewSchemaError,
+    validate_finding_criterion_id,
+)
+
 RELEASE_SUMMARY_MAX_CHARS = 280
 RELEASE_VERDICTS = ("APPROVED", "REJECTED")
 RELEASE_SEVERITIES = ("P0", "P1", "P2")
@@ -45,7 +50,7 @@ RELEASE_REQUIRED_KEYS = (
 RELEASE_BLOCKER_REQUIRED_KEYS = (
     "id", "severity", "title", "body", "required_fix", "why_blocks_release",
 )
-RELEASE_BLOCKER_OPTIONAL_KEYS = ("file", "line")
+RELEASE_BLOCKER_OPTIONAL_KEYS = ("file", "line", "criterion_id")
 
 VERIFICATION_GAP_REQUIRED_KEYS = ("risk", "missing_evidence", "required_check")
 
@@ -183,6 +188,13 @@ def _validate_blocker(b: Any, index: int) -> None:
                 f"{where}.line must be a positive integer or null"
             )
 
+    # ADR 0188 criterion link — same grammar as a review finding, so a blocker
+    # projected onto the review-shape mirror carries an identical reference.
+    try:
+        validate_finding_criterion_id(b, where)
+    except ReviewSchemaError as e:
+        raise ReleaseSchemaError(str(e)) from e
+
 
 def _validate_gap(g: Any, index: int) -> None:
     where = f"verification_gaps[{index}]"
@@ -254,7 +266,8 @@ Emit exactly one JSON object with this shape:
       "required_fix": "<what must change before ship>",
       "file": "path/to/file.py",
       "line": 123,
-      "why_blocks_release": "<release-specific framing of why this stops ship>"
+      "why_blocks_release": "<release-specific framing of why this stops ship>",
+      "criterion_id": "C2"
     }
   ],
   "verification_gaps": [
@@ -280,6 +293,7 @@ Rules:
 - REJECTED requires `ship_ready=false` and at least one blocker or verification gap.
 - Blockers use P0/P1/P2 only; `id`, `title`, `body`, `required_fix`, `why_blocks_release` are non-empty.
 - Optional blocker `file` is a string path; optional `line` is a positive integer.
+- Optional blocker `criterion_id` links the blocker to ONE plan acceptance criterion by its id (`C1`, `C2`, ...). Set it only when the blocker is evidence about that criterion; omit the key otherwise. It is a reference, never a restatement, and it never proves an `executable` criterion.
 - Verification gap fields (`risk`, `missing_evidence`, `required_check`) are non-empty.
 - `contract_status` keys are required; values must come from the enum sets above.
 """.strip()

@@ -30,6 +30,7 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("cost", "how much did it consume? cost-reference report"),
         ("evidence", "what happened / what proves it?"),
         ("diff", "what changed? captured diff.patch artifact"),
+        ("criterion", "which acceptance criterion is proven, advisory, or open?"),
     ]),
     ("Workspace & config", [
         ("workspace", "initialise and manage Orcho workspaces"),
@@ -45,6 +46,9 @@ COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Maintenance", [
         ("command", "run long agent commands with duplicate admission"),
         ("repair-state", "inspect and safely apply known run-state repairs"),
+        ("reconcile-delivery", "record a delivery commit a run stopped without recording"),
+        ("delivery", "inspect and decide a parked delivery gate"),
+        ("update", "upgrade Orcho via the manager that installed it"),
     ]),
     # NOTE: the ``tui`` and ``web`` interface commands are intentionally
     # omitted from the advertised listing until their packages ship on PyPI —

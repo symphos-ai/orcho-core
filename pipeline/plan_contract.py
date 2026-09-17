@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from core.contracts.criteria import criterion_display
+
 if TYPE_CHECKING:
     from pipeline.plan_parser import ParsedPlan
 
@@ -41,7 +43,11 @@ def render_plan_contract(plan: ParsedPlan | None) -> str:
         lines.append("")
         lines.append(f"**Goal:** {plan.goal}")
 
-    _append_bullet_section(lines, "Acceptance criteria", plan.acceptance_criteria)
+    _append_bullet_section(
+        lines,
+        "Acceptance criteria",
+        tuple(criterion_display(c) for c in plan.acceptance_criteria),
+    )
     _append_bullet_section(lines, "Owned files", plan.owned_files)
     _append_allowed_modifications(lines, plan)
     _append_bullet_section(lines, "Commands to run", plan.commands_to_run)

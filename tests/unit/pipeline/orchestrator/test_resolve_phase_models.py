@@ -73,7 +73,7 @@ def test_implement_and_repair_use_cli_fallback_when_appconfig_silent() -> None:
 
     plan, implement, repair_changes, _esc, review = result
     # plan / repair_escalation keep their own literal defaults.
-    assert plan == "claude-opus-4-8[1m]"
+    assert plan == "claude-fable-5-1[1m]"
     # implement / repair_changes use the CLI fallback the user
     # passed in, NOT a hardcoded Claude default.
     assert implement == "cli-fallback-model"

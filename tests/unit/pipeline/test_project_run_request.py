@@ -74,9 +74,9 @@ _REQUEST_ONLY_FIELDS = {
 #
 # Regeneration recipe — **must be run under pytest, not python -c**, because
 # ``model``'s default is ``config.phase_model("implement",
-# "claude-opus-4-8[1m]")`` and the config-layer stack resolves to different
+# "claude-opus-5[1m]")`` and the config-layer stack resolves to different
 # values in shell vs. pytest (workspace overrides apply in shell; the
-# fallback ``"claude-opus-4-8[1m]"`` applies in pytest). The pin below is
+# fallback ``"claude-opus-5[1m]"`` applies in pytest). The pin below is
 # the pytest-time value; rolling it would mask that distinction.
 #
 # To regenerate:
@@ -93,7 +93,7 @@ _REQUEST_ONLY_FIELDS = {
 
 PINNED_RUN_PIPELINE_SIGNATURE = (
     "(task: str, project_dir: str, max_rounds: int = 1, "
-    "model: str = 'claude-opus-4-8[1m]', "
+    "model: str = 'claude-opus-5[1m]', "
     "output_dir: pathlib.Path | None = None, dry_run: bool = False, "
     "phase_config: agents.registry.PhaseAgentConfig | None = None, "
     "session_mode: agents.protocols.SessionMode = <SessionMode.AUTO: 'auto'>, "

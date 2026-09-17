@@ -28,9 +28,13 @@ def _run() -> SimpleNamespace:
         "id": "gate:pytest-unit:1", "round": 1,
         "phase": "final_acceptance", "trigger": "verification_gate_failed",
         "requested_at": "2026-07-29T09:31:22+00:00",
+        # Every real gate handoff persists the synthesized failure critique;
+        # the retry seam recovers the repair inputs from it.
+        "last_output": "Required verification gate failed.\nCommand: pytest-unit",
     }
     state = SimpleNamespace(
         extras={}, human_feedback="", halt=False, halt_reason="",
+        last_critique="", last_test_output="",
         phase_handoff_request=None,
     )
     state.stop = lambda reason: (
@@ -168,7 +172,8 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
     )
 
     outcome = apply_verification_handoff_retry(
-        run=run, profile=object(), ctx=object(), active={"round": 1},
+        run=run, profile=object(), ctx=object(),
+        active={"round": 1, "last_output": "pytest-unit failed"},
         handoff_id="gate:pytest-unit:1", feedback="Поправьте тест", note=None,
         decided_at="2026-01-01T00:00:00Z",
         identity=GateIdentity("pytest-unit", "after_phase", "implement"),
@@ -178,6 +183,7 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
     assert calls[0] == {"repair": {
             "retry_context": VerificationHandoffRetryContext(
                 identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+                identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
                 prior_round=1, fresh_round=2, loop_max_rounds=1,
                 human_retry_ordinal=1,
             ),
@@ -220,7 +226,8 @@ def test_second_failure_keeps_new_recovery_subject(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr("pipeline.project.gate_repair.rerun_verification_handoff_gate", _fail)
     outcome = apply_verification_handoff_retry(
-        run=run, profile=object(), ctx=object(), active={"round": 1},
+        run=run, profile=object(), ctx=object(),
+        active={"round": 1, "last_output": "pytest-unit failed"},
         handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
         decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
     )
@@ -251,7 +258,8 @@ def test_retry_snapshots_fsm_metrics_before_exact_gate_rerun(
     )
 
     apply_verification_handoff_retry(
-        run=run, profile=object(), ctx=object(), active={"round": 2, "loop_max_rounds": 2},
+        run=run, profile=object(), ctx=object(),
+        active={"round": 2, "loop_max_rounds": 2, "last_output": "pytest-unit failed"},
         handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
         decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
     )
@@ -275,6 +283,128 @@ def test_control_preflight_failure_preserves_active_recovery_subject(
             decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
         )
     assert run.session["phase_handoff"]["id"] == "gate:pytest-unit:1"
+
+
+def test_retry_seeds_persisted_gate_failure_into_repair_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The persisted gate failure reaches repair without overwriting review state."""
+    run = _run()
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+
+    def _repair(dispatch_run, *_args, **_kwargs) -> None:
+        seen["verification_failure"] = dispatch_run.state.repair_feedback.verification_failure
+        seen["last_critique"] = dispatch_run.state.last_critique
+        seen["last_test_output"] = dispatch_run.state.repair_feedback.test_failures
+        seen["human_feedback"] = dispatch_run.state.human_feedback
+
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair", _repair,
+    )
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair.rerun_verification_handoff_gate",
+        lambda _run, **_kwargs: True,
+    )
+    critique = (
+        "2 required verification gates failed: lint, pytest-unit.\n\n"
+        "Required verification gate failed.\nCommand: lint"
+    )
+
+    apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=object(),
+        active={
+            "round": 1,
+            "last_output": critique,
+            "artifacts": {
+                "short_summary": "lint failed",
+                "findings": [
+                    {"failure_kind": "lint_failure", "body": "E501 line too long"},
+                    {"failure_kind": "test_failure", "body": "E   assert 1 == 2"},
+                ],
+            },
+        },
+        handoff_id="gate:pytest-unit:1", feedback="Почините lint", note=None,
+        decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+    assert seen["verification_failure"] == critique
+    assert seen["last_critique"] == ""
+    assert run.state.repair_feedback is None
+    # Only test_failure findings carry a test output; the lint body must not
+    # be laundered into it.
+    assert seen["last_test_output"] == "E   assert 1 == 2"
+    # Operator instruction stays on its own carrier, never folded into critique.
+    assert seen["human_feedback"] == "Почините lint"
+    assert critique not in seen["human_feedback"]
+
+
+def test_retry_recovers_gate_failure_from_findings_when_output_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run()
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda dispatch_run, *_a, **_kw: seen.update(
+            verification_failure=dispatch_run.state.repair_feedback.verification_failure,
+        ),
+    )
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair.rerun_verification_handoff_gate",
+        lambda _run, **_kwargs: True,
+    )
+
+    apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=object(),
+        active={
+            "round": 1,
+            "last_output": "   ",
+            "artifacts": {"short_summary": "pytest-unit exited 1"},
+        },
+        handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
+        decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+    assert seen["verification_failure"] == "pytest-unit exited 1"
+
+
+def test_unrecoverable_gate_failure_blocks_retry_without_consuming_subject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No recoverable failure text → typed block, decision still decidable."""
+    run = _run()
+    run.session["phase_handoff"].pop("last_output")
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair",
+        lambda *_args, **_kwargs: pytest.fail("must not repair without a gate failure"),
+    )
+
+    with pytest.raises(VerificationHandoffRetryBlocked, match="no recoverable gate failure"):
+        apply_verification_handoff_retry(
+            run=run, profile=object(), ctx=object(), active=run.session["phase_handoff"],
+            handoff_id="gate:pytest-unit:1", feedback="retry", note=None,
+            decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+        )
+
+    # The payload was never consumed: no override was published and the
+    # original subject is still the active, decidable handoff.
+    assert run.session["phase_handoff"]["id"] == "gate:pytest-unit:1"
+    assert run.session["status"] == "awaiting_phase_handoff"
+    assert "phase_handoff_override" not in run.state.extras
+    assert run.state.human_feedback == ""
+    assert run.state.last_critique == ""
 
 
 def test_persisted_retry_on_repairless_profile_reparks_as_decidable_pause(
@@ -447,6 +577,7 @@ def test_dispatch_exposes_explicit_human_retry_round_to_lifecycle() -> None:
         ctx,
         retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=1, fresh_round=2, loop_max_rounds=1,
             human_retry_ordinal=1,
         ),
@@ -505,7 +636,7 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
     )
     monkeypatch.setattr(gate_repair, "_contract", lambda _run: object())
     monkeypatch.setattr(gate_repair, "_plan", lambda *_args, **_kwargs: SimpleNamespace(entries=[entry]))
-    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args: {"exit_code": 1})
+    monkeypatch.setattr(gate_repair, "_run_gate_command", lambda *_args, **_kw: {"exit_code": 1})
     monkeypatch.setattr(gate_repair, "_placeholders", lambda _run: object())
     monkeypatch.setattr(
         gate_repair, "_classify_gate_receipt",
@@ -520,6 +651,7 @@ def test_rerun_gate_executes_selected_identity_and_publishes_fresh_round(
     passed = gate_repair.rerun_verification_handoff_gate(
         run, retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=2, fresh_round=3, loop_max_rounds=2,
             human_retry_ordinal=1,
         ), profile=object(),
@@ -600,6 +732,7 @@ def test_rerun_gate_records_fresh_rerun_execution_in_durable_ledger(
         run,
         retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=2,
             fresh_round=3,
             loop_max_rounds=2,
@@ -632,7 +765,7 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
     monkeypatch.setattr(gate_repair, "_plan", lambda *_args, **_kwargs: SimpleNamespace(entries=[entry]))
     monkeypatch.setattr(
         gate_repair, "_run_gate_command",
-        lambda _run, _contract, selected: calls.append(
+        lambda _run, _contract, selected, *, invocation_id=None: calls.append(
             (selected.command, selected.hook, selected.phase),
         ) or {"exit_code": 0},
     )
@@ -645,6 +778,7 @@ def test_rerun_gate_passes_only_for_the_selected_identity(
     assert gate_repair.rerun_verification_handoff_gate(
         run, retry_context=VerificationHandoffRetryContext(
             identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+            identities=(GateIdentity("pytest-unit", "after_phase", "implement"),),
             prior_round=1, fresh_round=2, loop_max_rounds=1,
             human_retry_ordinal=1,
         ), profile=object(),
@@ -682,3 +816,414 @@ def test_legacy_gate_identity_is_loaded_from_the_parent_ledger(tmp_path) -> None
     assert _scheduled_gate_identities(SimpleNamespace(output_dir=tmp_path)) == (
         GateIdentity("pytest-unit", "after_phase", "implement"),
     )
+
+
+# ── a handoff can block on more than one command ────────────────────────────
+
+
+def test_blocking_identities_come_from_the_persisted_set() -> None:
+    """``gate_identities`` is the durable blocking set; the primary leads it."""
+    primary = GateIdentity("lint", "after_phase", "implement")
+    context = VerificationHandoffRetryContext.from_active(
+        {
+            "round": 1,
+            "artifacts": {"gate_identities": [
+                {"command": "lint", "hook": "after_phase", "phase": "implement"},
+                {"command": "typecheck", "hook": "after_phase", "phase": "implement"},
+            ]},
+        },
+        primary,
+    )
+
+    assert context.identities == (
+        primary, GateIdentity("typecheck", "after_phase", "implement"),
+    )
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        {},
+        {"gate_identities": []},
+        {"gate_identities": [{"command": "lint", "hook": "after_phase"}]},
+        {"gate_identities": ["lint"]},
+        # A set that does not contain the routed primary is not this handoff's.
+        {"gate_identities": [
+            {"command": "typecheck", "hook": "after_phase", "phase": "implement"},
+        ]},
+    ],
+)
+def test_blocking_identities_fall_back_to_the_primary(artifacts) -> None:
+    """A record written before the set was durable — or one whose entry is not
+    a complete identity — must not silently widen or narrow the recheck."""
+    primary = GateIdentity("lint", "after_phase", "implement")
+
+    context = VerificationHandoffRetryContext.from_active(
+        {"round": 1, "artifacts": artifacts}, primary,
+    )
+
+    assert context.identities == (primary,)
+
+
+def test_rerun_rechecks_every_blocking_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retry that rechecked only the primary would close the pause with the
+    other required command of the same gate set still red."""
+    from pipeline.project import gate_repair
+
+    entries = [
+        SimpleNamespace(
+            command=command, hook="after_phase", phase="implement",
+            policy="require", action="repair_loop", primary_gate_set="smoke",
+        )
+        for command in ("lint", "typecheck")
+    ]
+    state = SimpleNamespace(
+        extras={}, last_critique="", last_test_output="",
+        halt=False, phase_handoff_request=None,
+    )
+    state.stop = lambda reason: setattr(state, "halt", True)
+    run = SimpleNamespace(state=state)
+    ran: list[str] = []
+    monkeypatch.setattr(gate_repair, "_contract", lambda _run: object())
+    monkeypatch.setattr(
+        gate_repair, "_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(entries=entries),
+    )
+    monkeypatch.setattr(
+        gate_repair, "_run_gate_command",
+        lambda _run, _contract, selected, *, invocation_id=None: ran.append(selected.command) or {
+            "exit_code": 0 if selected.command == "lint" else 1,
+        },
+    )
+    monkeypatch.setattr(gate_repair, "_placeholders", lambda _run: object())
+    monkeypatch.setattr(
+        gate_repair, "_classify_gate_receipt",
+        lambda receipt, _ctx: SimpleNamespace(
+            status="present" if receipt["exit_code"] == 0 else "absent",
+            failure_kind="test_failure", exit_code=receipt["exit_code"],
+            assertions_passed=0, assertions_total=0, failed_assertions=(),
+            reason="",
+        ),
+    )
+    monkeypatch.setattr(
+        gate_repair, "_record_executed_gate_event", lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(gate_repair, "_repair_step", lambda _profile: object())
+
+    passed = gate_repair.rerun_verification_handoff_gate(
+        run,
+        retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("lint", "after_phase", "implement"),
+            identities=(
+                GateIdentity("lint", "after_phase", "implement"),
+                GateIdentity("typecheck", "after_phase", "implement"),
+            ),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
+        profile=object(),
+    )
+
+    assert ran == ["lint", "typecheck"]
+    assert passed is False
+    findings = run.state.phase_handoff_request.artifacts["findings"]
+    assert [f["command"] for f in findings] == ["typecheck"]
+
+
+# ── producer → consumer: the decision reaches the real repair prompt ─────────
+
+_GATE_FAILURE = (
+    "2 required verification gates failed: lint, pytest-unit.\n\n"
+    "Required verification gate failed.\n"
+    "Command: lint\nExit code: 1\n"
+    "pipeline/prompts/builders.py:587:1: E501 line too long"
+)
+_OPERATOR_INSTRUCTION = "Почините E501 в builders.py, парсер не трогайте."
+
+
+class _CapturingRepairAgent:
+    """Agent-level fake — the lowest boundary that still runs the real handler.
+
+    Everything above it (the retry seam, ``_dispatch_via_fsm``, the registered
+    ``repair_changes`` handler, ``fix_prompt`` and its typed parts) is
+    production code, so the captured turn is the prompt the provider would
+    really have received.
+    """
+
+    def __init__(self, events: list[str]) -> None:
+        self.model = "fake-repair"
+        self.session_id: str | None = None
+        self._events = events
+        self.calls: list[str] = []
+        self.turns: list[object] = []
+
+    def invoke(
+        self,
+        prompt: str,
+        cwd: str,
+        *,
+        mutates_artifacts: bool = False,
+        continue_session: bool = False,
+        attachments: tuple = (),
+    ) -> str:
+        from core.observability.prompt_trace import take_last_prompt_turn
+
+        del cwd, mutates_artifacts, continue_session, attachments
+        self._events.append("repair")
+        self.calls.append(prompt)
+        # The invoke boundary publishes the effective turn just before this
+        # call, so the parts here are exactly the ones that went on the wire.
+        # ``take`` (not ``peek``) mirrors what a real runtime adapter does, so
+        # the single-take slot is left clean.
+        self.turns.append(take_last_prompt_turn())
+        return "repaired"
+
+    def reset_session(self) -> None:
+        self.session_id = None
+
+
+def _integration_retry_run(events: list[str]):
+    """A run whose repair phase is the real registered handler.
+
+    ``session_mode_initial='stateless'`` keeps the handler on the bound
+    ``repair_changes_agent`` (a CHAIN round would swap in ``implement_agent``),
+    which is the agent this test captures through.
+    """
+    from pipeline.lifecycle import default_lifecycle_context
+    from pipeline.phases.builtin import default_registry
+    from pipeline.runtime import PipelineState
+    from pipeline.session_adapters import RoundAdapter, SessionAdapterRegistry
+
+    agent = _CapturingRepairAgent(events)
+    state = PipelineState(
+        task="почините проваленный gate",
+        project_dir="/project",
+        plugin=PluginConfig(),
+        phase_config=SimpleNamespace(
+            plan_agent=None, validate_plan_agent=None, implement_agent=None,
+            review_changes_agent=None, repair_changes_agent=agent,
+            repair_escalation_agent=None, final_acceptance_agent=None,
+        ),
+    )
+    state.extras["session_mode_initial"] = "stateless"
+    active = {
+        "id": "gate:lint:2", "round": 2, "loop_max_rounds": 2,
+        "phase": "implement", "trigger": "verification_gate_failed",
+        "requested_at": "2026-09-06T10:00:00+00:00",
+        "last_output": _GATE_FAILURE,
+        "artifacts": {
+            "gate_identity": {
+                "command": "lint", "hook": "after_phase", "phase": "implement",
+            },
+            "gate_identities": [
+                {"command": "lint", "hook": "after_phase", "phase": "implement"},
+                {
+                    "command": "pytest-unit", "hook": "after_phase",
+                    "phase": "implement",
+                },
+            ],
+            "short_summary": "lint failed",
+            "findings": [
+                {"failure_kind": "lint_failure", "body": "E501 line too long"},
+            ],
+        },
+    }
+    session: dict[str, object] = {
+        "phase_handoff": active, "status": "awaiting_phase_handoff",
+    }
+    adapters = SessionAdapterRegistry()
+    adapters.register("repair_changes", RoundAdapter())
+    ctx = default_lifecycle_context(
+        phase_registry=default_registry(),
+        session_adapter_registry=adapters,
+        run_config={"session": session},
+    )
+    run = SimpleNamespace(session=session, state=state, output_dir=None, _ckpt=None)
+    return run, agent, ctx, active
+
+
+def _repair_phase_step():
+    """The step the profile would hand the seam, with a declared continuity."""
+    from pipeline.runtime import PhaseStep
+    from pipeline.runtime.profile import ExecutionPolicy
+
+    return PhaseStep(
+        phase="repair_changes",
+        execution_policy=ExecutionPolicy(
+            mode="linear", session_continuity="same_zone_continue",
+        ),
+    )
+
+
+def _wire_integration_seams(
+    monkeypatch: pytest.MonkeyPatch, events: list[str], reruns: list[dict],
+) -> None:
+    """Replace only the true external boundaries of this seam."""
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject",
+        lambda _run: None,
+    )
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair._repair_step",
+        lambda _profile: _repair_phase_step(),
+    )
+
+    def _rerun(_run, **kwargs) -> bool:
+        events.append("rerun")
+        reruns.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "pipeline.project.gate_repair.rerun_verification_handoff_gate", _rerun,
+    )
+
+
+def _prompt_parts(turn) -> dict[str, object]:
+    return {part.id: part for part in turn.parts}
+
+
+def test_retry_decision_reaches_the_real_repair_prompt_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Producer → consumer: the persisted gate failure and the operator's
+    instruction arrive at the provider on their own carriers, once, and only
+    then is the gate re-run."""
+    events: list[str] = []
+    reruns: list[dict] = []
+    run, agent, ctx, active = _integration_retry_run(events)
+    _wire_integration_seams(monkeypatch, events, reruns)
+
+    outcome = apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=ctx, active=active,
+        handoff_id="gate:lint:2", feedback=_OPERATOR_INSTRUCTION, note=None,
+        decided_at="2026-09-06T10:05:00Z",
+        identity=GateIdentity("lint", "after_phase", "implement"),
+    )
+
+    assert outcome.paused is False
+    # (1) exactly one provider call
+    assert len(agent.calls) == 1
+    assert "skipped" not in run.state.phase_log["repair_changes"]
+
+    # (2) both texts on the wire, each on its own typed carrier
+    wire = agent.calls[0]
+    assert _GATE_FAILURE in wire
+    assert f"Verification failed:\n{_GATE_FAILURE}" in wire
+    assert "A code review found these issues:" not in wire
+    assert run.state.repair_feedback is None
+    receipt = run.session["phases"]["rounds"][0]["repair_receipt"]
+    assert receipt["source_phase"] == "verification"
+    assert receipt["fixed"][0]["finding_id"] == "verification-feedback"
+    assert _OPERATOR_INSTRUCTION in wire
+    parts = _prompt_parts(agent.turns[0])
+    operator_part = parts["human_feedback:operator_feedback"]
+    assert operator_part.source == "operator"
+    assert operator_part.body == _OPERATOR_INSTRUCTION
+    critique_part = parts["feedback:repair_body"]
+    assert critique_part.source == "artifact"
+    assert _GATE_FAILURE in critique_part.body
+    # Provenance stays separate: machine critique never carries the operator's
+    # instruction, and vice versa.
+    assert _OPERATOR_INSTRUCTION not in critique_part.body
+
+    # (3) the gate re-runs strictly after the repair, on the fresh round
+    assert events == ["repair", "rerun"]
+    retry_context = reruns[0]["retry_context"]
+    assert retry_context.prior_round == 2
+    assert retry_context.fresh_round == 3
+    assert retry_context.loop_max_rounds == 2
+    assert retry_context.identities == (
+        GateIdentity("lint", "after_phase", "implement"),
+        GateIdentity("pytest-unit", "after_phase", "implement"),
+    )
+
+
+def test_retry_repairs_once_even_after_a_stale_skip_adapter_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_skip_adapter`` is the prior review's no-uncommitted skip, not the
+    operator's decision — a skip→rerun sequence would spend the retry with the
+    subject unchanged."""
+    events: list[str] = []
+    reruns: list[dict] = []
+    run, agent, ctx, active = _integration_retry_run(events)
+    run.state.phase_log["rounds_pending"] = {"_skip_adapter": True}
+    _wire_integration_seams(monkeypatch, events, reruns)
+
+    apply_verification_handoff_retry(
+        run=run, profile=object(), ctx=ctx, active=active,
+        handoff_id="gate:lint:2", feedback=_OPERATOR_INSTRUCTION, note=None,
+        decided_at="2026-09-06T10:05:00Z",
+        identity=GateIdentity("lint", "after_phase", "implement"),
+    )
+
+    assert len(agent.calls) == 1
+    assert "skipped" not in run.state.phase_log["repair_changes"]
+    assert _OPERATOR_INSTRUCTION in agent.calls[0]
+    assert events == ["repair", "rerun"]
+
+
+def test_unproven_subject_blocks_before_any_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pipeline.project.retry_subject import RepairSubjectUnproven
+
+    events: list[str] = []
+    reruns: list[dict] = []
+    run, agent, ctx, active = _integration_retry_run(events)
+    _wire_integration_seams(monkeypatch, events, reruns)
+
+    def _unproven(_run) -> None:
+        raise RepairSubjectUnproven("retained checkout has no rejected diff")
+
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", _unproven,
+    )
+
+    with pytest.raises(
+        VerificationHandoffRetryBlocked, match="no rejected diff",
+    ):
+        apply_verification_handoff_retry(
+            run=run, profile=object(), ctx=ctx, active=active,
+            handoff_id="gate:lint:2", feedback=_OPERATOR_INSTRUCTION, note=None,
+            decided_at="2026-09-06T10:05:00Z",
+            identity=GateIdentity("lint", "after_phase", "implement"),
+        )
+
+    assert agent.calls == []
+    assert events == []
+    # Nothing was consumed: the decision is still decidable.
+    assert run.session["phase_handoff"]["id"] == "gate:lint:2"
+    assert run.session["status"] == "awaiting_phase_handoff"
+    assert "phase_handoff_override" not in run.state.extras
+
+
+@pytest.mark.parametrize("error", [RuntimeError("control"), KeyboardInterrupt()])
+def test_retry_restores_scoped_feedback_when_dispatch_raises(monkeypatch, error):
+    from pipeline.repair_protocol import RepairFeedback
+
+    run = _run()
+    previous = RepairFeedback(review="earlier reviewer input")
+    run.state.repair_feedback = previous
+    monkeypatch.setattr(
+        "pipeline.project.retry_subject.guard_review_retry_subject", lambda _run: None,
+    )
+    monkeypatch.setattr("pipeline.project.gate_repair._repair_step", lambda _profile: object())
+
+    def fail(*_args, **_kwargs):
+        assert run.state.repair_feedback.verification_failure
+        raise error
+
+    monkeypatch.setattr(
+        "pipeline.project.verification_handoff_retry._dispatch_one_repair", fail,
+    )
+    expected = VerificationHandoffRetryBlocked if isinstance(error, RuntimeError) else type(error)
+    with pytest.raises(expected):
+        apply_verification_handoff_retry(
+            run=run, profile=object(), ctx=object(), active=run.session["phase_handoff"],
+            handoff_id="gate:pytest-unit:1", feedback="fix it", note=None,
+            decided_at="now", identity=GateIdentity("pytest-unit", "after_phase", "implement"),
+        )
+    assert run.state.repair_feedback is previous

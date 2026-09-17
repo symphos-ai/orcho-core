@@ -1193,6 +1193,97 @@ def test_roi_summary_marks_estimated_cost() -> None:
     )
 
 
+def test_roi_summary_names_unpriced_models_next_to_the_cost() -> None:
+    """The total omits invokes the pricing table had no entry for, so the line
+    says which models those were — right where the number is."""
+    assert _render_roi_summary(
+        {"phases": {}},
+        {
+            "total_tokens_in": 120_000,
+            "total_tokens_out": 3_456,
+            "total_tokens": 123_456,
+            "total_cost_usd_equivalent": 1.23,
+            "total_cost_partial": True,
+            "unpriced_models": ["gpt-5.6-sol"],
+        },
+        include_accounting=True,
+    ) == (
+        "ROI: tokens=123,456 (in=120,000 out=3,456) "
+        "cost_ref=runtime-reported:$1.23 (excl. unpriced: gpt-5.6-sol) "
+        "Outcome: 0 tasks, 0 run findings, 0 review findings"
+    )
+
+
+def test_roi_summary_lists_every_unpriced_model() -> None:
+    line = _render_roi_summary(
+        {"phases": {}},
+        {
+            "total_tokens": 100,
+            "total_cost_usd_equivalent": 1.23,
+            "unpriced_models": ["ghost-a", "ghost-b"],
+        },
+        include_accounting=True,
+    )
+    assert "(excl. unpriced: ghost-a, ghost-b)" in line
+
+
+def test_roi_summary_line_is_unchanged_without_unpriced_models() -> None:
+    """Byte-identical for a fully-priced run — whether the key is absent
+    (legacy metrics.json) or present but empty."""
+    baseline = (
+        "ROI: tokens=123,456 (in=120,000 out=3,456) "
+        "cost_ref=runtime-reported:$1.23 "
+        "Outcome: 0 tasks, 0 run findings, 0 review findings"
+    )
+    metrics = {
+        "total_tokens_in": 120_000,
+        "total_tokens_out": 3_456,
+        "total_tokens": 123_456,
+        "total_cost_usd_equivalent": 1.23,
+    }
+    assert _render_roi_summary(
+        {"phases": {}}, metrics, include_accounting=True,
+    ) == baseline
+    assert _render_roi_summary(
+        {"phases": {}}, {**metrics, "unpriced_models": []},
+        include_accounting=True,
+    ) == baseline
+
+
+def test_roi_summary_caveat_is_not_derived_from_a_missing_cost() -> None:
+    """A run with no cost at all is not "unpriced" — that fact is only ever
+    read from what the metrics writer recorded."""
+    assert "unpriced" not in _render_roi_summary(
+        {"phases": {}},
+        {
+            "total_tokens_in": 120_000,
+            "total_tokens_out": 3_456,
+            "total_tokens": 123_456,
+        },
+        include_accounting=True,
+    )
+
+
+def test_roi_summary_omits_unpriced_caveat_without_money_accounting() -> None:
+    """The caveat is dollar semantics; an accounting-off run shows neither the
+    cost nor the qualifier that explains it."""
+    line = _render_roi_summary(
+        {"phases": {}},
+        {
+            "total_tokens_in": 120_000,
+            "total_tokens_out": 3_456,
+            "total_tokens": 123_456,
+            "total_cost_usd_equivalent": 1.23,
+            "unpriced_models": ["gpt-5.6-sol"],
+        },
+        include_accounting=False,
+    )
+    assert line == (
+        "ROI: tokens=123,456 (in=120,000 out=3,456) "
+        "Outcome: 0 tasks, 0 run findings, 0 review findings"
+    )
+
+
 def test_roi_summary_does_not_invent_cost_when_accounting_cost_is_missing() -> None:
     assert _render_roi_summary(
         {"phases": {}},

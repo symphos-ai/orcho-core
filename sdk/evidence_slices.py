@@ -28,6 +28,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from core.contracts.criteria import (
+    CriterionSchemaError,
+    coerce_acceptance_criteria,
+    criteria_to_wire,
+    validate_acceptance_refs,
+)
 from core.observability.events import Event, read_all
 from pipeline.project.handoff_advice_evidence import collect_handoff_advice
 from pipeline.run_state.provider_runtime import PROVIDER_RUNTIME_FAILURE_KIND
@@ -39,6 +45,7 @@ from pipeline.run_state.stalled_command import (
     STALL_RECOVERY_VERBS,
     STALLED_COMMAND_FAILURE_KIND,
 )
+from sdk.errors import EvidenceInvalid
 from sdk.evidence import collect_evidence
 from sdk.runs import _CWD_DEFAULT, find_run, load_meta
 
@@ -91,7 +98,18 @@ class PlanSummary:
     subtask_count: int
     has_contract: bool
     goal: str | None
-    acceptance_criteria: tuple[str, ...]
+    # ADR 0188: typed criterion objects in their durable wire shape
+    # (``id`` / ``intent`` / ``verify`` plus the class-relevant key only).
+    # Legacy ``list[str]`` bundles are normalized on read by the single
+    # ingress normalizer, so this tuple never carries bare strings.
+    acceptance_criteria: tuple[dict[str, Any], ...]
+    # ADR 0188: the per-task half of the traceability contract — one entry per
+    # plan task, ``{"task_id": str, "acceptance_refs": [criterion id, ...]}``,
+    # in plan order. A task that references no criterion is PRESENT with an
+    # empty list: dropping it would hand a consumer a partial reference graph
+    # with no way to tell "owns nothing" from "missing". References are ids
+    # only; a task never restates criterion text.
+    task_acceptance_refs: tuple[dict[str, Any], ...]
     owned_files: tuple[str, ...]
     commands_to_run: tuple[str, ...]
     risks: tuple[str, ...]
@@ -431,6 +449,66 @@ def list_findings(
     return out
 
 
+def _task_acceptance_refs(plan: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    """Project the plan's per-task criterion references — ADR 0188.
+
+    Fail-closed on purpose. A malformed task entry, a missing task id, or a
+    malformed ``acceptance_refs`` list raises :class:`sdk.errors.EvidenceInvalid`
+    instead of degrading to an empty graph. Silence here would be the worst
+    outcome available: the criteria themselves would still be visible, so a
+    consumer would render a plan whose criteria look fully typed while the
+    edges that say *who owns what* had quietly vanished.
+
+    A plan whose tasks declare no references is not malformed — every task is
+    returned with an empty list.
+    """
+    subtasks = plan.get("subtasks")
+    if subtasks is None:
+        return ()
+    declared = plan.get("subtask_count")
+    if not isinstance(subtasks, list):
+        raise EvidenceInvalid(
+            f"plan.subtasks must be a list, got {type(subtasks).__name__}",
+        )
+    out: list[dict[str, Any]] = []
+    for i, task in enumerate(subtasks):
+        if not isinstance(task, Mapping):
+            raise EvidenceInvalid(
+                f"plan.subtasks[{i}] must be an object, got "
+                f"{type(task).__name__}",
+            )
+        task_id = task.get("id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise EvidenceInvalid(
+                f"plan.subtasks[{i}].id must be a non-empty string; a task "
+                "reference edge is keyed by task id",
+            )
+        try:
+            refs = validate_acceptance_refs(
+                task.get("acceptance_refs"),
+                where=f"plan.subtasks[{i}].acceptance_refs",
+            )
+        except CriterionSchemaError as exc:
+            raise EvidenceInvalid(str(exc)) from exc
+        out.append({"task_id": task_id.strip(), "acceptance_refs": list(refs)})
+    # The plan states how many tasks it has; a projected graph must have
+    # exactly that many edges. A shortfall means an entry was dropped upstream
+    # (the plan record keeps only object-shaped subtasks), which is precisely
+    # the partial graph this reader must never hand a consumer.
+    #
+    # Scoped to a record that actually projects a subtask list: a cross plan
+    # and a count-only ``plan.parsed`` event both carry ``subtasks: []`` with
+    # a positive count. That is "no graph", which stays honest — unlike a
+    # graph missing one edge, which does not.
+    if out and isinstance(declared, int) and declared != len(out):
+        raise EvidenceInvalid(
+            f"plan declares {declared} task(s) but only {len(out)} carry a "
+            "usable task reference edge; the criterion reference graph would "
+            "be partial",
+        )
+    return tuple(out)
+
+
 def get_plan_summary(
     run_id: str | None = None,
     *,
@@ -450,7 +528,12 @@ def get_plan_summary(
         subtask_count=int(plan.get("subtask_count") or 0),
         has_contract=bool(plan.get("has_contract")),
         goal=_optional_str(plan.get("goal")),
-        acceptance_criteria=tuple(plan.get("acceptance_criteria") or ()),
+        acceptance_criteria=tuple(
+            criteria_to_wire(
+                coerce_acceptance_criteria(plan.get("acceptance_criteria")),
+            ),
+        ),
+        task_acceptance_refs=_task_acceptance_refs(plan),
         owned_files=tuple(plan.get("owned_files") or ()),
         commands_to_run=tuple(plan.get("commands_to_run") or ()),
         risks=tuple(plan.get("risks") or ()),

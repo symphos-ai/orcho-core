@@ -577,6 +577,29 @@ elapsed-time formatting, SLA policy, and presentation. See [ADR
 0164](../adr/0164-open-operator-pause-requested-at.md) and [ADR
 0168](../adr/0168-public-sdk-timestamps-unambiguous.md).
 
+### Verification-contract presence on the delivery gate
+
+`DeliveryDecisionState.verification_contract_declared: bool | None` is
+additive and has exactly three values, projected verbatim from the durable
+`meta.verification_contract_presence` block: `False` when the run recorded no
+verification contract — the engine ran no gates, so an empty gate ledger means
+"nothing was checked", not "everything passed"; `True` when a contract was
+declared; `None` for runs written without the durable presence block (the
+field is absent from their meta and the state cannot assert either way).
+Every branch of `delivery_decision_state(...)` publishes it, including the
+non-decidable `kind='none'` and stopped-gate states, so a client never has to
+distinguish "no gate" from "no fact". The reader never re-derives the fact from
+the gate ledger.
+
+The downstream consumer is the `orcho_delivery_gate` MCP tool (`orcho-mcp`),
+which reads this state through the same wire (`dataclasses.asdict` → JSON). The
+field is additive and optional for it: the current MCP projection selects the
+fields it publishes and therefore ignores this one, so its payload is unchanged
+whether the field is absent (runs written before it existed), `null`, `false`,
+or `true`. A client that wants the fact today reads
+`delivery_decision_state(...)` directly; surfacing it on the MCP projection is a
+separate `orcho-mcp` change.
+
 ### Delivery-gate eligibility
 
 `DeliveryDecisionState.decidable` means the gate is actionable **now**. A

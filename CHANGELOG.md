@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+
+## 0.10.0 - 2026-09-17
+
+This release connects acceptance criteria to durable evidence and makes paused,
+interrupted, and deferred delivery observable and actionable through the CLI
+and SDK. Upgrade the complete Orcho package set together.
+
+### Added
+
+- Typed acceptance criteria with stable IDs and a criterion evidence matrix.
+  Executable criteria reference verification receipts, agent assertions remain
+  advisory, and human criteria require a recorded per-criterion decision.
+  Status, evidence, and delivery readiness share the same criterion projection.
+- A delivery ledger records intent and committed facts. `orcho reconcile-delivery`
+  can record a discovered existing delivery without creating another commit.
+- `orcho delivery gate` and `orcho delivery decide` inspect and decide deferred
+  delivery through the SDK. `orcho status` names the next available action.
+- `orcho status --json` exposes machine-readable status for automation.
+- Verification gates publish bounded live progress and preserve diagnostic
+  output on timeout, including checks run before final acceptance.
+- Runs disclose an absent verification contract. A run with no declared gates
+  does not claim receipt-backed verification.
+- `orcho update` upgrades through the detected installation manager. Run
+  metadata records the installed package versions for diagnostics.
+- Cost reports identify unpriced models and partial totals.
+
+### Changed
+
+- Fresh installs default planning to `claude-fable-5-1[1m]`, implementation
+  and repair to `claude-opus-5[1m]`, plan validation to `gpt-6-astra`, and
+  change review/final acceptance to `gpt-5.6-sol`, with phase-specific effort
+  levels preserved in the shipped configuration.
+- A halted `orcho run` exits with code `3`; phase-handoff pauses retain code
+  `4`. A deferred delivery is reported as not delivered until its decision is
+  completed. Supervisors must handle the new exit-code contract.
+- The plan and evidence interfaces carry typed criteria rather than prose-only
+  acceptance strings. Consumers should read verification class, proof references,
+  and readiness instead of inferring completion from text.
+- Delivery state distinguishes an unknown commit outcome from a recorded
+  negative outcome. Consumers must preserve that distinction.
+
+### Fixed
+
+- Correction follow-ups cannot approve over an inherited failed required gate
+  merely because implementation was skipped and the child has no receipts.
+- Out-of-band delivery decisions inherit valid parent verification evidence
+  and retain the delivery policy and authored commit message from the parked run.
+- Unresolved delivery actions are rejected before Git mutation. Existing
+  unrecorded delivery commits are detected instead of blindly repeated.
+- Linked worktrees inherit their repository's project plugin. A project with
+  no verification contract follows the explicitly advisory path.
+- Missing gate references can bind to declared gates; invalid plan contracts
+  return to planning, and open criterion matrices read their current evidence.
+- Repair receives the complete gate failure set and source-aware feedback.
+- CLI and SDK resume preserve the run's recorded round budget; cross-project
+  retries retain the plan and task context.
+- Plan prompts constrain criteria to the task's scope. Handoff advice includes
+  subtask receipts, and paused-run guidance names pending human decisions.
+- Provider-side transient failures, long startup bootstraps, streamed child
+  cancellation, and closed delivery-menu stdin are handled more predictably.
+- Metrics attribute phases to the model that actually ran them and include
+  correction-triage usage. Historical metrics are not rewritten automatically.
+- Retired runtime wrappers are excluded from wheels.
+- A phase-handoff waiver cannot satisfy unrelated missing, failed, or stale
+  required verification receipts. Its exact finding scope and operator
+  rationale remain durable across resume.
+- Final acceptance receives the latest applicable review verdict, findings,
+  preceding repair record, and operator direction with round attribution.
+- Checkpoint resume of a child created from an accepted run plan preserves that
+  plan and its projected profile instead of starting planning again.
+- Successful planning and research runs finish without requiring implementation
+  verification receipts, record delivery as not applicable, and offer a typed
+  `from_run_plan` action for the next implementation run.
+- Recovery lineage, diagnosis, SDK actions, and CLI guidance now agree when a
+  completed run holds a persisted plan. A clean plan-only result is no longer
+  reported as lacking a continuation subject.
+
+### Upgrade Notes
+
+- Upgrade `orcho`, `orcho-core`, and `orcho-mcp` together, then restart MCP
+  server processes. The supported package-family range is `>=0.10.0,<0.11`.
+- Update clients that consume acceptance criteria as strings, assume every
+  delivery outcome is boolean, or treat every nonzero exit code as a crash.
+- Declare and review the project's verification contract before relying on
+  required checks. Human acceptance still needs explicit recorded decisions.
+
+### Known Notes
+
+- Legacy delivery reconciliation can miss a commit found only on a retained
+  worktree branch when no delivery ledger exists. An explicit commit argument
+  does not bypass discovery.
+
 ## 0.9.0 - 2026-08-29
 
 Onboarding stops producing something inert, and a run that has ceased to exist

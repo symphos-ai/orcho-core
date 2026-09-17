@@ -154,9 +154,14 @@ class TestParserPopulatesContract:
         plan = parse_plan(_plan_text_with_contract())
 
         assert plan.goal == "Reject invalid payloads with 400"
-        assert plan.acceptance_criteria == (
-            "Invalid → 400", "Valid still 200",
-        )
+        # ADR 0188: the legacy ``list[str]`` fixture is normalized once at
+        # ingress into typed criteria with deterministic positional ids.
+        assert [
+            (c.id, c.intent, c.verify) for c in plan.acceptance_criteria
+        ] == [
+            ("C1", "Invalid → 400", "agent_assertion"),
+            ("C2", "Valid still 200", "agent_assertion"),
+        ]
         assert plan.owned_files == ("app/validation.py",)
         assert plan.commands_to_run == ("pytest tests/ -q",)
         assert plan.risks == ("Do not change response schema",)

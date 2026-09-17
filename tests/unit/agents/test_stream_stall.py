@@ -13,6 +13,7 @@ Covers the two stall paths wired into ``_stream_run`` via the opt-in
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import pytest
 import agents.stream as stream
 from agents.owned_child import OwnedChildRegistry, OwnedChildState
 from agents.stall_protocol import (
+    COMMAND_PREVIEW_MAX,
     AgentCommandStalledError,
     EventStallDiagnosticSink,
     StalledCommand,
@@ -73,6 +75,57 @@ def test_inspect_line_dedupes_repeated_poll_command() -> None:
     assert len(sink.recorded) == 1
 
 
+def test_inspect_line_records_claude_tool_use_once_despite_system_echoes() -> None:
+    """One Claude Bash ``pkill -f`` = one diagnostic. The ``system``
+    task_started / task_notification records that echo the command text
+    afterwards are not commands and must not add records (field defect)."""
+    sink = _SpySink()
+    mon = StreamStallMonitor(phase="repair_changes", sink=sink)
+    command = 'pkill -f "vite" && echo closed'
+    tool_use = json.dumps({
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": command}},
+        ]},
+    })
+    started = json.dumps({
+        "type": "system", "subtype": "task_started", "task_id": "t1",
+        "tool_use_id": "toolu_01", "description": command,
+        "is_backgrounded": False, "task_type": "local_bash",
+    })
+    notification = json.dumps({
+        "type": "system", "subtype": "task_notification", "task_id": "t1",
+        "tool_use_id": "toolu_01", "status": "completed", "output_file": "",
+        "summary": command,
+    })
+    assert mon.inspect_line(tool_use, elapsed_s=1.0) is True
+    assert mon.inspect_line(started, elapsed_s=1.5) is False
+    assert mon.inspect_line(notification, elapsed_s=2.0) is False
+    assert len(sink.recorded) == 1
+    assert sink.recorded[0].command_preview == command
+    # And the echoes alone (a fresh monitor) record nothing at all.
+    fresh = _SpySink()
+    mon2 = StreamStallMonitor(phase="repair_changes", sink=fresh)
+    assert mon2.inspect_line(started, elapsed_s=1.0) is False
+    assert mon2.inspect_line(notification, elapsed_s=1.0) is False
+    assert fresh.recorded == []
+
+
+def test_inspect_line_preview_keeps_tail_of_long_command() -> None:
+    """A poll trailing a long compound line stays visible in the bounded
+    preview: the monitor keeps the END of the command, not the head."""
+    sink = _SpySink()
+    mon = StreamStallMonitor(phase="implement", sink=sink)
+    setup = " && ".join(f"echo step{i}" for i in range(40))
+    command = f'{setup} && pkill -f "vite"'
+    assert len(command) > COMMAND_PREVIEW_MAX
+    assert mon.inspect_line(f"tool Bash: {command}", elapsed_s=3.0) is True
+    preview = sink.recorded[0].command_preview
+    assert len(preview) == COMMAND_PREVIEW_MAX
+    assert preview.endswith('pkill -f "vite"')
+    assert preview == command[-COMMAND_PREVIEW_MAX:]
+
+
 def test_inspect_line_ignores_safe_and_foreign_argv() -> None:
     sink = _SpySink()
     mon = StreamStallMonitor(phase="implement", sink=sink)
@@ -82,6 +135,13 @@ def test_inspect_line_ignores_safe_and_foreign_argv() -> None:
     assert mon.inspect_line("tool Bash: kill -0 12345", elapsed_s=1.0) is False
     # grep -f is not pgrep -f.
     assert mon.inspect_line("tool Bash: grep -f pats.txt out.log", elapsed_s=1.0) is False
+    # A stream-json record that is not a tool call never contributes its raw
+    # text, however command-like the embedded field is.
+    echo = json.dumps({
+        "type": "system", "subtype": "task_notification", "status": "completed",
+        "summary": 'kill -0 $(pgrep -f "pytest -q -m")',
+    })
+    assert mon.inspect_line(echo, elapsed_s=1.0) is False
     assert sink.recorded == []
 
 

@@ -35,6 +35,11 @@ written, what shape they carry, and what changes per terminal status.
 
 ## Scheduled-gate ledger
 
+The ledger exists only for a run that declared a contract; the
+`meta.json` `verification_contract_presence` block is written for every run,
+declared or not, and is the thing to read when asking "was there a contract at
+all?". An absent ledger alone does not answer that question.
+
 Runs with a verification contract persist `scheduled_gate_ledger.json`. It is
 schema version `"2"`, ordered by `(command, hook, phase)`, and contains the
 declaration/selection/execution axes plus an append-only identity trail. Each
@@ -47,6 +52,11 @@ except for `phase_handoff_unattended_halt`: ADR 0154 keeps that ledger open
 while the preserved handoff awaits its first checkpoint re-arm and operator
 decision.
 
+The `before_delivery:` epoch is the delivery view; it replays recorded
+`after_phase:implement` selections and, for a run that never resolved that
+boundary (a correction child whose `implement` was skipped), selects the
+unrecorded delivery rows from the live checkout and records them, so the view
+is never empty merely because the boundary did not happen in this run.
 Resume reuses the snapshot and epoch decisions. Evidence copies the validated
 artifact as `scheduled_gate_ledger`; SDK readers never reconstruct it via a
 project plugin. Every row has a typed `cost` of `fast`, `moderate`, `slow`, or
@@ -197,9 +207,186 @@ in-flight runs (the pipeline subprocess) and one out-of-band writer
   "session_mode_requested": "stateless",
   "timestamp": "2026-05-24T01:23:45.678901",
   "status": "running",
-  "phases": { }
+  "phases": { },
+  "versions": { "orcho-core": "0.9.1", "orcho-mcp": "0.8.3" },
+  "max_rounds": 4
 }
 ```
+
+`versions` maps every installed distribution whose name starts with
+`orcho` to its version, as seen by the interpreter that wrote the run.
+`orcho-core` is always present (`"0+unknown"` when the engine runs from an
+uninstalled source checkout); other entries appear only when that package
+is installed alongside the engine. Cross-project parent runs carry the
+same key. This is the only artifact-side record of which engine wrote the
+run — use it before attributing a behaviour to a release.
+
+`max_rounds` is the effective implement/review/repair round budget supplied to
+session construction, stamped once beside `versions`. For mono runs this is
+the resolved budget, including checkpoint inheritance when a resume frontend
+resolves it. Cross-project parent runs stamp the cross-run request's budget;
+this field does not add cross-resume inheritance.
+
+This is a **read-only audit projection**. The authority for resume inheritance
+stays the run's own `checkpoints.db` (`run_meta.config_json`, read through
+`read_run_config` by `pipeline/control/resume_budget.py`). No resume path reads
+the budget back out of `meta.json`. Use this key to audit the recorded budget,
+not to predict what a future resume will restore.
+
+### `verification_contract_presence`
+
+```json
+{ "verification_contract_presence": { "declared": false } }
+```
+
+**Writer:** `pipeline/project/bootstrap.py:init_session_with_atexit`, reached
+through `pipeline/project/run_setup.py:init_run_session`. The fact is decided
+once per run in `pipeline/project/session_run.py`, from the resolved
+verification contract, and stamped onto the session dict *before* its first
+`save_session` — so it is present from the first durable write and survives an
+abnormal exit (the atexit hook holds the same dict). A resume re-stamps the
+same fact from the freshly resolved contract.
+
+`declared` is `true` when the project declared a verification contract and
+`false` when it did not. That is the whole payload: this block is **not** a
+ledger, not a gate list, and not a result. It says only whether the engine had
+a contract to execute gates from — a run with `declared: false` ran no
+engine-owned gates at all, so it has no `scheduled_gate_ledger.json` and no
+command receipts to read.
+
+A **missing** block means the run never recorded the fact — runs written before
+the block existed. Readers must treat absent as "unknown" and behave exactly as
+they did before the block was introduced; they must never fall back to loading
+the project plugin to re-derive it.
+
+Wording and key are owned by `pipeline/project/verification_disclosure.py`; the
+header, DONE/HALTED tail, final_acceptance readiness block, `orcho status`, and
+the delivery-decision state all project this block rather than recomputing it.
+
+### Per-attempt review sub-records in `phases.rounds`
+
+Each `review_changes` invocation is persisted as a sub-record **inside** the
+round entry it belongs to, under a key naming the pass that ran
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)):
+
+```json
+{
+  "phases": {
+    "rounds": [
+      {
+        "round": 1,
+        "critique": "<rendered body of the last review of this round>",
+        "repair_receipt": { },
+        "review": {
+          "pass": "review",
+          "attempt": 1,
+          "verdict": "REJECTED",
+          "approved": false,
+          "clean": false,
+          "repair_preceded": false,
+          "short_summary": "…",
+          "findings": [ ]
+        },
+        "reverify": {
+          "pass": "reverify",
+          "attempt": 1,
+          "verdict": "APPROVED",
+          "approved": true,
+          "clean": true,
+          "repair_preceded": true,
+          "short_summary": "…",
+          "findings": []
+        }
+      }
+    ]
+  }
+}
+```
+
+**Writer:** `pipeline/review_round_record.py` (`ReviewRoundAdapter`), fired by
+the lifecycle after every `review_changes` dispatch.
+
+- The key is the pass: `review` for the round's first review, `reverify` for the
+  post-repair re-verify pass. `attempt` repeats the loop round, so an attempt's
+  identity is `(round, pass)`. Re-running the same `(round, pass)` overwrites the
+  same key rather than appending.
+- `repair_preceded` records whether a repair pass had already run in this round
+  when the attempt was written. It is observed from the round entry, not derived
+  from the pass: the in-loop `review` pass sees a pre-repair subject (`false`),
+  while a `reverify` and the operator-feedback retry round — which repairs first,
+  reviews after, and still writes the round's `review` pass — both see a repaired
+  one (`true`).
+- `parse_error` is present when the attempt's output never parsed. The record is
+  still written — a reader must see that the attempt happened *and* that its
+  verdict is unusable.
+- `session_id` / `continue_session` appear when the attempt's runtime metadata
+  carried them, per attempt rather than per round.
+- Both keys are **optional and additive**. A round from before this shape, a
+  critique-only round, and a skipped review all carry neither. There is no
+  `phases.review_changes` key — that placement is deliberately avoided because
+  it would create checkpoint rows and loop cursors for a loop phase and change
+  what loop resume restores.
+
+### `phases.final_acceptance.review_context`
+
+The prior-review evidence the closing gate was handed, resolved from the round
+sub-records above plus the run's operator waiver and
+`phase_handoff_decisions/*.json` artifacts:
+
+```json
+{
+  "review_context": {
+    "run_id": "20260916_000301",
+    "latest": {
+      "round": 2, "pass": "reverify", "verdict": "APPROVED",
+      "approved": true, "short_summary": "…", "findings": [],
+      "repair_preceded": true
+    },
+    "superseded": [
+      { "round": 2, "pass": "review", "verdict": "REJECTED",
+        "approved": false, "short_summary": "…",
+        "findings": [{"id": "F1", "severity": "P1", "title": "…",
+                      "file": "…", "line": 42, "required_fix": "…"}],
+        "repair_preceded": false }
+    ],
+    "invalid": [],
+    "unresolved_findings": [],
+    "operator": [
+      { "kind": "waiver", "handoff_id": "review_changes:2",
+        "phase": "review_changes", "action": "continue_with_waiver",
+        "text": "…", "note": "", "decided_at": "2026-09-16T10:00:00+00:00",
+        "round": 2, "waived_finding_ids": ["id:F1"] }
+    ]
+  }
+}
+```
+
+**Writer:** `pipeline/phases/builtin/handlers/final_acceptance.py`, resolved by
+`pipeline/phases/builtin/final_review_context.py`; persisted by
+`FinalAcceptanceAdapter`.
+
+- `latest` is the last attempt that actually parsed; `superseded` holds the
+  earlier valid REJECTED attempts it overruled (including the `review` of the
+  same round when its `reverify` approved); `invalid` holds attempts that failed
+  to parse — they are never `latest` and supersede nothing.
+- `unresolved_findings` are `latest`'s findings when `latest` is not approved,
+  projected to `id` / `severity` / `title` / `file` / `line` / `required_fix`;
+  the reviewer's prose body is not carried.
+- `repair_claim` is present when the latest attempt's round recorded a repair
+  *after* it, with no valid re-review since — an **unverified claim**, never a
+  resolution. `repair_before_latest` replaces it when the repair ran *before*
+  the latest attempt, recording that the standing verdict already covers it.
+  Which of the two applies is read from the attempt's own `repair_preceded`,
+  not from its pass.
+- `operator` entries have `kind` `waiver` or `decision`. `waived_finding_ids`
+  holds identity keys (`id:<id>`, else a `severity|title|file|line` fingerprint),
+  not display ids.
+- Provenance is exactly `run_id` plus each attempt's `(round, pass)`. **How** the
+  facts were loaded — live session or this file on a fresh-process resume — is
+  deliberately absent, so both paths serialize identically.
+- The whole block is **optional**: a run with no prior review writes no key.
+  This is evidence only; it changes no verdict. See
+  [Verification contract, Stage 5](../architecture/verification_contract.md#stage-5-final-acceptance-readiness-awareness).
 
 ### Status field semantics
 
@@ -229,6 +416,21 @@ the wire for runs spawned via MCP; raw `meta.status` does not.
 The ceiling writes canonical `halt_reason="startup_stalled"` and
 `meta.halt={phase:"startup",cause,budget_s,elapsed_s,command}`.
 
+`armed_at` is the start of the **current idle window**, not necessarily the
+moment of `run.start`. The watchdog's ambient progress signals are growth of
+`events.jsonl` and `output.log`; setup work that produces neither is reported
+to the watchdog explicitly as a heartbeat. Today the only heartbeat source is
+worktree bootstrap: each completed step and the successful bootstrap as a
+whole rewrite the artifact with a fresh `armed_at` and re-snapshotted
+baselines, so a dependency install longer than `startup_stall_seconds` is
+not retro-halted at the next checkpoint. The watchdog stays armed across a
+heartbeat: a hang after bootstrap and before the first `phase.start` still
+halts, and `halt.elapsed_s` then measures the idle window since the last
+heartbeat. A recorded service-command timeout is not cleared by a heartbeat.
+Out-of-process diagnosis (`orcho_run_diagnose`) classifies a `running` run
+from the same artifact, so it measures idleness from the refreshed
+`armed_at` as well.
+
 Stamped on every terminal status except `done` and (for now)
 `awaiting_*` states. Canonical values that the SDK + parsers
 recognise:
@@ -242,6 +444,12 @@ recognise:
 | `"interrupted"` | atexit hook | graceful interrupt while status was `running` |
 | `"phase_failure:<ExceptionClass>"` | `_record_phase_failure` | uncaught exception escaped a phase handler |
 | free-form string | finalize `state.halt` branch | any `state.stop(reason)` caller — see the [halt-trigger enumeration](#halt-trigger-enumeration) below |
+
+A plan that fails to parse or violates the plan contract is **not** a halt
+while the plan loop has rounds left: the plan handler records the violation
+and `validate_plan` renders it as a synthesized `REJECTED` verdict, so it
+becomes critique for the next round. The strings below appear only when no
+replan or operator-decision path remains.
 
 **Caveat — `state.halt` free-form strings.** When the finalize
 `state.halt` branch fires, `halt_reason` holds whatever string the
@@ -529,6 +737,14 @@ Three rollup fields are **omitted when zero** (`as_dict` at
 * `cost_estimated: bool` — `false` when the cost reference came from
   the active runtime/endpoint; `true` when Orcho estimated it from a
   local pricing table.
+* `unpriced_models: list[str]` — sorted, deduped **exact** model ids
+  whose invocations went unpriced. Present only when the list is
+  non-empty and dollar accounting is enabled; a fully-priced run keeps
+  its historical key set byte for byte. See
+  [Unpriced invocations](#unpriced-invocations) below.
+* `total_cost_partial: bool` — only when `true`, and only ever written
+  next to a present `total_cost_usd_equivalent`. Says that total sums
+  the priced invocations only.
 
 Consumers must use `metrics.get("total_rounds", 0)` rather than
 `metrics["total_rounds"]`.
@@ -550,7 +766,12 @@ Consumers must use `metrics.get("total_rounds", 0)` rather than
 
 Optional per-entry keys (omitted when zero / unset):
 `tool_calls`, `tokens_unknown`, `retries`, `cost_usd_equivalent`,
-`cost_estimated`.
+`cost_estimated`, `cost_unpriced`.
+
+`cost_unpriced: true` marks the attempt whose pricing lookup ran and
+came back empty. Written **only when true** — a priced attempt carries
+no `cost_unpriced: false`. It is also the attempt whose exact `model`
+lands in the top-level `unpriced_models`.
 
 `tokens_exact` semantics: `true` when the count came from the
 provider's API headers / CLI usage trailer; `false` when we
@@ -565,6 +786,96 @@ collapsed via summation, plus:
 * `model` becomes `"mixed"` when attempts used different models.
 * `tokens_exact` becomes `False` when any contributing attempt was
   estimated.
+* `cost_unpriced` becomes `true` when **any** contributing attempt was
+  unpriced (logical OR), and is absent otherwise. Because `model` here
+  can be `"mixed"`, a rollup row can never name which model went
+  unpriced — that is what the top-level `unpriced_models` list is for.
+
+### Unpriced invocations
+
+> [ADR 0189](../adr/0189-unpriced-usage-visibility-in-metrics.md).
+
+An invocation is **unpriced** when Orcho had no provider-reported cost,
+went to the local pricing table for an estimate, and the table had no
+entry for the model. The dollar total cannot include that invocation,
+so the fact is recorded rather than silently folded into a smaller
+number.
+
+**One invariant, everywhere.** `cost_unpriced: true` means *pricing was
+attempted here and the table returned nothing*. It never means anything
+else, on any record:
+
+* **Not** "this record cost nothing." A phase with zero tokens, no
+  model, or a provider-reported cost is not a pricing candidate at all
+  and carries no marker.
+* **Not** "the token counts were heuristic" — and here the two forms
+  differ, because they reach the pricing table on different terms:
+  * In a **mono** run, `tokens_exact: false` phases are deliberately
+    never priced by the resolver (`_resolve_phase_cost_usd_equivalent`)
+    — Orcho refuses to turn byte estimates into dollar-looking facts —
+    so they are not pricing candidates and carry no marker.
+  * In a **cross** run, `capture_invoke_usage` prices any invocation
+    with `total_tokens > 0` whatever its `token_split_source` (`exact`,
+    `runtime_estimate`, `text_estimate_scaled`, `aggregate_total_only`).
+    A heuristic-split invocation on an unpriced model therefore *does*
+    carry the marker: the lookup ran and returned nothing.
+* **Not** "accounting is off." With dollar accounting disabled the
+  whole surface is scrubbed: `cost_unpriced`, `unpriced_models`, and
+  `total_cost_partial` are all absent, like the other cost keys.
+
+The marker is written **only when true**; there is no `false` form.
+It appears on:
+
+* `phase_attempts[]` entries — the attempt whose lookup came back empty.
+* `phases.<name>` rollups — OR'd across that phase's attempts.
+* `subtasks.<phase>[]` records — when the record's producer attempted
+  pricing and got nothing. (The in-tree `subtask_dag` builder only
+  passes through runtime-reported cost, so it does not set the marker
+  today; the collector honors it when a record carries it.)
+* Cross-run `phases.<alias|cross_phase>` entries — see
+  [Cross-run `metrics.json`](#cross-run-metricsjson).
+
+**The list is written once, by the writer.** `unpriced_models` carries
+the **exact** model ids, collected by the metrics writer from the
+records that were actually marked. Readers (`DONE` summary, SDK, MCP)
+must read that list, never re-derive the fact from a missing/`null`
+cost — a `null` cost has several other causes above.
+
+**`total_cost_usd_equivalent` is a lower bound when
+`total_cost_partial` is `true`.** The total's value and rounding are
+unchanged by any of this: it sums the priced invocations exactly as
+before. `total_cost_partial` is a qualifier sitting next to it saying
+that at least one invocation is missing from the sum, and
+`unpriced_models` names the models responsible. `total_cost_partial` is
+never written without a `total_cost_usd_equivalent` to qualify (a run
+with no priced invocation at all has no total, and `unpriced_models`
+alone carries the fact).
+
+```json
+{
+  "total_tokens": 51200,
+  "total_cost_usd_equivalent": 1.23,
+  "cost_estimated": true,
+  "total_cost_partial": true,
+  "unpriced_models": ["ghost-model-1", "vendor/unlisted-9"],
+  "phases": {
+    "plan":      { "total_tokens": 1200, "cost_usd_equivalent": 1.23 },
+    "implement": { "total_tokens": 50000, "model": "mixed", "attempts": 2,
+                   "cost_unpriced": true }
+  },
+  "phase_attempts": [
+    { "phase": "implement", "attempt": 1, "model": "ghost-model-1",
+      "tokens_exact": true, "cost_unpriced": true },
+    { "phase": "implement", "attempt": 2, "model": "vendor/unlisted-9",
+      "tokens_exact": true, "cost_unpriced": true }
+  ]
+}
+```
+
+Resume keeps the fact: `load_from_disk` rehydrates `cost_unpriced` from
+`phase_attempts`, so a pause → resume → re-save re-emits
+`unpriced_models` rather than losing it because the pricing table
+answers differently in the second process.
 
 ### Per-subtask usage breakdown (`subtasks`)
 
@@ -604,8 +915,11 @@ Always-present per-record fields: `subtask_id`, `runtime`, `model`,
 `invocations`, `duration_s`, `tokens_in`, `tokens_out`,
 `total_tokens`, `tool_calls`, `tokens_exact`. The remaining fields —
 `tokens_in_cache_read`, `tokens_in_cache_create`,
-`cost_usd_equivalent`, `cost_estimated`, `state`, `declared_files` —
-appear **only when known**; an unknown value is omitted.
+`cost_usd_equivalent`, `cost_estimated`, `cost_unpriced`, `state`,
+`declared_files` — appear **only when known**; an unknown value is
+omitted. A record marked `cost_unpriced: true` contributes its own
+exact `model` to the top-level `unpriced_models`
+(see [Unpriced invocations](#unpriced-invocations)).
 
 Three authority/semantics rules a consumer must honor:
 
@@ -652,6 +966,69 @@ cumulative `phases.implement` rollup.
 `save()` writes via `json.dumps(d, indent=2, ensure_ascii=False)` —
 no trailing newline (unlike `phase_handoff_decide`'s meta.json write).
 
+### Cross-run `metrics.json`
+
+**Writer:** `core/observability/metrics.py:cross_metrics_dict`,
+persisted by `pipeline/cross_project/finalization.py` (and snapshotted
+on the cross pause paths).
+
+A cross run's `metrics.json` keeps the same top-level surface as the
+mono one (`total_tokens_in` / `total_tokens_out` / `total_tokens` /
+`total_duration_s` / `phases`), so consumers need no cross-vs-mono
+branch. Its `phases` entries are not phase rollups but two other kinds,
+tagged by `kind`: one `sub_pipeline` entry per child alias (folded from
+that child's own `metrics.json`) and one `cross_level` entry per
+cross-level invoke (`cross_hypothesis`, `cross_plan`,
+`cross_validate_plan`, `contract_check`). `cross_aggregation` lists
+both sets of names.
+
+The unpriced keys carry over unchanged in meaning:
+
+* `unpriced_models` — the **union** of the exact ids each source
+  already recorded: every child's own top-level `unpriced_models` and
+  every cross-level entry's `unpriced_models`. Nothing here re-derives
+  ids from a `model` field (a cross-level rollup's `model` collapses to
+  `"mixed"` once a phase spans two models, so it could never name
+  them). Same conditions as mono: sorted, deduped, present only when
+  non-empty and accounting is enabled. Malformed values arriving from a
+  child `metrics.json` on disk are ignored rather than merged.
+* `cost_unpriced: true` on a `phases` entry — the alias or cross-level
+  phase that contributed at least one unpriced invocation. A
+  cross-level entry that carries only `cost_unpriced` and no ids still
+  marks its row (the row is honest even when the id is unavailable).
+* `total_cost_partial: true` beside `total_cost_usd_equivalent` — same
+  lower-bound semantics: the summed total is unchanged, and the flag
+  says the sum omits the unpriced invocations.
+
+```json
+{
+  "total_tokens": 90000,
+  "total_cost_usd_equivalent": 4.5,
+  "total_cost_partial": true,
+  "unpriced_models": ["ghost-model-1"],
+  "phases": {
+    "api":       { "kind": "sub_pipeline", "total_tokens": 60000,
+                   "cost_usd_equivalent": 4.5 },
+    "web":       { "kind": "sub_pipeline", "total_tokens": 20000,
+                   "cost_unpriced": true },
+    "cross_plan":{ "kind": "cross_level", "total_tokens": 10000,
+                   "calls": 1, "cost_unpriced": true }
+  },
+  "cross_aggregation": {
+    "sub_pipelines": ["api", "web"],
+    "cross_phases": ["cross_plan"]
+  }
+}
+```
+
+Upstream of the writer, `pipeline/cross_project/usage.py` is where a
+cross-level invoke's marker is born: `capture_invoke_usage` sets
+`cost_unpriced` on the invoke whose pricing lookup came back empty
+(durable, independent of the one-shot stderr warning's per-model
+dedupe), and `accumulate_phase_usage` folds those invokes into the
+per-phase entry, keeping the exact ids in that entry's own
+`unpriced_models` list.
+
 ---
 
 ## Halt-trigger enumeration
@@ -664,7 +1041,8 @@ orchestrator paths are listed separately.
 
 | Trigger | Location | `state.halt_reason` string |
 |---|---|---|
-| Plan parse failure round-1 | `pipeline/phases/builtin.py:476` | `"plan rejected before implement: <parse error>"` |
+| Plan-contract violation with no replan or operator path left | `pipeline/phases/builtin/handlers/validate_plan.py` `_rejection_requires_stop` | `"plan rejected before implement: <parse error>"` |
+| Unresolvable criterion gate ref with no replan or operator path left | same | `"validate_plan rejected before implement: <problems>"` |
 | validate_plan budget exhausted on contract reject | `pipeline/phases/builtin.py:655` | `"validate_plan contract rejected before implement: <error>"` |
 | validate_plan contract reject (early-exit) | `pipeline/phases/builtin.py:900` | `"validate_plan contract rejected before implement: <error>"` |
 | review contract reject before repair_changes | `pipeline/phases/builtin.py:2225` | `"review contract rejected before repair_changes: <error>"` |
@@ -708,16 +1086,40 @@ delivery context (`source_path`, `project_path`, `baseline_ref`,
 `changed_paths`, `untracked_paths`, `release_verdict`, and any
 `verification_*` blockers) rides on the persisted gate so it can be replayed.
 
-An operator first resumes this stopped checkpoint. Once lifecycle has re-parked
-the unchanged gate in a live status, it resolves the gate out of band through
-`sdk.decide_delivery(run_id, action)` (mirror:
-`RunService.decide_delivery`). The executor re-checks the hard guards from the
-persisted evidence, recomputes the patch against the held worktree (it never
-reads the non-serialised `patch_text`), applies the chosen action, and
-finalizes the run: `approve` / `apply` / `skip` settle it `done`; `halt` / `fix`
-keep it `halted` (`commit_decision_halt` / `commit_decision_fix`). The read-only
-companion `sdk.delivery_decision_state(run_id)` preserves a stopped gate's kind
-and reason but offers no direct decision until the live re-park.
+The producer's park is decidable in place (ADR 0175 addendum): an operator
+resolves it out of band through `sdk.decide_delivery(run_id, action)` (mirror:
+`RunService.decide_delivery`, MCP `orcho_delivery_decide`) without resuming
+first. The executor re-checks the hard guards from the persisted evidence,
+recomputes the patch against the held worktree (it never reads the
+non-serialised `patch_text`), applies the chosen action, and finalizes the
+run: `approve` / `apply` / `skip` settle it `done`; `halt` / `fix` keep it
+`halted` (`commit_decision_halt` / `commit_decision_fix`). Every other stopped
+gate — an operator halt, a resolved-but-unapplied record, a
+`commit_delivery_scope_blocked` park — stays resume-first: the read-only
+companion `sdk.delivery_decision_state(run_id)` preserves its kind and reason
+but offers no direct decision until the lifecycle re-parks it live.
+
+### Delivery ledger (ADR 0191)
+
+`commit_decisions/<id>.delivery.json` is written around the delivery commit
+itself, not after it: `stage="intent"` right before the first mutating git
+op (`action`, `commit_target`, `baseline_ref`, `head_before`,
+`branch_before`, `message`, `strategy`, `staged_paths`), `stage="committed"`
+right after `git commit` (`commit_sha`), `stage="recorded"` once the audit
+artifact above exists. A run that stops between the commit and the audit
+therefore still carries the fact. On resume, `resolve_commit_delivery`
+reconciles the ledger with Git and *adopts* a ledger-backed commit
+(`meta.commit_delivery.provenance="resume_adopted"`, the audit completed
+from the intent) instead of delivering a second time. A commit an older
+engine created without a ledger (`legacy_commit`, found by the deterministic
+fallback subject `chore: deliver orcho run <run_id>`) is never adopted
+silently: the resolve refuses to deliver again, run diagnosis reports
+`delivery_inconsistent` with the sha, and an operator records it with
+`orcho reconcile-delivery <run_id> --apply --commit <sha>`
+(`provenance="reconciled"`, `operator` / `note` in the audit artifact; a
+rejected release settles as a *reconciled* `delivery_override`, never an
+operator override). A gate that is merely parked — no commit yet — is
+decided with `orcho delivery decide <run_id> <action>` instead.
 
 ### Delivery publication facts
 
@@ -824,3 +1226,15 @@ delivered.
 * [Observability surfaces](../architecture/observability_surfaces.md) — `prompt_render` + four sibling per-phase trace surfaces.
 * [Event registry](event_registry.md) — canonical `events.jsonl` event kinds and required payload keys.
 * [Resume modes](resume_modes.md) — CHECKPOINT vs FOLLOWUP vs FRESH semantics + `--from-run-plan`.
+
+
+### Engine-bound criterion evidence
+
+An executable plan criterion may omit `gate_refs`. Its `criterion_matrix`
+method then carries `{"kind": "gates", "gate_refs": [...], "implied": true}`,
+where the identities come from the run's selected ledger gates. Unexecuted
+operator recommendations are excluded. Pending selection blocks as `pending`;
+no selected proof blocks as `missing`. A row becomes `proven` only when every
+bound gate has a passing classification and a canonical receipt. Explicit
+plan references retain strict identity matching. The same matrix supplies live
+final acceptance, finalized evidence, SDK, and MCP readers.

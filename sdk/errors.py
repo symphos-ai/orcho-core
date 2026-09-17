@@ -64,6 +64,17 @@ class EvidenceInvalid(OrchoError):
     exit_code = 1
 
 
+class CriterionDecisionRejected(OrchoError):
+    """A typed human criterion decision failed validation before write.
+
+    Raised for an invalid payload (bad decision value, empty optional field,
+    naive timestamp) and for an invalid supersession (missing, stale, or
+    branched). The durable artifact is unchanged when this is raised.
+    """
+
+    exit_code = 2
+
+
 class CrossExecutionGraphInvalid(OrchoError):
     """The immutable cross execution graph artifact is missing or invalid."""
 

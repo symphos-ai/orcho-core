@@ -22,11 +22,16 @@ class VerificationHandoffRetryBlocked(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class VerificationHandoffRetryContext:
-    """Canonical identity and round accounting for one human gate retry.
+    """Canonical identities and round accounting for one human gate retry.
 
     The active handoff, rather than the fresh retry round, remains the source
     of the automatic loop maximum.  This makes the one-shot retry structurally
     human-directed even when it produces another gate handoff.
+
+    ``identity`` is the primary (route-classifying) gate; ``identities`` is the
+    complete blocking set the handoff was raised for.  A retry must recheck all
+    of them — rechecking only the primary would close the pause while another
+    required command of the same gate set is still red.
     """
 
     identity: GateIdentity
@@ -34,6 +39,7 @@ class VerificationHandoffRetryContext:
     fresh_round: int
     loop_max_rounds: int
     human_retry_ordinal: int
+    identities: tuple[GateIdentity, ...]
 
     @classmethod
     def from_active(
@@ -50,7 +56,79 @@ class VerificationHandoffRetryContext:
             fresh_round=fresh_round,
             loop_max_rounds=loop_max_rounds,
             human_retry_ordinal=max(1, fresh_round - loop_max_rounds),
+            identities=_blocking_identities(active, identity),
         )
+
+
+def _blocking_identities(
+    active: Mapping[str, object], identity: GateIdentity,
+) -> tuple[GateIdentity, ...]:
+    """Every gate identity the persisted handoff blocked on, primary first.
+
+    Falls back to the primary identity alone for a handoff written before the
+    set was durable, or for any record whose ``gate_identities`` entry is not a
+    complete identity — a malformed entry must not silently widen or narrow
+    what the retry rechecks.
+    """
+    artifacts = active.get("artifacts")
+    raw = artifacts.get("gate_identities") if isinstance(artifacts, Mapping) else None
+    if not isinstance(raw, list | tuple) or not raw:
+        return (identity,)
+    resolved: list[GateIdentity] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            return (identity,)
+        command, hook, phase = item.get("command"), item.get("hook"), item.get("phase")
+        if not (
+            isinstance(command, str) and command
+            and isinstance(hook, str) and hook
+            and isinstance(phase, str)
+        ):
+            return (identity,)
+        resolved.append(GateIdentity(command, hook, phase))
+    if identity not in resolved:
+        return (identity,)
+    # Primary first: it names the re-parked handoff and its phase.
+    return (identity, *[item for item in resolved if item != identity])
+
+
+def _nonempty_str(value: object) -> str:
+    """The value when it is a non-blank string, else ``""``."""
+    return value if isinstance(value, str) and value.strip() else ""
+
+
+def _persisted_gate_failure(active: Mapping[str, object]) -> tuple[str, str]:
+    """Recover ``(critique, test_output)`` for the repair round from the record.
+
+    ``last_output`` is preferred: ``_request_handoff`` stores the critique
+    ``_synthesize_critique`` built over the WHOLE failing command set, so it is
+    the only carrier guaranteed to name every red command. ``short_summary``
+    and the per-command finding bodies are progressively lossier fallbacks for
+    a record written without it.
+
+    The test output is best-effort — only ``test_failure`` findings carry one,
+    and the critique already restates their evidence, so an empty second
+    element is a normal result rather than a recovery failure.
+    """
+    artifacts = active.get("artifacts")
+    artifacts = artifacts if isinstance(artifacts, Mapping) else {}
+    findings = artifacts.get("findings")
+    findings = findings if isinstance(findings, list | tuple) else ()
+    bodies = [
+        (finding, _nonempty_str(finding.get("body")))
+        for finding in findings
+        if isinstance(finding, Mapping)
+    ]
+    critique = (
+        _nonempty_str(active.get("last_output"))
+        or _nonempty_str(artifacts.get("short_summary"))
+        or "\n\n".join(body for _finding, body in bodies if body)
+    )
+    test_output = "\n\n".join(
+        body for finding, body in bodies
+        if body and finding.get("failure_kind") == "test_failure"
+    )
+    return critique, test_output
 
 
 def apply_verification_handoff_resume(
@@ -136,9 +214,10 @@ def apply_verification_handoff_retry(
     """Repair once, then re-run one selected gate on a fresh subject.
 
     All validation precedes ``retry_feedback_handoff`` so malformed routing,
-    stale decisions, or absent retained work leave the active handoff available
-    for operator recovery. Provider/process exceptions are intentionally not
-    caught: their established interrupted/failed lifecycle remains authoritative.
+    stale decisions, absent retained work, or an unrecoverable persisted gate
+    failure leave the active handoff available for operator recovery.
+    Provider/process exceptions are intentionally not caught: their established
+    interrupted/failed lifecycle remains authoritative.
     """
     if not feedback.strip():
         raise VerificationHandoffRetryBlocked("verification retry requires retry_feedback")
@@ -156,6 +235,11 @@ def apply_verification_handoff_retry(
     repair_step = _repair_step(profile)
     if repair_step is None:
         raise VerificationHandoffRetryBlocked("verification retry profile has no repair_changes step")
+    gate_critique, gate_test_output = _persisted_gate_failure(active)
+    if not gate_critique:
+        raise VerificationHandoffRetryBlocked(
+            "verification retry has no recoverable gate failure to repair",
+        )
 
     retry_context = VerificationHandoffRetryContext.from_active(active, identity)
 
@@ -169,6 +253,12 @@ def apply_verification_handoff_retry(
     from pipeline.project.handoff import _persist_handoff_running_state
     _persist_handoff_running_state(run)
 
+    from pipeline.repair_protocol import RepairFeedback
+
+    previous_feedback = getattr(run.state, "repair_feedback", None)
+    run.state.repair_feedback = RepairFeedback(
+        verification_failure=gate_critique, test_failures=gate_test_output,
+    )
     try:
         _dispatch_one_repair(
             run,
@@ -183,6 +273,8 @@ def apply_verification_handoff_retry(
     except (RuntimeError, ValueError) as exc:
         _restore_recovery_subject(run, active)
         raise VerificationHandoffRetryBlocked(str(exc)) from exc
+    finally:
+        run.state.repair_feedback = previous_feedback
     if getattr(run.state, "halt", False):
         return _outcome(profile, paused=False)
     from pipeline.project.gate_repair import rerun_verification_handoff_gate

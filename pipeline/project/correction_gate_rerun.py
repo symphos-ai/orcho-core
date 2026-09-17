@@ -174,6 +174,7 @@ def execute_gate_rerun_receipts(
         extras=extras,
         dry_run=False,
         reason=_GATE_RERUN_REASON,
+        phase=_GATE_RERUN_PHASE,
     )
     # Durable trail (same fixed shape as the Stage 9 auto-run) so DONE sees the
     # gate-rerun's fresh/skipped_manual commands.

@@ -232,6 +232,24 @@ def test_validate_payload_rea2_new_kinds_required_fields() -> None:
     with pytest.raises(EventSchemaError, match="artifact_kind"):
         validate_payload("artifact.created", {"path": "/x"})
 
+    # gate.progress (ADR 0190): name / invocation_id / elapsed_s are required;
+    # the optional tails/counters/timestamps ride along.
+    with pytest.raises(EventSchemaError, match="invocation_id"):
+        validate_payload("gate.progress", {"name": "unit", "elapsed_s": 1.0})
+    with pytest.raises(EventSchemaError, match="elapsed_s"):
+        validate_payload("gate.progress", {"name": "unit", "invocation_id": "abc"})
+    validate_payload(
+        "gate.progress",
+        {
+            "name": "unit",
+            "invocation_id": "abc",
+            "elapsed_s": 1.0,
+            "has_output": True,
+            "stdout_tail": "…",
+            "stdout_bytes": 3,
+        },
+    )
+
     with pytest.raises(EventSchemaError, match="guardrail"):
         validate_payload("agent.guardrail", {"agent": "claude", "action": "abort"})
 

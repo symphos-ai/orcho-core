@@ -24,6 +24,7 @@ from core.io.retry import (
     AgentCallError,
     AgentCancelledError,
     AgentProcessKilledError,
+    ApiConnectionError,
     ApiTimeoutError,
     ContextOverflowError,
     ErrorType,
@@ -97,6 +98,83 @@ class TestClassifyError:
         exc = RuntimeError("HTTP 429")
         result = classify_error(exc, stderr="429 too many requests")
         assert isinstance(result, RateLimitError)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["API Error: 429 rate limited", "HTTP 429", "status 429 from upstream"],
+    )
+    def test_anchored_429_is_rate_limit(self, text: str) -> None:
+        result = classify_error(RuntimeError("x"), stderr=text)
+        assert isinstance(result, RateLimitError)
+
+    def test_bare_429_inside_uuid_is_not_rate_limit(self) -> None:
+        # Field regression: a 500 failure was retried as [rate_limit] only
+        # because "429" occurred inside a session UUID in the stream output.
+        stdout = '{"type":"system","subtype":"init","session_id":"3f2b429c-aaaa-bbbb"}\n'
+        result = classify_error(RuntimeError("exit=1"), stdout=stdout)
+        assert type(result) is AgentCallError
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "API Error: 529 Overloaded. This is a server-side issue, usually temporary",
+            "API Error: 500 Internal server error. This is a server-side issue",
+            "API Error: 502 Bad Gateway",
+            "API Error: 503",
+            "API Error: 504",
+            '{"type":"error","error":{"type":"overloaded_error"}}',
+            '{"error":{"type":"server_error","message":"The server had an error"}}',
+        ],
+    )
+    def test_server_error_maps_to_api_connection_error(self, text: str) -> None:
+        # Provider 5xx is transient: same recovery shape as a transport drop,
+        # so it shares ApiConnectionError's bounded retry budget instead of
+        # landing in the never-retried generic bucket.
+        result = classify_error(RuntimeError("exit=1"), stdout=text)
+        assert isinstance(result, ApiConnectionError)
+
+    def test_server_error_message_carries_provider_status_text(self) -> None:
+        stderr = "API Error: 529 Overloaded. This is a server-side issue, usually temporary"
+        result = classify_error(RuntimeError("exit=1"), stderr=stderr)
+        assert "529 Overloaded" in str(result)
+
+    def test_server_error_detail_falls_back_to_the_first_readable_line(self) -> None:
+        """The status can sit in JSONL plumbing that carries no readable text.
+
+        ``subtype`` is not one of the keys the JSON extractor harvests, so the
+        pattern matches the raw blob while no readable line carries it. The
+        detail then names the most useful line available rather than echoing
+        the envelope.
+        """
+        result = classify_error(
+            RuntimeError("exit=1"),
+            stderr="Something went wrong",
+            stdout='{"type":"result","subtype":"server_error"}',
+        )
+        assert isinstance(result, ApiConnectionError)
+        assert "Something went wrong" in str(result)
+
+    def test_server_error_detail_falls_back_to_a_generic_line(self) -> None:
+        """With no readable line at all, the detail still names the failure."""
+        result = classify_error(
+            RuntimeError(""),
+            stderr="",
+            stdout='{"type":"result","subtype":"server_error"}',
+        )
+        assert isinstance(result, ApiConnectionError)
+        assert "transient server error" in str(result)
+
+    def test_server_error_does_not_shadow_rate_limit(self) -> None:
+        result = classify_error(
+            RuntimeError("x"), stderr="API Error: 429 rate limited; server overloaded",
+        )
+        assert isinstance(result, RateLimitError)
+
+    def test_server_error_does_not_shadow_auth(self) -> None:
+        result = classify_error(
+            RuntimeError("x"), stderr="401 invalid api key; API Error: 500 internal server error",
+        )
+        assert isinstance(result, AgentAuthenticationError)
 
     def test_context_overflow_in_stderr(self) -> None:
         exc = RuntimeError("error")
@@ -183,6 +261,37 @@ class TestClassifyFromExit:
     def test_nonzero_exit_with_pty_exhaustion(self) -> None:
         result = classify_from_exit(126, "out of pty devices")
         assert isinstance(result, SystemResourceError)
+
+    @pytest.mark.parametrize(
+        "status_text",
+        [
+            "API Error: 529 Overloaded. This is a server-side issue, usually temporary "
+            "— try again in a moment. If it persists, check https://status.claude.com.",
+            "API Error: 500 Internal server error. This is a server-side issue, usually "
+            "temporary — try again in a moment.",
+        ],
+        ids=["529", "500"],
+    )
+    def test_server_error_in_stream_json_stdout_skips_plumbing(self, status_text: str) -> None:
+        # Field shape (runs 20260903_152110_6f7949 / 163345_94c82e / 164217_0e846c):
+        # the CLI exits 1, stderr is empty, and the status text lives in a
+        # stream-json assistant event on stdout behind the init payload.
+        result = classify_from_exit(
+            1,
+            "",
+            stdout=(
+                '{"type":"system","subtype":"init","cwd":"/repo","session_id":"3f2b429c-1"}\n'
+                '{"type":"assistant","message":{"content":[{"type":"text",'
+                f'"text":"{status_text}"}}]}}}}\n'
+            ),
+        )
+
+        assert isinstance(result, ApiConnectionError)
+        message = str(result)
+        assert status_text[:40] in message
+        assert '{"type":"system"' not in message
+        assert "/repo" not in message
+        assert "not retried" not in message
 
     def test_nonzero_exit_generic(self) -> None:
         result = classify_from_exit(1, "something went wrong")
