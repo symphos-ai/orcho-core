@@ -6555,7 +6555,7 @@
         },
         {
           "annotation": "str",
-          "default": "'claude-opus-4-8[1m]'",
+          "default": "'claude-opus-5[1m]'",
           "kind": "POSITIONAL_OR_KEYWORD",
           "name": "model"
         },
@@ -6745,7 +6745,7 @@
         },
         {
           "annotation": "str",
-          "default": "'claude-opus-4-8[1m]'",
+          "default": "'claude-opus-5[1m]'",
           "kind": "POSITIONAL_OR_KEYWORD",
           "name": "model"
         },

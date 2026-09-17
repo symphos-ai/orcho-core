@@ -2554,7 +2554,7 @@ def _add_common_run_args(p: argparse.ArgumentParser, *, cross: bool = False) -> 
     models = p.add_argument_group("Models and runtimes")
     models.add_argument(
         "--model", default=config.phase_model(
-            "implement", "claude-opus-4-8[1m]",
+            "implement", "claude-opus-5[1m]",
         ),
         help="Default implementation model.",
     )

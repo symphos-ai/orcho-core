@@ -14,14 +14,26 @@ from core.infra import config
 class TestPhaseModelDefaults:
     """JSON-layer defaults reachable via ``config.phase_model(phase, default)``."""
 
-    def test_plan_default_is_opus(self) -> None:
-        assert "opus" in config.phase_model("plan", "")
-
-    def test_implement_default_is_opus(self) -> None:
-        assert config.phase_model("implement", "") == "claude-opus-4-8[1m]"
-
-    def test_repair_escalation_default_is_opus(self) -> None:
-        assert "opus" in config.phase_model("repair_escalation", "")
+    def test_installed_phase_defaults_are_current(self) -> None:
+        app = config.AppConfig.load()
+        assert app.phase_model_map == {
+            "plan": "claude-fable-5-1[1m]",
+            "validate_plan": "gpt-6-astra",
+            "implement": "claude-opus-5[1m]",
+            "review_changes": "gpt-5.6-sol",
+            "repair_changes": "claude-opus-5[1m]",
+            "repair_escalation": "claude-fable-5-1[1m]",
+            "final_acceptance": "gpt-5.6-sol",
+        }
+        assert app.phase_effort_map == {
+            "plan": "high",
+            "validate_plan": "high",
+            "implement": "medium",
+            "review_changes": "medium",
+            "repair_changes": "medium",
+            "repair_escalation": "high",
+            "final_acceptance": "low",
+        }
 
     def test_codex_model_nonempty(self) -> None:
         assert len(config.CODEX_MODEL) > 0

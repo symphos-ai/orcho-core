@@ -137,9 +137,9 @@ state after an authoring commit handoff.
 ```bash
 # Expensive models only where needed
 orcho run --task "..." --project . \
-  --model-plan           'claude-opus-4-8[1m]' \   # powerful for planning
-  --model-implement      'claude-opus-4-8[1m]' \   # default coding model
-  --model-review-changes gpt-5.5               # reviewer
+  --model-plan           'claude-fable-5-1[1m]' \   # default planning model
+  --model-implement      'claude-opus-5[1m]' \      # default coding model
+  --model-review-changes gpt-5.6-sol                # reviewer
 ```
 
 `orcho cross` (the public cross-project facade) accepts the canonical names
@@ -150,10 +150,10 @@ rule applies to `--runtime-*` flags:
 
 ```bash
 orcho cross --task "..." --projects api:~/api unity:~/unity \
-  --model-plan   'claude-opus-4-8[1m]' \
-  --model-implement      'claude-opus-4-8[1m]' \
-  --model-repair-changes 'claude-opus-4-8[1m]' \
-  --model-review-changes gpt-5.5
+  --model-plan           'claude-fable-5-1[1m]' \
+  --model-implement      'claude-opus-5[1m]' \
+  --model-repair-changes 'claude-opus-5[1m]' \
+  --model-review-changes gpt-5.6-sol
 ```
 
 Use `orcho-cross` directly only when its historical `build` / `fix` / `review`

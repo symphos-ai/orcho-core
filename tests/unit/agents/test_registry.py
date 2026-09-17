@@ -192,13 +192,13 @@ class TestPhaseAgentConfigDefault:
     ) -> None:
         cfg = PhaseAgentConfig.default(stubbed_registry)
         # Models come from _config/config.defaults.json
-        assert cfg.plan_agent.model         == "claude-opus-4-8[1m]"
-        assert cfg.implement_agent.model        == "claude-opus-4-8[1m]"
-        assert cfg.repair_changes_agent.model          == "claude-opus-4-8[1m]"
-        assert cfg.repair_escalation_agent.model == "claude-opus-4-8[1m]"
-        assert cfg.review_changes_agent.model       == "gpt-5.5"
-        assert cfg.validate_plan_agent.model      == "gpt-5.5"
-        assert cfg.final_acceptance_agent.model     == "gpt-5.5"
+        assert cfg.plan_agent.model == "claude-fable-5-1[1m]"
+        assert cfg.implement_agent.model == "claude-opus-5[1m]"
+        assert cfg.repair_changes_agent.model == "claude-opus-5[1m]"
+        assert cfg.repair_escalation_agent.model == "claude-fable-5-1[1m]"
+        assert cfg.review_changes_agent.model == "gpt-5.6-sol"
+        assert cfg.validate_plan_agent.model == "gpt-6-astra"
+        assert cfg.final_acceptance_agent.model == "gpt-5.6-sol"
 
     def test_env_var_overrides_phase_model(
         self,
@@ -318,7 +318,7 @@ class TestBuildPhaseConfigFromOverridesRegression:
         from pipeline.project.phase_config import build_phase_config_from_overrides
 
         cfg = build_phase_config_from_overrides(runtime_review_changes="claude")
-        # Default review model from config.defaults.json is gpt-5.5; provider
+        # The default review model comes from config.defaults.json; provider
         # flipping doesn't change the model string the user picked.
         assert type(cfg.review_changes_agent).__name__ == "ClaudeAgent"
 

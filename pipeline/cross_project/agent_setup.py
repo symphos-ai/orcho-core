@@ -81,7 +81,7 @@ def setup_cross_agents(
         code_model   = phase_config.implement_agent.model
         review_model = phase_config.review_changes_agent.model
     else:
-        plan_model   = config.phase_model("plan", "claude-opus-4-8[1m]")
+        plan_model   = config.phase_model("plan", "claude-fable-5-1[1m]")
         code_model   = model
         review_model = config.CODEX_MODEL
 

@@ -62,7 +62,7 @@ class CrossRunRequest:
     Notes on defaults:
 
     * ``model`` is set via ``config.phase_model("implement",
-      "claude-opus-4-8[1m]")`` at module load time. ``run_cross_pipeline``
+      "claude-opus-5[1m]")`` at module load time. ``run_cross_pipeline``
       uses the same expression at its function definition time. As
       long as both modules import in the same process the strings
       match — locked by the Phase C signature test.
@@ -81,7 +81,7 @@ class CrossRunRequest:
     task: str
     projects: dict[str, Path]
     max_rounds: int = 1
-    model: str = config.phase_model("implement", "claude-opus-4-8[1m]")
+    model: str = config.phase_model("implement", "claude-opus-5[1m]")
     output_dir: Path | None = None
     dry_run: bool = False
     mock: bool = False
