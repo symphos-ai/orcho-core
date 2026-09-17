@@ -2,13 +2,6 @@
 
 ## Unreleased
 
-### Changed
-
-- Fresh installs now default planning to `claude-fable-5-1[1m]`, implementation
-  and repair to `claude-opus-5[1m]`, plan validation to `gpt-6-astra`, and
-  change review/final acceptance to `gpt-5.6-sol`, with phase-specific effort
-  levels preserved in the shipped configuration.
-
 ## 0.10.0 - 2026-09-17
 
 This release connects acceptance criteria to durable evidence and makes paused,
@@ -36,6 +29,10 @@ and SDK. Upgrade the complete Orcho package set together.
 
 ### Changed
 
+- Fresh installs default planning to `claude-fable-5-1[1m]`, implementation
+  and repair to `claude-opus-5[1m]`, plan validation to `gpt-6-astra`, and
+  change review/final acceptance to `gpt-5.6-sol`, with phase-specific effort
+  levels preserved in the shipped configuration.
 - A halted `orcho run` exits with code `3`; phase-handoff pauses retain code
   `4`. A deferred delivery is reported as not delivered until its decision is
   completed. Supervisors must handle the new exit-code contract.
@@ -74,6 +71,12 @@ and SDK. Upgrade the complete Orcho package set together.
   preceding repair record, and operator direction with round attribution.
 - Checkpoint resume of a child created from an accepted run plan preserves that
   plan and its projected profile instead of starting planning again.
+- Successful planning and research runs finish without requiring implementation
+  verification receipts, record delivery as not applicable, and offer a typed
+  `from_run_plan` action for the next implementation run.
+- Recovery lineage, diagnosis, SDK actions, and CLI guidance now agree when a
+  completed run holds a persisted plan. A clean plan-only result is no longer
+  reported as lacking a continuation subject.
 
 ### Upgrade Notes
 
