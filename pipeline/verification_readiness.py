@@ -756,6 +756,19 @@ def required_receipt_gaps(
     when every required receipt is present (or only non-require gaps remain).
     Reuses :func:`classify_required_receipts` (same subject, same inheritance
     rules as the readiness block the reviewer saw); never raises.
+
+    Waivers (ADR 0192). This builder is the **single owner** of which durable
+    waiver may excuse a gap, and it excuses exactly what the Stage-6 delivery
+    assessment excuses (:mod:`pipeline.verification_delivery`): a
+    ``phase_handoff_waiver`` read through
+    :func:`pipeline.verification_waiver.collect_gate_waivers` whose gate command
+    matches ``command`` exactly, and only for a ``failed`` / ``missing`` receipt.
+    A general "continue with waiver" over reviewer findings carries no gate
+    command and excuses nothing — accepting a critique is not evidence that a
+    required command ran. ``stale`` / ``unverifiable`` are never waivable: a
+    waiver accepts a *known* failure, not subject drift. Callers must not add a
+    second waiver rule on top of this one, or the closing gate and the delivery
+    guard will disagree.
     """
     if plan is None:
         try:
@@ -781,6 +794,14 @@ def required_receipt_gaps(
         status_by_command,
         policy_by_command,
     )
+    # Verification-gate waivers (ADR 0192), read the same way the Stage-6
+    # delivery assessment reads them so the two authorities cannot disagree.
+    try:
+        from pipeline.verification_waiver import collect_gate_waivers
+
+        waivers = collect_gate_waivers(extras)
+    except Exception:  # noqa: BLE001 — gaps must never raise outward
+        waivers = {}
     gaps: list[dict[str, Any]] = []
     for command, classification in status_by_command.items():
         if classification.status == "present":
@@ -788,6 +809,11 @@ def required_receipt_gaps(
         # Only an effective ``require`` gap is a release blocker; warn/suggest are
         # shipping-allowed and manual_only is never a gap (ADR 0090).
         if consequences.get(command) != "required_action":
+            continue
+        # An operator waiver naming THIS gate excuses an accepted failure or a
+        # deliberately skipped run. A general waiver carries no gate command and
+        # never lands here; a stale/unverifiable receipt is never excused.
+        if classification.status in ("failed", "missing") and command in waivers:
             continue
         run_decl = (contract.commands.get(command) or {}).get("run", "")
         if isinstance(run_decl, (list, tuple)):
@@ -817,10 +843,11 @@ def criterion_release_gaps(run_dir: Path | str) -> list[dict[str, Any]]:
     appear here.
 
     This is deliberately **separate** from :func:`required_receipt_gaps`. That
-    backstop is scoped to a declared verification contract and is waived by an
-    explicit operator waiver; a criterion gap is neither. A run with no
-    contract still has criteria, and a general "continue with waiver" is not
-    the per-criterion human decision an ADR 0188 ``human`` criterion requires.
+    backstop is scoped to a declared verification contract and is excused only
+    by an operator waiver naming that exact gate command (ADR 0192); a criterion
+    gap is neither scoped to a contract nor waivable at all. A run with no
+    contract still has criteria, and no waiver — general or per-gate — is the
+    per-criterion human decision an ADR 0188 ``human`` criterion requires.
 
     Empty only for a run whose plan artifact is genuinely absent. Unreadable
     durable facts produce one blocking integrity gap — never silence.

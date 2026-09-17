@@ -11,8 +11,19 @@ the pause with ``continue_with_waiver``, which persists a waiver whose
 
 This module is the provider-neutral *reader* over that durable record. It turns
 the stored waiver(s) into verification-gate waivers keyed by the exact gate
-command, so the Stage-6 delivery assessment can let a precisely-waived required
-receipt through without unblocking any neighbouring gate.
+command, so a precisely-waived required receipt can pass without unblocking any
+neighbouring gate.
+
+Two authorities read it, and they must agree (ADR 0192):
+
+* the Stage-6 delivery assessment (:mod:`pipeline.verification_delivery`), and
+* the closing-gate receipt backstop
+  (:func:`pipeline.verification_readiness.required_receipt_gaps`, behind
+  ``final_acceptance``).
+
+Both excuse the same thing — an exactly-named gate whose receipt is ``failed``
+or ``missing`` — so a run can never be green at final acceptance and red at
+delivery, or the reverse.
 
 Design constraints:
 

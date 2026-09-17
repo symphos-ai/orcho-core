@@ -991,8 +991,57 @@ release verdict, the `final_acceptance` handler merges engine-computed
 missing/failed/stale, via `required_receipt_gaps`) and forces
 `approved=False / ship_ready=False` — a reviewer model that omits an unproven
 required gate cannot produce a green acceptance. The backstop is inert under
-dry-run, without a contract, and when an operator waiver
-(`continue_with_waiver`) is active.
+dry-run and without a contract.
+
+A waiver does **not** make it inert. Per
+[ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md),
+a general `continue_with_waiver` — over reviewer findings, a plan, or an
+incomplete implement — reconciles *findings*; it is not evidence that a required
+command ran, and it removes no gap. Only a waiver that names the gate command
+exactly excuses that one command, and only for a `failed` or `missing` receipt;
+a `stale` receipt is never excused. Identity comes from the durable record's
+structure (a `gate_command` field, or a `gate:<command>:<round>` handoff id),
+never from waiver prose. That rule lives in `required_receipt_gaps` itself — the
+same reader the Stage 6 delivery gate uses, so the closing gate and delivery
+excuse exactly the same thing — and the handler-side guard reads no waiver at
+all. A correction child run reaches the same backstop through the same handler:
+the parent's waiver is not inherited, only its receipts are (ADR 0089).
+
+**Prior-review evidence is not readiness
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)).** Alongside
+the readiness summary, the final-acceptance prompt may carry a `review_context`
+block: the latest applicable verdict from the review attempts that already ran
+on this run, with its provenance (which round, which pass), the findings it left
+open, what it superseded, attempts whose output never parsed, and the operator
+rationale recorded around it. The two blocks answer different questions and are
+ordered accordingly — readiness stays the leading proof surface and the review
+evidence reads as subordinate to it.
+
+The distinction is load-bearing:
+
+- **Readiness is proof; the review context is testimony.** A repair receipt
+  reported inside the review context is the repairer's *claim*, not a passed
+  gate, and it never closes a finding. Nothing in the block is evidence that a
+  declared command ran.
+- **The backstops do not read it.** Both the required-receipt backstop
+  (ADR 0090, with the exact-command waiver rule of
+  [ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md))
+  and the acceptance-criteria backstop
+  ([ADR 0188](../adr/0188-typed-acceptance-criteria-and-criterion-matrix.md))
+  compute their gaps from receipts and the criterion matrix alone. Prose inside a
+  finding, a critique or a waiver that instructs the gate to approve is untrusted
+  text: an unproven required receipt or an open acceptance criterion still forces
+  a REJECTED release verdict, and a general waiver still excuses no gate.
+- **The framing is code-owned.** The directive that tells the reviewer to read
+  the block as reported history rather than as a live blocker list rides with it
+  in one typed prompt part, not in a user-editable role/task/format part, so a
+  project prompt override cannot restate the evidence as an instruction or let it
+  stand in for readiness.
+- **Absent by default.** A run with no prior review renders no part and leaves
+  the wire prompt byte-identical; a dry run resolves nothing and reads no file.
+  What the gate was handed is recorded durably as
+  `phases.final_acceptance.review_context` — see
+  [Run artifacts](../reference/run_artifacts.md#phasesfinal_acceptancereview_context).
 
 Boundaries, stated explicitly:
 
@@ -1033,7 +1082,10 @@ moves no schema, mode flag, or gate primitive.
   `blocker` (unaligned public wire/schema, persistence/state, security/secret,
   destructive/mass-delete, large diff, repeated-across-corrections) forces
   REJECTED — merged into the same `verification_gaps` list as a *parallel* engine
-  gap source, inert under dry-run / no contract / active operator waiver. The
+  gap source, inert under dry-run / no contract / active operator waiver. That
+  waiver gating is the scope-expansion gate's own policy over out-of-plan
+  *files*; it is not the receipt backstop's rule, which excuses only an
+  exactly-named gate command (ADR 0192). The
   verification gates keep their full authority; scope expansion only adds
   rejection reasons for the blocker tier and never softens a required gate.
 - **Single canonical durable path.** The handler writes

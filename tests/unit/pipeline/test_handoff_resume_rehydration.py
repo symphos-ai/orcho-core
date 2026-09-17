@@ -1025,6 +1025,138 @@ class TestReviewRepairRetryResume:
         )
 
     @pytest.mark.git_worktree
+    def test_retry_round_review_verdict_lands_in_rounds(
+        self,
+        tmp_path,
+        monkeypatch,
+    ) -> None:
+        """The operator-directed retry round is a real review attempt, so its
+        verdict must survive into ``rounds`` like any automatic round.
+
+        No ``_review_reverify_resume`` flag is set on this path, so the
+        attempt is the retry round's ``review`` pass.
+        """
+        import pipeline.project.handoff as handoff_mod
+        from pipeline.session_adapters import default_session_adapter_registry
+        from sdk.phase_handoff import safe_handoff_id
+
+        run_dir = tmp_path / "20260610_173949"
+        run_dir.mkdir()
+        handoff_id = "review_changes:repair_round:1"
+        decisions_dir = run_dir / "phase_handoff_decisions"
+        decisions_dir.mkdir()
+        (decisions_dir / f"{safe_handoff_id(handoff_id)}.json").write_text(
+            json.dumps(
+                {
+                    "run_id": run_dir.name,
+                    "handoff_id": handoff_id,
+                    "phase": "review_changes",
+                    "action": "retry_feedback",
+                    "feedback": "fix review blocker",
+                    "note": None,
+                    "decided_at": "2026-06-10T12:00:00+00:00",
+                },
+            ),
+            encoding="utf-8",
+        )
+        repo = tmp_path / "checkout"
+        _init_dirty_repo(repo)
+        state = PipelineState(
+            task="t",
+            project_dir=str(repo),
+            plugin=PluginConfig(),
+        )
+
+        class _Metrics:
+            def add_round(self) -> None:
+                pass
+
+            def save(self, _output_dir) -> None:
+                pass
+
+        class _Run:
+            output_dir = run_dir
+            session_ts = run_dir.name
+            session = {
+                "status": "awaiting_phase_handoff",
+                "phases": {"rounds": [{"round": 1, "critique": "rejected"}]},
+                "worktree": {"isolation": "off", "path": str(repo)},
+                "phase_handoff": {
+                    "id": handoff_id,
+                    "phase": "review_changes",
+                    "round": 1,
+                    "loop_max_rounds": 1,
+                    "last_output": "review rejected",
+                },
+            }
+            _ckpt = None
+            _metrics = _Metrics()
+
+            def __init__(self) -> None:
+                self.state = state
+
+            def _on_phase_start(self, _name, _state) -> None:
+                pass
+
+            def _on_phase_end(self, _name, _state) -> None:
+                pass
+
+        def _dispatch_stub(step, current_state, _ctx, **_kwargs):
+            if step.phase == "review_changes":
+                current_state.phase_log["review_changes"] = {
+                    "approved": True,
+                    "clean": True,
+                    "verdict": "APPROVED",
+                    "critique": "",
+                    "short_summary": "retry fixed the blocker",
+                    "findings": [],
+                    "meta": {},
+                }
+            elif step.phase == "repair_changes":
+                # The real repair handler stages the round entry through
+                # ``rounds_pending``; the retry path composes the round from
+                # it BEFORE the review verdict is recorded.
+                current_state.phase_log["repair_changes"] = {"ok": True}
+                current_state.phase_log["rounds_pending"] = {
+                    "critique":       "fix review blocker",
+                    "repair_output":  "applied the operator feedback",
+                    "repair_receipt": {
+                        "source_phase": "review_changes",
+                        "repair_phase": "repair_changes",
+                        "fixed": [{"finding_id": "F1", "summary": "guarded"}],
+                    },
+                }
+            else:
+                current_state.phase_log[step.phase] = {"ok": True}
+            return current_state
+
+        monkeypatch.setattr(handoff_mod, "_dispatch_via_fsm", _dispatch_stub)
+        run = _Run()
+        outcome = handoff_mod.apply_phase_handoff_resume(
+            run,
+            self._profile(),
+            SimpleNamespace(
+                session_adapter_registry=default_session_adapter_registry(),
+            ),
+        )
+
+        assert outcome.paused is False
+        rounds = run.session["phases"]["rounds"]
+        retry_entry = next(e for e in rounds if e["round"] == 2)
+        assert retry_entry["review"]["pass"] == "review"
+        assert retry_entry["review"]["attempt"] == 2
+        assert retry_entry["review"]["verdict"] == "APPROVED"
+        assert "reverify" not in retry_entry
+        # This path repairs first and reviews after, so the round's repair is
+        # already reviewed evidence — the closing gate must not be told it is
+        # an unverified post-review claim.
+        assert retry_entry["review"]["repair_preceded"] is True
+        # The pre-retry round is untouched, and no checkpointable
+        # ``review_changes`` phase key appeared.
+        assert rounds[0] == {"round": 1, "critique": "rejected"}
+        assert "review_changes" not in run.session["phases"]
+
+    @pytest.mark.git_worktree
     def test_approved_repair_retry_skips_upstream_phases(
         self,
         tmp_path,

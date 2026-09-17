@@ -263,6 +263,131 @@ Wording and key are owned by `pipeline/project/verification_disclosure.py`; the
 header, DONE/HALTED tail, final_acceptance readiness block, `orcho status`, and
 the delivery-decision state all project this block rather than recomputing it.
 
+### Per-attempt review sub-records in `phases.rounds`
+
+Each `review_changes` invocation is persisted as a sub-record **inside** the
+round entry it belongs to, under a key naming the pass that ran
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)):
+
+```json
+{
+  "phases": {
+    "rounds": [
+      {
+        "round": 1,
+        "critique": "<rendered body of the last review of this round>",
+        "repair_receipt": { },
+        "review": {
+          "pass": "review",
+          "attempt": 1,
+          "verdict": "REJECTED",
+          "approved": false,
+          "clean": false,
+          "repair_preceded": false,
+          "short_summary": "…",
+          "findings": [ ]
+        },
+        "reverify": {
+          "pass": "reverify",
+          "attempt": 1,
+          "verdict": "APPROVED",
+          "approved": true,
+          "clean": true,
+          "repair_preceded": true,
+          "short_summary": "…",
+          "findings": []
+        }
+      }
+    ]
+  }
+}
+```
+
+**Writer:** `pipeline/review_round_record.py` (`ReviewRoundAdapter`), fired by
+the lifecycle after every `review_changes` dispatch.
+
+- The key is the pass: `review` for the round's first review, `reverify` for the
+  post-repair re-verify pass. `attempt` repeats the loop round, so an attempt's
+  identity is `(round, pass)`. Re-running the same `(round, pass)` overwrites the
+  same key rather than appending.
+- `repair_preceded` records whether a repair pass had already run in this round
+  when the attempt was written. It is observed from the round entry, not derived
+  from the pass: the in-loop `review` pass sees a pre-repair subject (`false`),
+  while a `reverify` and the operator-feedback retry round — which repairs first,
+  reviews after, and still writes the round's `review` pass — both see a repaired
+  one (`true`).
+- `parse_error` is present when the attempt's output never parsed. The record is
+  still written — a reader must see that the attempt happened *and* that its
+  verdict is unusable.
+- `session_id` / `continue_session` appear when the attempt's runtime metadata
+  carried them, per attempt rather than per round.
+- Both keys are **optional and additive**. A round from before this shape, a
+  critique-only round, and a skipped review all carry neither. There is no
+  `phases.review_changes` key — that placement is deliberately avoided because
+  it would create checkpoint rows and loop cursors for a loop phase and change
+  what loop resume restores.
+
+### `phases.final_acceptance.review_context`
+
+The prior-review evidence the closing gate was handed, resolved from the round
+sub-records above plus the run's operator waiver and
+`phase_handoff_decisions/*.json` artifacts:
+
+```json
+{
+  "review_context": {
+    "run_id": "20260916_000301",
+    "latest": {
+      "round": 2, "pass": "reverify", "verdict": "APPROVED",
+      "approved": true, "short_summary": "…", "findings": [],
+      "repair_preceded": true
+    },
+    "superseded": [
+      { "round": 2, "pass": "review", "verdict": "REJECTED",
+        "approved": false, "short_summary": "…",
+        "findings": [{"id": "F1", "severity": "P1", "title": "…",
+                      "file": "…", "line": 42, "required_fix": "…"}],
+        "repair_preceded": false }
+    ],
+    "invalid": [],
+    "unresolved_findings": [],
+    "operator": [
+      { "kind": "waiver", "handoff_id": "review_changes:2",
+        "phase": "review_changes", "action": "continue_with_waiver",
+        "text": "…", "note": "", "decided_at": "2026-09-16T10:00:00+00:00",
+        "round": 2, "waived_finding_ids": ["id:F1"] }
+    ]
+  }
+}
+```
+
+**Writer:** `pipeline/phases/builtin/handlers/final_acceptance.py`, resolved by
+`pipeline/phases/builtin/final_review_context.py`; persisted by
+`FinalAcceptanceAdapter`.
+
+- `latest` is the last attempt that actually parsed; `superseded` holds the
+  earlier valid REJECTED attempts it overruled (including the `review` of the
+  same round when its `reverify` approved); `invalid` holds attempts that failed
+  to parse — they are never `latest` and supersede nothing.
+- `unresolved_findings` are `latest`'s findings when `latest` is not approved,
+  projected to `id` / `severity` / `title` / `file` / `line` / `required_fix`;
+  the reviewer's prose body is not carried.
+- `repair_claim` is present when the latest attempt's round recorded a repair
+  *after* it, with no valid re-review since — an **unverified claim**, never a
+  resolution. `repair_before_latest` replaces it when the repair ran *before*
+  the latest attempt, recording that the standing verdict already covers it.
+  Which of the two applies is read from the attempt's own `repair_preceded`,
+  not from its pass.
+- `operator` entries have `kind` `waiver` or `decision`. `waived_finding_ids`
+  holds identity keys (`id:<id>`, else a `severity|title|file|line` fingerprint),
+  not display ids.
+- Provenance is exactly `run_id` plus each attempt's `(round, pass)`. **How** the
+  facts were loaded — live session or this file on a fresh-process resume — is
+  deliberately absent, so both paths serialize identically.
+- The whole block is **optional**: a run with no prior review writes no key.
+  This is evidence only; it changes no verdict. See
+  [Verification contract, Stage 5](../architecture/verification_contract.md#stage-5-final-acceptance-readiness-awareness).
+
 ### Status field semantics
 
 `meta.status` is the wire-format status. Canonical values:

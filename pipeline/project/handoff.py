@@ -876,6 +876,20 @@ def apply_review_repair_handoff_retry(
                     run.session,
                     round_n=retry_round_n,
                 )
+                # The retry round's review verdict is durable evidence for
+                # the closing gate. No ``_review_reverify_resume`` flag is
+                # set on this path, so it lands as the round's ``review``
+                # pass; re-running the same attempt overwrites the same key.
+                review_adapter = prev_adapter_registry.get_or_none(
+                    "review_changes",
+                )
+                if review_adapter is not None:
+                    review_adapter.write(
+                        "review_changes",
+                        run.state,
+                        run.session,
+                        round_n=retry_round_n,
+                    )
                 if run.output_dir:
                     save_session(run.output_dir, run.session)
         run._metrics.add_round()
