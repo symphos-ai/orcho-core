@@ -499,7 +499,7 @@ class ProviderWorkKindDetector:
         from core.infra import config as _config
 
         model = self.model or _config.AppConfig.load().phase_model_map.get(
-            "plan", "claude-opus-4-8"
+            "plan", "claude-fable-5-1[1m]"
         )
         agent = AgentRegistry.default().architect(
             model, self.runtime, effort=self.effort,

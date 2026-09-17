@@ -795,7 +795,7 @@ Examples:
     if args.model is None:
         args.model = config.AppConfig.load().phase_model_map.get(
             "implement",
-            "claude-opus-4-8[1m]",
+            "claude-opus-5[1m]",
         )
 
     # Resume context resolution: when ``--resume RUN_ID`` is supplied,

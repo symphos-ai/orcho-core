@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Fresh installs now default planning to `claude-fable-5-1[1m]`, implementation
+  and repair to `claude-opus-5[1m]`, plan validation to `gpt-6-astra`, and
+  change review/final acceptance to `gpt-5.6-sol`, with phase-specific effort
+  levels preserved in the shipped configuration.
+
 ## 0.10.0 - 2026-09-17
 
 This release connects acceptance criteria to durable evidence and makes paused,
