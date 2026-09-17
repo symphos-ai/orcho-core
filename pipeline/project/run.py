@@ -1592,6 +1592,7 @@ class _PipelineRun:
             baseline_ref=self._commit_delivery_baseline(),
             commit_message_generator=commit_message_generator,
             verification_gate=assessment,
+            resolved_profile=getattr(self, "_done_summary_profile", None),
             decision_mode=decision_mode,
         )
         # Stage C delivery-scope enforcement (T4): a strict-mono sibling-repo
@@ -1642,8 +1643,8 @@ class _PipelineRun:
         # Persist it (carrying release_verdict / release_summary) so meta,
         # evidence, and the SDK can surface the rejection instead of leaving a
         # rejected run with no ``commit_delivery`` record at all. ``disabled``
-        # and ``no_diff`` stay dropped; ``not_applicable`` with an empty or
-        # APPROVED verdict stays dropped.
+        # and ordinary ``no_diff`` stay dropped. Proven plan-only completion
+        # carries the delivery owner's internal persistence instruction below.
         rejected_release = (
             decision.status == "not_applicable"
             and is_release_blocked(decision.release_verdict, empty_blocks=False)
@@ -1659,6 +1660,7 @@ class _PipelineRun:
             decision.status in {"disabled", "not_applicable", "no_diff"}
             and not rejected_release
             and not existing_commit
+            and not decision.persist_no_delivery
         ):
             return
         self.session["commit_delivery"] = decision.to_dict()

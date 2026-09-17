@@ -5,7 +5,8 @@ Pins the rules ``compute_next_actions`` implements:
 * paused on phase handoff → one Action per ``available_actions``;
 * halted / failed / interrupted → resume Action;
 * persisted plan (``plan_source != "none"``) → from-run-plan Action;
-* terminal-success / running / missing meta → empty tuple.
+* terminal-success с явным plan-only outcome и parsed plan → from-run-plan;
+* остальные terminal-success / running / missing meta → empty tuple.
 
 Tests are pure: synthetic meta dicts, no filesystem, no clock, no env.
 """
@@ -113,6 +114,83 @@ class TestTerminalAndRunning:
         meta = _meta(status="running", plan_source="local")
         # Running run: nothing actionable yet.
         assert compute_next_actions(meta, run_id="r1") == ()
+
+
+class TestCompletedPlanOnly:
+    @staticmethod
+    def meta() -> dict:
+        return {
+            "status": "done", "task": "Implement structured logging",
+            "plan_source": "local",
+            "commit_delivery": {"status": "not_applicable", "action": "none"},
+        }
+
+    @pytest.mark.parametrize("status", ["done", "success", "completed"])
+    def test_explicit_no_delivery_with_artifact_suggests_continuation(self, status):
+        meta = self.meta()
+        meta["status"] = status
+        actions = compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
+        assert len(actions) == 1
+        assert actions[0].tool == "orcho_run_start"
+        assert actions[0].args == {
+            "from_run_plan": "r1", "profile": "feature", "task": meta["task"],
+        }
+        assert actions[0].kind == "ready_call"
+
+    @pytest.mark.parametrize("artifact", [False, None])
+    def test_plan_source_alone_cannot_prove_artifact(self, artifact):
+        assert compute_next_actions(
+            self.meta(), run_id="r1", has_parsed_plan_artifact=artifact,
+        ) == ()
+
+    @pytest.mark.parametrize("delivery", [
+        None, [], {},
+        {"status": "not_applicable"},
+        {"status": "no_diff", "action": "none"},
+        {"status": "disabled", "action": "none"},
+        {"status": "committed", "action": "commit"},
+        {"status": "verification_blocked", "action": "none"},
+        {"status": "not_applicable", "action": "none", "error": "run diff unavailable"},
+        {"status": "not_applicable", "action": "none", "commit_sha": "abc123"},
+        {"status": "not_applicable", "action": "none", "release_verdict": "APPROVED"},
+        {"status": "not_applicable", "action": "none", "release_verdict": "REJECTED"},
+    ])
+    def test_ordinary_delivery_does_not_gain_action(self, delivery):
+        meta = self.meta()
+        meta.update(profile="feature", commit_delivery=delivery)
+        assert compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True) == ()
+
+    @pytest.mark.parametrize("fact", [
+        {"phase_handoff": {"trigger": "rejected"}},
+        {"halt_reason": "phase_handoff_halt"},
+    ])
+    def test_conflicting_terminal_facts_do_not_gain_action(self, fact):
+        meta = self.meta()
+        meta.update(fact)
+        assert compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True) == ()
+
+    @pytest.mark.parametrize("status", ["halted", "failed", "interrupted", "rejected", "running"])
+    def test_non_success_recovery_is_unchanged(self, status):
+        meta = self.meta()
+        meta["status"] = status
+        actions = compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
+        del meta["commit_delivery"]
+        assert actions == compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
+
+    def test_projected_status_override_takes_precedence(self):
+        meta = self.meta()
+        meta["status"] = "running"
+        assert len(compute_next_actions(
+            meta, run_id="r1", status="done", has_parsed_plan_artifact=True,
+        )) == 1
+
+    def test_missing_task_requires_real_operator_input(self):
+        meta = self.meta()
+        del meta["task"]
+        action, = compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
+        assert action.kind == "operator_input_required"
+        assert action.input_schema["required"] == ["task"]
+        assert "task" not in action.args
 
 
 # ── Paused on handoff ───────────────────────────────────────────────────────
