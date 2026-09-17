@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.10.0 - 2026-09-15
+## 0.10.0 - 2026-09-17
 
 This release connects acceptance criteria to durable evidence and makes paused,
 interrupted, and deferred delivery observable and actionable through the CLI
@@ -60,6 +60,13 @@ and SDK. Upgrade the complete Orcho package set together.
 - Metrics attribute phases to the model that actually ran them and include
   correction-triage usage. Historical metrics are not rewritten automatically.
 - Retired runtime wrappers are excluded from wheels.
+- A phase-handoff waiver cannot satisfy unrelated missing, failed, or stale
+  required verification receipts. Its exact finding scope and operator
+  rationale remain durable across resume.
+- Final acceptance receives the latest applicable review verdict, findings,
+  preceding repair record, and operator direction with round attribution.
+- Checkpoint resume of a child created from an accepted run plan preserves that
+  plan and its projected profile instead of starting planning again.
 
 ### Upgrade Notes
 
@@ -72,12 +79,6 @@ and SDK. Upgrade the complete Orcho package set together.
 
 ### Known Notes
 
-- A general phase-handoff waiver currently bypasses the required-receipt
-  backstop in final acceptance. It must not be interpreted as proof that the
-  waived run's required checks passed.
-- Final acceptance does not yet receive the latest rejected review as a
-  dedicated verdict-and-findings input. Operators must inspect that review
-  before accepting residual findings.
 - Legacy delivery reconciliation can miss a commit found only on a retained
   worktree branch when no delivery ledger exists. An explicit commit argument
   does not bypass discovery.
