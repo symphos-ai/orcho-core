@@ -362,6 +362,11 @@ def test_continuation_read_models_preserve_retained_followup_and_preflight_block
     assert status.continuation_decision.recommended_next_action == "start_followup"
     assert diagnosis.recommended_next_action == "start_followup"
     assert lineage.recommended_next_action == "start_followup"
+    # Negative control for the plan-artifact continuation: a REAL retained
+    # uncommitted subject keeps the plan subject unavailable, so this run can
+    # never be mistaken for the plan-only outcome that licenses from_run_plan.
+    assert lineage.continuation_subject == "retained_change"
+    assert lineage.plan_subject_available is False
     assert status.next_actions
     assert all(
         action.args.get("from_run_plan") != retained.run_id

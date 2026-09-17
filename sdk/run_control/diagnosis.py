@@ -534,6 +534,11 @@ def _classify(
         )
 
     # (6) resume_inert_terminal / closed_by_followup — a terminal dead-end.
+    # ``cont`` carries the subject: terminal only means resume is inert, not
+    # that nothing continues. A successful plan-only run still names its own
+    # plan artifact, because the plan-subject fact in ``recovery_lineage``
+    # rests on the delivery owner's canonical outcome — this module neither
+    # reads ``commit_delivery`` nor classifies a profile to reach it.
     if terminal:
         return _terminal_branch(run_id, status, halt_reason, meta, cont)
 

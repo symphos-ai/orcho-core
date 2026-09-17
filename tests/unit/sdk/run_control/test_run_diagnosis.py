@@ -511,6 +511,62 @@ def test_resume_inert_terminal_plan_artifact(tmp_path: Path) -> None:
     assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
 
 
+def _dogfood_plan_only(profile: str) -> dict:
+    """The meta a real successful plan-only run persists (mirrors the lineage test).
+
+    ``isolation=off`` writes no ``followup_continuity`` block, so the absence of
+    a retained diff is proven by the delivery owner's canonical
+    ``not_applicable``/``none`` receipt, not by the worktree shape.
+    """
+    return {
+        "status": "done", "profile": profile, "plan_source": "local",
+        "project": "/x",
+        "worktree": {
+            "isolation": "off", "path": "/x", "base_ref": "8dc028cb",
+            "branch_ref": None,
+        },
+        "commit_delivery": {
+            "action": "none", "status": "not_applicable", "run_id": "r",
+            "decision_id": "r:delivery", "project_path": "/x",
+            "source_path": "/x", "baseline_ref": "8dc028cb", "dirty": False,
+            "include_untracked": False, "pr_url": None,
+        },
+    }
+
+
+@pytest.mark.parametrize("profile", ["planning", "research"])
+def test_resume_inert_terminal_plan_artifact_for_done_plan_only(
+    tmp_path: Path, profile: str,
+) -> None:
+    # A successful plan-only run is terminal (resume is inert) but NOT a dead
+    # end: the diagnosis names this run's own plan artifact as the continuation,
+    # and its attached recovery is the standalone lineage verbatim.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only(profile), files={"parsed_plan.json": "{}"})
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recommended_run_id == "r"
+    assert d.recovery == recovery_lineage("r", runs_dir=runs, cwd=None)
+    assert d.recovery.plan_subject_available is True
+
+
+def test_resume_inert_terminal_done_plan_only_without_artifact_is_none(
+    tmp_path: Path,
+) -> None:
+    # Same canonical delivery outcome without a physical parsed_plan.json: no
+    # artifact, no continuation subject — a clean success to follow up on.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only("planning"))
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_NONE
+    assert d.recommended_next_action == diag.ACTION_START_FOLLOWUP
+    assert d.recovery == recovery_lineage("r", runs_dir=runs, cwd=None)
+    assert d.recovery.plan_subject_available is False
+
+
 def test_resume_inert_terminal_stop_unknown_missing_facts(tmp_path: Path) -> None:
     # Rejected dead-end with no resumable source, no plan, no gate, no child →
     # explicit unknown stop with the absent facts enumerated (not a blind resume).

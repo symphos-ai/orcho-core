@@ -1,5 +1,13 @@
 """Conservative delivery applicability from the full recipe and completed facts.
 
+Two sides of one concept live here, and nothing else:
+
+* **Engine side** — :func:`completed_plan_only` and :func:`absent_delivery_subject`
+  classify a live run's recipe and its delivery subject while the gate decides.
+* **Read side** — :func:`persisted_plan_only_outcome` recognizes the persisted
+  receipt that classification produced, so every reader (next actions, recovery
+  lineage, diagnosis) asks one owner instead of re-deriving the field shape.
+
 This module owns classification, not Git reads or verification receipt policy.
 An unknown recipe or incomplete run remains subject to the ordinary delivery gate.
 """
@@ -48,3 +56,28 @@ def completed_plan_only(profile: object, session: Mapping[str, Any]) -> bool:
 def absent_delivery_subject(patch: str, untracked: tuple[str, ...] | None) -> bool:
     """Unknown Git reads are not proof of absence."""
     return untracked == () and (not patch.strip() or patch == "(no diff)")
+
+
+def persisted_plan_only_outcome(meta: Mapping[str, Any]) -> bool:
+    """Recognize the persisted "ran to the end, nothing to deliver" receipt.
+
+    The canonical shape is a ``commit_delivery`` receipt classified as
+    ``not_applicable``/``none`` carrying no delivery residue (``error``,
+    ``commit_sha``, ``release_verdict``), on a run with no terminal fact that
+    contradicts a clean finish (``phase_handoff``, ``halt_reason``).
+
+    Deliberately *not* part of the predicate, because each caller proves it its
+    own way: the run's status (merged status for next actions, terminality for
+    recovery lineage) and the physical ``parsed_plan.json`` artifact.
+    """
+    if not isinstance(meta, Mapping):
+        return False
+    delivery = meta.get("commit_delivery")
+    return bool(
+        isinstance(delivery, Mapping)
+        and delivery.get("status") == "not_applicable"
+        and delivery.get("action") == "none"
+        and not any(delivery.get(key) for key in ("error", "commit_sha", "release_verdict"))
+        and not meta.get("phase_handoff")
+        and not meta.get("halt_reason")
+    )

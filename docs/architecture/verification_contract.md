@@ -1156,6 +1156,18 @@ gates remain engine-owned and manual/suggest entries remain operator-owned.
 Missing downstream receipts can remain visible even though there is no change
 to deliver. Rejected handoffs and operator halts keep their existing semantics.
 
+Recovery lineage and run diagnosis consume that same canonical outcome through
+the shared predicate in `pipeline/engine/delivery_applicability.py`, so the
+read-model agrees with `sdk/actions.py` instead of running a second
+applicability policy. For a recovery subject the question is narrower — is this
+run holding an undelivered diff? — and the canonical outcome answers it: the
+delivery owner already looked for a subject and found none. `isolation=off` is
+*not* itself that answer. Such a run writes no `followup_continuity` block, so
+its `diff_source` is `None`: the absence of a statement about the diff, not a
+statement that nothing is held. Without the canonical outcome that pair still
+proves nothing and no plan-artifact continuation is published. A physically
+readable `parsed_plan.json` remains a separate, independently required fact.
+
 ### Delivery verification policy
 
 A new optional contract field `verification.delivery_policy` (validated against

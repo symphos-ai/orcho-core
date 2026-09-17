@@ -32,6 +32,7 @@ from sdk.run_control.diagnosis import (
     CONDITION_STALLED,
     CONDITION_SUPERSEDED_BY_CHILD,
 )
+from sdk.run_control.recovery_lineage import ACTION_PLAN_ARTIFACT_CONTINUATION
 from sdk.run_control.types import RunDiagnosis
 
 RUN = "20260908_131908_4064f0"
@@ -114,6 +115,17 @@ def test_resume_inert_terminal_is_inspect_only() -> None:
         CONDITION_RESUME_INERT_TERMINAL, status="done", recommended_run_id=RUN,
     ))
     assert lines == [f"inspect only — orcho evidence {RUN}"]
+    assert "--resume" not in " ".join(lines)
+
+
+def test_resume_inert_terminal_plan_artifact_continues_from_run_plan() -> None:
+    # Same run, but core named a plan artifact to continue from: the dead-end
+    # line becomes the continuation command the typed diagnosis already carries.
+    lines = next_step_lines(_diag(
+        CONDITION_RESUME_INERT_TERMINAL, status="done", recommended_run_id=RUN,
+        recommended_next_action=ACTION_PLAN_ARTIFACT_CONTINUATION,
+    ))
+    assert lines == [f"orcho run --from-run-plan {RUN} --project <dir>"]
     assert "--resume" not in " ".join(lines)
 
 

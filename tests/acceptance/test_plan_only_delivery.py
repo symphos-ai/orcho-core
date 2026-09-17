@@ -15,6 +15,7 @@ from pipeline.plugins import PluginConfig
 from pipeline.project_orchestrator import run_pipeline
 from sdk import collect_evidence, to_jsonable
 from sdk.phase_handoff import phase_handoff_decide
+from sdk.run_control import recovery_lineage, run_diagnosis
 from sdk.status import load_status
 from tests.acceptance.test_full_mock_flow import (
     _build_clean_review_provider,
@@ -61,7 +62,13 @@ def test_approved_plan_only_resume(tmp_path: Path, monkeypatch, capsys, profile:
     )
     resumed = run_pipeline(**kwargs, resume_from=checkpoint.run_id)
     assert resumed["status"] == "done", resumed.get("halt_reason")
-    assert resumed["commit_delivery"]["status"] in {"not_applicable", "no_diff"}
+    # C4(1): the producer must emit the ONE canonical plan-only outcome, not a
+    # family of near-misses — the read models below key off exactly this shape.
+    assert resumed["commit_delivery"]["status"] == "not_applicable"
+    assert resumed["commit_delivery"]["action"] == "none"
+    assert not resumed["commit_delivery"].get("error")
+    assert not resumed["commit_delivery"].get("commit_sha")
+    assert not resumed["commit_delivery"].get("release_verdict")
     meta = json.loads((run_dir / "meta.json").read_text())
     assert meta["status"] == "done"
     assert meta["commit_delivery"] == resumed["commit_delivery"]
@@ -106,6 +113,40 @@ def test_approved_plan_only_resume(tmp_path: Path, monkeypatch, capsys, profile:
         "from_run_plan": run_dir.name, "profile": "feature", "task": kwargs["task"],
     }
     assert payload["next_actions"] == [to_jsonable(action)]
+
+    # C4(2): the producer shape the plan-artifact continuation rests on. An
+    # isolation=off run writes no follow-up continuity block, so the read model
+    # cannot learn "no retained diff" from diff_source — only the delivery
+    # outcome above proves it. No diff.patch, but a real parsed_plan artifact.
+    assert meta["worktree"]["isolation"] == "off"
+    assert "followup_continuity" not in meta["worktree"]
+    assert meta["commit_delivery"]["dirty"] is False
+    artefact_kinds = {artefact.kind for artefact in status.artefacts}
+    assert "diff" not in artefact_kinds
+    assert "parsed_plan" in artefact_kinds
+
+    # C4(3): lineage publishes the plan artifact as the continuation subject.
+    lineage = recovery_lineage(run_dir.name, runs_dir=run_dir.parent, cwd=None)
+    assert lineage.continuation_subject == "plan_artifact"
+    assert lineage.recommended_next_action == "plan_artifact_continuation"
+    assert lineage.recommended_run_id == run_dir.name
+    assert lineage.plan_subject_available is True
+    assert lineage.missing_facts == ()
+
+    # C4(4): diagnosis agrees — terminal means resume is inert, not that
+    # nothing continues — and carries that very lineage.
+    diagnosis = run_diagnosis(run_dir.name, runs_dir=run_dir.parent, cwd=None)
+    assert diagnosis.condition == "resume_inert_terminal"
+    assert diagnosis.recommended_next_action == "plan_artifact_continuation"
+    assert diagnosis.recommended_run_id == run_dir.name
+    assert diagnosis.recovery == lineage
+
+    # C4(5)+(6): the ready call, the typed diagnosis, and the CLI --json
+    # next_step all name the same run to continue from.
+    assert action.args["from_run_plan"] == lineage.recommended_run_id
+    assert lineage.recommended_run_id == diagnosis.recommended_run_id
+    assert cli_payload["next_step"]["action"] == "plan_artifact_continuation"
+    assert cli_payload["next_step"]["run_id"] == run_dir.name
 
 
 @pytest.mark.parametrize("profile", ["planning", "research"])

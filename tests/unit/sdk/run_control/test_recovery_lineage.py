@@ -96,6 +96,33 @@ _TERMINAL_CHILD = {
 }
 
 
+def _dogfood_plan_only(profile: str, **overrides) -> dict:
+    """The meta a real successful plan-only run persists.
+
+    ``isolation=off`` means no worktree block ever carries a
+    ``followup_continuity`` sub-block, so ``diff_source`` is ``None`` — the
+    absence of a statement about the diff, not a statement that one is held.
+    What proves nothing is retained is the delivery owner's own canonical
+    ``not_applicable``/``none`` receipt.
+    """
+    meta = {
+        "status": "done", "profile": profile, "plan_source": "local",
+        "project": "/x",
+        "worktree": {
+            "isolation": "off", "path": "/x", "base_ref": "8dc028cb",
+            "branch_ref": None,
+        },
+        "commit_delivery": {
+            "action": "none", "status": "not_applicable", "run_id": "r",
+            "decision_id": "r:delivery", "project_path": "/x",
+            "source_path": "/x", "baseline_ref": "8dc028cb", "dirty": False,
+            "include_untracked": False, "pr_url": None,
+        },
+    }
+    meta.update(overrides)
+    return meta
+
+
 # ── export wiring ─────────────────────────────────────────────────────────────
 
 
@@ -183,6 +210,96 @@ def test_terminal_plan_only(tmp_path: Path) -> None:
     assert rl.recommended_next_action == rlm.ACTION_PLAN_ARTIFACT_CONTINUATION
     assert rl.recommended_run_id == "r"
     assert rl.plan_subject_available is True
+
+
+@pytest.mark.parametrize("profile", ["planning", "research"])
+def test_done_plan_only_not_applicable_isolation_off_is_plan_subject(
+    tmp_path: Path, profile: str,
+) -> None:
+    # The dogfood shape: a successful plan-only run that produced a plan and
+    # nothing to deliver. It must resolve to the plan-artifact continuation of
+    # ITSELF, not to a start_followup dead end.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only(profile), files={"parsed_plan.json": "{}"})
+    rl = _lineage(runs, "r")
+    assert rl.is_terminal_or_rejected is True
+    assert rl.continuation_subject == rlm.SUBJECT_PLAN_ARTIFACT
+    assert rl.recommended_next_action == rlm.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert rl.recommended_run_id == "r"
+    assert rl.plan_subject_available is True
+    assert "plan_source=local" in rl.reason
+    assert f"profile={profile}" in rl.reason
+
+
+def test_done_plan_only_without_artifact_is_not_a_plan_subject(
+    tmp_path: Path,
+) -> None:
+    # Same canonical delivery outcome, but no physical parsed_plan.json: a bare
+    # ``plan_source`` stamp never proves an artifact.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only("planning"))
+    rl = _lineage(runs, "r")
+    assert rl.continuation_subject == rlm.SUBJECT_NONE
+    assert rl.recommended_next_action == rlm.ACTION_START_FOLLOWUP
+    assert rl.plan_subject_available is False
+
+
+@pytest.mark.parametrize("delivery", [
+    None,
+    {"status": "no_diff", "action": "none"},
+    {"status": "committed", "action": "commit", "commit_sha": "abc"},
+    {"status": "verification_blocked", "action": "none"},
+    {"status": "not_applicable", "action": "none", "error": "x"},
+])
+def test_isolation_off_without_canonical_outcome_is_not_a_plan_subject(
+    tmp_path: Path, delivery: dict | None,
+) -> None:
+    # ``isolation=off`` alone is not the fact. Without the canonical receipt,
+    # ``has_worktree=True`` + ``diff_source=None`` proves nothing about a
+    # retained diff, so the plan subject stays unavailable.
+    runs = tmp_path / "runs"
+    meta = _dogfood_plan_only("planning")
+    if delivery is None:
+        del meta["commit_delivery"]
+    else:
+        meta["commit_delivery"] = delivery
+    _mk(runs, "r", meta, files={"parsed_plan.json": "{}"})
+    rl = _lineage(runs, "r")
+    assert rl.continuation_subject != rlm.SUBJECT_PLAN_ARTIFACT
+    assert rl.plan_subject_available is False
+
+
+@pytest.mark.parametrize("delivery", [
+    None,
+    {"status": "no_diff", "action": "none"},
+    {"status": "verification_blocked", "action": "none"},
+])
+def test_retained_worktree_diff_is_never_a_plan_subject(
+    tmp_path: Path, delivery: dict | None,
+) -> None:
+    # A real retained subject: the producer wrote a continuity block saying the
+    # diff lives in the worktree. Re-implementing the plan would strand it.
+    #
+    # There is no mirror case combining ``diff_source='worktree'`` with the
+    # canonical ``not_applicable``/``none`` receipt, because the producer cannot
+    # emit one: ``absent_delivery_subject`` only classifies not_applicable after
+    # a successful, empty Git read. This test pins the shapes that are real.
+    runs = tmp_path / "runs"
+    meta = _dogfood_plan_only("planning", worktree={
+        "isolation": "per_run", "path": "/tmp/wt-r",
+        "followup_continuity": {
+            "mode_label": "reuse", "blocked": False, "reason": None,
+            "diff_source": "worktree",
+        },
+    })
+    if delivery is None:
+        del meta["commit_delivery"]
+    else:
+        meta["commit_delivery"] = delivery
+    _mk(runs, "r", meta, files={"parsed_plan.json": "{}"})
+    rl = _lineage(runs, "r")
+    assert rl.continuation_subject != rlm.SUBJECT_PLAN_ARTIFACT
+    assert rl.plan_subject_available is False
 
 
 def test_clean_terminal_success(tmp_path: Path) -> None:

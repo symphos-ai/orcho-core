@@ -23,12 +23,20 @@ resumable logic. The single owners it leans on:
   ``meta['worktree']['followup_continuity']`` block (the exact shape
   ``pipeline/project/isolation_setup.py`` writes via
   :meth:`FollowupWorktreeDecision.to_dict`), read via the shared helper in
-  :mod:`sdk.run_control.recovery_source`.
+  :mod:`sdk.run_control.recovery_source`;
+- whether delivery found a subject at all — the canonical
+  :func:`pipeline.engine.delivery_applicability.persisted_plan_only_outcome`,
+  the one owner of what a "ran to the end, nothing to deliver" receipt looks
+  like. ``commit_delivery`` fields are never inspected here.
 
 No status / halt-reason decision-table literal is declared here; the only
 frozensets (``_PERSISTED_PLAN_SOURCES`` / ``_PLANNING_PROFILES``) are
 plan-attribution vocabularies, not lifecycle decision tables, so the ownership
 guard (which protects the status / halt-reason sets) does not cover them.
+``_PLANNING_PROFILES`` names the profile *work kinds* that produce a plan
+artifact instead of an implementation diff; it is one of several facts
+:func:`_plan_subject_available` composes, never a standalone applicability
+rule, and it is not copied into any other module.
 
 Provider boundary: ``source_meta`` lets an embedder feed already-merged meta for
 the *source* candidates so a stale on-disk ``status='running'`` cannot make core
@@ -48,6 +56,7 @@ from pipeline.control.resume_context import (
     is_terminal_resume_parent,
     is_terminal_success,
 )
+from pipeline.engine.delivery_applicability import persisted_plan_only_outcome
 from pipeline.run_state.release_verdict import is_rejected
 from sdk.run_control.delivery import delivery_decision_state
 from sdk.run_control.recovery_lineage_resolve import (
@@ -236,13 +245,33 @@ def _plan_subject_available(
     AND the run carries no undelivered diff / retained worktree AND the profile
     is plan-only / research. The artifact check keeps from_run_plan honest: a
     bare ``plan_source`` stamp without a persisted plan is NOT a plan subject.
+
+    Three independent facts can prove "nothing undelivered is being held", and
+    any one of them suffices:
+
+    1. ``not has_worktree`` — the run never had a worktree to retain.
+    2. ``diff_source == 'none'`` — the persisted follow-up continuity block
+       states outright that there is no diff to carry forward.
+    3. :func:`persisted_plan_only_outcome` — the delivery owner already looked
+       for a subject, found none, and persisted the canonical
+       ``not_applicable``/``none`` receipt. This module consumes that verdict;
+       it never re-reads ``commit_delivery`` fields itself.
+
+    Note what is deliberately *not* on the list: ``has_worktree=True`` with
+    ``diff_source=None``. That pair is the absence of a continuity block (an
+    ``isolation=off`` run never writes one), not a statement about the diff, so
+    on its own it proves nothing and the plan subject stays unavailable.
     """
     plan_source = _optional_str(meta.get("plan_source"))
     if plan_source not in _PERSISTED_PLAN_SOURCES:
         return False
     if not _has_durable_parsed_plan(run_dir):
         return False
-    no_retained_diff = (not has_worktree) or diff_source == "none"
+    no_retained_diff = (
+        (not has_worktree)
+        or diff_source == "none"
+        or persisted_plan_only_outcome(meta)
+    )
     if not no_retained_diff:
         return False
     prof = (_optional_str(meta.get("profile")) or "").lower()
