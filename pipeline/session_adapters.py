@@ -38,6 +38,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from pipeline.review_round_record import (
+    PASS_REVERIFY,
+    PASS_REVIEW,
+    ReviewRoundAdapter,
+)
 from pipeline.runtime import PipelineState
 
 # ── Protocol ─────────────────────────────────────────────────────────────────
@@ -451,7 +456,7 @@ class BuildAdapter:
 
 
 class RoundAdapter:
-    """Append a round dict to ``session['phases']['rounds']``.
+    """Write a round dict into ``session['phases']['rounds']``.
 
     Drives the review_changes ↔ repair_changes loop session shape.
     ``round_n`` is required (the loop-driver explicitly passes it). Two
@@ -470,6 +475,14 @@ class RoundAdapter:
     The contract: optional fields (repair_output, repair_model, session_mode,
     split session ids, session_id, test_result) are **omitted** when None to keep
     ``"repair_output" not in rounds[0]`` for clean early-exits.
+
+    The round entry may already exist as a *provisional* one — the
+    ``ReviewRoundAdapter`` runs first in the loop and stamps the round's
+    review sub-record before any repair happened, appending
+    ``{"round": n, "review": {...}}``. This adapter fills that provisional
+    entry in place (carrying the ``review`` / ``reverify`` sub-records over)
+    instead of appending a second entry for the same round; a round that
+    already has a ``critique`` is a completed round and is never reused.
     """
 
     def write(
@@ -593,7 +606,23 @@ class RoundAdapter:
             entry["runtime_compaction_review"] = review_rc
         if repair_rc is not None:
             entry["runtime_compaction_repair"] = repair_rc
-        session["phases"]["rounds"].append(entry)
+        # Fill the provisional entry the review adapter appended for this
+        # round (round matches, no critique yet), preserving its per-attempt
+        # review sub-records; otherwise this is a fresh round → append.
+        rounds = session["phases"]["rounds"]
+        for index, candidate in enumerate(rounds):
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("round") == round_n
+                and "critique" not in candidate
+            ):
+                for sub_key in (PASS_REVIEW, PASS_REVERIFY):
+                    sub_record = candidate.get(sub_key)
+                    if sub_record is not None:
+                        entry[sub_key] = sub_record
+                rounds[index] = entry
+                return
+        rounds.append(entry)
 
 
 class FinalAcceptanceAdapter:
@@ -658,6 +687,12 @@ class FinalAcceptanceAdapter:
             # an in-memory detail — finalization, evidence, and status readers
             # must see the model verdict and the engine verdict separately.
             "engine_backstop",
+            # The prior-review evidence the gate was handed: which attempt was
+            # latest, what it superseded, what never parsed, and the operator
+            # rationale around it. Persisted so a reader can reconstruct what
+            # the closing gate saw without re-resolving it. Copied only when
+            # present, so a run without a prior review is byte-identical.
+            "review_context",
         ):
             value = log.get(key)
             if value is not None:
@@ -762,6 +797,11 @@ def default_session_adapter_registry() -> SessionAdapterRegistry:
     Same instance shared so adapter state — if any — stays consistent
     across both paths. RoundAdapter is currently stateless so the dual
     registration is purely a name alias.
+
+    ``review_changes`` maps to :class:`ReviewRoundAdapter`, which writes a
+    per-attempt sub-record *inside* the matching ``rounds`` entry and never
+    creates a ``session["phases"]["review_changes"]`` key — see
+    ``pipeline/review_round_record.py`` for why that key is off-limits.
     """
     global _DEFAULT_REGISTRY
     if _DEFAULT_REGISTRY is None:
@@ -772,6 +812,7 @@ def default_session_adapter_registry() -> SessionAdapterRegistry:
         reg.register("implement",        BuildAdapter())
         reg.register("rounds",           round_adapter)
         reg.register("repair_changes",   round_adapter)  # v2 dispatch alias
+        reg.register("review_changes",   ReviewRoundAdapter())
         reg.register("final_acceptance", FinalAcceptanceAdapter())
         reg.register("correction_triage", CorrectionTriageAdapter())
         reg.register("hypothesis",       HypothesisAdapter())

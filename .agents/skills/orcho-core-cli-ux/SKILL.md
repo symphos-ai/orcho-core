@@ -29,7 +29,6 @@ Keep the CLI a thin, stable facade over SDK and pipeline boundaries.
 - pipeline semantics -> relevant core specialist
 - SDK payload shape -> `orcho-core-sdk-wire`
 - MCP exposure -> `orcho-mcp`
-- public wording hygiene -> `orcho-public-boundary`
 
 ## Invariants
 
@@ -42,10 +41,8 @@ Keep the CLI a thin, stable facade over SDK and pipeline boundaries.
 
 - `python -m pytest -q orcho-core/tests/unit/cli`
 - command-specific tests for changed commands
-- public boundary scan for help/docs wording
 
 ## Neighbor Skills
 
 - `orcho-core-sdk-wire` when formatter inputs or public status/evidence shape change
-- `orcho-public-boundary` for public help/docs/error wording
 - `orcho-core-evidence-observability` when CLI renders evidence internals

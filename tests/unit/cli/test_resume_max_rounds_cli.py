@@ -69,6 +69,7 @@ class TestResumeMaxRounds:
         project.mkdir()
         (project / "pyproject.toml").write_text("[project]\nname='p'\n")
         self._project = project
+        monkeypatch.chdir(project)
         yield
         shutil.rmtree(runspace, ignore_errors=True)
         _config._reset_config()

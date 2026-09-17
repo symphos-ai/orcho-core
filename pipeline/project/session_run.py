@@ -47,6 +47,7 @@ from pipeline.project.profile_dispatch import (
     dispatch_via_v2_profile as _dispatch_via_v2_profile,
 )
 from pipeline.project.profile_setup import profile_phase_efforts, setup_profile
+from pipeline.project.resume_plan_source import restore_inherited_plan_request
 from pipeline.project.run import _PipelineRun
 from pipeline.project.run_setup import (
     init_run_session,
@@ -623,6 +624,7 @@ def run_project_pipeline_session(
     """
     if request.output_dir is not None:
         request.output_dir.mkdir(parents=True, exist_ok=True)
+    request = restore_inherited_plan_request(request)
     request = _promote_plan_only_followup(request)
     with startup_watchdog_scope(request.output_dir):
         ctx = _resolve_profile_runtime(request)
