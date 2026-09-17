@@ -90,7 +90,14 @@ def next_step_lines(diagnosis: Any) -> list[str]:
     if condition == CONDITION_STALLED:
         return [f"orcho repair-state {run_id}"]
 
+    # Inert terminal: a plain resume would do nothing. When core still names a
+    # continuation subject — a persisted plan artifact this run finished
+    # producing — the operator's next step is a new run seeded from that plan,
+    # not a dead end. Without a recommended action there is nothing to run.
     if condition == CONDITION_RESUME_INERT_TERMINAL:
+        if diagnosis.recommended_next_action == ACTION_PLAN_ARTIFACT_CONTINUATION:
+            target = diagnosis.recommended_run_id or run_id
+            return [f"orcho run --from-run-plan {target} --project <dir>"]
         return [f"inspect only — orcho evidence {run_id}"]
 
     if condition == CONDITION_CLOSED_BY_FOLLOWUP:

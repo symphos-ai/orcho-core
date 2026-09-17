@@ -16,6 +16,7 @@ import re
 
 import pytest
 
+from sdk import actions
 from sdk.actions import Action, compute_next_actions
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -176,6 +177,14 @@ class TestCompletedPlanOnly:
         actions = compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
         del meta["commit_delivery"]
         assert actions == compute_next_actions(meta, run_id="r1", has_parsed_plan_artifact=True)
+
+    def test_outcome_predicate_is_the_single_owner(self, monkeypatch):
+        # No second copy of the commit_delivery field check lives here: neuter
+        # the canonical predicate and the suggestion disappears.
+        monkeypatch.setattr(actions, "persisted_plan_only_outcome", lambda meta: False)
+        assert compute_next_actions(
+            self.meta(), run_id="r1", has_parsed_plan_artifact=True,
+        ) == ()
 
     def test_projected_status_override_takes_precedence(self):
         meta = self.meta()

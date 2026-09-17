@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.control.continuation import ContinuationDecision
+from pipeline.engine.delivery_applicability import persisted_plan_only_outcome
 from pipeline.run_state.status_vocab import (
     RESUMABLE_TERMINAL_STATUSES,
     TERMINAL_SUCCESS_STATUSES,
@@ -174,21 +175,12 @@ def compute_next_actions(
     if continuation_decision is not None and continuation_decision.continuation_subject == "retained_change":
         return (_correction_followup_action(continuation_decision),)
 
-    # Delivery already classified applicability. Do not infer it again from
-    # profile names, remaining phases, or an ordinary no_diff outcome.
+    # Delivery already classified applicability, and
+    # ``persisted_plan_only_outcome`` is the one owner of what that receipt
+    # looks like. Do not infer it again here from profile names, remaining
+    # phases, or an ordinary no_diff outcome.
     if status in TERMINAL_SUCCESS_STATUSES:
-        delivery = meta.get("commit_delivery")
-        if (
-            has_parsed_plan_artifact is True
-            and isinstance(delivery, Mapping)
-            and delivery.get("status") == "not_applicable"
-            and delivery.get("action") == "none"
-            and not any(delivery.get(key) for key in (
-                "error", "commit_sha", "release_verdict",
-            ))
-            and not meta.get("phase_handoff")
-            and not meta.get("halt_reason")
-        ):
+        if has_parsed_plan_artifact is True and persisted_plan_only_outcome(meta):
             task = meta.get("task")
             return (_from_run_plan_action(run_id, task=task if isinstance(task, str) else None),)
         return ()
