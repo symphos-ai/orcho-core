@@ -1109,6 +1109,55 @@ diff into the project checkout and commits it. It is the last boundary and the
 only one that acts on the final tree, so it is where declared proof can
 actually gate the change leaving the run.
 
+
+### Plan-only delivery applicability
+
+[ADR 0194](../adr/0194-plan-only-delivery-applicability.md) distinguishes a
+completed plan artifact from a change requiring delivery. The delivery-owned
+classifier in `pipeline/engine/delivery_applicability.py` uses the **full resolved
+recipe** and canonical run facts, including restored checkpoint facts. It never
+uses a profile name or an empty list of remaining resume steps as proof.
+
+A completed `plan → validate_plan` recipe with an approved plan, no pending
+handoff, no other phase results, and a proven absent delivery subject receives
+an explicit canonical `commit_delivery.status = not_applicable`. This narrow
+classification happens before missing downstream verification receipts can
+block delivery, after existing-delivery adoption and release guards.
+
+Subject inspection reuses delivery's baseline-aware patch and filtered
+untracked readers, including the existing `add_untracked` policy. Unknown
+profile/run facts, Git inspection failures, and unavailable diffs fail closed.
+Absence of `implement` or `diff.patch` alone does not establish applicability.
+Review-only profiles can own an existing uncommitted diff and must still satisfy
+required receipts. Ordinary delivery also retains the **verification before
+no-diff** guard: a clean checkout is not a general exemption.
+
+The runner persists this explicit outcome before terminal projections and
+artifacts are finalized. Checkpoint, metadata, latest `run.end`, evidence and
+public status agree on `done`; the parsed plan, approval and historical handoff
+decision remain preserved. Consumers use the canonical
+outcome rather than reclassifying planning/research. Ordinary approved
+final-acceptance no-diff persistence remains unchanged.
+
+После согласованного расширения scope на `sdk/actions.py` terminal-success
+с этим явным `not_applicable` и физически сохранённым `parsed_plan.json`
+публикует одно действие `orcho_run_start` с `from_run_plan`, `profile=feature`
+и исходной задачей. SDK использует outcome владельца delivery, не имена профилей
+и не повторную проверку diff. Записи с ошибкой, delivery commit или release
+verdict не подходят; обычный `no_diff` также не разрешает продолжение.
+Без подтверждённого артефакта действие отсутствует. При отсутствии задачи
+существующий builder требует её ввода оператором. Новое правило действует
+только для terminal-success; существующие recovery-действия halted/rejected
+не расширяются. SDK/CLI JSON и MCP `Action.to_dict()` сохраняют прежние поля;
+новые wire-поля и транспортная бизнес-логика не вводятся.
+
+This exception creates no receipt or waiver and removes no evidence. Scheduled
+gates remain engine-owned and manual/suggest entries remain operator-owned.
+Missing downstream receipts can remain visible even though there is no change
+to deliver. Rejected handoffs and operator halts keep their existing semantics.
+
+### Delivery verification policy
+
 A new optional contract field `verification.delivery_policy` (validated against
 the canonical `manual | suggest | warn | require` vocabulary — no new policy
 constants) selects the behaviour. Defaults are conservative:

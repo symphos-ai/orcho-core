@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -38,6 +38,7 @@ from pipeline.engine.commit_policy import (
     normalize_commit_message_strategy,
     snapshot_commit_policy,
 )
+from pipeline.engine.delivery_applicability import absent_delivery_subject, completed_plan_only
 from pipeline.engine.delivery_branch import (
     DeliveryBranchOutcome,
     DeliveryPrIntent,
@@ -128,6 +129,8 @@ class CommitDeliveryDecision:
     project_path: Path
     source_path: Path
     baseline_ref: str
+    # Internal persistence instruction; deliberately absent from to_dict / wire.
+    persist_no_delivery: bool = field(default=False, kw_only=True)
     dirty: bool = False
     release_summary: str = ""
     release_verdict: str = ""
@@ -307,6 +310,7 @@ def resolve_commit_delivery(
     baseline_ref: str = "HEAD",
     commit_message_generator: CommitMessageGenerator | None = None,
     verification_gate: DeliveryVerificationAssessment | None = None,
+    resolved_profile: object | None = None,
     decision_action: CommitDeliveryAction | None = None,
     decision_mode: str = "auto",
     input_fn: Callable[[str], str] = input,
@@ -456,6 +460,24 @@ def resolve_commit_delivery(
             error="release verdict is not APPROVED",
             **release_fields,
         )
+
+    # Narrow plan-only exception: adoption and release guards retain priority.
+    # Read the same baseline patch and filtered untracked subject used below;
+    # failed Git inspection cannot prove that delivery is inapplicable.
+    if not release_blocked and completed_plan_only(resolved_profile, session):
+        plan_patch = _run_owned_patch(source_worktree, baseline_ref)
+        plan_untracked = _read_untracked_paths(source_worktree)
+        deliverable = (
+            plan_untracked if cfg.get("add_untracked", True) else
+            (() if plan_untracked is not None else None)
+        )
+        if absent_delivery_subject(plan_patch, deliverable):
+            return CommitDeliveryDecision(
+                action="none", status="not_applicable", run_id=run_id,
+                decision_id=decision_id, project_path=project_dir,
+                source_path=source_worktree, baseline_ref=baseline_ref,
+                persist_no_delivery=True, **release_fields,
+            )
 
     # Stage 6 verification delivery gate (ADR 0083). These fields are empty when
     # ``verification_gate is None`` (no contract / policy off), so everything
@@ -1976,12 +1998,15 @@ def _dedupe_changed_against_untracked(
 
 
 def _untracked_paths(source_worktree: Path) -> tuple[str, ...]:
-    lines = _git_lines(
-        source_worktree,
-        ["ls-files", "--others", "--exclude-standard"],
-    )
+    return _read_untracked_paths(source_worktree) or ()
+
+
+def _read_untracked_paths(source_worktree: Path) -> tuple[str, ...] | None:
+    result = _run_git(source_worktree, ["ls-files", "--others", "--exclude-standard"])
+    if not result.ok:
+        return None
     return tuple(
-        line for line in lines
+        line for line in result.stdout.splitlines()
         if line.strip() and not _is_python_bytecode_artifact(line)
     )
 
