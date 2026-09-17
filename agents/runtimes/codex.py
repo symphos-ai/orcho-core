@@ -10,7 +10,10 @@ sandbox bypass lets reviewer phases run verification subprocesses
 (``pytest``, ``ruff``, ``git log``) that ``--sandbox read-only``
 forbids entirely. Destructive git operations are caught regardless
 by the streaming guardrail (``blocked_agent_stream_line`` in
-:func:`_invoke_exec`). The runtime captures the Codex thread handle
+:func:`_invoke_exec`), which inspects the ``command_execution``
+lifecycle records; Codex has already launched the command by the
+time either record streams, so the guardrail halts the run rather
+than preventing the command. The runtime captures the Codex thread handle
 from JSONL so later calls with ``continue_session=True`` resume via
 ``codex exec resume``.
 
@@ -409,9 +412,12 @@ class CodexAgent:
 
         Destructive git operations are caught regardless of sandbox
         mode by the streaming guardrail in :func:`_invoke_exec`'s
-        ``_on_line`` handler (``blocked_agent_stream_line``). The
-        guardrail is the real defence; the codex sandbox flag is
-        belt-and-suspenders that turns out to also disable belts.
+        ``_on_line`` handler (``blocked_agent_stream_line``), which
+        reads the ``command_execution`` JSONL records. Codex emits
+        those only after launching the command, so the guardrail is a
+        run halt, not a prevention. It is still the real defence; the
+        codex sandbox flag is belt-and-suspenders that turns out to
+        also disable belts.
 
         ``mutates_artifacts`` is still threaded through to inform
         the runtime label / observability (``mode=read`` vs

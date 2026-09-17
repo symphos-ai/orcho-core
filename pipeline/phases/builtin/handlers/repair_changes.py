@@ -102,7 +102,12 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             )
 
     agent = _require_agent(state, "repair_changes_agent")
-    critique_for_round = state.last_critique  # captured before fix consumes it
+    from pipeline.repair_protocol import RepairFeedback
+
+    feedback = state.repair_feedback or RepairFeedback(
+        review=state.last_critique, test_failures=state.last_test_output,
+    )
+    critique_for_round = feedback.review  # captured before fix consumes it
 
     # Phase 5e-5 substep 4 + 6b: read text/test-config helpers from ctx.
     # FSM always populates ``state.lifecycle_ctx``; legacy
@@ -111,18 +116,35 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
     critique_is_empty = ctx.text_helpers.critique_is_empty
     _resolve_tests_config_local = ctx.test_config_resolver
     pending = state.phase_log.get("rounds_pending", {}) or {}
+    # A human-directed ``retry_feedback`` round carries operator instruction
+    # that only the repair provider can act on, and the operator gets exactly
+    # one such round. Both early exits below describe the PRIOR review round,
+    # not that decision, so neither may consume the retry: skipping here would
+    # spend the retry with zero provider calls and hand the gate rerun an
+    # unchanged subject. Compute the signal before the first early return so
+    # both guards close over the same condition.
+    actionable_retry = bool(
+        cfg.get("human_directed", False) and (state.human_feedback or "").strip()
+    )
     # If review handler skipped on no-uncommitted, propagate the skip
     # marker so RoundAdapter omits the round entry (legacy parity).
     if pending.get("_skip_adapter"):
-        state.phase_log["repair_changes"] = {"skipped": "review skipped (no uncommitted)"}
-        return state
-    if critique_is_empty(critique_for_round) and not state.dry_run:
+        if not actionable_retry:
+            state.phase_log["repair_changes"] = {"skipped": "review skipped (no uncommitted)"}
+            return state
+        # Bypassed for the retry: drop the stale marker so RoundAdapter
+        # records this real round instead of omitting it.
+        pending = {key: value for key, value in pending.items() if key != "_skip_adapter"}
+    if critique_is_empty(critique_for_round) and not state.dry_run and not actionable_retry:
         state.phase_log["repair_changes"] = {"skipped": "review clean"}
         state.phase_log["rounds_pending"] = {
             **pending,
             "critique": critique_for_round or "",
         }
         return state
+    # Operator instruction rides its own prompt part, and only on the round it
+    # was decided for — an automatic round must never inherit stale feedback.
+    operator_feedback = state.human_feedback if actionable_retry else ""
 
     # Take the baseline snapshot only once we're committed to invoking
     # the runtime — the early-return guards above don't print a summary.
@@ -147,8 +169,10 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             critique_for_round,
             _agent_project_dir(state),
             state.plugin,
-            test_failures=state.last_test_output,
+            test_failures=feedback.test_failures,
+            verification_failure=feedback.verification_failure,
             write_style=_resolve_tests_config_local(state.plugin).write_style,
+            operator_feedback=operator_feedback,
             continue_session=continue_session,
             hybrid_codemap=state.extras.get("hybrid_codemap", "") or "",
             plan_contract=_plan_contract_for(state),
@@ -174,8 +198,10 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
             critique_for_round,
             _agent_project_dir(state),
             state.plugin,
-            test_failures=state.last_test_output,
+            test_failures=feedback.test_failures,
+            verification_failure=feedback.verification_failure,
             write_style=_resolve_tests_config_local(state.plugin).write_style,
+            operator_feedback=operator_feedback,
             plan_contract=_plan_contract_for(state),
             plan_tasks=_plan_tasks_for(state),
             handoff_contract=_handoff_contract_for(state),
@@ -301,11 +327,11 @@ def _phase_repair_changes(state: PipelineState) -> PipelineState:
     repair_receipt = _store_repair_receipt(
         state,
         build_repair_receipt(
-            source_phase="review_changes",
+            source_phase="verification" if feedback.verification_failure else "review_changes",
             source_round=cfg.get("repair_round"),
             repair_phase="repair_changes",
             repair_round=cfg.get("repair_round"),
-            critique=critique_for_round,
+            critique=critique_for_round or feedback.verification_failure,
             repair_output=result.output,
             operator_feedback=state.human_feedback,
             changed_refs=tuple(

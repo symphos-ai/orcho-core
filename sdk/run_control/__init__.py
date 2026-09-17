@@ -23,6 +23,12 @@ from __future__ import annotations
 from pipeline.run_state import RunStateIssue, RunStateValidationReport
 from sdk.run_control.commands import build_decision_command
 from sdk.run_control.delivery import decide_delivery, delivery_decision_state
+from sdk.run_control.delivery_reconcile import (
+    DeliveryReconcileResult,
+    DeliveryReconciliationState,
+    inspect_delivery_reconciliation,
+    reconcile_delivery_record,
+)
 from sdk.run_control.diagnosis import run_diagnosis
 from sdk.run_control.events import read_run_events, tail_run_events
 from sdk.run_control.launch import (
@@ -69,6 +75,8 @@ __all__ = [
     "DeliveryDecisionCommand",
     "DeliveryDecisionResult",
     "DeliveryDecisionState",
+    "DeliveryReconcileResult",
+    "DeliveryReconciliationState",
     "LaunchResult",
     "LaunchSpec",
     "LaunchedRun",
@@ -88,6 +96,8 @@ __all__ = [
     "cancel_run",
     "decide_delivery",
     "delivery_decision_state",
+    "inspect_delivery_reconciliation",
+    "reconcile_delivery_record",
     "launch_run",
     "launch_correction_followup",
     "launch_from_run_plan",

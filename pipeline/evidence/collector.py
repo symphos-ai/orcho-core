@@ -121,7 +121,7 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
         "artifacts": _build_artifacts(events),
         "metrics": _build_metrics_rollup(metrics),
         "errors": _build_errors(events, meta, target),
-        "findings": _build_findings(meta),
+        "findings": project_findings(meta),
         "release_summary": _build_release_summary(meta),
         "implementation_receipts": _build_implementation_receipts(events),
         # ADR 0076: additive durable verification-environment receipt
@@ -169,7 +169,34 @@ def collect_evidence(run_dir: Path | str) -> dict[str, Any]:
     if startup_halt is not None:
         bundle["startup_halt"] = startup_halt
 
+    # ADR 0188: additive criterion matrix. Present ONLY when the run has a
+    # durable accepted-plan artifact — a bundle from before this contract (or
+    # a run that never produced a plan) omits the key entirely, which is
+    # meaningfully different from the explicit empty matrix a new-format plan
+    # with no criteria writes. ``null`` is never written.
+    criterion_matrix = _build_criterion_matrix(target, bundle["findings"])
+    if criterion_matrix is not None:
+        bundle["criterion_matrix"] = criterion_matrix
+
     return bundle
+
+
+def _build_criterion_matrix(
+    run_dir: Path, findings: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Project the durable criterion matrix, or ``None`` when there is no plan.
+
+    Only a genuinely absent plan artifact omits the key. A plan, claim log, or
+    decision journal that exists but does not load raises: the error travels
+    out through ``collect_evidence`` and reaches the public SDK as
+    :class:`sdk.errors.EvidenceInvalid`. Degrading a corrupt artifact to an
+    omitted key would make a bundle with unreadable criterion facts
+    indistinguishable from a legacy bundle that never had any.
+    """
+    from pipeline.criterion_evidence import criterion_matrix_for_run
+
+    matrix = criterion_matrix_for_run(run_dir, findings=findings)
+    return None if matrix is None else matrix.to_dict()
 
 
 def _build_startup_halt(meta: dict[str, Any]) -> dict[str, Any] | None:
@@ -901,7 +928,7 @@ def _build_command_stalled_errors(
 
 # ── Findings ───────────────────────────────────────────────────────────────
 
-def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
+def project_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten reviewer findings from ``meta.phases`` into one list.
 
     Each finding-bearing phase (validate_plan / review / final_acceptance /
@@ -947,6 +974,10 @@ def _build_findings(meta: dict[str, Any]) -> list[dict[str, Any]]:
                     "required_fix": _optional_str(f.get("required_fix")),
                     "file": _optional_str(f.get("file")),
                     "line": _optional_int(f.get("line")),
+                    # ADR 0188: preserve the reviewer's typed criterion link
+                    # so the criterion matrix can be rebuilt from durable
+                    # evidence after a resume, not only in memory.
+                    "criterion_id": _optional_str(f.get("criterion_id")),
                     "phase": phase_name,
                     "attempt": attempt_num,
                     "source_verdict": str(attempt.get("verdict") or ""),
@@ -1055,7 +1086,7 @@ def _phase_attempts(value: Any) -> list[dict[str, Any]]:
         single ``dict`` — the closing gate runs once, not as a loop.
 
     Without this normalization, the dict-shape path is silently invisible
-    to ``_build_findings`` and ``_build_release_summary``, dropping the
+    to ``project_findings`` and ``_build_release_summary``, dropping the
     release blockers projected into the review-shape ``findings`` mirror.
     """
     if isinstance(value, list):

@@ -45,6 +45,7 @@ def render_evidence_md(bundle: dict[str, Any], *, debug: bool = False) -> str:
     lines.extend(_render_header(bundle))
     lines.extend(_render_worktree(bundle.get("worktree"), bundle.get("worktree_projects")))
     lines.extend(_render_plan(bundle["plan"]))
+    lines.extend(_render_criterion_matrix(bundle.get("criterion_matrix")))
     lines.extend(_render_phases(bundle["phases"]))
     lines.extend(_render_gates(bundle["gates"]))
     lines.extend(_render_findings(bundle.get("findings") or []))
@@ -275,6 +276,71 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
         lines.append(f"- **MCP context entries:** {len(plan['mcp_context'])}")
     lines.append("")
     return lines
+
+
+def _render_criterion_matrix(matrix: dict[str, Any] | None) -> list[str]:
+    """Render the ADR 0188 criterion matrix.
+
+    An absent key (a bundle written before the contract, or a run with no
+    accepted plan) omits the whole section — that is deliberately different
+    from an explicit empty matrix, which renders the section and says so.
+    """
+    if matrix is None:
+        return []
+    lines = ["## Criterion matrix", ""]
+    summary = matrix.get("summary") or {}
+    rows = matrix.get("rows") or []
+    if not rows:
+        lines.extend(["_No acceptance criteria declared._", ""])
+        return lines
+
+    lines.append("| Criterion | Executor | Verification | Proof | State |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for row in rows:
+        lines.append(
+            "| {id} | {executors} | {method} | {proof} | {state} |".format(
+                id=row["criterion_id"],
+                executors=", ".join(row["executors"]),
+                method=_criterion_method_label(row["method"]),
+                proof=_criterion_proof_label(row["proof_refs"]),
+                state=row["state"],
+            )
+        )
+    lines.append("")
+    counts = summary.get("counts_by_state") or {}
+    if counts:
+        lines.append(
+            "- **States:** "
+            + ", ".join(f"{state} {count}" for state, count in counts.items())
+        )
+    lines.append(f"- **Blocking open:** {summary.get('blocking_open', 0)}")
+    lines.append(f"- **Ready:** {'yes' if summary.get('ready') else 'no'}")
+    pending = summary.get("pending_human_ids") or []
+    if pending:
+        lines.append(f"- **Pending human decisions:** {', '.join(pending)}")
+    lines.append("")
+    return lines
+
+
+def _criterion_method_label(method: dict[str, Any]) -> str:
+    kind = method.get("kind")
+    if kind == "gates":
+        # A non-phase-anchored hook (``before_delivery`` / ``on_resume`` /
+        # ``manual_only``) has an empty phase; rstrip keeps the label from
+        # ending in a stray separator.
+        return ", ".join(
+            f"{ref['command']} @ {ref['hook']} {ref['phase']}".rstrip()
+            for ref in method.get("gate_refs") or ()
+        )
+    if kind == "manual":
+        return "manual"
+    return "inspection"
+
+
+def _criterion_proof_label(proof_refs: list[dict[str, Any]]) -> str:
+    if not proof_refs:
+        return "-"
+    return ", ".join(f"{ref['kind']}:{ref['id']}" for ref in proof_refs)
 
 
 def _render_phases(phases: list[dict[str, Any]]) -> list[str]:

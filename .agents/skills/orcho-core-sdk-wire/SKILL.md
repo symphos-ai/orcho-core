@@ -48,4 +48,3 @@ Protect the public Python SDK and MCP-visible core payload shape.
 - `orcho-mcp` for MCP-visible changes
 - `orcho-core-evidence-observability` for evidence/status slices
 - `orcho-core-quality-gates` for parser/gate payloads
-- `orcho-public-boundary` for public docs/docstrings

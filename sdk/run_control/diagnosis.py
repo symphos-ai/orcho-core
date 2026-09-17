@@ -21,11 +21,15 @@ branch leans on a single existing owner:
 - ``superseded_by_child`` / ``active_child_run`` —
   :func:`pipeline.control.resume_context.detect_active_followup_child`;
 - ``blocked_worktree`` — the persisted ``meta['worktree']['followup_continuity']``
-  block read via :func:`sdk.run_control.recovery_lineage._worktree_continuity`;
+  block read via :func:`sdk.run_control.recovery_source._worktree_continuity`;
 - terminality (``resume_inert_terminal`` / ``closed_by_followup``) —
   :func:`~pipeline.control.resume_context.is_terminal_resume_parent`;
 - the continuation subject / recovery lineage —
-  :func:`sdk.run_control.recovery_lineage._resolve_continuation`;
+  :func:`sdk.run_control.recovery_lineage._resolve_continuation` (whose source
+  facts come from the canonical launch preflight via
+  :mod:`sdk.run_control.recovery_source`, so ``recover_via_source_run`` never
+  recommends an operation ``resume_run`` / ``launch_from_run_plan`` would
+  refuse);
 - a resumable non-terminal stop — ``RESUMABLE_TERMINAL_STATUSES`` from
   :mod:`pipeline.run_state.status_vocab`.
 
@@ -78,8 +82,9 @@ from sdk.run_control.recovery_lineage import (
     _MISSING_SOURCE as _MISSING_SOURCE,
     ACTION_DELIVERY_DECISION as ACTION_DELIVERY_DECISION,
     ACTION_PLAN_ARTIFACT_CONTINUATION as ACTION_PLAN_ARTIFACT_CONTINUATION,
+    ACTION_RECONCILE_DELIVERY,
     ACTION_RESUME_ACTIVE_CHILD,
-    ACTION_RESUME_SOURCE_RUN,
+    ACTION_RESUME_SOURCE_RUN,  # noqa: F401 - public diagnosis vocabulary re-export
     ACTION_START_FOLLOWUP,
     ACTION_STOP_UNKNOWN as ACTION_STOP_UNKNOWN,
     SUBJECT_ACTIVE_CHILD_RUN,
@@ -87,18 +92,18 @@ from sdk.run_control.recovery_lineage import (
     SUBJECT_NONE,
     SUBJECT_PLAN_ARTIFACT,  # noqa: F401 - public diagnosis vocabulary re-export
     SUBJECT_RETAINED_CHANGE,
-    SUBJECT_SOURCE_RUN_CHECKPOINT,
+    SUBJECT_SOURCE_RUN_CHECKPOINT,  # noqa: F401 - public diagnosis vocabulary re-export
     SUBJECT_UNKNOWN,
     _build_recovery_lineage,
     _Continuation,
-    _optional_str,
+    _continues_via_source,
     _resolve_continuation,
-    _worktree_continuity,
 )
 from sdk.run_control.recovery_lineage_resolve import (
     _strict_load_meta,
     _unreadable_meta_lineage,
 )
+from sdk.run_control.recovery_source import _optional_str, _worktree_continuity
 from sdk.run_control.types import RecoveryLineage, RunDiagnosis
 from sdk.runs import _CWD_DEFAULT, find_run
 
@@ -109,6 +114,10 @@ CONDITION_NEEDS_DECISION = "needs_decision"
 CONDITION_SUPERSEDED_BY_CHILD = "superseded_by_child"
 CONDITION_BLOCKED_WORKTREE = "blocked_worktree"
 CONDITION_CORRECTION_FOLLOWUP_REQUIRED = "correction_followup_required"
+# ADR 0191 — the target checkout carries a delivery commit for this run that
+# the run's durable record does not (the process stopped between the commit
+# and its audit, or an older engine kept no ledger). Never a resume target.
+CONDITION_DELIVERY_INCONSISTENT = "delivery_inconsistent"
 CONDITION_NEEDS_DELIVERY_DECISION = "needs_delivery_decision"
 CONDITION_RECOVER_VIA_SOURCE_RUN = "recover_via_source_run"
 CONDITION_RESUME_INERT_TERMINAL = "resume_inert_terminal"
@@ -400,7 +409,10 @@ def _classify(
 
     # (1) needs_decision — paused (or torn-interrupted) awaiting a phase handoff.
     if _is_decidable_handoff_status(status, active):
-        return _needs_decision(run_id, status, halt_reason, active)
+        return _needs_decision(
+            run_id, status, halt_reason, active,
+            pending_human=_pending_human_criteria(run_dir, meta),
+        )
 
     # (2) superseded_by_child — a newer unfinished follow-up child is live.
     child = _safe_active_child(run_id, run_dir.parent)
@@ -458,6 +470,29 @@ def _classify(
             block_message=block_message,
         )
 
+    # (3b) delivery_inconsistent — Git already carries a delivery commit for
+    # this run that its durable record does not (ADR 0191). Outranks every
+    # delivery-gate / terminal branch below: a parked gate or a plain resume
+    # would reason about a delivery that in fact happened.
+    inconsistency = _delivery_inconsistency(run_id, run_dir, meta, status)
+    if inconsistency is not None:
+        sha, detail = inconsistency
+        return RunDiagnosis(
+            run_id=run_id,
+            condition=CONDITION_DELIVERY_INCONSISTENT,
+            reason=(
+                f"delivery commit {sha[:12]} exists for this run but the run "
+                f"records no matching delivery ({detail}); record it with "
+                f"`orcho reconcile-delivery {run_id} --commit {sha[:12]} --apply` "
+                "after verifying it — do not resume or decide delivery first"
+            ),
+            status=status,
+            halt_reason=halt_reason,
+            continuation_subject=SUBJECT_DELIVERY_GATE,
+            recommended_next_action=ACTION_RECONCILE_DELIVERY,
+            recommended_run_id=run_id,
+        )
+
     # (4) correction_followup_required / needs_delivery_decision — a parked
     # post-release delivery / correction gate (the gate kind is authoritative
     # even when halt_reason reads as a terminal ``commit_decision_fix``).
@@ -476,26 +511,34 @@ def _classify(
         source_meta=source_meta,
     )
 
-    # (5) recover_via_source_run — resume the source checkpoint, not this run.
-    if cont.subject == SUBJECT_SOURCE_RUN_CHECKPOINT:
+    # (5) recover_via_source_run — continue via the source, not this run:
+    # resume the source's checkpoint (``resume_source_run``) when preflight
+    # accepts it, else start a new run off the source's launchable plan
+    # artifact (``plan_artifact_continuation`` with the source as the
+    # recommended ``from_run_plan`` parent).
+    if _continues_via_source(cont):
         return RunDiagnosis(
             run_id=run_id,
             condition=CONDITION_RECOVER_VIA_SOURCE_RUN,
             reason=(
                 f"run is a terminal/rejected dead-end (status={status}"
                 + (f", halt_reason={halt_reason}" if halt_reason else "")
-                + f"); source run {cont.recommended_run_id} is resumable — "
-                "resume it"
+                + f"); {cont.reason}"
             ),
             status=status,
             halt_reason=halt_reason,
-            continuation_subject=SUBJECT_SOURCE_RUN_CHECKPOINT,
-            recommended_next_action=ACTION_RESUME_SOURCE_RUN,
+            continuation_subject=cont.subject,
+            recommended_next_action=cont.action,
             recommended_run_id=cont.recommended_run_id,
             source_run_id=cont.source_run_id,
         )
 
     # (6) resume_inert_terminal / closed_by_followup — a terminal dead-end.
+    # ``cont`` carries the subject: terminal only means resume is inert, not
+    # that nothing continues. A successful plan-only run still names its own
+    # plan artifact, because the plan-subject fact in ``recovery_lineage``
+    # rests on the delivery owner's canonical outcome — this module neither
+    # reads ``commit_delivery`` nor classifies a profile to reach it.
     if terminal:
         return _terminal_branch(run_id, status, halt_reason, meta, cont)
 
@@ -590,24 +633,76 @@ def _stalled_diagnosis(
 
 
 def _needs_decision(
-    run_id: str, status: str | None, halt_reason: str | None, active: Any,
+    run_id: str,
+    status: str | None,
+    halt_reason: str | None,
+    active: Any,
+    *,
+    pending_human: tuple[str, ...] = (),
 ) -> RunDiagnosis:
-    """Build the ``needs_decision`` diagnosis from the active handoff payload."""
+    """Build the ``needs_decision`` diagnosis from the active handoff payload.
+
+    ``pending_human`` names the ``human`` criteria still awaiting an operator
+    verdict. They ride on the diagnosis and its reason so every surface
+    (``orcho status`` Next:, MCP live status) can tell the operator to decide
+    them before resuming — the cheap path that keeps final acceptance from
+    rejecting into a correction follow-up for a verdict nobody recorded.
+    """
     handoff_id = None
     available_actions: tuple[str, ...] = ()
     if isinstance(active, dict):
         handoff_id = _optional_str(active.get("id"))
         available_actions = _str_tuple(active.get("available_actions"))
     id_suffix = f" ({handoff_id})" if handoff_id else ""
+    reason = f"run is paused awaiting a phase-handoff decision{id_suffix}"
+    if pending_human:
+        reason = f"{reason}; {pending_human_criteria_hint(run_id, pending_human)}"
     return RunDiagnosis(
         run_id=run_id,
         condition=CONDITION_NEEDS_DECISION,
-        reason=f"run is paused awaiting a phase-handoff decision{id_suffix}",
+        reason=reason,
         status=status,
         halt_reason=halt_reason,
         handoff_id=handoff_id,
         available_actions=available_actions,
+        pending_human_criteria=pending_human,
     )
+
+
+def pending_human_criteria_hint(run_id: str, ids: tuple[str, ...]) -> str:
+    """The one sentence every surface prints for open ``human`` criteria.
+
+    Single owner of the wording (CLI ``Next:`` and the MCP mirror reuse it),
+    naming the exact CLI form so it is copy-paste runnable.
+    """
+    listed = ", ".join(ids)
+    return (
+        f"open human criteria: {listed} — record each with "
+        f"`orcho criterion decide {run_id} --criterion <id> --decision accept|reject` "
+        "before resuming, so final acceptance sees them"
+    )
+
+
+def _pending_human_criteria(run_dir: Path, meta: Mapping[str, Any]) -> tuple[str, ...]:
+    """``human`` criteria without a recorded verdict, from the run's own matrix.
+
+    Composed through the same reducer every other surface uses
+    (``criterion_matrix_for_run``); never raises — a run with no accepted
+    plan, no human criteria, or an unreadable matrix simply reports none.
+    """
+    try:
+        from pipeline.criterion_evidence import criterion_matrix_for_run
+        from pipeline.evidence.collector import project_findings
+
+        matrix = criterion_matrix_for_run(
+            run_dir, findings=project_findings(dict(meta)),
+        )
+    except Exception:  # noqa: BLE001 — diagnosis is read-only and must never fail here
+        return ()
+    if matrix is None:
+        return ()
+    summary = getattr(matrix, "summary", None)
+    return tuple(str(cid) for cid in getattr(summary, "pending_human_ids", ()) or ())
 
 
 def _delivery_branch(
@@ -698,6 +793,45 @@ def _terminal_branch(
 
 
 # ── Defensive read helpers ───────────────────────────────────────────────────
+
+
+#: Delivery statuses whose durable record already accounts for a commit.
+_DELIVERED_STATUSES: frozenset[str] = frozenset({"committed", "applied_uncommitted"})
+
+
+def _delivery_inconsistency(
+    run_id: str, run_dir: Path, meta: dict[str, Any], status: str | None,
+) -> tuple[str, str] | None:
+    """``(commit_sha, detail)`` when Git holds a delivery the run does not record.
+
+    Read-only and never raising: consumes
+    :func:`pipeline.engine.delivery_ledger.reconcile_delivery` (ledger + a
+    bounded ``git log`` probe of the project checkout) and compares it with
+    ``meta.commit_delivery``. Skipped for a live run (``running``), whose
+    ledger legitimately passes through the intent / committed stages.
+    """
+    if status in (None, _RUNNING_STATUS):
+        return None
+    try:
+        from pipeline.engine.delivery_ledger import reconcile_delivery, safe_decision_id
+
+        project = meta.get("project")
+        recon = reconcile_delivery(
+            run_dir,
+            run_id=run_id,
+            decision_id=safe_decision_id(run_id),
+            project_path=project if isinstance(project, str) and project else None,
+        )
+    except Exception:  # noqa: BLE001 — auxiliary read-only probe
+        return None
+    if not recon.found or not recon.commit_sha:
+        return None
+    recorded = meta.get("commit_delivery")
+    if isinstance(recorded, dict) and recorded.get("status") in _DELIVERED_STATUSES:
+        recorded_sha = recorded.get("commit_sha") or recorded.get("published_commit_sha")
+        if recorded_sha == recon.commit_sha:
+            return None
+    return recon.commit_sha, recon.detail
 
 
 def _safe_active_child(run_id: str, runs_dir: Path) -> Any:

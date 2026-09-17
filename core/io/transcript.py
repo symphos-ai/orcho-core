@@ -29,6 +29,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from core.contracts.criteria import criterion_display
 from core.io import summary_lines
 from core.io.ansi import C, paint
 
@@ -128,13 +129,15 @@ def render_run_header(
     agents: Iterable[Mapping[str, str]],
     profile: str,
     session_mode: str,
-    rounds: int,
+    repair_rounds: int,
     plan: bool,
+    plan_rounds: int | None = None,
     output_log: str | None = None,
     events_log: str | None = None,
     plugin_line: str | None = None,
     skills_line: str | None = None,
     verification: VerificationHeaderView | None = None,
+    verification_absent_line: str | None = None,
     resumed: bool = False,
     completed_phases: Iterable[str] = (),
     parent_run_id: str | None = None,
@@ -151,15 +154,32 @@ def render_run_header(
     each optionally carrying a sanitized ``account`` diagnostic hint
     (``account=<label> / <email>``) rendered after the effort column.
     The block keeps every field the legacy header carried — model names,
-    effort levels, profile, session mode, max rounds, plan toggle,
+    effort levels, profile, session mode, retry budgets, plan toggle,
     plugin line, resume notice, output / event log paths — but lays
     them out as a scannable table instead of a single dense line.
+
+    The two retry budgets are separate and are labelled as such.
+    ``repair_rounds`` is the implement/review/repair cap the caller set
+    per run (``--max-rounds`` / ``max_rounds``). ``plan_rounds`` is the
+    plan/validate_plan budget declared by the active profile's plan
+    ``LoopStep.max_rounds``; it is not settable per run (ADR 0031
+    rejected global round overrides). Rendering a single unlabelled
+    ``rounds=`` next to ``plan=`` made operators read the repair cap as
+    the planning budget. Pass ``plan_rounds=None`` when the profile is
+    unresolved — the plan budget is then simply omitted rather than
+    guessed.
 
     ``parent_run_id`` + ``project_alias`` mark sub-pipeline runs spawned
     by ``orcho cross``. When set, the title carries a "sub-pipeline
     [<alias>]" chip and ``Task`` is relabeled ``Subtask`` so a reviewer
     can tell at a glance that they're looking at one slice of a larger
     cross-project run rather than a standalone run.
+
+    ``verification_absent_line`` is rendered as a single ``Verification``
+    row **only** when ``verification`` is None — the "this run declared no
+    verification contract" fact, pre-worded by the caller. ``core`` sits
+    below ``pipeline`` in the layering, so the wording is passed in rather
+    than imported; omit it and the block stays absent exactly as before.
 
     ``followup_parent_run_id`` + ``followup_base_task`` mark a
     ``--resume`` follow-up: a new run that uses an earlier run as
@@ -240,6 +260,10 @@ def render_run_header(
     if verification is not None:
         from core.io.verification_header import render_verification_header
         parts.append(render_verification_header(verification))
+    elif verification_absent_line:
+        # No contract to tabulate: say so in one line where the gate matrix
+        # would have been, instead of silently dropping the whole block.
+        parts.append(_kv("Verification", verification_absent_line, C.CYAN))
 
     parts.append("")
     parts.append(_line(C.CYAN + C.BOLD, "Agents"))
@@ -266,6 +290,11 @@ def render_run_header(
     # they don't go hunting for an error.
     if plan:
         plan_label = "yes"
+        # Name the plan budget on the plan row itself so it can't be
+        # confused with the repair cap next to it.
+        if plan_rounds is not None:
+            unit = "round" if plan_rounds == 1 else "rounds"
+            plan_label = f"yes  ({plan_rounds} {unit})"
     elif is_subpipeline:
         plan_label = "skip  (cross-plan already supplied)"
     elif profile in ("task", "review"):
@@ -275,7 +304,7 @@ def render_run_header(
     parts.append(
         _kv(
             "session",
-            f"{session_mode}  rounds={rounds}  plan={plan_label}",
+            f"{session_mode}  plan={plan_label}  repair_rounds={repair_rounds}",
             C.CYAN, indent=2,
         )
     )
@@ -308,8 +337,9 @@ def render_cross_run_header(
     agents: Iterable[Mapping[str, str]],
     project_agents: Iterable[Mapping[str, str]] = (),
     cross_mode: str,
-    rounds: int,
+    repair_rounds: int,
     profile: str | None = None,
+    plan_rounds: int | None = None,
     plan_source: str | None = None,
     projection: str | None = None,
     output_log: str | None = None,
@@ -332,6 +362,16 @@ def render_cross_run_header(
     knob and projection result up-front: a cross run always has
     ``plan_source="cross"`` (the cross-level plan is canonical), and
     ``projection`` is typically ``"global + per-project"``.
+
+    The two retry budgets are named separately, for the same reason the
+    mono header names them (see :func:`render_run_header`).
+    ``repair_rounds`` is the per-run implement/review/repair cap, which
+    cross projects into every child project run; ``plan_rounds`` is the
+    cross plan loop's own declared budget, which ``--max-rounds`` does
+    not reach. Rendering only the former as ``rounds_per_project=4``
+    while the transcript then banners ``CROSS-PLAN -- Round 1/2`` reads
+    as a contradiction. ``plan_rounds=None`` omits the planning budget
+    rather than guessing it.
     """
     parts: list[str] = []
     is_followup = bool(followup_parent_run_id)
@@ -365,7 +405,11 @@ def render_cross_run_header(
     if profile:
         parts.append(_kv("Profile", profile, C.CYAN))
     if plan_source:
-        parts.append(_kv("Plan source", plan_source, C.CYAN))
+        plan_source_label = plan_source
+        if plan_rounds is not None:
+            unit = "round" if plan_rounds == 1 else "rounds"
+            plan_source_label = f"{plan_source}  ({plan_rounds} {unit})"
+        parts.append(_kv("Plan source", plan_source_label, C.CYAN))
     if projection:
         parts.append(_kv("Projection", projection, C.CYAN))
 
@@ -395,7 +439,9 @@ def render_cross_run_header(
 
     parts.append("")
     parts.append(_line(C.CYAN + C.BOLD, "State"))
-    parts.append(_kv("session", f"rounds_per_project={rounds}", C.CYAN, indent=2))
+    parts.append(_kv(
+        "session", f"repair_rounds_per_project={repair_rounds}", C.CYAN, indent=2,
+    ))
     if output_log:
         parts.append(_kv("output", output_log, C.GREY, indent=2))
     if events_log:
@@ -1412,7 +1458,7 @@ def render_plan_block(plan: Mapping[str, Any], *, title: str = "Plan") -> str:
     summary = str(plan.get("short_summary") or plan.get("plan_summary") or "")
     planning_context = str(plan.get("planning_context") or "")
     goal = str(plan.get("goal") or "")
-    acceptance = list(plan.get("acceptance_criteria") or ())
+    acceptance = [criterion_display(c) for c in (plan.get("acceptance_criteria") or ())]
     owned_files = list(plan.get("owned_files") or ())
     commands = list(plan.get("commands_to_run") or ())
     risks = list(plan.get("risks") or ())
@@ -1507,6 +1553,7 @@ def _render_task_lines(task: Mapping[str, Any]) -> list[str]:
     goal = str(task.get("goal") or "")
     files = list(task.get("files") or ())
     deps = list(task.get("depends_on") or ())
+    acceptance_refs = list(task.get("acceptance_refs") or ())
     skill = task.get("skill")
     model = task.get("model")
     spec = str(task.get("spec") or "")
@@ -1517,6 +1564,10 @@ def _render_task_lines(task: Mapping[str, Any]) -> list[str]:
         out.append(f"      {_dim('files ' + ', '.join(files))}")
     if deps:
         out.append(f"      {_dim('depends_on ' + ', '.join(deps))}")
+    if acceptance_refs:
+        out.append(
+            f"      {_dim('acceptance ' + ', '.join(str(r) for r in acceptance_refs))}"
+        )
     extras: list[str] = []
     if skill:
         extras.append(f"skill {skill}")

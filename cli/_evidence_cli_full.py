@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from core.contracts.criteria import criterion_display
 from core.io.ansi import C, paint
 
 
@@ -40,7 +41,10 @@ def full_plan_lines(plan: dict[str, Any], *, artifacts: list[Any]) -> list[str]:
     ]
     lines.append(f"  {_muted(' · '.join(counts))}")
 
-    lines.extend(_bullet_list_lines("Acceptance criteria", plan.get("acceptance_criteria")))
+    lines.extend(_bullet_list_lines(
+        "Acceptance criteria",
+        [criterion_display(c) for c in (plan.get("acceptance_criteria") or ())],
+    ))
     lines.extend(_bullet_list_lines("Owned files", plan.get("owned_files")))
     lines.extend(_bullet_list_lines("Commands to run", plan.get("commands_to_run")))
     lines.extend(_bullet_list_lines("Risks", plan.get("risks")))

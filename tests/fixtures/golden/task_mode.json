@@ -35,6 +35,7 @@
     "reason": "patch_applies",
     "status": "patch_valid"
   },
+  "max_rounds": 1,
   "metrics": {
     "phase_attempts": [
       {
@@ -114,7 +115,7 @@
     "total_tokens_out": "<TOKEN_COUNT>",
     "total_tokens_unknown": "<TOKEN_COUNT>"
   },
-  "model": "claude-opus-4-8[1m]",
+  "model": "claude-opus-5[1m]",
   "phases": {
     "final_acceptance": {
       "approved": true,
@@ -129,6 +130,22 @@
       "findings": [],
       "raw_response": "{\"verdict\": \"APPROVED\", \"ship_ready\": true, \"short_summary\": \"Mock release gate: change is ship-ready in mock mode.\", \"release_blockers\": [], \"verification_gaps\": [], \"contract_status\": {\"task_contract\": \"satisfied\", \"interfaces\": \"not_applicable\", \"persistence\": \"not_applicable\", \"tests\": \"sufficient\"}}",
       "release_blockers": [],
+      "review_context": {
+        "invalid": [],
+        "latest": {
+          "approved": true,
+          "findings": [],
+          "pass": "review",
+          "repair_preceded": false,
+          "round": 1,
+          "short_summary": "Repair verified: the negative path is covered and no blockers remain.",
+          "verdict": "APPROVED"
+        },
+        "operator": [],
+        "run_id": "<RUN_ID>",
+        "superseded": [],
+        "unresolved_findings": []
+      },
       "session_id": "<VOLATILE>",
       "ship_ready": true,
       "short_summary": "Mock release gate: change is ship-ready in mock mode.",
@@ -377,6 +394,18 @@
           "session_split": "common",
           "wire_chars": "<VOLATILE>"
         },
+        "review": {
+          "approved": true,
+          "attempt": 1,
+          "clean": true,
+          "continue_session": false,
+          "findings": [],
+          "pass": "review",
+          "repair_preceded": false,
+          "session_id": "<VOLATILE>",
+          "short_summary": "Repair verified: the negative path is covered and no blockers remain.",
+          "verdict": "APPROVED"
+        },
         "review_continue_session": false,
         "review_session_id": "mock-codex-1",
         "round": 1
@@ -408,6 +437,10 @@
   "status": "done",
   "task": "snapshot regression task",
   "timestamp": "<TIMESTAMP>",
+  "verification_contract_presence": {
+    "declared": false
+  },
+  "versions": "<HOST_SPECIFIC>",
   "worktree": {
     "base_ref": "<VOLATILE>",
     "branch_ref": null,

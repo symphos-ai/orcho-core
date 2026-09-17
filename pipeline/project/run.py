@@ -861,6 +861,10 @@ class _PipelineRun:
             "review_changes":   "review_changes_agent",
             "repair_changes":   "repair_changes_agent",
             "final_acceptance": "final_acceptance_agent",
+            # The correction-triage handler invokes the read-only reviewer
+            # slot (ADR 0085); without this row its usage was never read and
+            # the phase recorded 0 tokens estimated from an empty prompt.
+            "correction_triage": "review_changes_agent",
             "decompose":        "plan_agent",
             "decompose_qa":     "validate_plan_agent",
             "integrate_qa":     "review_changes_agent",
@@ -1239,12 +1243,21 @@ class _PipelineRun:
                 tool_calls,
                 int(composite_usage.get("tool_calls") or 0),
             )
+        # The model is the one the invocation actually ran with (stamped on
+        # the outcome from the invoked agent), not the static slot→model map:
+        # ``final_acceptance`` and ``correction_triage`` run their own agents
+        # and were priced as the review model. The map stays the fallback for
+        # the last_* path, where no outcome names the model.
+        actual_model = (
+            str(getattr(outcome, "model", "") or "").strip()
+            if outcome is not None else ""
+        )
         self._metrics.record_phase(
             name,
             prompt=prompt,
             output=output,
             duration_s=duration_s,
-            model=self._model_for_phase(name),
+            model=actual_model or self._model_for_phase(name),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             tokens_total=tokens_total,
@@ -1579,6 +1592,7 @@ class _PipelineRun:
             baseline_ref=self._commit_delivery_baseline(),
             commit_message_generator=commit_message_generator,
             verification_gate=assessment,
+            resolved_profile=getattr(self, "_done_summary_profile", None),
             decision_mode=decision_mode,
         )
         # Stage C delivery-scope enforcement (T4): a strict-mono sibling-repo
@@ -1598,16 +1612,17 @@ class _PipelineRun:
                 self.session, halt_reason="commit_delivery_scope_blocked",
             )
             return
-        # ADR 0100 — defer mode parks the decision: ``resolve`` returns a
-        # ``pending`` decision (action unresolved) instead of an applicable one.
-        # Persist the full context and halt the run at a recoverable delivery /
-        # correction gate WITHOUT touching the project checkout; an operator
-        # resolves it later through ``decide_delivery``.
-        if (
-            decision_mode == "defer"
-            and self.no_interactive
-            and decision.status == "pending"
-        ):
+        # ADR 0100 / ADR 0191 — a parked decision is recognised by the decision
+        # itself (``action='none'`` + ``status='pending'``), never by re-deriving
+        # the resolve's inputs here. ``resolve`` parks on ``defer`` whenever no
+        # operator can be prompted — ``--no-interactive`` OR simply no TTY (an
+        # MCP-supervised resume launched without the flag) — and the two
+        # predicates used to disagree: the run applied a decision whose action
+        # was unresolved and committed a rejected release. Persist the full
+        # context and halt at a recoverable delivery / correction gate WITHOUT
+        # touching the project checkout; an operator resolves it later through
+        # ``decide_delivery``.
+        if decision.status == "pending" and decision.action == "none":
             self.session["commit_delivery"] = decision.to_dict()
             _record_multi_project_delivery(self.session, decision)
             mark_run_halted(self.session, halt_reason="commit_delivery_pending")
@@ -1628,15 +1643,24 @@ class _PipelineRun:
         # Persist it (carrying release_verdict / release_summary) so meta,
         # evidence, and the SDK can surface the rejection instead of leaving a
         # rejected run with no ``commit_delivery`` record at all. ``disabled``
-        # and ``no_diff`` stay dropped; ``not_applicable`` with an empty or
-        # APPROVED verdict stays dropped.
+        # and ordinary ``no_diff`` stay dropped. Proven plan-only completion
+        # carries the delivery owner's internal persistence instruction below.
         rejected_release = (
             decision.status == "not_applicable"
             and is_release_blocked(decision.release_verdict, empty_blocks=False)
         )
+        # ADR 0191 — a refused delivery because Git already carries a delivery
+        # commit for this run (``provenance='existing_commit'``) is a real,
+        # inspectable fact: persist it so status / diagnosis name the sha
+        # instead of reading "no delivery".
+        existing_commit = (
+            decision.status == "not_applicable" and bool(decision.commit_sha)
+        )
         if (
             decision.status in {"disabled", "not_applicable", "no_diff"}
             and not rejected_release
+            and not existing_commit
+            and not decision.persist_no_delivery
         ):
             return
         self.session["commit_delivery"] = decision.to_dict()

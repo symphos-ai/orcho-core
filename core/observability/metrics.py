@@ -63,9 +63,12 @@ _BYTE_HEURISTIC_SOURCE = "byte_heuristic"
 _TIKTOKEN_FALLBACK_ENCODING = "o200k_base"
 _ACCOUNTING_KEYS = {
     "cost_estimated",
+    "cost_unpriced",
     "cost_usd",
     "cost_usd_equivalent",
+    "total_cost_partial",
     "total_cost_usd_equivalent",
+    "unpriced_models",
 }
 
 
@@ -264,6 +267,13 @@ class PhaseMetrics:
     # numbers from estimates without having to know which CLIs report
     # what.
     tokens_exact: bool = False
+    # True when pricing was ATTEMPTED for this record and the table had no
+    # entry for ``model`` — the durable counterpart of the one-time stderr
+    # "no pricing for model X" warning. False when pricing was never tried
+    # (provider reported cost, heuristic tokens, no usage, accounting off),
+    # so the marker never reads as "unpriced" for a record that was simply
+    # not a pricing candidate.
+    cost_unpriced: bool = False
     # Registered agent-runtime id this phase executed under (e.g. ``claude``,
     # ``claude-glm``, ``codex``, ``gemini``). Empty when unknown — legacy
     # ``metrics.json`` carries no such key, and ``sdk/cost`` then buckets by
@@ -296,6 +306,9 @@ class PhaseMetrics:
         if accounting_enabled() and self.cost_usd_equivalent is not None:
             d["cost_usd_equivalent"] = round(self.cost_usd_equivalent, 4)
             d["cost_estimated"] = self.cost_estimated
+        # Conditional so a fully-priced run keeps its historical key set.
+        if accounting_enabled() and self.cost_unpriced:
+            d["cost_unpriced"] = True
         # Always emit ``tokens_exact`` so consumers (orcho cost, dashboards)
         # can disambiguate measured from estimated without re-deriving
         # the rule. False is the conservative default for legacy entries
@@ -326,25 +339,30 @@ def _resolve_phase_cost_usd_equivalent(
     tokens_unknown: int,
     tokens_in_cache_read: int,
     tokens_exact: bool,
-) -> tuple[float | None, bool]:
-    """Return ``(api_equivalent_cost, estimated)`` for a phase.
+) -> tuple[float | None, bool, bool]:
+    """Return ``(api_equivalent_cost, estimated, unpriced)`` for a phase.
 
     Provider-reported cost remains authoritative. When accounting is enabled
     and the provider reported exact token usage but no cost, estimate the
     cost reference from the local pricing table. Heuristic token counts
     intentionally stay unpriced so the DONE summary never turns byte estimates
     into dollar-looking facts.
+
+    ``unpriced`` is true only when pricing was actually attempted here and the
+    table returned nothing. Every early return above the lookup leaves it
+    false: those records were never pricing candidates, so marking them would
+    make the run look like it lost money it never had a price for.
     """
     if not accounting_enabled():
-        return None, False
+        return None, False, False
     if cost_usd is not None:
-        return float(cost_usd), False
+        return float(cost_usd), False, False
     if not tokens_exact or not model:
-        return None, False
+        return None, False, False
 
     total_tokens = max(0, tokens_in) + max(0, tokens_out) + max(0, tokens_unknown)
     if total_tokens <= 0:
-        return None, False
+        return None, False, False
 
     from core.observability import pricing
 
@@ -360,8 +378,8 @@ def _resolve_phase_cost_usd_equivalent(
     else:
         estimated = pricing.estimate_cost_from_total(model, total_tokens)
     if estimated is None:
-        return None, False
-    return float(estimated), True
+        return None, False, True
+    return float(estimated), True, False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -546,7 +564,7 @@ class MetricsCollector:
         cache_read_tok = max(0, int(tokens_in_cache_read or 0))
         cache_create_tok = max(0, int(tokens_in_cache_create or 0))
 
-        resolved_cost_usd, cost_estimated = _resolve_phase_cost_usd_equivalent(
+        resolved_cost_usd, cost_estimated, cost_unpriced = _resolve_phase_cost_usd_equivalent(
             cost_usd=cost_usd,
             model=resolved_model,
             tokens_in=in_tok,
@@ -570,6 +588,7 @@ class MetricsCollector:
             retries=retries,
             cost_usd_equivalent=resolved_cost_usd,
             cost_estimated=cost_estimated,
+            cost_unpriced=cost_unpriced,
             tokens_exact=exact,
             runtime=(runtime or self._default_runtime),
         )
@@ -726,11 +745,22 @@ class MetricsCollector:
         # estimate). Only surfaced when at least one phase has a cost —
         # otherwise users would see ``$0.00`` and assume the call was free,
         # which is the opposite of what the field means.
+        unpriced_models = self._unpriced_models()
         if accounting_enabled() and any(
             p.cost_usd_equivalent is not None for p in self._phases
         ):
             d["total_cost_usd_equivalent"] = round(self.total_cost_usd_equivalent, 4)
             d["cost_estimated"] = self.total_cost_estimated
+            # The number and its rounding are untouched — the qualifier sits
+            # NEXT to the total, saying the sum omits the unpriced invokes.
+            if unpriced_models:
+                d["total_cost_partial"] = True
+        # Exact model ids that went unpriced. Written once, here, by the
+        # metrics writer; readers must not re-derive the fact from a null
+        # cost. Absent (not empty) when everything priced, so a fully-priced
+        # run keeps its historical key set byte for byte.
+        if unpriced_models:
+            d["unpriced_models"] = unpriced_models
         # Additive per-subtask breakdown. Only present when records exist, so
         # whole_plan / non-subtask runs keep the historical shape. Cost fields
         # are gated by the same accounting switch as ``total_cost_*`` above —
@@ -755,6 +785,27 @@ class MetricsCollector:
                 advice = scrub_accounting_fields(advice)
             d["handoff_advice"] = advice
         return d
+
+    def _unpriced_models(self) -> list[str]:
+        """Return the sorted, deduped exact model ids that went unpriced.
+
+        Collected from the two places the fact is born: phase records marked
+        by :func:`_resolve_phase_cost_usd_equivalent`, and the observe-only
+        per-subtask records, whose own ``model`` is the exact id (a phase
+        rollup's ``model`` collapses to ``"mixed"`` and could never name it).
+        Empty when accounting is off — the whole surface is dollar semantics.
+        """
+        if not accounting_enabled():
+            return []
+        models = {p.model for p in self._phases if p.cost_unpriced and p.model}
+        for records in self._subtask_usage.values():
+            for record in records:
+                if not record.get("cost_unpriced"):
+                    continue
+                model = record.get("model")
+                if isinstance(model, str) and model:
+                    models.add(model)
+        return sorted(models)
 
     def _phase_rollup_dict(self) -> dict[str, Any]:
         """Return per-phase rollups without losing repeated attempts."""
@@ -809,6 +860,10 @@ class MetricsCollector:
                 current["cost_estimated"] = (
                     bool(current.get("cost_estimated")) or p.cost_estimated
                 )
+            # OR across attempts: one unpriced attempt makes the phase's
+            # rolled-up cost partial, whatever the other attempts did.
+            if accounting_enabled() and p.cost_unpriced:
+                current["cost_unpriced"] = True
             current["tokens_exact"] = (
                 bool(current.get("tokens_exact")) and p.tokens_exact
             )
@@ -904,6 +959,10 @@ class MetricsCollector:
                     and not isinstance(cost, bool) else None
                 ),
                 cost_estimated=bool(entry.get("cost_estimated")),
+                # Rehydrated so a pause/resume re-save keeps ``unpriced_models``
+                # — the fact is only recoverable from the attempt records, the
+                # pricing table may well answer differently by then.
+                cost_unpriced=bool(entry.get("cost_unpriced")),
                 tokens_exact=bool(entry.get("tokens_exact")),
             ))
             self._total_retries += _i(entry.get("retries"))
@@ -1134,6 +1193,18 @@ def cross_summary_table(
     return "\n".join(lines)
 
 
+def _unpriced_ids(value: Any) -> list[str]:
+    """Return the non-empty string model ids in a source ``unpriced_models``.
+
+    Defensive: the value arrives from a child ``metrics.json`` on disk or a
+    cross-level rollup dict, so a malformed entry must be ignored rather than
+    crash the writer or land a non-id in the merged list.
+    """
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
 def cross_metrics_dict(
     per_project: dict[str, dict[str, Any]],
     cross_phases: dict[str, dict[str, Any]] | None = None,
@@ -1164,6 +1235,10 @@ def cross_metrics_dict(
     trnd = 0
     tcost = 0.0
     any_cost = False
+    # Exact ids from both sources, unioned. A child's list already carries the
+    # exact ids its own writer recorded, so nothing here re-derives them from a
+    # ``model`` field (which collapses to ``"mixed"`` per phase).
+    unpriced: set[str] = set()
     phases: dict[str, Any] = {}
     for alias, m in per_project.items():
         m = m or {}
@@ -1192,6 +1267,10 @@ def cross_metrics_dict(
             phase_entry["rounds"] = a_rnd
         if a_cost is not None:
             phase_entry["cost_usd_equivalent"] = round(float(a_cost), 4)
+        a_unpriced = _unpriced_ids(m.get("unpriced_models")) if accounting_enabled() else []
+        if a_unpriced:
+            unpriced.update(a_unpriced)
+            phase_entry["cost_unpriced"] = True
         phases[alias] = phase_entry
 
     cross_phases = cross_phases or {}
@@ -1220,6 +1299,12 @@ def cross_metrics_dict(
             cp_entry["calls"] = int(m["calls"])
         if p_cost is not None:
             cp_entry["cost_usd_equivalent"] = round(float(p_cost), 4)
+        if accounting_enabled():
+            p_unpriced = _unpriced_ids(m.get("unpriced_models"))
+            if p_unpriced:
+                unpriced.update(p_unpriced)
+            if p_unpriced or m.get("cost_unpriced"):
+                cp_entry["cost_unpriced"] = True
         phases[name] = cp_entry
 
     d: dict[str, Any] = {
@@ -1237,6 +1322,11 @@ def cross_metrics_dict(
         d["total_rounds"] = trnd
     if accounting_enabled() and any_cost:
         d["total_cost_usd_equivalent"] = round(tcost, 4)
+        # Qualifier only — the summed number and its rounding are unchanged.
+        if unpriced:
+            d["total_cost_partial"] = True
+    if unpriced:
+        d["unpriced_models"] = sorted(unpriced)
     return d
 
 

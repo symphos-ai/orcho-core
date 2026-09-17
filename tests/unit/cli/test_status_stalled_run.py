@@ -133,18 +133,36 @@ def test_a_failed_diagnosis_leaves_status_intact(
     assert "Stalled:" not in out
 
 
-def test_a_terminal_run_is_never_probed(runs_dir: Path, capsys, monkeypatch) -> None:
-    """Only a ``running`` record can be lying about it."""
+def test_a_terminal_run_is_diagnosed_once_but_never_stalled(
+    runs_dir: Path, capsys, monkeypatch,
+) -> None:
+    """Every run with a meta record is diagnosed exactly once (for ``Next:``).
+
+    Only a ``running`` record can be lying about being alive, so a terminal
+    run must never earn a ``Stalled:`` line — but it still asks core once for
+    its next step, and that single call feeds both lines.
+    """
+    from sdk.run_control.types import RunDiagnosis
+
     _write_running_run(
         runs_dir, "20260828_done", age_seconds=8 * 3600, status="done",
     )
     calls: list[str] = []
-    monkeypatch.setattr(
-        "sdk.run_control.run_diagnosis",
-        lambda run_id, **kw: calls.append(run_id),
-    )
+
+    def _diagnose(run_id, **_kw):
+        calls.append(run_id)
+        return RunDiagnosis(
+            run_id=run_id,
+            condition="resume_inert_terminal",
+            reason="run is terminal (status=done); resume is inert",
+            status="done",
+        )
+
+    monkeypatch.setattr("sdk.run_control.run_diagnosis", _diagnose)
 
     assert orcho.cmd_status(_make_args(run_id="20260828_done")) == 0
 
-    assert calls == []
-    assert "Stalled:" not in strip_ansi(capsys.readouterr().out)
+    out = strip_ansi(capsys.readouterr().out)
+    assert calls == ["20260828_done"]
+    assert "Stalled:" not in out
+    assert "Next: inspect only — orcho evidence 20260828_done" in out

@@ -23,8 +23,9 @@ Rules covered by :func:`compute_next_actions`:
 * Run terminated with a checkpoint-resumable state (``halted``,
   ``failed``, ``interrupted``): suggest ``orcho_run_resume`` so the
   caller can pick the run back up.
-* Run in a terminal-success state (``done``, ``success``): no
-  suggestions — the workflow is complete.
+* Run in a terminal-success state (``done``, ``success``): suggest
+  ``from_run_plan`` only for the explicit plan-only no-delivery outcome
+  with a confirmed parsed-plan artifact; otherwise no suggestions.
 * Anything else (``running``, missing status, unknown shapes):
   empty list. We do not invent suggestions when state is unclear.
 
@@ -44,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pipeline.control.continuation import ContinuationDecision
+from pipeline.engine.delivery_applicability import persisted_plan_only_outcome
 from pipeline.run_state.status_vocab import (
     RESUMABLE_TERMINAL_STATUSES,
     TERMINAL_SUCCESS_STATUSES,
@@ -173,8 +175,14 @@ def compute_next_actions(
     if continuation_decision is not None and continuation_decision.continuation_subject == "retained_change":
         return (_correction_followup_action(continuation_decision),)
 
-    # Terminal success — workflow complete, nothing to suggest.
+    # Delivery already classified applicability, and
+    # ``persisted_plan_only_outcome`` is the one owner of what that receipt
+    # looks like. Do not infer it again here from profile names, remaining
+    # phases, or an ordinary no_diff outcome.
     if status in TERMINAL_SUCCESS_STATUSES:
+        if has_parsed_plan_artifact is True and persisted_plan_only_outcome(meta):
+            task = meta.get("task")
+            return (_from_run_plan_action(run_id, task=task if isinstance(task, str) else None),)
         return ()
 
     # Build the action list incrementally so multiple rules can

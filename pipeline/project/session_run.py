@@ -47,6 +47,7 @@ from pipeline.project.profile_dispatch import (
     dispatch_via_v2_profile as _dispatch_via_v2_profile,
 )
 from pipeline.project.profile_setup import profile_phase_efforts, setup_profile
+from pipeline.project.resume_plan_source import restore_inherited_plan_request
 from pipeline.project.run import _PipelineRun
 from pipeline.project.run_setup import (
     init_run_session,
@@ -71,6 +72,7 @@ from pipeline.project.state_setup import (
     build_pipeline_state,
 )
 from pipeline.project.types import PresentationPolicy, ProjectRunRequest
+from pipeline.project.verification_disclosure import VerificationContractPresence
 
 __all__ = ["load_plugin", "run_project_pipeline_session"]
 
@@ -113,6 +115,9 @@ class _ProjectRunContext:
     agent_registry: Any
     # ── verification contract (read-only Stage 1 projection) ─────────
     verification_contract: Any = None
+    #: The run's decided "is a contract declared?" fact — the single copy
+    #: threaded to the header and to session init.
+    contract_presence: VerificationContractPresence | None = None
     # ── isolation / session / checkpoint / state ─────────────────────
     session: dict | None = None
     git_cwd: Any = None
@@ -266,6 +271,12 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         profile=_profile.v2_profile,
         cli_mode=os.environ.get("ORCHO_WORK_MODE") or None,
     )
+    # The run's verification-contract fact is decided HERE, once, from the
+    # already-resolved contract — and from nothing else. Every downstream
+    # surface reads the persisted projection instead of re-deriving it.
+    contract_presence = VerificationContractPresence.from_contract(
+        verification_contract,
+    )
     from pipeline.project.verification_ledger_runtime import initialize_contract
 
     if not request.resume_from:
@@ -315,6 +326,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         phase_identities=phase_identities,
         resume_from=request.resume_from,
         contract=verification_contract,
+        contract_presence=contract_presence,
     )
 
     return _ProjectRunContext(
@@ -344,6 +356,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         phase_config=_runtime.phase_config,
         agent_registry=_runtime.agent_registry,
         verification_contract=verification_contract,
+        contract_presence=contract_presence,
     )
 
 
@@ -375,6 +388,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
     session = init_run_session(
         task=request.task, project_path=ctx.project_path, plugin=ctx.plugin,
         model=request.model,
+        max_rounds=ctx.max_rounds,
         profile_name=ctx.resolved_profile_name, session_mode=request.session_mode,
         change_handoff=ctx.change_handoff,
         output_dir=request.output_dir,
@@ -386,6 +400,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         followup_parent_status=request.followup_parent_status,
         followup_base_task=request.followup_base_task,
         plan_source_run_id=_iso_inputs.plan_source_run_id,
+        verification_contract_presence=ctx.contract_presence,
     )
     ctx.session = session
     if checkpoint_startup_watchdog(session):
@@ -609,6 +624,7 @@ def run_project_pipeline_session(
     """
     if request.output_dir is not None:
         request.output_dir.mkdir(parents=True, exist_ok=True)
+    request = restore_inherited_plan_request(request)
     request = _promote_plan_only_followup(request)
     with startup_watchdog_scope(request.output_dir):
         ctx = _resolve_profile_runtime(request)

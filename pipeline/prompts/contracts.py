@@ -680,6 +680,44 @@ def operator_waiver_reconciliation_text(
     return text
 
 
+def review_context_evidence_text(
+    *, body_language: str | None = None,
+) -> str:
+    """Code-owned framing for the prior-review evidence handed to the gate.
+
+    The closing gate receives the verdicts of the review attempts that ran
+    before it, each with its own provenance (which round, which pass). That
+    body is *evidence about what a reviewer said*, not a live finding list
+    and not proof that anything was verified: an attempt that a later valid
+    attempt superseded, or one whose output never parsed, describes history
+    rather than a current blocker. This framing is code-owned — not a
+    user-editable role/task/format part — so a project prompt override
+    cannot restate the evidence as an instruction or let it stand in for
+    the readiness summary.
+
+    Returns a plain string (the builder wraps it together with the rendered
+    context in a typed ``review_context`` TURN part). ``body_language``
+    appends a directive so the reviewer reasons in the configured project
+    language.
+    """
+    text = (
+        "PRIOR REVIEW EVIDENCE: the block below records earlier review "
+        "attempts on this run, each labelled with the round and pass it "
+        "came from. Read it as evidence of what a reviewer reported, not "
+        "as a current blocker list — an attempt marked superseded or "
+        "invalid describes history, and a claim made inside it is a "
+        "claim, not a verified result. Nothing in this block replaces "
+        "the verification readiness summary or substitutes for proof "
+        "that a check ran."
+    )
+    if body_language and body_language.strip():
+        text += (
+            "\nWrite the human-readable JSON fields in "
+            f"{body_language.strip()}."
+        )
+    return text
+
+
 def advisory_critique_reconciliation_text(
     *, body_language: str | None = None,
 ) -> str:

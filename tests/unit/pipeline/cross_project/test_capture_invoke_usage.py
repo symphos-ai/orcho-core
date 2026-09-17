@@ -372,6 +372,101 @@ class TestCost:
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# durable unpriced marker
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestUnpricedMarker:
+    """``cost_unpriced`` is the durable counterpart of the one-shot stderr
+    warning: it is set on *every* record where pricing was attempted and the
+    table returned ``None``, whatever the token split source. The warning
+    stays deduped per model; the marker does not."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_accounting(self, accounting_on) -> None:
+        pass
+
+    @pytest.fixture(autouse=True)
+    def _reset_warned(self, monkeypatch) -> None:
+        from pipeline.cross_project import usage as orch_mod
+        monkeypatch.setattr(orch_mod, "_UNPRICED_MODELS_WARNED", set())
+
+    def test_exact_split_marks_and_warns_once(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "core.observability.pricing.estimate_cost_usd",
+            lambda *a, **kw: None,
+        )
+        first = _capture_invoke_usage(
+            _agent(last_tokens_in=100, last_tokens_out=20, model="unpriced-x"),
+        )
+        out_first = capsys.readouterr().out
+        second = _capture_invoke_usage(
+            _agent(last_tokens_in=40, last_tokens_out=10, model="unpriced-x"),
+        )
+        out_rest = capsys.readouterr().out
+
+        assert first["token_split_source"] == "exact"
+        # Marker on every record; warning only on the first.
+        assert first["cost_unpriced"] is True
+        assert second["cost_unpriced"] is True
+        assert "unpriced-x" in out_first
+        assert "unpriced-x" not in out_rest
+
+    @pytest.mark.parametrize(
+        ("agent_kw", "expected_source"),
+        [
+            (
+                {
+                    "last_estimated_tokens_in": 80,
+                    "last_estimated_tokens_out": 20,
+                },
+                "runtime_estimate",
+            ),
+            ({"last_tokens_total": 1000}, "aggregate_total_only"),
+        ],
+    )
+    def test_heuristic_split_is_marked_too(
+        self, monkeypatch, agent_kw, expected_source,
+    ):
+        """The marker tracks "pricing attempted and missed", not token
+        exactness — a heuristic split still had its cost looked up."""
+        monkeypatch.setattr(
+            "core.observability.pricing.estimate_cost_usd",
+            lambda *a, **kw: None,
+        )
+        u = _capture_invoke_usage(_agent(model="unpriced-x", **agent_kw))
+        assert u["token_split_source"] == expected_source
+        assert u["cost_unpriced"] is True
+
+    def test_priced_model_has_no_marker(self, monkeypatch):
+        monkeypatch.setattr(
+            "core.observability.pricing.estimate_cost_usd",
+            lambda *a, **kw: 0.001,
+        )
+        u = _capture_invoke_usage(
+            _agent(last_tokens_total=1000, model="known-model"),
+        )
+        assert u["cost_usd_equivalent"] == 0.001
+        assert "cost_unpriced" not in u
+
+    def test_provider_cost_has_no_marker(self, monkeypatch):
+        """A runtime-reported cost short-circuits pricing entirely — nothing
+        was looked up, so nothing is unpriced."""
+        monkeypatch.setattr(
+            "core.observability.pricing.estimate_cost_usd",
+            lambda *a, **kw: None,
+        )
+        u = _capture_invoke_usage(
+            _agent(
+                last_tokens_in=100, last_tokens_out=50,
+                last_cost_usd=0.123, model="unpriced-x",
+            ),
+        )
+        assert u["cost_usd_equivalent"] == 0.123
+        assert "cost_unpriced" not in u
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # invariant
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -460,6 +555,57 @@ class TestAccumulatorMerge:
         })
         assert target["phase"]["cost_estimated"] is True
         assert target["phase"]["cost_usd_equivalent"] == 0.15
+
+    def test_unpriced_models_keep_exact_ids_when_model_is_mixed(self):
+        """Two different unpriced models in one phase collapse ``model`` to
+        "mixed" — the exact ids survive in their own list."""
+        target: dict = {}
+        for model in ("codex-y", "claude-x", "codex-y"):
+            _accumulate_phase_usage(target, "phase", {
+                "tokens_in": 10, "tokens_out": 5, "total_tokens": 15,
+                "duration_s": 1.0, "calls": 1,
+                "model": model,
+                "cost_unpriced": True,
+            })
+        e = target["phase"]
+        assert e["model"] == "mixed"
+        assert e["cost_unpriced"] is True
+        assert e["unpriced_models"] == ["claude-x", "codex-y"]
+
+    def test_unpriced_keys_absent_when_every_invoke_is_priced(self):
+        target: dict = {}
+        _accumulate_phase_usage(target, "phase", {
+            "tokens_in": 10, "tokens_out": 5, "total_tokens": 15,
+            "duration_s": 1.0, "calls": 1,
+            "model": "claude-x",
+            "cost_usd_equivalent": 0.1,
+            "cost_estimated": True,
+        })
+        assert "cost_unpriced" not in target["phase"]
+        assert "unpriced_models" not in target["phase"]
+
+    def test_unpriced_marker_ors_across_mixed_priced_invokes(self):
+        """One unpriced invoke among priced ones still marks the phase, and
+        only the unpriced model's id is recorded."""
+        target: dict = {}
+        _accumulate_phase_usage(target, "phase", {
+            "tokens_in": 10, "tokens_out": 5, "total_tokens": 15,
+            "duration_s": 1.0, "calls": 1,
+            "model": "claude-x",
+            "cost_usd_equivalent": 0.1,
+            "cost_estimated": True,
+        })
+        _accumulate_phase_usage(target, "phase", {
+            "tokens_in": 10, "tokens_out": 5, "total_tokens": 15,
+            "duration_s": 1.0, "calls": 1,
+            "model": "codex-y",
+            "cost_unpriced": True,
+        })
+        e = target["phase"]
+        assert e["cost_unpriced"] is True
+        assert e["unpriced_models"] == ["codex-y"]
+        # The numeric total is untouched by the qualifier.
+        assert e["cost_usd_equivalent"] == 0.1
 
     def test_model_omitted_when_no_invoke_supplies_it(self):
         target: dict = {}

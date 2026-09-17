@@ -267,6 +267,33 @@ workstream with its own contract — not a silent core change.
 - **Status vocabulary unchanged.** `present / missing / failed / stale` is intact;
   provenance, searched dirs, and hints are additive context, not new statuses.
 
+## Addendum 2026-09-08 — the out-of-band delivery decision reads the same source
+
+Observed on an Orcho-on-Orcho correction follow-up (child
+`20260908_140152_173bb8`, implement / repair skipped, same retained worktree
+as the parent): the in-run readiness and delivery gate inherited the parent's
+six receipts and parked the delivery cleanly, yet `orcho_delivery_decide` /
+`decide_delivery` refused `approve` with "required verification incomplete".
+The SDK re-check (`sdk/run_control/delivery.py::_reassess_delivery_verification`)
+rebuilt the contract with an `extras` that carried only durable waivers, so
+`assess_delivery_verification` searched the child's run dir alone — a second
+reader that contradicted the producer, exactly what §5 forbids.
+
+Rule: every reader of the delivery gate, in-run or out of band, derives the
+parent receipt sources from one durable fact — the persisted `parent_run_id`
+/ `parent_run_dir` pair in `meta.json`. `pipeline.verification_receipt_index.
+parent_sources_from_meta` is the single projection of that pair into
+`VERIFICATION_PARENT_RUNS_EXTRAS_KEY`; the SDK re-check stamps it before
+assessing. A fresh run (no lineage) is unchanged.
+
+The refusal also carries the assessment's gap list and its
+`orcho verify run …` hint (`suggested_verify_commands`): §6 hinted
+`--required`, which resolves to the static `verification.required` set and
+cannot materialize a path-selected delivery gate (ADR 0094). The hint names
+the concrete commands whenever the gap set exceeds the static set; the
+refusal reason now repeats it verbatim so CLI (`orcho delivery gate`) and MCP
+(`orcho_delivery_gate`) show the same line.
+
 ## References
 
 - `pipeline/verification_receipt_index.py` — `ReceiptSource`, `ReceiptCandidate`,

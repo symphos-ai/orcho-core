@@ -47,6 +47,7 @@ from core.io.process_tree import (
 from core.observability.logging import normalize_output_mode
 from pipeline.argv import build_orch_argv
 from pipeline.control.continuation import ContinuationRequest
+from pipeline.control.resume_budget import persisted_max_rounds
 from pipeline.project.correction_followup import (
     compose_correction_context,
     compose_correction_task,
@@ -516,7 +517,9 @@ def resume_run(
     """Continue an existing run from its checkpoint via ``--resume``.
 
     Inherits ``mock`` / ``output_mode`` from the persisted state so a
-    paused mock run does not silently switch providers. Profile resolves
+    paused mock run does not silently switch providers, and ``max_rounds``
+    from the run's own ``checkpoints.db`` config so a resume keeps the
+    repair budget the operator asked for. Profile resolves
     explicit → ``meta.profile`` → ``"feature"``. ``--task`` is
     deliberately omitted so core classifies the spawn as a CHECKPOINT
     continuation (re-using the existing run dir) rather than a follow-up.
@@ -567,6 +570,12 @@ def resume_run(
         )
     except ValueError:
         original_output_mode = "summary"
+    # Same inheritance rule as ``mock`` / ``output_mode`` / profile above:
+    # a resume continues the operator's original run, so it must not
+    # re-negotiate the run's own budget. ``build_orch_argv`` omits the
+    # flag for None, so a run with nothing persisted keeps the previous
+    # behaviour (the orchestrator's own default).
+    original_max_rounds = persisted_max_rounds(run_dir, run_id)
 
     argv = build_orch_argv(
         project=project_dir,
@@ -576,6 +585,7 @@ def resume_run(
         output_dir=str(run_dir),
         profile=effective_profile,
         mock=original_mock,
+        max_rounds=original_max_rounds,
         output_mode=original_output_mode,
     )
     cmd = [sys.executable, "-m", "pipeline.project_orchestrator", *argv]

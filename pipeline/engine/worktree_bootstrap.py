@@ -16,9 +16,25 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+#: Per-stream cap on captured step output, mirroring the verification receipt
+#: tails: enough to diagnose the failure, bounded so a runaway build log cannot
+#: grow the durable run record without limit.
+OUTPUT_TAIL_CHARS = 8000
+
 
 class WorktreeBootstrapError(RuntimeError):
-    """Raised when a configured worktree bootstrap step fails."""
+    """Raised when a configured worktree bootstrap step fails.
+
+    ``failure`` carries the failing step's captured evidence — index, action,
+    argv/command, cwd, exit code, and the stdout/stderr tails — so the caller
+    can persist it into the run dir. A halt whose only trace is "step N failed
+    with exit code 1" is undiagnosable; the output the step actually produced is
+    the diagnosis, and it must outlive the process that saw it.
+    """
+
+    def __init__(self, message: str, *, failure: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.failure: dict[str, Any] = dict(failure or {})
 
 
 def run_worktree_bootstrap(
@@ -277,7 +293,9 @@ def _command_step(
         step, source_root=source_root, worktree_path=worktree_path,
     )
     timeout = _timeout(step)
-    _run_subprocess(cmd, cwd=cwd, timeout=timeout, index=index)
+    _run_subprocess(
+        cmd, cwd=cwd, timeout=timeout, index=index, action="run",
+    )
     return {
         "index": index,
         "action": "run",
@@ -311,7 +329,9 @@ def _python_step(
         step, source_root=source_root, worktree_path=worktree_path,
     )
     timeout = _timeout(step)
-    _run_subprocess(cmd, cwd=cwd, timeout=timeout, index=index)
+    _run_subprocess(
+        cmd, cwd=cwd, timeout=timeout, index=index, action="python",
+    )
     return {
         "index": index,
         "action": "python",
@@ -350,11 +370,21 @@ def _shell_step(
     except subprocess.TimeoutExpired as exc:
         raise WorktreeBootstrapError(
             f"worktree_bootstrap shell step {index} timed out",
+            failure=_failure_record(
+                index=index, action="shell", cmd=raw_cmd, cwd=cwd,
+                exit_code=None, stdout=exc.stdout, stderr=exc.stderr,
+                reason="timeout",
+            ),
         ) from exc
     if result.returncode != 0:
         raise WorktreeBootstrapError(
             f"worktree_bootstrap shell step {index} failed "
             f"with exit code {result.returncode}",
+            failure=_failure_record(
+                index=index, action="shell", cmd=raw_cmd, cwd=cwd,
+                exit_code=result.returncode, stdout=result.stdout,
+                stderr=result.stderr, reason="exit_code",
+            ),
         )
     return {
         "index": index,
@@ -386,6 +416,7 @@ def _run_subprocess(
     cwd: Path,
     timeout: int,
     index: int,
+    action: str = "run",
 ) -> None:
     try:
         result = subprocess.run(
@@ -399,17 +430,63 @@ def _run_subprocess(
         )
     except FileNotFoundError as exc:
         raise WorktreeBootstrapError(
-            f"worktree_bootstrap run step {index} command not found: {cmd[0]}",
+            f"worktree_bootstrap {action} step {index} command not found: {cmd[0]}",
+            failure=_failure_record(
+                index=index, action=action, cmd=cmd, cwd=cwd, exit_code=None,
+                stdout="", stderr=str(exc), reason="command_not_found",
+            ),
         ) from exc
     except subprocess.TimeoutExpired as exc:
         raise WorktreeBootstrapError(
-            f"worktree_bootstrap run step {index} timed out",
+            f"worktree_bootstrap {action} step {index} timed out",
+            failure=_failure_record(
+                index=index, action=action, cmd=cmd, cwd=cwd, exit_code=None,
+                stdout=exc.stdout, stderr=exc.stderr, reason="timeout",
+            ),
         ) from exc
     if result.returncode != 0:
         raise WorktreeBootstrapError(
-            f"worktree_bootstrap run step {index} failed "
+            f"worktree_bootstrap {action} step {index} failed "
             f"with exit code {result.returncode}",
+            failure=_failure_record(
+                index=index, action=action, cmd=cmd, cwd=cwd,
+                exit_code=result.returncode, stdout=result.stdout,
+                stderr=result.stderr, reason="exit_code",
+            ),
         )
+
+
+def _failure_record(
+    *,
+    index: int,
+    action: str,
+    cmd: Any,
+    cwd: Path,
+    exit_code: int | None,
+    stdout: Any,
+    stderr: Any,
+    reason: str,
+) -> dict[str, Any]:
+    """Capture what a failing bootstrap step actually did, bounded."""
+    return {
+        "index": index,
+        "action": action,
+        "status": "failed",
+        "reason": reason,
+        "cmd": list(cmd) if isinstance(cmd, list | tuple) else str(cmd),
+        "cwd": str(cwd),
+        "exit_code": exit_code,
+        "stdout_tail": _tail(stdout),
+        "stderr_tail": _tail(stderr),
+    }
+
+
+def _tail(raw: Any) -> str:
+    """Last :data:`OUTPUT_TAIL_CHARS` characters of a captured stream."""
+    if raw is None:
+        return ""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+    return text[-OUTPUT_TAIL_CHARS:]
 
 
 def _resolve_command_cwd(
@@ -487,4 +564,8 @@ def _platform_aliases() -> set[str]:
     return aliases
 
 
-__all__ = ["WorktreeBootstrapError", "run_worktree_bootstrap"]
+__all__ = [
+    "OUTPUT_TAIL_CHARS",
+    "WorktreeBootstrapError",
+    "run_worktree_bootstrap",
+]

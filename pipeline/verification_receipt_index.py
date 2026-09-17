@@ -41,6 +41,7 @@ from pipeline.evidence.verification_receipt import (
 
 __all__ = [
     "VERIFICATION_PARENT_RUNS_EXTRAS_KEY",
+    "parent_sources_from_meta",
     "ReceiptCandidate",
     "ReceiptSource",
     "coerce_receipt_sources",
@@ -143,6 +144,30 @@ def parent_sources_from_extras(
     if not isinstance(extras, Mapping):
         return ()
     return coerce_receipt_sources(extras.get(VERIFICATION_PARENT_RUNS_EXTRAS_KEY))
+
+
+def parent_sources_from_meta(
+    meta: Mapping[str, Any] | None,
+) -> tuple[ReceiptSource, ...]:
+    """Follow-up parent receipt sources from a persisted ``meta.json``.
+
+    The in-run producer stamps :data:`VERIFICATION_PARENT_RUNS_EXTRAS_KEY`
+    from the follow-up inputs (``pipeline.project.state_setup``); an
+    out-of-band reader (SDK / MCP delivery decision) has no live extras and
+    must rebuild the same single source from the durable ``parent_run_id`` /
+    ``parent_run_dir`` pair the run persisted. Both must be present and
+    non-empty strings; anything else degrades to ``()`` so a fresh run stays
+    byte-identical. Never raises.
+    """
+    if not isinstance(meta, Mapping):
+        return ()
+    run_id = meta.get("parent_run_id")
+    run_dir = meta.get("parent_run_dir")
+    if not isinstance(run_id, str) or not run_id:
+        return ()
+    if not isinstance(run_dir, str) or not run_dir:
+        return ()
+    return coerce_receipt_sources(((run_id, run_dir),))
 
 
 def load_parent_candidates(

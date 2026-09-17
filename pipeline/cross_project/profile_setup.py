@@ -50,6 +50,33 @@ def _flatten_profile_entries(entries) -> list[Any]:
     return out
 
 
+def find_cross_plan_loop(global_steps) -> Any | None:
+    """Return the projected cross plan loop, or ``None`` when there is none.
+
+    The cross plan loop is the first ``LoopStep`` in the projection's
+    global steps whose inner steps carry a ``cross_plan`` handler. Single
+    owner of that rule: the run flow reads it to drive the planning loop,
+    and the run header reads it to report the planning budget. Those two
+    must never disagree, and the header is assembled before the run flow
+    resolves its own step handles, so neither can source it from the
+    other.
+
+    ``--max-rounds`` does not reach this loop (ADR 0031 rejected global
+    round overrides), so its declared ``max_rounds`` is the whole story
+    for planning.
+    """
+    from pipeline.runtime import LoopStep, PhaseStep
+
+    for entry in global_steps:
+        if not isinstance(entry, LoopStep):
+            continue
+        for step in entry.steps:
+            cross = getattr(step, "cross", None) if isinstance(step, PhaseStep) else None
+            if cross is not None and cross.handler == "cross_plan":
+                return entry
+    return None
+
+
 def _gate_will_run(policy: Any) -> bool:
     if not bool(getattr(policy, "enabled", False)):
         return False
@@ -152,6 +179,7 @@ def setup_cross_profile(*, profile_name: str) -> CrossProfileSetup:
 __all__ = [
     "CrossProfileSetup",
     "setup_cross_profile",
+    "find_cross_plan_loop",
     "_flatten_profile_entries",
     "_gate_will_run",
 ]

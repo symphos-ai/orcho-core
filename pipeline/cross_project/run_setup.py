@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.infra.versions import installed_orcho_versions
 from core.observability import events as _events
 from pipeline.cross_project.checkpoint import read_cross_checkpoint
 from pipeline.cross_project.profile_setup import CrossProfileSetup, _gate_will_run
@@ -74,6 +75,7 @@ def setup_cross_run(
     projects: Mapping[str, Path],
     model: str,
     mock: bool,
+    max_rounds: int,
     output_dir: Path,
     cross_mode: str,
     resume_from: str | None,
@@ -91,6 +93,10 @@ def setup_cross_run(
     ``cross_mode`` is normalized to ``"full"`` unless it is ``"plan"``.
     The ``success`` resume line is gated by ``terminal``; the ``run.start``
     event and ``session`` shape are never gated.
+
+    ``max_rounds`` is the budget supplied by the cross-run request. It is
+    stamped once here, on the same seam as ``versions``, as a read-only audit
+    projection on ``meta.json``; this does not resolve resume inheritance.
     """
     from pipeline.cross_project.rendering import silent_renderers
     (_banner, success, _warn, _preview, _rcpp, _print, _C) = silent_renderers(
@@ -136,7 +142,9 @@ def setup_cross_run(
         "projected_profile": projected_profile_name,
         "timestamp": datetime.now().isoformat(),
         "status": "running",
-        "phases": {}
+        "phases": {},
+        "versions": installed_orcho_versions(),
+        "max_rounds": max_rounds,
     }
     if resume_mode:
         session["resume_mode"] = resume_mode
@@ -266,6 +274,14 @@ def render_cross_pipeline_header(
     _projection_label = (
         "global + per-project" if projection.project_steps else "global only"
     )
+    # Two independent budgets, as on the mono header: ``max_rounds`` is the
+    # per-run repair cap cross projects into each child run, while the cross
+    # plan loop's budget is declared by the profile and has no runtime
+    # override (ADR 0031). Read through the shared owner so this never
+    # disagrees with the planning loop that actually enforces it.
+    from pipeline.cross_project.profile_setup import find_cross_plan_loop
+    _plan_loop = find_cross_plan_loop(projection.global_steps)
+    _plan_rounds = int(_plan_loop.max_rounds) if _plan_loop is not None else None
     print(render_cross_run_header(
         run_id=_run_dir_for_header.name if _run_dir_for_header is not None else None,
         task=task,
@@ -273,8 +289,9 @@ def render_cross_pipeline_header(
         agents=agents_block,
         project_agents=project_agents_block,
         cross_mode=cross_mode,
-        rounds=max_rounds,
+        repair_rounds=max_rounds,
         profile=requested_profile_name,
+        plan_rounds=_plan_rounds,
         plan_source="cross",
         projection=_projection_label,
         output_log=str(_run_dir_for_header / "output.log") if _run_dir_for_header else None,

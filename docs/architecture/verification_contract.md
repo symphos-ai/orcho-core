@@ -785,20 +785,41 @@ non-implement phase — `repair_loop` **deterministically degrades to `handoff`*
 with a logged note. This degradation is intentional, user-visible behavior: a
 gate cannot "repair" where there is no implement→repair pair to drive.
 
+### One hook, one failure set (ADR 0186)
+
+A hook selects a **set** of required commands, so one firing can end with more
+than one of them red. The hook **executes every selected gate before it routes
+anything**, then routes the whole failure set as one unit:
+
+- `policy: require` is a property of the set — the hook reports `passed` only
+  when **every** required command of that hook is green;
+- the repair critique carries **every** failing command's output, and the repair
+  loop closes only when **every** pending command rechecks green;
+- an escalation names **every** failing command (see
+  [the handoff payload](#the-gate-handoff-payload-adr-0186));
+- a set enters the repair loop only when **every** member is repairable — one
+  agent-unfixable member (`provenance_failure`, `env_failure`, `unverifiable`,
+  `timeout`) escalates the whole set instead of spending rounds on the fixable
+  half and then showing the operator only that half.
+
+`abort` is the one early exit: it ends the run, so the remaining gates' commands
+are not spent.
+
 ### The critical flow: implement → repair, minus review
 
-A failed required `after_phase(implement)` gate whose effective action is
+Failed required `after_phase(implement)` gates whose effective action is
 `repair_loop`:
 
-1. synthesizes the critique from the failed command receipt
+1. synthesize the critique from the failed command receipts
    (`state.last_critique` / `state.last_test_output`) — the failing command
-   output *is* the critique;
-2. dispatches `repair_changes` through the lifecycle FSM **without** a preceding
+   output *is* the critique, and **all** failing commands contribute theirs;
+2. dispatch `repair_changes` through the lifecycle FSM **without** a preceding
    `review_changes` pass (token economy — no reviewer turn);
-3. **re-executes the same gate command** as the exit condition;
-4. repeats up to the repair budget (`--max-rounds` / the profile's
-   `repair_round` loop); a passing re-check closes the flow, budget exhaustion
-   escalates to a handoff.
+3. **re-execute every still-failing gate command** as the exit condition; each
+   round re-narrows to the commands that are still red;
+4. repeat up to the repair budget (`--max-rounds` / the profile's
+   `repair_round` loop); a round in which every re-check passes closes the flow,
+   budget exhaustion escalates to a handoff naming what is still red.
 
 When an ordinary reviewer-requested `repair_changes` phase mutates the subject
 after this flow, the engine eagerly reruns every selected fast identity from
@@ -818,6 +839,25 @@ so Stage 5 readiness, the Stage 6 delivery gate, and the evidence bundle see
 the same proof routing acted on (ADR 0090 — the silent-skip incident ran gates
 against the original project directory and dropped the receipts).
 
+### The gate handoff payload (ADR 0186)
+
+A `trigger="verification_gate_failed"` handoff carries the **whole** blocking
+set, so the operator never decides on a strict subset of what is red:
+
+| artifact key | meaning |
+|---|---|
+| `findings` | one entry per failing command, each naming its `command` |
+| `gate_commands` | every failing command, primary first |
+| `gate_identities` | every failing `(command, hook, phase)`, primary first |
+| `gate_command` / `gate_identity` | the **primary** (first) failure only |
+| `short_summary` | one `command: evidence` line per failure |
+
+The singular keys stay single-identity on purpose: waiver identity and
+handoff-route classification are single-identity contracts, and `handoff_id`
+keeps its parsed `gate:<command>:<round>` shape. Consequently a
+`continue_with_waiver` waives the primary command's identity only — a second red
+required receipt still blocks delivery.
+
 ### Handoff retry: fresh subject, exact identity (ADR 0149)
 
 When a required verification gate publishes a
@@ -830,8 +870,10 @@ unambiguous scheduled-gate ledger record.
 
 After all preconditions succeed, the owner consumes the active decision once,
 runs exactly one `repair_changes` step against the retained worktree, and
-reruns only the identified gate against that freshly repaired subject.  A
-passing rerun continues; a failing rerun creates a new handoff.  Missing
+reruns **every** gate identity the handoff blocked on (`gate_identities`,
+falling back to the primary alone) against that freshly repaired subject.  A
+rerun in which every identity passes continues; any still-failing identity
+creates a new handoff naming all of them.  Missing
 feedback, ambiguous identity, stale handoff id, unproven repair subject, or a
 missing repair step is a **blocker**: the original handoff remains available
 and no decision is consumed.  A provider/process exception is a **crash** and
@@ -949,8 +991,57 @@ release verdict, the `final_acceptance` handler merges engine-computed
 missing/failed/stale, via `required_receipt_gaps`) and forces
 `approved=False / ship_ready=False` — a reviewer model that omits an unproven
 required gate cannot produce a green acceptance. The backstop is inert under
-dry-run, without a contract, and when an operator waiver
-(`continue_with_waiver`) is active.
+dry-run and without a contract.
+
+A waiver does **not** make it inert. Per
+[ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md),
+a general `continue_with_waiver` — over reviewer findings, a plan, or an
+incomplete implement — reconciles *findings*; it is not evidence that a required
+command ran, and it removes no gap. Only a waiver that names the gate command
+exactly excuses that one command, and only for a `failed` or `missing` receipt;
+a `stale` receipt is never excused. Identity comes from the durable record's
+structure (a `gate_command` field, or a `gate:<command>:<round>` handoff id),
+never from waiver prose. That rule lives in `required_receipt_gaps` itself — the
+same reader the Stage 6 delivery gate uses, so the closing gate and delivery
+excuse exactly the same thing — and the handler-side guard reads no waiver at
+all. A correction child run reaches the same backstop through the same handler:
+the parent's waiver is not inherited, only its receipts are (ADR 0089).
+
+**Prior-review evidence is not readiness
+([ADR 0193](../adr/0193-final-acceptance-latest-review-context.md)).** Alongside
+the readiness summary, the final-acceptance prompt may carry a `review_context`
+block: the latest applicable verdict from the review attempts that already ran
+on this run, with its provenance (which round, which pass), the findings it left
+open, what it superseded, attempts whose output never parsed, and the operator
+rationale recorded around it. The two blocks answer different questions and are
+ordered accordingly — readiness stays the leading proof surface and the review
+evidence reads as subordinate to it.
+
+The distinction is load-bearing:
+
+- **Readiness is proof; the review context is testimony.** A repair receipt
+  reported inside the review context is the repairer's *claim*, not a passed
+  gate, and it never closes a finding. Nothing in the block is evidence that a
+  declared command ran.
+- **The backstops do not read it.** Both the required-receipt backstop
+  (ADR 0090, with the exact-command waiver rule of
+  [ADR 0192](../adr/0192-general-waiver-does-not-excuse-required-verification-proof.md))
+  and the acceptance-criteria backstop
+  ([ADR 0188](../adr/0188-typed-acceptance-criteria-and-criterion-matrix.md))
+  compute their gaps from receipts and the criterion matrix alone. Prose inside a
+  finding, a critique or a waiver that instructs the gate to approve is untrusted
+  text: an unproven required receipt or an open acceptance criterion still forces
+  a REJECTED release verdict, and a general waiver still excuses no gate.
+- **The framing is code-owned.** The directive that tells the reviewer to read
+  the block as reported history rather than as a live blocker list rides with it
+  in one typed prompt part, not in a user-editable role/task/format part, so a
+  project prompt override cannot restate the evidence as an instruction or let it
+  stand in for readiness.
+- **Absent by default.** A run with no prior review renders no part and leaves
+  the wire prompt byte-identical; a dry run resolves nothing and reads no file.
+  What the gate was handed is recorded durably as
+  `phases.final_acceptance.review_context` — see
+  [Run artifacts](../reference/run_artifacts.md#phasesfinal_acceptancereview_context).
 
 Boundaries, stated explicitly:
 
@@ -991,7 +1082,10 @@ moves no schema, mode flag, or gate primitive.
   `blocker` (unaligned public wire/schema, persistence/state, security/secret,
   destructive/mass-delete, large diff, repeated-across-corrections) forces
   REJECTED — merged into the same `verification_gaps` list as a *parallel* engine
-  gap source, inert under dry-run / no contract / active operator waiver. The
+  gap source, inert under dry-run / no contract / active operator waiver. That
+  waiver gating is the scope-expansion gate's own policy over out-of-plan
+  *files*; it is not the receipt backstop's rule, which excuses only an
+  exactly-named gate command (ADR 0192). The
   verification gates keep their full authority; scope expansion only adds
   rejection reasons for the blocker tier and never softens a required gate.
 - **Single canonical durable path.** The handler writes
@@ -1014,6 +1108,67 @@ delivery boundary** — the post-acceptance step that transports the run-owned
 diff into the project checkout and commits it. It is the last boundary and the
 only one that acts on the final tree, so it is where declared proof can
 actually gate the change leaving the run.
+
+
+### Plan-only delivery applicability
+
+[ADR 0194](../adr/0194-plan-only-delivery-applicability.md) distinguishes a
+completed plan artifact from a change requiring delivery. The delivery-owned
+classifier in `pipeline/engine/delivery_applicability.py` uses the **full resolved
+recipe** and canonical run facts, including restored checkpoint facts. It never
+uses a profile name or an empty list of remaining resume steps as proof.
+
+A completed `plan → validate_plan` recipe with an approved plan, no pending
+handoff, no other phase results, and a proven absent delivery subject receives
+an explicit canonical `commit_delivery.status = not_applicable`. This narrow
+classification happens before missing downstream verification receipts can
+block delivery, after existing-delivery adoption and release guards.
+
+Subject inspection reuses delivery's baseline-aware patch and filtered
+untracked readers, including the existing `add_untracked` policy. Unknown
+profile/run facts, Git inspection failures, and unavailable diffs fail closed.
+Absence of `implement` or `diff.patch` alone does not establish applicability.
+Review-only profiles can own an existing uncommitted diff and must still satisfy
+required receipts. Ordinary delivery also retains the **verification before
+no-diff** guard: a clean checkout is not a general exemption.
+
+The runner persists this explicit outcome before terminal projections and
+artifacts are finalized. Checkpoint, metadata, latest `run.end`, evidence and
+public status agree on `done`; the parsed plan, approval and historical handoff
+decision remain preserved. Consumers use the canonical
+outcome rather than reclassifying planning/research. Ordinary approved
+final-acceptance no-diff persistence remains unchanged.
+
+После согласованного расширения scope на `sdk/actions.py` terminal-success
+с этим явным `not_applicable` и физически сохранённым `parsed_plan.json`
+публикует одно действие `orcho_run_start` с `from_run_plan`, `profile=feature`
+и исходной задачей. SDK использует outcome владельца delivery, не имена профилей
+и не повторную проверку diff. Записи с ошибкой, delivery commit или release
+verdict не подходят; обычный `no_diff` также не разрешает продолжение.
+Без подтверждённого артефакта действие отсутствует. При отсутствии задачи
+существующий builder требует её ввода оператором. Новое правило действует
+только для terminal-success; существующие recovery-действия halted/rejected
+не расширяются. SDK/CLI JSON и MCP `Action.to_dict()` сохраняют прежние поля;
+новые wire-поля и транспортная бизнес-логика не вводятся.
+
+This exception creates no receipt or waiver and removes no evidence. Scheduled
+gates remain engine-owned and manual/suggest entries remain operator-owned.
+Missing downstream receipts can remain visible even though there is no change
+to deliver. Rejected handoffs and operator halts keep their existing semantics.
+
+Recovery lineage and run diagnosis consume that same canonical outcome through
+the shared predicate in `pipeline/engine/delivery_applicability.py`, so the
+read-model agrees with `sdk/actions.py` instead of running a second
+applicability policy. For a recovery subject the question is narrower — is this
+run holding an undelivered diff? — and the canonical outcome answers it: the
+delivery owner already looked for a subject and found none. `isolation=off` is
+*not* itself that answer. Such a run writes no `followup_continuity` block, so
+its `diff_source` is `None`: the absence of a statement about the diff, not a
+statement that nothing is held. Without the canonical outcome that pair still
+proves nothing and no plan-artifact continuation is published. A physically
+readable `parsed_plan.json` remains a separate, independently required fact.
+
+### Delivery verification policy
 
 A new optional contract field `verification.delivery_policy` (validated against
 the canonical `manual | suggest | warn | require` vocabulary — no new policy

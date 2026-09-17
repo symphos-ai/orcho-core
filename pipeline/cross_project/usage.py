@@ -138,6 +138,10 @@ def capture_invoke_usage(
             out["cost_usd_equivalent"] = round(float(est), 4)
             out["cost_estimated"] = True
         else:
+            # Durable marker: pricing was attempted and the table had no
+            # entry. Independent of the warning's one-shot dedupe — every
+            # unpriced record carries it, whatever the token split source.
+            out["cost_unpriced"] = True
             _warn_unpriced_model(
                 resolved_model,
                 warned_models=warned_models,
@@ -201,6 +205,15 @@ def accumulate_phase_usage(target: dict, phase: str, usage: dict) -> None:
     model_in = usage.get("model")
     if model_in:
         entry["model"] = _merge_provenance(entry.get("model"), model_in)
+    if usage.get("cost_unpriced"):
+        entry["cost_unpriced"] = True
+        if model_in:
+            # Exact ids accumulate in their own list: ``entry["model"]``
+            # collapses to "mixed" once a phase spans two models, so it
+            # can never name which of them went unpriced.
+            unpriced = set(entry.get("unpriced_models") or ())
+            unpriced.add(model_in)
+            entry["unpriced_models"] = sorted(unpriced)
 
 
 def format_usage_snapshot(phase_label: str, usage: Mapping[str, Any]) -> str:

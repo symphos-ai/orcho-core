@@ -1,7 +1,11 @@
 Produce an implementation plan for the task before any code lands:
 
 1. State what "done" means — observable behavior, files in scope,
-   constraints. Derive acceptance criteria if the task omits them.
+   constraints. Derive acceptance criteria only from the task's own
+   acceptance and stated contract. Never add a criterion the task did not
+   ask for that widens its scope: work in another repository, a human
+   verdict, or an invariant over files the task did not name. A check that
+   is useful but not asked for is a risk or a note, not a criterion.
 2. Inspect relevant code, callers/callees, and tests before planning.
 3. Identify load-bearing files, interfaces, persisted shapes, and
    invariants the change must preserve.

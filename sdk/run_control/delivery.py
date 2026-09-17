@@ -25,10 +25,12 @@ diff against the held worktree.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pipeline.project.verification_disclosure import VerificationContractPresence
 from pipeline.run_state.release_verdict import is_release_blocked
 from pipeline.run_state.status_vocab import (
     RESUMABLE_TERMINAL_STATUSES,
@@ -213,7 +215,7 @@ def decide_delivery(
 
     release_verdict = str(ctx.get("release_verdict") or "")
     release_blocked = is_release_blocked(release_verdict, empty_blocks=False)
-    verification_blocked = _verification_blocked(meta, ctx, ref.run_dir)
+    verification_blocked, verification_reason = _verification_gate(meta, ctx, ref.run_dir)
     scope_blocked = bool(ctx.get("scope_blocker"))
     scope_disclosure = _scope_disclosure(ctx)
 
@@ -240,6 +242,7 @@ def decide_delivery(
             status="verification_blocked",
             terminal_outcome="halted",
             blocker="verification_blocked",
+            reason=verification_reason,
         )
     if action in _SHIPPING_ACTIONS and release_blocked:
         return DeliveryDecisionResult(
@@ -346,6 +349,11 @@ def delivery_decision_state(
         meta = load_meta(ref.run_dir)
     ctx = meta.get("commit_delivery") if isinstance(meta, dict) else None
     resolved_run_id = _resolved_run_id(ctx, ref.run_dir, run_id)
+    # The durable "did this run declare a verification contract?" fact, read
+    # once from the persisted block and published on every branch below. A run
+    # written before the block existed projects ``None``.
+    presence = VerificationContractPresence.from_mapping(meta)
+    declared = presence.declared if presence else None
 
     if not isinstance(ctx, dict):
         return DeliveryDecisionState(
@@ -353,6 +361,7 @@ def delivery_decision_state(
             decidable=False,
             kind="none",
             reason="no pending delivery gate",
+            verification_contract_declared=declared,
         )
 
     if (
@@ -364,6 +373,7 @@ def delivery_decision_state(
             decidable=False,
             kind="none",
             reason="no pending delivery gate",
+            verification_contract_declared=declared,
         )
 
     # Checked only after the gate block itself proved decision-shaped: a
@@ -376,6 +386,7 @@ def delivery_decision_state(
             decidable=False,
             kind=_delivery_gate_kind(ctx),
             reason=stopped_reason,
+            verification_contract_declared=declared,
         )
 
     requested_at = _durable_decided_at(ctx)
@@ -405,9 +416,10 @@ def delivery_decision_state(
             reason=_followup_correction_reason(resolved_run_id, ref.run_dir),
             requested_at=requested_at,
             scope_disclosure=scope_disclosure,
+            verification_contract_declared=declared,
         )
 
-    verification_blocked = _verification_blocked(meta, ctx, ref.run_dir)
+    verification_blocked, verification_reason = _verification_gate(meta, ctx, ref.run_dir)
     scope_blocked = bool(ctx.get("scope_blocker"))
     patch_invalid, patch_invalid_path = _patch_invalid_blocked(meta, ctx, ref.run_dir)
     # ``fix_requested`` is handled above (follow-up required); the only correction
@@ -456,7 +468,7 @@ def delivery_decision_state(
         if blocker_reason:
             reason = f"{reason}; {blocker_reason}"
     elif verification_blocked:
-        reason = "required verification incomplete — receipt or waiver needed"
+        reason = verification_reason
     elif scope_blocked:
         reason = (
             "delivery_scope_violation — sibling-repo changes outside strict "
@@ -475,6 +487,7 @@ def delivery_decision_state(
         reason=reason,
         requested_at=requested_at,
         scope_disclosure=scope_disclosure,
+        verification_contract_declared=declared,
     )
 
 
@@ -488,8 +501,24 @@ def _stopped_delivery_gate_reason(meta: dict[str, Any]) -> str | None:
     intentionally imports the canonical status vocabularies instead of owning
     a parallel terminal-status literal.  A gate is durable context, not an
     authorization to execute after its lifecycle has stopped.
+
+    One stopped shape is exempt (ADR 0175 addendum): the deferred-delivery
+    producer's own park — ``halted`` / ``commit_delivery_pending`` with a
+    ``pending`` gate whose action is still ``none`` — is the decision the
+    lifecycle deliberately handed to the operator, so it is decidable in
+    place; a resume would only re-park the same gate.
     """
     status = meta.get("status")
+    context = meta.get("commit_delivery")
+    if (
+        status == "halted"
+        and meta.get("halt_reason") == "commit_delivery_pending"
+        and isinstance(context, dict)
+        and context.get("status") == "pending"
+        and context.get("action") == "none"
+    ):
+        # This is the producer's parked decision, not an operator stop.
+        return None
     stopped_statuses = (
         TERMINAL_SUCCESS_STATUSES
         | RESUMABLE_TERMINAL_STATUSES
@@ -703,10 +732,13 @@ def _patch_invalid_reason(patch_path: str | None) -> str:
     )
 
 
-def _verification_blocked(
+_VERIFICATION_BLOCK_REASON = "required verification incomplete — receipt or waiver needed"
+
+
+def _verification_gate(
     meta: dict[str, Any], ctx: dict[str, Any], run_dir: Path,
-) -> bool:
-    """Whether a required verification gap still blocks shipping, re-checked fresh.
+) -> tuple[bool, str | None]:
+    """``(blocked, reason)`` for the required-verification guard, re-checked fresh.
 
     The persisted ``verification_*`` fields are a snapshot from park time; a
     receipt materialized or a durable waiver recorded *after* parking must
@@ -715,11 +747,53 @@ def _verification_blocked(
     rebuilt (no recorded project, plugin load failure) it conservatively falls
     back to the persisted fields — an unverifiable gate keeps its recorded
     block rather than silently shipping.
+
+    ``reason`` names the gap commands and carries the exact ``orcho verify
+    run`` line the assessment suggests, so an operator never has to guess
+    whether ``--required`` covers a path-selected gate; ``None`` when not
+    blocked.
     """
     assessment, reconstructed = _reassess_delivery_verification(meta, ctx, run_dir)
     if reconstructed:
-        return assessment is not None and assessment.blocking
-    return _persisted_verification_blocked(ctx)
+        if assessment is None or not assessment.blocking:
+            return False, None
+        return True, _verification_block_reason(
+            missing=tuple(assessment.required_missing),
+            failed=tuple(assessment.required_failed),
+            stale=tuple(assessment.required_stale),
+            suggested=tuple(assessment.suggested_commands),
+        )
+    if not _persisted_verification_blocked(ctx):
+        return False, None
+    return True, _verification_block_reason(
+        missing=_str_tuple(ctx.get("verification_missing")),
+        failed=_str_tuple(ctx.get("verification_failed")),
+        stale=_str_tuple(ctx.get("verification_stale")),
+        suggested=(),
+    )
+
+
+def _verification_block_reason(
+    *,
+    missing: tuple[str, ...],
+    failed: tuple[str, ...],
+    stale: tuple[str, ...],
+    suggested: tuple[str, ...],
+) -> str:
+    parts = [_VERIFICATION_BLOCK_REASON]
+    for label, names in (("missing", missing), ("failed", failed), ("stale", stale)):
+        if names:
+            parts.append(f"{label}: {', '.join(names)}")
+    run_hint = next((line for line in suggested if line.startswith("orcho verify run")), None)
+    if run_hint:
+        parts.append(f"run: {run_hint}")
+    return "; ".join(parts)
+
+
+def _str_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(v) for v in value if v)
 
 
 def _persisted_verification_blocked(ctx: dict[str, Any]) -> bool:
@@ -786,6 +860,21 @@ def _reassess_delivery_verification(
         waivers = meta.get(WAIVER_KEY)
         if waivers is not None:
             extras[WAIVER_KEY] = waivers
+        # A correction follow-up inherits its parent's valid receipts for the
+        # same subject (ADR 0089). The in-run gate reads them from the extras
+        # key state_setup stamps; this out-of-band re-check has no live extras
+        # and used to search only the child's run dir — so a child that changed
+        # no code was refused with "required verification incomplete" even
+        # though the parent had just verified the identical tree. Rebuild the
+        # same single source from the persisted parent linkage.
+        from pipeline.verification_receipt_index import (
+            VERIFICATION_PARENT_RUNS_EXTRAS_KEY,
+            parent_sources_from_meta,
+        )
+
+        parent_sources = parent_sources_from_meta(meta)
+        if parent_sources:
+            extras[VERIFICATION_PARENT_RUNS_EXTRAS_KEY] = parent_sources
 
         assessment = assess_delivery_verification(
             contract,
@@ -830,7 +919,7 @@ def _reresolve(
             "final_acceptance": release_entry,
         }
 
-    return resolve_commit_delivery(
+    decision = resolve_commit_delivery(
         project_dir=Path(str(ctx.get("project_path"))),
         source_worktree=Path(str(ctx.get("source_path"))),
         run_dir=run_dir,
@@ -842,6 +931,30 @@ def _reresolve(
         decision_action=action,
         verification_gate=None,
     )
+    # The commit message was authored at park time by the run's own agent in
+    # content_language and persisted on the gate (``final_message`` +
+    # ``strategy``). This replay has no generator, so pin it here instead of
+    # falling back to the release summary in the plan language (ADR 0121).
+    if not isinstance(ctx.get("commit_policy"), dict) and decision.status == "pending":
+        decision = replace(
+            decision,
+            delivery_warnings=(*decision.delivery_warnings, _LEGACY_POLICY_WARNING),
+        )
+    pinned = ctx.get("final_message")
+    if (
+        action == "approve"
+        and decision.status == "pending"
+        and isinstance(pinned, str)
+        and pinned.strip()
+    ):
+        decision = replace(
+            decision,
+            final_message=pinned.strip(),
+            commit_message_strategy=(
+                str(ctx.get("strategy")) if ctx.get("strategy") else decision.commit_message_strategy
+            ),
+        )
+    return decision
 
 
 def _replay_commit_config(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -854,12 +967,28 @@ def _replay_commit_config(ctx: dict[str, Any]) -> dict[str, Any]:
     produces an applicable pending decision rather than re-parking it.
     """
     from core.infra import config
+    from pipeline.engine.commit_policy import overlay_commit_policy
 
+    # ``commit_policy`` is the normalised snapshot the producer stamped at park
+    # time (branch_policy / publish / default_strategy / branch_name /
+    # publish_provider). It wins over the deciding process's config, whose
+    # ``AppConfig`` resolves from THIS process's env and cwd, not the run's
+    # workspace. A gate parked before snapshots existed carries none and keeps
+    # the process config (the replay records that as a delivery warning).
     return {
-        **config.AppConfig.load().commit,
+        **overlay_commit_policy(
+            config.AppConfig.load().commit, ctx.get("commit_policy"),
+        ),
         "decision_mode": "auto",
         "add_untracked": bool(ctx.get("include_untracked")),
     }
+
+
+_LEGACY_POLICY_WARNING = (
+    "delivery policy (branch_policy / publish / default_strategy) taken from "
+    "the deciding process's config: this gate was parked without a "
+    "commit_policy snapshot"
+)
 
 
 def _finalize(
@@ -938,6 +1067,18 @@ def _finalize(
         blocker = _STATUS_BLOCKERS.get(status)
 
     _write_meta(run_dir, meta)
+
+    if terminal_outcome == "done":
+        # A delivered correction child closes its parent. The live run does
+        # this in its own finalization; a child parked on a deferred gate
+        # finalized as ``pending`` and only lands here, so the same seam runs
+        # now (no-op unless this is a correction follow-up of a fix /
+        # rejected-FA parent).
+        from pipeline.project.followup_supersede import (
+            supersede_parent_after_child_delivery,
+        )
+
+        supersede_parent_after_child_delivery(meta, run_dir, child_run_id=run_id)
 
     return DeliveryDecisionResult(
         run_id=run_id,

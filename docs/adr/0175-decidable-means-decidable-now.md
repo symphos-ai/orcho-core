@@ -69,3 +69,29 @@ ADR 0099 remains authoritative for deferred delivery persistence and the
 out-of-band decision surface. This ADR supersedes only its implication that a
 `halted` `commit_delivery_pending` record can be decided directly or must be
 excluded from checkpoint resume selection.
+
+## Addendum — 2026-09-07: the producer's own park is decidable in place
+
+The resume-first rule above treated every stopped status alike, including the
+`halted` / `commit_delivery_pending` record the deferred-delivery producer
+writes on purpose (ADR 0099). A dogfood run showed the cost: the producer
+parked a headless run exactly as designed, and the very next
+`decide_delivery(approve)` was refused with `delivery_decision_requires_resume`,
+sending the operator through a resume whose only effect is to re-park the
+same gate.
+
+`_stopped_delivery_gate_reason` now recognises that one shape — `status=halted`,
+`halt_reason=commit_delivery_pending`, `commit_delivery.status=pending`,
+`commit_delivery.action=none` — as the producer's parked decision, not an
+operator stop, and returns no resume-first reason for it. `decide_delivery` and
+`delivery_decision_state` therefore treat it as decidable now, and
+`run_diagnosis` classifies it `needs_delivery_decision`. Every other stopped
+shape keeps the rule: an operator halt, a resolved-but-unapplied record
+(`pending` with an action), a `commit_delivery_scope_blocked` park, and every
+terminal status still direct the operator to resume first.
+
+MCP mirrors the split: a halted gate core resolved as decidable is offered its
+`orcho_delivery_decide` calls; only a gate core did not resolve keeps the
+checkpoint-resume route. The executor's own guards (release / verification /
+scope / stale worktree via re-resolve) are unchanged and still run before any
+transport.

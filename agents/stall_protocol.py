@@ -100,6 +100,17 @@ class StalledCommand:
     fields are deliberately minimal — phase, elapsed seconds, a command
     preview, an output tail / inactivity window, the reason category, and the
     owning process group id (``None`` when not known / not a real child).
+
+    ``elapsed_s`` is measured on the stream monitor's clock: seconds since
+    the agent subprocess was spawned (``agents.stream._stream_run``'s start),
+    on both the terminal and the non-terminal path. For a non-terminal
+    ``unsafe_process_polling`` record it is therefore *when in the agent
+    session* the poll was issued, not how long that command has been running
+    — the stream cannot observe the inner command's own start time.
+
+    ``command_preview`` is bounded to ``COMMAND_PREVIEW_MAX`` from the head
+    here; a producer that needs a different window (the stream monitor keeps
+    the tail of a flagged polling command) trims before construction.
     """
 
     phase: str
@@ -130,7 +141,9 @@ class StalledCommand:
         The required keys (``phase`` / ``reason`` / ``elapsed_s`` /
         ``terminal`` / ``recovery_actions``) are always present; the optional
         preview / tail / process_group ride along when non-empty. ``reason`` is
-        the StrEnum's string value so the payload is plain-JSON.
+        the StrEnum's string value so the payload is plain-JSON. ``elapsed_s``
+        keeps the carrier's meaning: seconds since the agent subprocess was
+        spawned, not the flagged command's runtime (see the class docstring).
         ``recovery_actions`` is the shared bounded verb set so a generic event
         consumer (MCP/event-tail) sees the recovery contract at the moment of
         write-through, without re-deriving it. ``_clean_payload`` (the event

@@ -99,11 +99,11 @@ def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> Schedu
     else:
         plan = build_scheduled_gate_plan(contract, context)
     selected = {(entry.command, entry.hook, entry.phase): entry for entry in plan.entries}
-    epoch_hook, epoch_phase = _epoch_identity(epoch)
+    positions = _epoch_positions(ledger, epoch)
     trail = list(ledger.trail)
     rows: list[GateLedgerRow] = []
     for row in ledger.rows:
-        if row.hook != epoch_hook or row.phase != epoch_phase:
+        if (row.hook, row.phase) not in positions:
             rows.append(row)
             continue
         entry = selected.get(row.identity)
@@ -133,6 +133,31 @@ def select_epoch(run: Any, contract: Any, *, epoch: str, context: Any) -> Schedu
         epoch,
         _published_epoch_plan(ledger, contract, epoch, plan),
     )
+
+
+def _epoch_positions(ledger: ScheduledGateLedger, epoch: str) -> frozenset[tuple[str, str]]:
+    """Ledger positions the ``epoch`` selection decides.
+
+    Normally exactly the epoch's own ``(hook, phase)``. The ``before_delivery:``
+    epoch additionally decides every delivery position this ledger has never
+    recorded a selection for: a run whose ``after_phase:implement`` boundary
+    never fired (a correction child that skipped ``implement``) has no recorded
+    delivery selection to replay, and the delivery view it publishes must not
+    be empty merely because that boundary did not happen in this run. The rows
+    are selected from the same live context and recorded in the trail, so a
+    resumed run replays them instead of re-deriving them.
+    """
+    positions = {_epoch_identity(epoch)}
+    if epoch == "before_delivery:":
+        recorded = {
+            (event.hook, event.phase)
+            for event in ledger.trail
+            if event.kind == "selection"
+        }
+        positions.update(
+            position for position in _DELIVERY_POSITIONS if position not in recorded
+        )
+    return frozenset(positions)
 
 
 def _publish_epoch_plan(state: Any, epoch: str, plan: ScheduledGatePlan) -> ScheduledGatePlan:

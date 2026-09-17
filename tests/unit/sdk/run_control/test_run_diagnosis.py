@@ -180,6 +180,31 @@ def test_startup_recent_or_progressing_run_stays_active(tmp_path: Path) -> None:
     assert _diag(runs, "output").condition == diag.CONDITION_ACTIVE
 
 
+def test_startup_window_refreshed_by_a_heartbeat_classifies_from_armed_at(tmp_path: Path) -> None:
+    """A worktree bootstrap heartbeat rewrites ``startup_command.json`` with a
+    fresh ``armed_at`` and the same event/output baselines. Diagnosis must
+    measure idleness from that refreshed window, not from the old
+    ``run.start`` event: a long bootstrap that just finished is active, and
+    only a window that expired again with no growth is stalled."""
+    runs = tmp_path / "runs"
+    event = '{"seq":1,"ts":"2026-01-01T00:00:00Z","kind":"run.start","payload":{}}\n'
+    _mk(runs, "fresh", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "output.log": "",
+        "startup_command.json": _startup_artifact(age_s=5, event_size=len(event.encode())),
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=600),
+    })
+    _mk(runs, "expired", {"status": "running", "project": "/x"}, files={
+        "events.jsonl": event, "output.log": "",
+        "startup_command.json": _startup_artifact(age_s=130, event_size=len(event.encode())),
+        "run_supervisor.json": _launch_state(pid=os.getpid(), age_s=600),
+    })
+
+    assert _diag(runs, "fresh").condition == diag.CONDITION_ACTIVE
+    expired = _diag(runs, "expired")
+    assert expired.condition == diag.CONDITION_STALLED
+    assert "startup has been idle for 13" in expired.reason
+
+
 def test_live_healthy_recent_launch_and_fresh_progress_stay_active(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     now = datetime.now(UTC).isoformat()
@@ -339,14 +364,14 @@ def test_recover_via_source_run(tmp_path: Path) -> None:
 
 
 def test_recover_via_source_run_respects_injected_source_facts(tmp_path: Path) -> None:
-    # The source's on-disk meta is stale (``running`` + retained worktree → it
-    # would read as resumable), but the embedder's supervisor-merge has already
-    # settled it to a clean terminal ``done``. Feeding that resolved meta via
-    # ``source_meta`` must suppress the blind ``recover_via_source_run`` — the
-    # source is terminal, so the child is a dead-end stop, not a redirect.
+    # The source's on-disk meta is stale (``failed`` + retained worktree → it
+    # reads as a resumable checkpoint), but the embedder's supervisor-merge has
+    # already settled it to a clean terminal ``done``. Feeding that resolved meta
+    # via ``source_meta`` must suppress the blind ``recover_via_source_run`` —
+    # the source is terminal, so the child is a dead-end stop, not a redirect.
     runs = tmp_path / "runs"
     _mk(runs, "parent", {
-        "status": "running",
+        "status": "failed",
         "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
         "project": "/x",
     })
@@ -370,6 +395,77 @@ def test_recover_via_source_run_respects_injected_source_facts(tmp_path: Path) -
     assert resolved.continuation_subject == diag.SUBJECT_UNKNOWN
     assert resolved.recommended_next_action == diag.ACTION_STOP_UNKNOWN
     assert diag._MISSING_SOURCE in resolved.missing_facts
+
+
+def _finalize_ledger(runs_dir: Path, run_id: str) -> None:
+    """The finalized scheduled-gate ledger finalization leaves at run.end."""
+    from pipeline.verification_ledger_store import ScheduledGateLedger, write_ledger
+
+    write_ledger(runs_dir / run_id, ScheduledGateLedger(rows=(), finalized=True))
+
+
+def test_recover_via_source_run_finalized_ledger_recommends_from_run_plan(
+    tmp_path: Path,
+) -> None:
+    # Field shape: the source is a non-terminal stop with a retained worktree
+    # and a persisted plan, but its scheduled-gate ledger was finalized at
+    # run.end — the canonical launch preflight refuses a same-run resume of it.
+    # The diagnosis must not tell the operator to resume it; the via-source
+    # recovery is a NEW run from the source's plan artifact.
+    runs = tmp_path / "runs"
+    _mk(
+        runs, "parent",
+        {
+            "status": "halted", "halt_reason": "plan rejected before implement",
+            "plan_source": "local", "profile": "feature",
+            "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+            "project": "/x",
+        },
+        files={"parsed_plan.json": "{}"},
+    )
+    _finalize_ledger(runs, "parent")
+    _mk(runs, "child", {
+        "status": "halted", "halt_reason": "phase_handoff_halt",
+        "parent_run_id": "parent", "plan_source": "run",
+        "plan_source_run_id": "parent", "profile": "feature", "project": "/x",
+        "worktree": {"isolation": "per_run", "path": "/tmp/wt-child"},
+    })
+    d = _diag(runs, "child")
+    assert d.condition == diag.CONDITION_RECOVER_VIA_SOURCE_RUN
+    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recommended_run_id == "parent"
+    assert d.source_run_id == "parent"
+    assert "finalized scheduled-gate ledger" in d.reason
+    assert "from_run_plan=parent" in d.reason
+    # The attached recovery agrees field-for-field.
+    assert d.recovery is not None
+    assert d.recovery.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recovery.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recovery.recommended_run_id == "parent"
+    assert d.recovery.source_resumable is False
+    assert d.recovery.reason == d.reason
+
+
+def test_running_source_is_never_a_resume_target(tmp_path: Path) -> None:
+    # A live source is refused by the launch preflight, so the terminal child
+    # is a dead-end stop (unknown, missing a resumable source) — never
+    # ``recover_via_source_run`` pointing at a run that cannot be resumed.
+    runs = tmp_path / "runs"
+    _mk(runs, "parent", {
+        "status": "running",
+        "worktree": {"isolation": "per_run", "path": "/tmp/wt-parent"},
+        "project": "/x",
+    })
+    _mk(runs, "child", {
+        "status": "halted", "halt_reason": "final_acceptance_rejected",
+        "parent_run_id": "parent", "project": "/x",
+    })
+    d = _diag(runs, "child")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_UNKNOWN
+    assert d.recommended_next_action == diag.ACTION_STOP_UNKNOWN
+    assert diag._MISSING_SOURCE in d.missing_facts
 
 
 def test_closed_by_followup(tmp_path: Path) -> None:
@@ -413,6 +509,62 @@ def test_resume_inert_terminal_plan_artifact(tmp_path: Path) -> None:
     assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
     assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
     assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+
+
+def _dogfood_plan_only(profile: str) -> dict:
+    """The meta a real successful plan-only run persists (mirrors the lineage test).
+
+    ``isolation=off`` writes no ``followup_continuity`` block, so the absence of
+    a retained diff is proven by the delivery owner's canonical
+    ``not_applicable``/``none`` receipt, not by the worktree shape.
+    """
+    return {
+        "status": "done", "profile": profile, "plan_source": "local",
+        "project": "/x",
+        "worktree": {
+            "isolation": "off", "path": "/x", "base_ref": "8dc028cb",
+            "branch_ref": None,
+        },
+        "commit_delivery": {
+            "action": "none", "status": "not_applicable", "run_id": "r",
+            "decision_id": "r:delivery", "project_path": "/x",
+            "source_path": "/x", "baseline_ref": "8dc028cb", "dirty": False,
+            "include_untracked": False, "pr_url": None,
+        },
+    }
+
+
+@pytest.mark.parametrize("profile", ["planning", "research"])
+def test_resume_inert_terminal_plan_artifact_for_done_plan_only(
+    tmp_path: Path, profile: str,
+) -> None:
+    # A successful plan-only run is terminal (resume is inert) but NOT a dead
+    # end: the diagnosis names this run's own plan artifact as the continuation,
+    # and its attached recovery is the standalone lineage verbatim.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only(profile), files={"parsed_plan.json": "{}"})
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_PLAN_ARTIFACT
+    assert d.recommended_next_action == diag.ACTION_PLAN_ARTIFACT_CONTINUATION
+    assert d.recommended_run_id == "r"
+    assert d.recovery == recovery_lineage("r", runs_dir=runs, cwd=None)
+    assert d.recovery.plan_subject_available is True
+
+
+def test_resume_inert_terminal_done_plan_only_without_artifact_is_none(
+    tmp_path: Path,
+) -> None:
+    # Same canonical delivery outcome without a physical parsed_plan.json: no
+    # artifact, no continuation subject — a clean success to follow up on.
+    runs = tmp_path / "runs"
+    _mk(runs, "r", _dogfood_plan_only("planning"))
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_RESUME_INERT_TERMINAL
+    assert d.continuation_subject == diag.SUBJECT_NONE
+    assert d.recommended_next_action == diag.ACTION_START_FOLLOWUP
+    assert d.recovery == recovery_lineage("r", runs_dir=runs, cwd=None)
+    assert d.recovery.plan_subject_available is False
 
 
 def test_resume_inert_terminal_stop_unknown_missing_facts(tmp_path: Path) -> None:
@@ -479,6 +631,7 @@ def test_interrupted_in_flight_phase_recommends_plan_artifact(
 _MCP_CONDITIONS = frozenset({
     "needs_decision",
     "needs_delivery_decision",
+    "delivery_inconsistent",
     "correction_followup_required",
     "superseded_by_child",
     "closed_by_followup",
@@ -579,6 +732,22 @@ def _scenarios(runs: Path) -> list[tuple[str, str, str | None]]:
         "parent_run_id": "src", "project": "/x",
     })
     table.append(("viasrc", "recover_via_source_run", "source_run_checkpoint"))
+
+    _mk(
+        runs, "srcplan",
+        {
+            "status": "failed", "plan_source": "local", "profile": "feature",
+            "worktree": {"isolation": "per_run", "path": "/tmp/wt-srcplan"},
+            "project": "/x",
+        },
+        files={"parsed_plan.json": "{}"},
+    )
+    _finalize_ledger(runs, "srcplan")
+    _mk(runs, "viaplan", {
+        "status": "halted", "halt_reason": "final_acceptance_rejected",
+        "parent_run_id": "srcplan", "project": "/x",
+    })
+    table.append(("viaplan", "recover_via_source_run", "plan_artifact"))
 
     _mk(runs, "closed", {
         "status": "done",
@@ -885,3 +1054,176 @@ def test_stalled_vocabulary_and_active_order_are_single_and_guarded() -> None:
         "artifact_stalled_reason = _startup_stalled_reason",
     ):
         assert src.index(stall_check) < active_branch
+
+
+# ── delivery_inconsistent (ADR 0191) ──────────────────────────────────────────
+#
+# Git carries a delivery commit for the run that its durable record does not.
+# Outranks the delivery-gate and terminal branches: nothing may reason about
+# a delivery that in fact happened as if it had not.
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _repo_with_delivery(tmp_path: Path, run_id: str, *, subject: str | None = None) -> tuple[Path, str]:
+    from pipeline.engine.delivery_ledger import default_delivery_subject
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@orcho.invalid")
+    _git(repo, "config", "user.name", "Orcho Test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "app.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+    _git(repo, "add", "app.txt")
+    _git(repo, "commit", "-q", "-m", subject or default_delivery_subject(run_id))
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_delivery_inconsistent_from_a_legacy_commit(tmp_path: Path) -> None:
+    repo, sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "failed", "halt_reason": "abnormal_exit:1",
+                    "project": str(repo)})
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_DELIVERY_INCONSISTENT
+    assert d.recommended_next_action == "reconcile_delivery"
+    assert d.continuation_subject == "delivery_gate"
+    assert d.recommended_run_id == "r"
+    assert sha[:12] in d.reason
+    assert "orcho reconcile-delivery r" in d.reason
+    assert d.status == "failed"
+
+
+def test_delivery_inconsistent_from_a_ledger_fact(tmp_path: Path) -> None:
+    from pipeline.engine import delivery_ledger as dl
+
+    repo, sha = _repo_with_delivery(tmp_path, "r", subject="feat: anything")
+    runs = tmp_path / "runs"
+    run_dir = runs / "r"
+    _mk(runs, "r", {"status": "failed", "project": str(repo)})
+    record = dl.record_delivery_intent(
+        run_dir, run_id="r", decision_id="r", action="approve", commit_target=repo,
+        baseline_ref="HEAD", message="feat: anything", strategy="release_summary",
+        staged_paths=("app.txt",),
+    )
+    dl.record_delivery_commit(run_dir, record, sha)
+    d = _diag(runs, "r")
+    assert d.condition == diag.CONDITION_DELIVERY_INCONSISTENT
+    assert sha[:12] in d.reason
+
+
+def test_a_recorded_delivery_is_consistent(tmp_path: Path) -> None:
+    repo, sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "failed", "project": str(repo),
+                    "commit_delivery": {"status": "committed", "commit_sha": sha}})
+    d = _diag(runs, "r")
+    assert d.condition != diag.CONDITION_DELIVERY_INCONSISTENT
+    assert d.condition == "failed"
+
+
+def test_a_running_run_is_never_probed_for_delivery(tmp_path: Path) -> None:
+    repo, _sha = _repo_with_delivery(tmp_path, "r")
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {"status": "running", "project": str(repo)})
+    assert _diag(runs, "r").condition == diag.CONDITION_ACTIVE
+
+
+# ── needs_decision names the open human criteria ─────────────────────────────
+#
+# A paused run whose accepted plan has ``human`` criteria without a recorded
+# verdict must say so on the pause — deciding them BEFORE resuming is what
+# keeps final acceptance from rejecting into a correction follow-up.
+
+_HUMAN_PLAN = {
+    "short_summary": "s",
+    "planning_context": "p",
+    "acceptance_criteria": [
+        {"id": "C1", "intent": "docs read coherently", "verify": "agent_assertion"},
+        {"id": "C2", "intent": "operator accepts the journey", "verify": "human",
+         "human_instructions": "Exercise the journey and record the outcome."},
+        {"id": "C3", "intent": "operator checks the MCP payload", "verify": "human",
+         "human_instructions": "Call the tool and record the outcome."},
+    ],
+    "tasks": [{"id": "t1", "goal": "g"}],
+}
+
+
+def _paused_with_plan(runs: Path, run_id: str) -> None:
+    from pipeline.plan_artifacts import write_parsed_plan_artifact
+    from pipeline.plan_parser import parse_plan
+
+    _mk(runs, run_id, {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "review_changes:repair_round:1",
+                          "available_actions": ["continue", "halt"]},
+        "project": "/x",
+    })
+    write_parsed_plan_artifact(runs / run_id, parse_plan(json.dumps(_HUMAN_PLAN)), attempt=1)
+
+
+def test_needs_decision_names_open_human_criteria(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _paused_with_plan(runs, "r")
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_NEEDS_DECISION
+    assert d.pending_human_criteria == ("C2", "C3")
+    assert d.reason == (
+        "run is paused awaiting a phase-handoff decision (review_changes:repair_round:1); "
+        "open human criteria: C2, C3 — record each with "
+        "`orcho criterion decide r --criterion <id> --decision accept|reject` "
+        "before resuming, so final acceptance sees them"
+    )
+
+
+def test_needs_decision_drops_decided_human_criteria(tmp_path: Path) -> None:
+    from pipeline.criterion_decisions import record_human_decision
+
+    runs = tmp_path / "runs"
+    _paused_with_plan(runs, "r")
+    record_human_decision(runs / "r", run_id="r", criterion_id="C2", decision="accept")
+
+    d = _diag(runs, "r")
+
+    assert d.pending_human_criteria == ("C3",)
+    assert "open human criteria: C3 —" in d.reason
+
+
+def test_needs_decision_without_plan_names_no_criteria(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "h1", "available_actions": ["continue", "halt"]},
+        "project": "/x",
+    })
+
+    d = _diag(runs, "r")
+
+    assert d.pending_human_criteria == ()
+    assert d.reason == "run is paused awaiting a phase-handoff decision (h1)"
+
+
+def test_needs_decision_unreadable_matrix_is_silent_not_fatal(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _mk(runs, "r", {
+        "status": "awaiting_phase_handoff",
+        "phase_handoff": {"id": "h1", "available_actions": ["halt"]},
+        "project": "/x",
+    }, files={"parsed_plan.json": "{not json"})
+
+    d = _diag(runs, "r")
+
+    assert d.condition == diag.CONDITION_NEEDS_DECISION
+    assert d.pending_human_criteria == ()

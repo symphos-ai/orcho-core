@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.entities import SubTask
+from core.contracts.criteria import coerce_acceptance_criteria, criteria_to_wire
 from core.contracts.plan_schema import PlanSchemaError, validate_plan_dict
 from pipeline.plan_parser import ParsedPlan, PlanParseError, validate_dag
 
@@ -110,15 +111,17 @@ def _plan_body_to_dict(plan: ParsedPlan) -> dict[str, Any]:
     body: dict[str, Any] = {
         "short_summary": plan.short_summary,
         "planning_context": plan.planning_context,
+        # ADR 0188 presence marker: ``[]`` identifies a new-format plan with
+        # an explicit empty criterion contract. Older artifacts omitted this
+        # field, which lets readers distinguish legacy absence from an empty
+        # matrix without a schema-version break.
+        "acceptance_criteria": criteria_to_wire(plan.acceptance_criteria),
         "tasks": [_subtask_to_dict(s) for s in plan.subtasks],
     }
-    # REA-1 typed contract — emit only populated fields so an empty
-    # contract round-trips as an empty contract (the schema validator
-    # treats all of these as optional).
+    # REA-1 typed contract — emit the remaining fields only when populated
+    # (the schema validator treats all of these as optional).
     if plan.goal:
         body["goal"] = plan.goal
-    if plan.acceptance_criteria:
-        body["acceptance_criteria"] = list(plan.acceptance_criteria)
     if plan.owned_files:
         body["owned_files"] = list(plan.owned_files)
     if plan.allowed_modifications:
@@ -158,6 +161,8 @@ def _subtask_to_dict(s: SubTask) -> dict[str, Any]:
         out["depends_on"] = list(s.depends_on)
     if s.done_criteria:
         out["done_criteria"] = list(s.done_criteria)
+    if s.acceptance_refs:
+        out["acceptance_refs"] = list(s.acceptance_refs)
     if s.owned_files:
         out["owned_files"] = list(s.owned_files)
     if s.allowed_modifications:
@@ -226,7 +231,9 @@ def parsed_plan_from_dict(data: Mapping[str, Any]) -> ParsedPlan:
         # from a persisted artefact.
         source="artifact",
         goal=(body.get("goal") or None),
-        acceptance_criteria=tuple(body.get("acceptance_criteria") or ()),
+        acceptance_criteria=coerce_acceptance_criteria(
+            body.get("acceptance_criteria"),
+        ),
         owned_files=tuple(body.get("owned_files") or ()),
         allowed_modifications=tuple(body.get("allowed_modifications") or ()),
         commands_to_run=tuple(body.get("commands_to_run") or ()),
@@ -247,6 +254,7 @@ def _subtask_from_dict(t: Mapping[str, Any]) -> SubTask:
         model=(t.get("model") or None),
         depends_on=tuple(t.get("depends_on") or ()),
         done_criteria=tuple(t.get("done_criteria") or ()),
+        acceptance_refs=tuple(t.get("acceptance_refs") or ()),
         owned_files=tuple(t.get("owned_files") or ()),
         allowed_modifications=tuple(t.get("allowed_modifications") or ()),
         architectural_decision=bool(t.get("architectural_decision") or False),

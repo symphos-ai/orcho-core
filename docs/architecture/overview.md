@@ -352,6 +352,8 @@ own home rather than re-narrated here:
 - [Run state](run_state.md) — recorded state, terminal writers, repair
 - [Verification contract](verification_contract.md) — declared proof,
   receipts, and the delivery gate
+- [Criterion contract](criterion_contract.md) — typed acceptance criteria,
+  the criterion matrix, and typed human decisions
 - [Sandbox](sandbox.md) — launch-layer hygiene and the isolation envelope
 - [Project documentation strategy](project_documentation_strategy.md) — docs
   as durable delivery memory, with indexing as a later layer

@@ -207,7 +207,7 @@ def run_cross_pipeline(
     task: str,
     projects: dict[str, Path],
     max_rounds: int = 1,
-    model: str = config.phase_model("implement", "claude-opus-4-8[1m]"),
+    model: str = config.phase_model("implement", "claude-opus-5[1m]"),
     output_dir: Path | None = None,
     dry_run: bool = False,
     mock: bool = False,

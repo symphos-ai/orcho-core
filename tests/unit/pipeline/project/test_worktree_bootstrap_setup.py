@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -47,6 +49,10 @@ def _setup_isolation_kwargs(
         "worktree_bootstrap_config": None,
         "presentation": presentation,
     }
+
+
+def _iso(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _init_repo_with_ignored_libs(path: Path) -> None:
@@ -212,15 +218,24 @@ def test_bootstrap_terminal_renders_step_and_total_elapsed(
     assert "Worktree bootstrap complete (2.50s)" in output
 
 
-def test_bootstrap_silent_is_quiet_and_does_not_pass_reporter(
+def test_bootstrap_silent_is_quiet_even_when_steps_report(
     tmp_path: Path, capsys,
 ) -> None:
+    """SILENT still receives the step callback (it feeds the startup watchdog)
+    but must not render anything for it."""
     session = {}
     worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
-    engine = Mock(return_value={"status": "ok", "steps": []})
+    record = {"index": 1, "action": "copy", "status": "ok"}
+    seen: dict[str, object] = {}
+
+    def bootstrap(*args, on_step, **kwargs):
+        seen.update(kwargs)
+        on_step("start", 1, "copy", {"copy": "libs"})
+        on_step("complete", 1, "copy", record)
+        return {"status": "ok", "steps": [record]}
 
     with patch(
-        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", engine,
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
     ):
         _apply_worktree_bootstrap(
             config=[{"copy": "libs"}],
@@ -231,13 +246,74 @@ def test_bootstrap_silent_is_quiet_and_does_not_pass_reporter(
             presentation=PresentationPolicy.SILENT,
         )
 
-    assert engine.call_args.kwargs == {
-        "source_root": tmp_path,
-        "worktree_path": tmp_path,
-    }
+    assert seen == {"source_root": tmp_path, "worktree_path": tmp_path}
+    assert session["worktree_bootstrap"]["status"] == "ok"
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def test_bootstrap_longer_than_the_startup_budget_is_not_retro_halted(
+    tmp_path: Path,
+) -> None:
+    """A successful bootstrap emits no event and writes no ``output.log``, so
+    the startup watchdog's ambient progress check cannot see it. The bootstrap
+    path must report its own progress: a step that outlives the whole startup
+    budget leaves an expired window, and the heartbeat that follows the step
+    revives it instead of letting the next checkpoint halt a run that just
+    finished real work. The watchdog stays armed, so a hang after bootstrap
+    and before the first phase still halts.
+
+    Expiry is forced, not slept for. Racing a small budget against the
+    session-save I/O between the last heartbeat and the checkpoint is exactly
+    what made the first version of this test flake on a loaded CI runner.
+    """
+    from pipeline.project.startup_watchdog import startup_watchdog_scope
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session = {"status": "running", "phases": {}}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+    revived_after_step: list[bool] = []
+
+    def bootstrap(*args, on_step, **kwargs):
+        for index in (1, 2):
+            on_step("start", index, "run", {"run": ["npm", "ci"]})
+            # The step outlived the entire startup budget.
+            watchdog.deadline = 0.0
+            on_step("complete", index, "run", {"index": index, "action": "run", "status": "ok"})
+            revived_after_step.append(watchdog.deadline > time.monotonic())
+        return {"status": "ok", "steps": []}
+
+    with startup_watchdog_scope(run_dir) as watchdog, patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap", bootstrap,
+    ):
+        watchdog.budget_s = 30.0
+        watchdog.arm()
+        armed_at = json.loads((run_dir / "startup_command.json").read_text())["armed_at"]
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npm", "ci"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.SILENT,
+        )
+
+        # Every completed step revived the expired window.
+        assert revived_after_step == [True, True]
+        assert watchdog.checkpoint(session) is False
+        assert watchdog.armed is True and watchdog.disarmed is False
+        refreshed = json.loads((run_dir / "startup_command.json").read_text())
+        assert _iso(refreshed["armed_at"]) >= _iso(armed_at)
+        assert refreshed["budget_s"] == 30.0
+
+        # Still armed: a hang before the first phase is caught as before.
+        watchdog.deadline = 0.0
+        assert watchdog.checkpoint(session) is True
+
+    assert session["worktree_bootstrap"]["status"] == "ok"
+    assert session["halt_reason"] == "startup_stalled"
 
 
 def test_pre_run_dirty_halt_silent_is_quiet_and_clears_stale_phase_handoff(
@@ -572,3 +648,109 @@ def test_correction_followup_rejects_unreadable_retained_worktree(
                 parent_worktree=parent_worktree,
             ),
         )
+
+
+# ── a bootstrap halt must leave the failing step's output in the run dir ────
+
+
+def _bootstrap_failure(**overrides) -> WorktreeBootstrapError:
+    failure = {
+        "index": 2, "action": "run", "status": "failed", "reason": "exit_code",
+        "cmd": ["npx", "nuxt", "prepare"], "cwd": "/wt", "exit_code": 1,
+        "stdout_tail": "preparing app", "stderr_tail": "ENOENT: nuxt.config",
+    }
+    failure.update(overrides)
+    return WorktreeBootstrapError(
+        "worktree_bootstrap run step 2 failed with exit code 1", failure=failure,
+    )
+
+
+def test_bootstrap_failure_persists_step_output_into_the_run_dir(
+    tmp_path: Path,
+) -> None:
+    """The reported gap: runner.log carried one exit-code line and output.log
+    was empty, so the halt was undiagnosable once the process was gone."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(WorktreeBootstrapError):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.SILENT,
+        )
+
+    evidence = run_dir / "worktree_bootstrap" / "step-0002-run.json"
+    assert evidence.is_file()
+    record = json.loads(evidence.read_text(encoding="utf-8"))
+    assert record["exit_code"] == 1
+    assert record["cmd"] == ["npx", "nuxt", "prepare"]
+    assert record["stdout_tail"] == "preparing app"
+    assert record["stderr_tail"] == "ENOENT: nuxt.config"
+    assert record["error"] == "worktree_bootstrap run step 2 failed with exit code 1"
+
+    # The durable session/meta record carries it too, next to the halt reason.
+    meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta["halt_reason"] == "worktree_bootstrap_failed"
+    assert meta["worktree_bootstrap"]["failed_step"]["stderr_tail"] == (
+        "ENOENT: nuxt.config"
+    )
+
+
+def test_bootstrap_failure_terminal_quotes_the_step_output(
+    tmp_path: Path, capsys,
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(SystemExit):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=run_dir,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.TERMINAL,
+        )
+
+    err = capsys.readouterr().err
+    assert "step 2 (run)" in err
+    assert "preparing app" in err
+    assert "ENOENT: nuxt.config" in err
+
+
+def test_bootstrap_failure_without_output_dir_still_records_the_step(
+    tmp_path: Path, capsys,
+) -> None:
+    """No run dir is not a reason to lose the diagnosis."""
+    session: dict = {"status": "running"}
+    worktree_ctx = SimpleNamespace(is_isolated=True, path=tmp_path)
+
+    with patch(
+        "pipeline.engine.worktree_bootstrap.run_worktree_bootstrap",
+        side_effect=_bootstrap_failure(),
+    ), pytest.raises(SystemExit):
+        _apply_worktree_bootstrap(
+            config=[{"run": ["npx", "nuxt", "prepare"]}],
+            session=session,
+            output_dir=None,
+            git_root=tmp_path,
+            worktree_ctx=worktree_ctx,
+            presentation=PresentationPolicy.TERMINAL,
+        )
+
+    assert session["worktree_bootstrap"]["failed_step"]["exit_code"] == 1
+    assert "ENOENT: nuxt.config" in capsys.readouterr().err

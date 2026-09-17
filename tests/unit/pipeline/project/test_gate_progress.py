@@ -208,3 +208,95 @@ def test_run_and_classify_gate_silent_run_prints_nothing(monkeypatch) -> None:
     ))
 
     assert lines == []
+
+
+# ── live progress presenter (ADR 0190) ───────────────────────────────────
+
+
+def _progress_record(**kw):
+    from pipeline.verification_progress import GateProgressRecord
+
+    base = dict(
+        name="broad-non-e2e", invocation_id="inv-1", hook="after_phase",
+        phase="implement", started_at="t0", elapsed_s=12.0,
+    )
+    base.update(kw)
+    return GateProgressRecord(**base)
+
+
+def test_render_progress_line_no_output_yet() -> None:
+    from pipeline.project.gate_progress_view import render_gate_progress_line
+
+    line = render_gate_progress_line(_progress_record(elapsed_s=95.0))
+    assert line == "     broad-non-e2e  ⏱ 1m35s  · no output yet"
+
+
+def test_render_progress_line_streaming_shows_compact_tail() -> None:
+    from pipeline.project.gate_progress_view import render_gate_progress_line
+
+    line = render_gate_progress_line(
+        _progress_record(
+            has_output=True, elapsed_s=8.0,
+            stderr_tail="running tests\n42%% done",
+        ),
+    )
+    # Newlines collapsed, stderr preferred, compact and single-line.
+    assert line.startswith("     broad-non-e2e  ⏱ 8s  · streaming  · ")
+    assert "\n" not in line
+    assert "42%% done" in line
+
+
+def test_render_progress_line_prefers_stderr_then_stdout() -> None:
+    from pipeline.project.gate_progress_view import render_gate_progress_line
+
+    line = render_gate_progress_line(
+        _progress_record(has_output=True, stdout_tail="only-stdout"),
+    )
+    assert "only-stdout" in line
+
+
+def test_print_gate_progress_emits_a_single_flushed_line() -> None:
+    from pipeline.project.gate_progress_view import print_gate_progress
+
+    lines = _cap(lambda: print_gate_progress(_progress_record(has_output=True,
+                                                              stdout_tail="tail")))
+    assert len(lines) == 1
+    assert "broad-non-e2e" in lines[0]
+
+
+def test_aggregator_with_terminal_presenter_renders_coalesced_lines(
+    monkeypatch,
+) -> None:
+    """A TERMINAL run wires the presenter; feeding output renders live lines."""
+    from pipeline import verification_progress as vp
+    from pipeline.project.gate_progress_view import gate_progress_presenter
+
+    monkeypatch.setattr(vp._events, "emit", lambda *a, **k: None)
+    ctx = vp.build_gate_progress_context(
+        invocation_id="inv-1", name="unit", hook="after_phase", phase="implement",
+        presenter=gate_progress_presenter(),
+    )
+    agg = vp.GateProgressAggregator(ctx)
+
+    lines = _cap(lambda: agg.feed(vp.STDOUT, b"streaming output"))
+    assert lines  # at least one live line was rendered.
+    assert "unit" in lines[0]
+
+
+def test_aggregator_without_presenter_prints_nothing(monkeypatch) -> None:
+    """SILENT / MCP-stdio pass no presenter: durable emit still fires (patched
+    here) but nothing reaches stdout."""
+    from pipeline import verification_progress as vp
+
+    emitted: list = []
+    monkeypatch.setattr(
+        vp._events, "emit", lambda *a, **k: emitted.append(k),
+    )
+    ctx = vp.build_gate_progress_context(
+        invocation_id="inv-1", name="unit", presenter=None,
+    )
+    agg = vp.GateProgressAggregator(ctx)
+
+    lines = _cap(lambda: agg.feed(vp.STDOUT, b"streaming output"))
+    assert lines == []
+    assert emitted  # the durable event is not stdout — it still fires.

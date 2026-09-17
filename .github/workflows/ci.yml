@@ -200,6 +200,11 @@ jobs:
           printf 'print("hi")\n' > "$proj/app.py"
           git -C "$proj" add -A
           git -C "$proj" -c user.email=ci@example.com -c user.name=ci commit -q -m init
+          # The run's own delivery commit needs an identity too; without it the
+          # commit fails and the run ends halted (delivery failed) — which now
+          # exits 3 instead of being masked by a green exit 0.
+          git -C "$proj" config user.email ci@example.com
+          git -C "$proj" config user.name ci
           python -m cli.orcho run --mock \
             --task "Add a hello world function" \
             --project "$proj" \

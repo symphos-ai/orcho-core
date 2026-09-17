@@ -12,7 +12,7 @@ import json
 import re
 import shlex
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -258,8 +258,26 @@ def _append_status_phases(
 
 
 def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) -> None:
+    from pipeline.project.verification_disclosure import (
+        VerificationContractPresence,
+        status_line,
+    )
+
     gates = status.quality_gates
+    # A run that declared no verification contract has no gate ledger at all —
+    # today's empty section silently reads as "nothing to report". Disclose the
+    # fact instead, creating the section when there are no gate rows to carry
+    # it. Runs without the durable block (and runs that did declare a contract)
+    # render exactly as before.
+    presence = VerificationContractPresence.from_mapping(status.raw_meta)
+    no_contract = presence is not None and not presence.declared
+    if not gates and not no_contract:
+        return
+
     if not gates:
+        out.append("")
+        out.append(_status_section("  Gates:"))
+        out.append(f"    {status_line()}")
         return
 
     counts: dict[str, int] = {}
@@ -269,6 +287,8 @@ def _append_status_gates(out: list[str], status: RunStatus, *, verbose: bool) ->
 
     out.append("")
     out.append(_status_section("  Gates:"))
+    if no_contract:
+        out.append(f"    {status_line()}")
     out.append(
         "    "
         + " · ".join(
@@ -415,18 +435,37 @@ def _append_status_stall(out: list[str], reason: str | None) -> None:
     out.append(f"{_status_label('  Stalled:')} {_status_warning(reason)}")
 
 
+def _append_status_next(out: list[str], next_lines: Sequence[str] | None) -> None:
+    """Close the status with the operator's next step.
+
+    ``next_lines`` is the text ``cli/_status_next.py`` derived from core's
+    ``run_diagnosis`` (first line the step, later lines indented detail). This
+    only adds the label; it never decides what the step is. Nothing is
+    printed when the caller has nothing to suggest.
+    """
+    if not next_lines:
+        return
+    out.append("")
+    first, *rest = next_lines
+    out.append(f"{_status_label('  Next:')} {first}")
+    for line in rest:
+        out.append(f"        {line}")
+
+
 def format_status(
     status: RunStatus,
     *,
     verbose: bool = False,
     publish_gate: object | None = None,
     stalled_reason: str | None = None,
+    next_lines: Sequence[str] | None = None,
 ) -> str:
     """Render a human-readable status snapshot for one run.
 
     ``stalled_reason`` is core's ``run_diagnosis`` explanation for a run whose
-    recorded process is gone. The caller resolves it; this renderer never
-    decides whether a run is alive.
+    recorded process is gone, and ``next_lines`` the next-step text derived
+    from the same diagnosis. The caller resolves both; this renderer never
+    decides whether a run is alive or what to do with it.
     """
     out: list[str] = []
     sep = "─" * 60
@@ -494,6 +533,7 @@ def format_status(
 
     _append_status_delivery(out, status.raw_meta, publish_gate=publish_gate)
     _append_status_paths(out, status, status.raw_meta)
+    _append_status_next(out, next_lines)
 
     if verbose and status.raw_meta:
         out.append("")

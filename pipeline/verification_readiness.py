@@ -52,6 +52,7 @@ from pipeline.verification_failure import (
 from pipeline.verification_receipt_index import receipt_file_path
 
 __all__ = [
+    "CRITERION_INTEGRITY_RISK",
     "READINESS_POLICY_LINE",
     "ROUTING_PLANS_EXTRAS_KEY",
     "TRANSCRIPT_NOT_PROOF_NOTE",
@@ -63,6 +64,7 @@ __all__ = [
     "build_final_acceptance_readiness",
     "classify_required_receipts",
     "command_phase_schedule",
+    "criterion_release_gaps",
     "delivery_gate_plan",
     "effective_policy_by_command",
     "environment_provenance_gate_failures",
@@ -189,6 +191,13 @@ class ReadinessSummary:
     # SDK shape consumes this field.
     consequence_by_command: tuple[tuple[str, str], ...] = ()
     operator_gaps: tuple[str, ...] = ()
+    # ADR 0188: the criterion reducer's summary, consumed (not recomputed) by
+    # this single readiness policy site. ``None`` when the run has no accepted
+    # plan artifact, so a run without a criterion contract renders and behaves
+    # byte-identically to before.
+    criterion_summary: dict[str, Any] | None = None
+    # Blocking criterion rows, pre-rendered as ``"<id> <state>: <reason>"``.
+    criterion_gaps: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -201,6 +210,7 @@ class ReadinessSummary:
             or self.required_stale
             or self.operator_gaps
             or self.exploratory_count
+            or self.criterion_gaps
         )
 
 
@@ -746,6 +756,19 @@ def required_receipt_gaps(
     when every required receipt is present (or only non-require gaps remain).
     Reuses :func:`classify_required_receipts` (same subject, same inheritance
     rules as the readiness block the reviewer saw); never raises.
+
+    Waivers (ADR 0192). This builder is the **single owner** of which durable
+    waiver may excuse a gap, and it excuses exactly what the Stage-6 delivery
+    assessment excuses (:mod:`pipeline.verification_delivery`): a
+    ``phase_handoff_waiver`` read through
+    :func:`pipeline.verification_waiver.collect_gate_waivers` whose gate command
+    matches ``command`` exactly, and only for a ``failed`` / ``missing`` receipt.
+    A general "continue with waiver" over reviewer findings carries no gate
+    command and excuses nothing — accepting a critique is not evidence that a
+    required command ran. ``stale`` / ``unverifiable`` are never waivable: a
+    waiver accepts a *known* failure, not subject drift. Callers must not add a
+    second waiver rule on top of this one, or the closing gate and the delivery
+    guard will disagree.
     """
     if plan is None:
         try:
@@ -771,6 +794,14 @@ def required_receipt_gaps(
         status_by_command,
         policy_by_command,
     )
+    # Verification-gate waivers (ADR 0192), read the same way the Stage-6
+    # delivery assessment reads them so the two authorities cannot disagree.
+    try:
+        from pipeline.verification_waiver import collect_gate_waivers
+
+        waivers = collect_gate_waivers(extras)
+    except Exception:  # noqa: BLE001 — gaps must never raise outward
+        waivers = {}
     gaps: list[dict[str, Any]] = []
     for command, classification in status_by_command.items():
         if classification.status == "present":
@@ -778,6 +809,11 @@ def required_receipt_gaps(
         # Only an effective ``require`` gap is a release blocker; warn/suggest are
         # shipping-allowed and manual_only is never a gap (ADR 0090).
         if consequences.get(command) != "required_action":
+            continue
+        # An operator waiver naming THIS gate excuses an accepted failure or a
+        # deliberately skipped run. A general waiver carries no gate command and
+        # never lands here; a stale/unverifiable receipt is never excused.
+        if classification.status in ("failed", "missing") and command in waivers:
             continue
         run_decl = (contract.commands.get(command) or {}).get("run", "")
         if isinstance(run_decl, (list, tuple)):
@@ -791,6 +827,55 @@ def required_receipt_gaps(
             )
         )
     return gaps
+
+
+#: Risk text for a run whose criterion facts cannot be read. It is a *gap*,
+#: never an absent matrix: unreadable proof is unproven proof.
+CRITERION_INTEGRITY_RISK = "acceptance criterion evidence is unreadable"
+
+
+def criterion_release_gaps(run_dir: Path | str) -> list[dict[str, Any]]:
+    """Release gaps for blocking criterion rows (ADR 0188 §3).
+
+    An unproven executable criterion or a pending/rejected human criterion is a
+    declared, machine-checkable gap: it must reach the release verdict even
+    when the reviewer model omits it. Agent assertions are advisory and never
+    appear here.
+
+    This is deliberately **separate** from :func:`required_receipt_gaps`. That
+    backstop is scoped to a declared verification contract and is excused only
+    by an operator waiver naming that exact gate command (ADR 0192); a criterion
+    gap is neither scoped to a contract nor waivable at all. A run with no
+    contract still has criteria, and no waiver — general or per-gate — is the
+    per-criterion human decision an ADR 0188 ``human`` criterion requires.
+
+    Empty only for a run whose plan artifact is genuinely absent. Unreadable
+    durable facts produce one blocking integrity gap — never silence.
+    """
+    from pipeline.criterion_evidence import criterion_matrix_for_run
+
+    try:
+        matrix = criterion_matrix_for_run(run_dir)
+    except Exception as e:  # noqa: BLE001 — surfaced as a gap, never swallowed
+        return [{
+            "risk": CRITERION_INTEGRITY_RISK,
+            "missing_evidence": str(e),
+            "required_check": (
+                "Repair or restore the run's plan, claim, and decision "
+                "artifacts so the criterion matrix can be rebuilt."
+            ),
+        }]
+    if matrix is None:
+        return []
+    return [
+        {
+            "risk": f"acceptance criterion {row.criterion_id} is {row.state}",
+            "missing_evidence": row.reason or row.intent,
+            "required_check": row.intent,
+        }
+        for row in matrix.rows
+        if row.blocking
+    ]
 
 
 def _is_russian(language: str | None) -> bool:
@@ -948,6 +1033,8 @@ def build_final_acceptance_readiness(
             project=str(getattr(ctx, "project", "") or ""),
         )
 
+    criterion_summary, criterion_gaps = _criterion_readiness(run_dir)
+
     return ReadinessSummary(
         env_statuses=env_statuses,
         gate_statuses=gate_statuses,
@@ -965,7 +1052,36 @@ def build_final_acceptance_readiness(
         policy_by_command=tuple(policy_by_command.items()),
         consequence_by_command=tuple(consequences.items()),
         operator_gaps=operator_gaps,
+        criterion_summary=criterion_summary,
+        criterion_gaps=criterion_gaps,
     )
+
+
+def _criterion_readiness(
+    run_dir: Path | str,
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """Consume the criterion reducer's summary; never re-derive its states.
+
+    Returns ``(summary_dict_or_None, blocking_gap_lines)``. Only a genuinely
+    absent plan artifact yields ``(None, ())``, keeping the readiness block
+    unchanged for every run predating the criterion contract. A corrupt plan,
+    claim log, or decision journal yields a **blocking** integrity gap instead
+    of vanishing.
+    """
+    from pipeline.criterion_evidence import criterion_matrix_for_run
+
+    try:
+        matrix = criterion_matrix_for_run(run_dir)
+    except Exception as e:  # noqa: BLE001 — surfaced as a gap, never swallowed
+        return None, (f"{CRITERION_INTEGRITY_RISK}: {e}",)
+    if matrix is None:
+        return None, ()
+    gaps = tuple(
+        f"{row.criterion_id} {row.state}: {row.reason or row.intent}"
+        for row in matrix.rows
+        if row.blocking
+    )
+    return matrix.summary.to_dict(), gaps
 
 
 def render_readiness_block(summary: ReadinessSummary) -> str | None:
@@ -1036,6 +1152,11 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
             for name in summary.operator_gaps
         )
 
+    # ADR 0188: the criterion matrix as the reviewer sees it. Absent — and thus
+    # byte-identical to a pre-contract run — when the run has no accepted plan.
+    if summary.criterion_summary is not None:
+        _criterion_section(lines, summary)
+
     lines.append("  Exploratory commands:")
     if summary.exploratory_count:
         lines.append(
@@ -1072,6 +1193,10 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
         [f"missing required: {c}" for c in require_missing]
         + [f"failed required: {c}" for c in require_failed]
         + [f"stale required: {item}" for item in require_stale]
+        # A blocking criterion row is a first-class readiness gap: an
+        # unproven executable criterion or a pending/rejected human criterion
+        # cannot be shipped past by continuing the phase (ADR 0188 §3).
+        + [f"open criterion: {item}" for item in summary.criterion_gaps]
     )
     lines.append("  Remaining before ready:")
     if remaining:
@@ -1116,6 +1241,27 @@ def render_readiness_block(summary: ReadinessSummary) -> str | None:
 
 
 # ── Internals ────────────────────────────────────────────────────────────────
+
+
+def _criterion_section(lines: list[str], summary: ReadinessSummary) -> None:
+    """Render the consumed criterion summary. Never recomputes a state."""
+    criterion = summary.criterion_summary or {}
+    lines.append("  Acceptance criteria:")
+    counts = criterion.get("counts_by_state") or {}
+    if counts:
+        lines.append(
+            "    "
+            + ", ".join(f"{state} {count}" for state, count in counts.items())
+        )
+    else:
+        lines.append("    (none declared)")
+    if summary.criterion_gaps:
+        lines.extend(f"    open: {item}" for item in summary.criterion_gaps)
+    pending = criterion.get("pending_human_ids") or []
+    if pending:
+        lines.append(
+            "    awaiting operator decision: " + ", ".join(pending),
+        )
 
 
 def _annotate_gap(text: str, policy: str, consequence: str | None = None) -> str:

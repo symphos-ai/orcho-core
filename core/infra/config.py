@@ -610,7 +610,7 @@ def agent_idle_timeout(runtime: str) -> int | None:
 
 # ── Codex model ──────────────────────────────────────────────────────────────
 # Codex CLI review model. Passed as config key: -c model="<value>".
-CODEX_MODEL = os.environ.get("CODEX_MODEL", phase_model("review_changes", "gpt-5.5"))
+CODEX_MODEL = os.environ.get("CODEX_MODEL", phase_model("review_changes", "gpt-5.6-sol"))
 
 
 # ── AppConfig: lazy, immutable singleton (C1 fix) ────────────────────────────

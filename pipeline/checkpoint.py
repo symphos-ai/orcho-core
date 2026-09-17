@@ -410,3 +410,46 @@ class CheckpointStore:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+# ── Read-only probe (no store construction) ───────────────────────────────────
+
+
+def read_run_config(
+    db_path: str | Path, run_id: str
+) -> dict[str, Any] | None:
+    """Return ``run_meta.config_json`` for ``run_id``, or None.
+
+    Deliberately a module-level probe rather than a
+    :class:`CheckpointStore` method: constructing the store *creates*
+    ``checkpoints.db`` (and its parent directory) and applies the schema.
+    A launcher that only wants to read back what a prior subprocess
+    recorded must not fabricate a checkpoint store for a run that never
+    wrote one, so this opens the existing file read-only and returns None
+    for a missing / unreadable / row-less store.
+
+    This keeps ``run_meta`` schema knowledge inside this module — callers
+    ask for the persisted config, they do not learn the table shape.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT config_json FROM run_meta WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        config = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return config if isinstance(config, dict) else None

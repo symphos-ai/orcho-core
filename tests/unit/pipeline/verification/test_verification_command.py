@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from pipeline.verification_command import run_command
 from pipeline.verification_contract import (
@@ -87,6 +90,22 @@ class TestRunCommandBasics:
 
         assert receipt["exit_code"] == 3
 
+    def test_empty_command_receipt_shape(self, tmp_path: Path) -> None:
+        # C5: an empty ``run`` declaration produces no argv, so _execute short
+        # -circuits to the ``empty`` outcome with no exit code and empty tails.
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        contract = _contract(commands={"nothing": {"run": ""}})
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        receipt = run_command("nothing", contract.commands["nothing"], contract, ctx)
+
+        assert receipt["outcome"] == "empty"
+        assert receipt["exit_code"] is None
+        assert receipt["stdout_tail"] == ""
+        assert receipt["stderr_tail"] == ""
+        assert receipt["detail"] == "empty command (nothing to run)"
+
     def test_missing_binary_does_not_raise(self, tmp_path: Path) -> None:
         checkout = tmp_path / "co"
         _init_repo(checkout)
@@ -139,6 +158,161 @@ class TestCommandTimeout:
 
         assert receipt["exit_code"] is None
         assert "timed out after 1s" in receipt["detail"]
+
+    def test_timeout_preserves_flushed_stdout_and_stderr(
+        self, tmp_path: Path,
+    ) -> None:
+        """C1/C2/C4: a child that flushes distinct stdout/stderr markers before
+        exceeding a bounded timeout yields both markers in the respective
+        receipt tails and in the on-disk log, while outcome stays ``timeout``
+        and exit_code stays ``None`` (even when the output contains 'passed')."""
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        # The child writes a distinct marker to each stream, flushes both, then
+        # sleeps well past the declared timeout so the kill happens after the
+        # bytes are captured. 'passed' is embedded to prove it never flips the
+        # execution outcome.
+        child = (
+            "import sys, time; "
+            "sys.stdout.write('OUTMARKER passed\\n'); sys.stdout.flush(); "
+            "sys.stderr.write('ERRMARKER\\n'); sys.stderr.flush(); "
+            "time.sleep(30)"
+        )
+        contract = _contract(commands={
+            "hang": {"run": ["python", "-c", child], "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+
+        receipt = run_command(
+            "hang", contract.commands["hang"], contract, ctx, log_dir=log_dir,
+        )
+
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert receipt["duration_s"] < 30
+        assert "OUTMARKER passed" in receipt["stdout_tail"]
+        assert "ERRMARKER" in receipt["stderr_tail"]
+
+        # Read the saved log back from disk: both markers present and stdout vs
+        # stderr remain distinguishable via the stderr divider.
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "OUTMARKER passed" in log_text
+        assert "ERRMARKER" in log_text
+        assert "--- stderr ---" in log_text
+        assert log_text.index("OUTMARKER") < log_text.index("--- stderr ---")
+        assert log_text.index("--- stderr ---") < log_text.index("ERRMARKER")
+
+    def test_timeout_tail_is_bounded_but_log_retains_full_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """C2: a short ``tail_chars`` bounds the receipt tail while the on-disk
+        log keeps the full captured output."""
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        child = (
+            "import sys, time; "
+            "sys.stdout.write('A' * 500 + 'ZEND\\n'); sys.stdout.flush(); "
+            "time.sleep(30)"
+        )
+        contract = _contract(commands={
+            "hang": {"run": ["python", "-c", child], "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+
+        receipt = run_command(
+            "hang", contract.commands["hang"], contract, ctx,
+            log_dir=log_dir, tail_chars=10,
+        )
+
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        # The tail is bounded to the trailing 10 chars (the end of the marker).
+        assert len(receipt["stdout_tail"]) == 10
+        assert "ZEND" in receipt["stdout_tail"]
+        # The full output survives on disk, tail bounding notwithstanding.
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "A" * 500 + "ZEND" in log_text
+
+
+class TestStreamCoercion:
+    """C3: normalisation of timeout-carried stdout/stderr shapes must never
+    crash receipt/log construction and must not repr-wrap bytes.
+
+    These use a fake streaming boundary (monkeypatched ``run_bounded``) so the
+    exact captured-stream shape is controlled; only the normalisation is under
+    test here, not the real kill path."""
+
+    def _run_with_timeout_streams(
+        self, tmp_path, monkeypatch, *, stdout, stderr,
+    ):
+        from pipeline import verification_command
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+
+        def fake_run_bounded(*args, **kwargs):
+            return verification_command.TimedOut(
+                stdout=stdout, stderr=stderr, returncode=None,
+                reap_exhausted=False,
+            )
+
+        monkeypatch.setattr(
+            verification_command, "run_bounded", fake_run_bounded,
+        )
+        contract = _contract(commands={"c": {"run": "python -c \"pass\"", "timeout": 1}})
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+        log_dir = tmp_path / "logs"
+        return run_command(
+            "c", contract.commands["c"], contract, ctx, log_dir=log_dir,
+        )
+
+    def test_bytes_streams_are_decoded(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout=b"hello out", stderr=b"hello err",
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert "hello out" in receipt["stdout_tail"]
+        assert "hello err" in receipt["stderr_tail"]
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "b'" not in log_text
+
+    def test_str_streams_pass_through(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout="str out", stderr="str err",
+        )
+        assert "str out" in receipt["stdout_tail"]
+        assert "str err" in receipt["stderr_tail"]
+
+    def test_none_streams_become_empty(self, tmp_path, monkeypatch) -> None:
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch, stdout=None, stderr=None,
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert receipt["stdout_tail"] == ""
+        assert receipt["stderr_tail"] == ""
+
+    def test_invalid_encoded_bytes_do_not_crash_or_repr_wrap(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        # Incomplete/invalid utf-8 sequences must decode lossily, not raise.
+        receipt = self._run_with_timeout_streams(
+            tmp_path, monkeypatch,
+            stdout=b"valid\xff\xfe tail", stderr=b"\x80\x81",
+        )
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        assert "valid" in receipt["stdout_tail"]
+        # No repr-style wrapping leaked into text.
+        assert "b'" not in receipt["stdout_tail"]
+        assert "b'" not in receipt["stderr_tail"]
+        log_text = Path(receipt["log_path"]).read_text(encoding="utf-8")
+        assert "b'" not in log_text
 
 
 class TestPythonTokenAndCwd:
@@ -285,6 +459,284 @@ class TestDependencyProvenance:
         receipt = run_command("noop", contract.commands["noop"], contract, ctx)
 
         assert receipt["dependencies"] == []
+
+
+class TestStreamingProgress:
+    """ADR 0190: run_command streams live ``gate.progress`` while the command
+    runs, without changing the settled receipt. These pin the producer side:
+    a separate reader observes the active gate + both stream markers via the
+    SDK reader WHILE the child is still blocked on a release sentinel.
+    """
+
+    def _release_child(self, sentinel: Path) -> str:
+        # Flush distinguishable markers on each stream, then poll a sentinel with
+        # a bounded fallback deadline. While waiting it dribbles output on both
+        # streams so the aggregator keeps coalescing (markers stay in the tails).
+        return (
+            "import sys, time, pathlib\n"
+            "sys.stdout.write('OUTMARKER\\n'); sys.stdout.flush()\n"
+            "sys.stderr.write('ERRMARKER\\n'); sys.stderr.flush()\n"
+            f"sentinel = pathlib.Path({str(sentinel)!r})\n"
+            "deadline = time.time() + 20\n"
+            "while not sentinel.exists() and time.time() < deadline:\n"
+            "    sys.stdout.write('.'); sys.stdout.flush()\n"
+            "    sys.stderr.write('.'); sys.stderr.flush()\n"
+            "    time.sleep(0.1)\n"
+        )
+
+    @pytest.mark.slow_process
+    def test_reader_sees_active_gate_and_both_markers_before_release(
+        self, tmp_path: Path,
+    ) -> None:
+        import threading
+
+        from core.observability import events as _events
+        from pipeline.verification_progress import build_gate_progress_context
+        from sdk.gate_progress import read_active_gate_progress
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "20260101_000000"
+        run_dir.mkdir(parents=True)
+        sentinel = tmp_path / "release.sentinel"
+
+        contract = _contract(commands={
+            "unit": {"run": ["python", "-c", self._release_child(sentinel)],
+                     "timeout": 60},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        _events.init_event_store(run_dir)
+        # Deliberately leave the global phase context cleared (as it is when an
+        # after_phase gate runs, post phase.end) to prove the gate's own phase is
+        # stamped on the event from the progress context, not seeded here.
+        _events.set_phase(None)
+        progress = build_gate_progress_context(
+            invocation_id="inv-1", name="unit", hook="after_phase",
+            phase="implement",
+        )
+
+        result: dict = {}
+
+        def _run() -> None:
+            result["receipt"] = run_command(
+                "unit", contract.commands["unit"], contract, ctx,
+                required=True, progress=progress,
+            )
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        try:
+            snap = None
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                snap = read_active_gate_progress(
+                    "20260101_000000", runs_dir=str(runs_dir),
+                )
+                if (
+                    snap is not None
+                    and "OUTMARKER" in snap.stdout_tail
+                    and "ERRMARKER" in snap.stderr_tail
+                ):
+                    break
+                time.sleep(0.1)
+            # Acceptance A: the active gate is observable, correctly identified,
+            # and carries both stream markers WHILE the child is still blocked.
+            assert snap is not None, "no active gate observed before release"
+            assert snap.command == "unit"
+            assert snap.invocation_id == "inv-1"
+            # Phase came from the gate context, not the (cleared) global context.
+            assert snap.phase == "implement"
+            assert snap.execution_state == "running"
+            assert snap.exit_code is None
+            assert snap.has_output is True
+            assert "OUTMARKER" in snap.stdout_tail
+            assert "ERRMARKER" in snap.stderr_tail
+            assert worker.is_alive(), "child settled before the reader released it"
+        finally:
+            sentinel.write_text("go", encoding="utf-8")
+            worker.join(timeout=15)
+            _events.init_event_store(None)
+
+        assert not worker.is_alive()
+        receipt = result["receipt"]
+        assert receipt["outcome"] == "completed"
+        assert receipt["exit_code"] == 0
+        assert "OUTMARKER" in receipt["stdout_tail"]
+        assert "ERRMARKER" in receipt["stderr_tail"]
+
+    @pytest.mark.slow_process
+    def test_no_active_gate_once_run_is_terminal(self, tmp_path: Path) -> None:
+        """The reader never advertises a finished command as running: once the
+        run records ``run.end`` there is no active gate to project."""
+        from core.observability import events as _events
+        from pipeline.verification_progress import build_gate_progress_context
+        from sdk.gate_progress import read_active_gate_progress
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "20260101_000001"
+        run_dir.mkdir(parents=True)
+
+        contract = _contract(commands={
+            "unit": {"run": ["python", "-c", "print('quick')"]},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        _events.init_event_store(run_dir)
+        _events.set_phase("IMPLEMENT")
+        try:
+            run_command(
+                "unit", contract.commands["unit"], contract, ctx,
+                required=True,
+                progress=build_gate_progress_context(
+                    invocation_id="inv-x", name="unit",
+                ),
+            )
+            _events.emit("run.end", status="done")
+        finally:
+            _events.init_event_store(None)
+
+        assert read_active_gate_progress(
+            "20260101_000001", runs_dir=str(runs_dir),
+        ) is None
+
+    @pytest.mark.slow_process
+    def test_silent_command_is_observable_as_an_active_gate(
+        self, tmp_path: Path,
+    ) -> None:
+        """A gate that produces no output still publishes an initial
+        ``gate.progress`` (has_output=False) so a slow silent gate is
+        distinguishable from no active gate (F1)."""
+        from core.observability import events as _events
+        from pipeline.verification_progress import build_gate_progress_context
+        from sdk.gate_progress import read_active_gate_progress
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "20260101_000002"
+        run_dir.mkdir(parents=True)
+
+        # A real, output-free command: the executor must emit progress up front,
+        # not wait for bytes that never come.
+        contract = _contract(commands={
+            "unit": {"run": ["python", "-c", "import time; time.sleep(0.3)"]},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        _events.init_event_store(run_dir)
+        _events.set_phase(None)
+        try:
+            run_command(
+                "unit", contract.commands["unit"], contract, ctx,
+                required=True,
+                progress=build_gate_progress_context(
+                    invocation_id="inv-silent", name="unit",
+                    hook="after_phase", phase="implement",
+                ),
+            )
+            events = _events.read_all(run_dir)
+        finally:
+            _events.init_event_store(None)
+
+        progress = [e for e in events if e.kind == "gate.progress"]
+        assert progress, "silent command emitted no gate.progress at all"
+        assert progress[0].payload["has_output"] is False
+        assert progress[0].payload["name"] == "unit"
+        assert progress[0].payload["invocation_id"] == "inv-silent"
+        # No gate.end / run.end were written, so the reader surfaces the active
+        # (silent) gate rather than None.
+        snap = read_active_gate_progress("20260101_000002", runs_dir=str(runs_dir))
+        assert snap is not None
+        assert snap.command == "unit"
+        assert snap.has_output is False
+        assert snap.phase == "implement"
+
+    @pytest.mark.slow_process
+    def test_progress_event_carries_gate_phase_when_global_context_cleared(
+        self, tmp_path: Path,
+    ) -> None:
+        """After ``phase.end`` clears the global phase context, an after_phase
+        gate's ``gate.progress`` must still carry the gate's phase on the
+        top-level ``Event.phase`` (F4), not ``null``."""
+        from core.observability import events as _events
+        from pipeline.verification_progress import build_gate_progress_context
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        runs_dir = tmp_path / "runs"
+        run_dir = runs_dir / "20260101_000003"
+        run_dir.mkdir(parents=True)
+
+        contract = _contract(commands={
+            "unit": {"run": ["python", "-c", "print('out')"]},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        _events.init_event_store(run_dir)
+        _events.set_phase(None)  # the post-phase.end reality.
+        try:
+            run_command(
+                "unit", contract.commands["unit"], contract, ctx,
+                required=True,
+                progress=build_gate_progress_context(
+                    invocation_id="inv-phase", name="unit",
+                    hook="after_phase", phase="implement",
+                ),
+            )
+            events = _events.read_all(run_dir)
+        finally:
+            _events.init_event_store(None)
+
+        progress = [e for e in events if e.kind == "gate.progress"]
+        assert progress
+        assert all(e.phase == "implement" for e in progress)
+        # The wire contract keeps phase on Event.phase, never in the payload.
+        assert all("phase" not in e.payload for e in progress)
+
+
+class TestCancellationKillsTree:
+    @pytest.mark.slow_process
+    def test_timeout_leaves_no_surviving_grandchild(self, tmp_path: Path) -> None:
+        """Cancellation via the hard timeout kills the whole process tree: a
+        grandchild that would write a marker after the kill never does
+        (process-tree kill, marker-file idiom)."""
+        import sys as _sys
+
+        checkout = tmp_path / "co"
+        _init_repo(checkout)
+        marker = tmp_path / "grandchild.marker"
+        gc_script = tmp_path / "gc.py"
+        gc_script.write_text(
+            "import pathlib, time\n"
+            "time.sleep(4)\n"
+            f"pathlib.Path({str(marker)!r}).write_text('alive')\n",
+            encoding="utf-8",
+        )
+        child = (
+            "import subprocess, sys, time\n"
+            f"subprocess.Popen([sys.executable, {str(gc_script)!r}])\n"
+            "sys.stdout.write('SPAWNED\\n'); sys.stdout.flush()\n"
+            "time.sleep(30)\n"
+        )
+        contract = _contract(commands={
+            "hang": {"run": [_sys.executable, "-c", child], "timeout": 1},
+        })
+        ctx = PlaceholderContext(checkout=str(checkout), project=str(checkout))
+
+        receipt = run_command("hang", contract.commands["hang"], contract, ctx)
+
+        assert receipt["outcome"] == "timeout"
+        assert receipt["exit_code"] is None
+        # Give the grandchild's would-be write its chance to land.
+        time.sleep(5)
+        assert not marker.exists(), (
+            "grandchild survived the gate timeout kill — process-tree "
+            "SIGKILL did not propagate"
+        )
 
 
 class TestGitProvenanceCwd:

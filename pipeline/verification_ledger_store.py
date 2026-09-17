@@ -69,10 +69,17 @@ class ScheduledGateLedger:
             raise LedgerStoreError("finalized scheduled-gate ledger cannot be updated")
         return replace(self, trail=(*self.trail, event))
 
-    def finalize(self) -> ScheduledGateLedger:
-        if self.finalized:
-            return self
-        rows = tuple(
+    def reduced_rows(self) -> tuple[GateLedgerRow, ...]:
+        """Every row closed from the trail as it stands right now.
+
+        ``rows`` carries the disposition persisted at the last finalize; until
+        then it still reads the run-setup ``residual_missing`` even after the
+        trail has recorded an execution. Readers that need the live answer
+        (the criterion matrix behind ``final_acceptance``) must reduce from
+        the trail, and they must do it with exactly the reducer ``finalize``
+        uses, or the mid-run and end-of-run views of the same ledger diverge.
+        """
+        return tuple(
             replace(
                 row,
                 disposition=reduce_disposition(row, self.trail),
@@ -80,7 +87,11 @@ class ScheduledGateLedger:
             )
             for row in self.rows
         )
-        return replace(self, rows=rows, finalized=True)
+
+    def finalize(self) -> ScheduledGateLedger:
+        if self.finalized:
+            return self
+        return replace(self, rows=self.reduced_rows(), finalized=True)
 
 
 def ledger_path(run_dir: Path) -> Path:

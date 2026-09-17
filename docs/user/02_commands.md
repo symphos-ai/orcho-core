@@ -45,6 +45,10 @@ the full argparse dump for every subcommand.
 | `orcho workspace init` | Connect a project or initialise a shared workspace; interactive terminals may offer starter project plugin-configs |
 | `orcho workspace mcp` | Print the complete read-only MCP client setup for a resolved workspace |
 | `orcho repair-state` | Inspect and safely apply known run-state repairs |
+| `orcho reconcile-delivery` | Record a delivery commit a run stopped without recording (dry-run by default) |
+| `orcho delivery gate` | Read-only projection of a parked delivery gate: kind, decidable, available / blocked actions, gate facts; exit 0 decidable, 3 not decidable right now, 1 no gate |
+| `orcho delivery decide` | Resolve a parked delivery gate with `approve` / `apply` / `skip` / `halt` / `fix` through the SDK executor; exit 0 accepted, 1 refused, 2 usage error |
+| `orcho update` | Upgrade Orcho via the manager that installed it |
 
 ---
 
@@ -54,7 +58,7 @@ Use the inspection commands by question, not by file shape:
 
 | Question | Command | Leads with |
 |----------|---------|------------|
-| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths |
+| What is happening / what should I do next? | `orcho status` | current state, phase progress, attention signals, delivery state, paths; `--json` for one machine-readable object |
 | What happened / what proves it? | `orcho evidence` | proof summary; use `--view full` for the plan, task/DAG shape, phase timeline, receipts, findings, and acceptance |
 | How much did it consume? | `orcho metrics`, `orcho cost` | tokens, time, retries, cost-reference usage |
 | What changed? | `orcho diff` | captured patch, preview, stats, path filtering |
@@ -78,7 +82,8 @@ orcho run --task "Task description" --project /path/to/project
 --mock                # simulation without API calls; can create a mock artifact for the review loop
 --mock-review-reject 1 # mock-only: reject one review, then repair and approve
 --dry-run             # print what would happen, change nothing
---max-rounds 2        # how many implement/review/repair rounds (default: 1)
+--max-rounds 2        # how many implement/review/repair rounds (default: 1;
+                      #   inherited from the run on --resume, see below)
 --workspace /path     # explicit workspace (default: $ORCHO_WORKSPACE / cwd discovery)
 --output summary      # summary (default) | live | debug — transcript mode
 --stream-output       # alias for --output live
@@ -121,6 +126,11 @@ orcho run --from-run-plan 20260610_144938 --project ./api
 
 - `--resume` continues an interrupted or paused run from its checkpoint,
   skipping phases that already completed.
+- A resume continues the run you started; it does not re-negotiate it. If
+  you omit `--max-rounds`, the resumed run keeps the budget it was
+  started with (Orcho prints the inherited value). Pass `--max-rounds`
+  explicitly to change the budget for the rest of the run — an explicit
+  value always wins over the inherited one.
 - `--from-run-plan` starts a **new** run that inherits the parsed plan
   of a parent run: the profile skips its leading plan + validate_plan
   block and starts at implement. Mutually exclusive with `--resume`.
@@ -168,9 +178,9 @@ The same routing is available permanently through environment
 variables:
 
 ```bash
-export MODEL_PLAN='claude-opus-4-8[1m]'
-export MODEL_IMPLEMENT='claude-opus-4-8[1m]'
-export MODEL_REVIEW_CHANGES=gpt-5.5
+export MODEL_PLAN='claude-fable-5-1[1m]'
+export MODEL_IMPLEMENT='claude-opus-5[1m]'
+export MODEL_REVIEW_CHANGES=gpt-5.6-sol
 export RUNTIME_REVIEW_CHANGES=codex
 ```
 
@@ -292,16 +302,119 @@ surface, `--from-run-plan`, `--no-worktree-isolation`, `--attach`,
 ```bash
 orcho status              # latest run
 orcho status <run-id>     # a specific run by id
+orcho status <run-id> -v  # also dump the durable meta record
+orcho status <run-id> --json  # machine-readable snapshot + next step
 ```
 
 Output:
 ```
-Run: 20260503_104135
-Status: DONE ✓
-Phases: plan ✓  implement ✓  review_changes ✓  final_acceptance ✓
-Gates: passed x2  skipped x1
-Duration: 4m 32s
+  Run:     20260503_104135
+  Project: project
+  Task:    Add health endpoint
+  Status:  done
+  Profile: feature
+  Time:    2026-05-03T10:41:35
+
+  Phases completed: plan, implement, review_changes, final_acceptance
+
+  Paths:
+    Source:   /path/to/project
+    Run dir:  /path/to/workspace/runspace/runs/20260503_104135
+
+  Next: inspect only — orcho evidence 20260503_104135
 ```
+
+The output ends with a `Next:` block: the operator's next step, derived
+from the run diagnosis (`sdk.run_control.run_diagnosis`, the same read-model
+MCP exposes). `orcho status` asks that one owner exactly once per invocation
+and prints what it says; it never classifies the run on its own, so the
+`Stalled:` line, the `Next:` block, and MCP can never disagree. Typical
+shapes:
+
+| Run situation | `Next:` |
+|---------------|---------|
+| parked delivery gate | `decide the parked delivery gate — orcho delivery decide <run-id> <action>`, then an indented `available actions: approve, apply, skip, halt` line taken from the gate state and a pointer to `orcho delivery gate <run-id>` |
+| correction gate that dead-ended | the diagnosis reason, which already names the follow-up run to start |
+| delivery commit in Git the run does not record | `record the existing delivery commit — orcho reconcile-delivery <run-id> --commit <sha> --apply` |
+| paused phase handoff | `decide the pending phase handoff <handoff-id> (actions: …) then orcho run --resume <run-id>` |
+| `running` record whose process is gone | a `Stalled:` line with the reason, and `Next: orcho repair-state <run-id>` |
+| resumable stop (`halted` / `failed` / `interrupted`) | `orcho run --resume <run-id>` |
+| terminal run, or one closed by a successful follow-up | `inspect only — orcho evidence <run-id>` (never a resume) |
+| active run | no `Next:` block |
+
+The diagnosis is an enrichment. If it cannot be computed the rest of the
+status is printed unchanged and the block degrades to
+`Next: (diagnosis unavailable: <reason>)` — no traceback, exit code `0`.
+
+### `--json`
+
+For scripts and agents. `orcho status <run-id> --json` writes exactly one
+JSON object to stdout and exits `0`. Keys are sorted, nothing is ever
+painted (no ANSI escapes, even where color is forced), and the object is
+built from the same single `run_diagnosis` call the text report uses — the
+two surfaces cannot disagree.
+
+Top-level keys; every one is always present, `null` standing in for absence:
+
+| Key | Value |
+|-----|-------|
+| `run_id` | the resolved run id |
+| `run_dir` | absolute path to the run directory |
+| `status` | the full `RunStatus` projection — the same payload MCP's `orcho_run_status` returns, including `meta`, `run_ref`, `sub_projects`, `quality_gates`, `worktree`, `raw_meta`, `raw_metrics`, `next_actions`, `continuation_decision`, `artefacts`, the `total_*` usage fields, and `last_event_seq` / `last_event_ts` |
+| `stalled_reason` | the `Stalled:` line's reason when a `running` record's process is gone, else `null` |
+| `diagnosis` | the full `RunDiagnosis` projection from `sdk.run_control.run_diagnosis` — the same read-model MCP's `orcho_run_diagnose` returns; `null` when the diagnosis could not be computed |
+| `diagnosis_error` | `"<ExcType>: <message>"` when the diagnosis failed, else `null` |
+| `next_step` | the structured form of the `Next:` block (below) |
+
+`next_step` fields:
+
+| Field | Value |
+|-------|-------|
+| `condition` | `diagnosis.condition` — `stalled`, `needs_decision`, `resume_inert_terminal`, … |
+| `action` | `diagnosis.recommended_next_action`, the typed next step |
+| `run_id` | `diagnosis.recommended_run_id` when the diagnosis redirects to another run (a child, a source run), else the run's own id |
+| `available_actions` | the decidable actions for a parked delivery gate or a pending handoff; `[]` otherwise |
+| `handoff_id` | the pending phase handoff's id, else `null` |
+| `lines` | exactly the lines the text `Next:` block prints — empty for an active run, one `(diagnosis unavailable: …)` line when the diagnosis failed |
+
+Without a diagnosis every `next_step` field except `lines` is `null` / `[]`.
+
+A `done` run, abbreviated:
+
+```json
+{
+  "diagnosis": {
+    "condition": "resume_inert_terminal",
+    "reason": "run is terminal (status=done); resume is inert",
+    "recommended_next_action": "start_followup",
+    "run_id": "20260503_104135",
+    "status": "done"
+  },
+  "diagnosis_error": null,
+  "next_step": {
+    "action": "start_followup",
+    "available_actions": [],
+    "condition": "resume_inert_terminal",
+    "handoff_id": null,
+    "lines": ["inspect only — orcho evidence 20260503_104135"],
+    "run_id": "20260503_104135"
+  },
+  "run_dir": "/path/to/workspace/runspace/runs/20260503_104135",
+  "run_id": "20260503_104135",
+  "stalled_reason": null,
+  "status": { "meta": { "status": "done", "...": "..." }, "...": "..." }
+}
+```
+
+Caveats:
+
+- `-v` does not affect the JSON. The durable meta record it dumps in text
+  mode is already inside `status`, so both forms emit the same object.
+- An empty workspace or an unknown run id leaves stdout empty: the
+  `No run found…` / `Runs dir: …` lines go to stderr and the exit code is
+  `1`, the same as in text mode. A parse of stdout never sees prose.
+- A failed diagnosis is data, not an error: `diagnosis` is `null`,
+  `diagnosis_error` carries the reason, and the exit code stays `0`.
 
 ---
 
@@ -476,3 +589,89 @@ orcho prompts tasks/plan --verbose
 Inspect and safely apply known repairs to run state (for example after
 an interrupted process). Read `orcho repair-state --help` before using
 it; repairs are explicit and listed, never guessed.
+
+---
+
+## `orcho delivery` — decide a parked delivery gate
+
+A run whose delivery is deferred finishes its phases and parks: the diff is
+held in the run's worktree, `meta.status` is `halted` with
+`halt_reason=commit_delivery_pending`, and nothing has touched the target
+checkout. `orcho status` reports such a run with a `Next:` pointing here.
+
+```bash
+orcho delivery gate <run-id>                    # read-only: what may be decided
+orcho delivery gate <run-id> --json             # one JSON object on stdout
+orcho delivery decide <run-id> approve --note "reviewed the diff by hand"
+orcho delivery decide <run-id> halt --json      # give up; the worktree is kept
+```
+
+`gate` prints the gate exactly as core projects it: the gate kind
+(`delivery` or `correction`), whether it is decidable, the actions that are
+available and the ones a guard currently blocks, the default action, the
+reason for any block, and the persisted gate facts (checkout, baseline ref,
+changed and untracked paths, scope blocker). Exit `0` when the gate is
+decidable, `3` when a gate exists but cannot be decided right now (a stopped
+run that must be resumed first, or a gate with every shipping action
+blocked), `1` when the run has no gate.
+
+`decide` applies one action — `approve`, `apply`, `skip`, `halt`, or `fix` —
+through the same SDK executor MCP uses (`sdk.run_control.decide_delivery`).
+The gate state and every refusal are computed by core: the release verdict,
+required verification, and delivery scope guards the live run enforced are
+re-checked before anything is written, and the CLI never overrides or
+pre-filters them. A refusal is printed with core's `blocker` and `reason`.
+When those preliminary checks refuse the action (for example
+`release_blocked`, `verification_required`, or `status_not_stopped`), nothing
+is written: the run, the checkout, and the durable record stay as they were.
+A failure that happens while an accepted action is executing is different: a
+commit error after the diff was applied (`commit_failed`) or a dirty target
+(`target_dirty`) is also reported with `accepted: false` and exit `1`, but the
+checkout may already carry the applied changes and the run is re-parked with
+its new `commit_delivery` record, so read the printed result and the run
+artifacts before acting again. Exit `0` when the decision was accepted, `1`
+when core refused or failed it, `2` on a usage error (unknown run, invalid
+action). With `--json` both subcommands print a
+single JSON object on stdout; errors go to stderr.
+
+`orcho run --resume` is not the way to resolve this gate: resuming a
+producer-parked run only parks the same gate again. Decide it here (or via
+MCP), then `orcho status` shows the run as `done` with no resume hint.
+
+---
+
+## `orcho update` — upgrade the installed CLI
+
+Orcho ships as an ordinary Python distribution, so the correct upgrade command
+depends on which installer owns the environment the CLI runs from. `orcho
+update` resolves that ownership from on-disk evidence and delegates to the
+detected manager.
+
+```bash
+orcho update            # detect the install, then upgrade through its manager
+orcho update --dry-run  # report the install and the command, change nothing
+```
+
+| Detected install | Upgrade command |
+|---|---|
+| pipx venv | `pipx upgrade <package>` |
+| `uv tool` venv | `uv tool upgrade <package>` |
+| virtualenv or system pip | `<that venv's python> -m pip install --upgrade <package>` |
+
+A pip install is always upgraded with its **own** interpreter, never with
+whatever `python` happens to be first on `PATH`.
+
+Three cases are reported instead of upgraded, because upgrading would be the
+wrong action:
+
+- **Source checkout** — no installed distribution owns the running code; update
+  the checkout itself.
+- **Editable install** (`pip install -e`) — the checkout is the upgrade unit, so
+  a package-manager upgrade would fight it.
+- **Locally built install** — the environment was built from a local path rather
+  than a package index, so an upgrade would silently replace that code with the
+  published release. The command is printed so you can do it deliberately.
+
+A missing manager binary is also reported rather than run. In every reported
+case the command is printed and the exit code is `0`: the report is the
+deliverable.

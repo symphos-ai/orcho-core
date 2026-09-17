@@ -38,6 +38,7 @@
     "reason": "patch_applies",
     "status": "patch_valid"
   },
+  "max_rounds": 1,
   "metrics": {
     "phase_attempts": [
       {
@@ -215,7 +216,7 @@
     "total_tokens_out": "<TOKEN_COUNT>",
     "total_tokens_unknown": "<TOKEN_COUNT>"
   },
-  "model": "claude-opus-4-8[1m]",
+  "model": "claude-opus-5[1m]",
   "phases": {
     "final_acceptance": {
       "approved": true,
@@ -230,6 +231,22 @@
       "findings": [],
       "raw_response": "{\"verdict\": \"APPROVED\", \"ship_ready\": true, \"short_summary\": \"Mock release gate: change is ship-ready in mock mode.\", \"release_blockers\": [], \"verification_gaps\": [], \"contract_status\": {\"task_contract\": \"satisfied\", \"interfaces\": \"not_applicable\", \"persistence\": \"not_applicable\", \"tests\": \"sufficient\"}}",
       "release_blockers": [],
+      "review_context": {
+        "invalid": [],
+        "latest": {
+          "approved": true,
+          "findings": [],
+          "pass": "review",
+          "repair_preceded": false,
+          "round": 1,
+          "short_summary": "Plan approved by JSON contract; no residual risk identified.",
+          "verdict": "APPROVED"
+        },
+        "operator": [],
+        "run_id": "<RUN_ID>",
+        "superseded": [],
+        "unresolved_findings": []
+      },
       "session_id": "<VOLATILE>",
       "ship_ready": true,
       "short_summary": "Mock release gate: change is ship-ready in mock mode.",
@@ -465,7 +482,7 @@
         "missing_files": [
           "src/checkout/implementation.txt"
         ],
-        "output": "# Implementation Plan\n\n## Short Summary\n\n**Mock plan for snapshot regression task**\n\n## Planning Context\n\nMock planner selected a focused inspect/apply/verify path for: snapshot regression task\n\n## Plan Contract\n\n**Goal:** Deliver a focused, verified change for: snapshot regression task\n\n**Acceptance criteria:**\n- Implementation changes are limited to the planned files\n- Tests or equivalent verification are run before final QA\n- No regressions in adjacent modules\n\n**Owned files:**\n- src/checkout/implementation.txt\n\n**Commands to run:**\n- pytest -q\n\n**Risks:**\n- Existing public interfaces must remain stable\n- Do not mask test failures with broad rewrites\n\n**Review focus:**\n- Targeted change in planned files only\n- Verification command was actually run\n\n## Tasks\n\n## Task inspect-target: Inspect the current implementation for: snapshot regression task\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Spec:**\n\nRead src/checkout/implementation.txt and adjacent tests/docs to confirm the bug surface before making changes.\n\n**Done Criteria:**\n- Relevant code path identified\n- Expected behaviour stated before edit\n\n## Task apply-fix: Implement the requested change for checkout\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- inspect-target\n\n**Spec:**\n\nApply the smallest code change that satisfies the task while preserving existing public interfaces.\n\n**Done Criteria:**\n- Bug is fixed in the target implementation\n- No unrelated files are changed\n\n## Task verify: Verify behaviour and regression safety\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- apply-fix\n\n**Spec:**\n\nRun the narrowest relevant tests first, then the configured project test command when available.\n\n**Done Criteria:**\n- Targeted verification passes\n- Failure output is captured for the fix loop if tests fail\n",
+        "output": "# Implementation Plan\n\n## Short Summary\n\n**Mock plan for snapshot regression task**\n\n## Planning Context\n\nMock planner selected a focused inspect/apply/verify path for: snapshot regression task\n\n## Plan Contract\n\n**Goal:** Deliver a focused, verified change for: snapshot regression task\n\n**Acceptance criteria:**\n- C1 [agent_assertion] Implementation changes are limited to the planned files\n- C2 [agent_assertion] Tests or equivalent verification are run before final QA\n- C3 [agent_assertion] No regressions in adjacent modules\n\n**Owned files:**\n- src/checkout/implementation.txt\n\n**Commands to run:**\n- pytest -q\n\n**Risks:**\n- Existing public interfaces must remain stable\n- Do not mask test failures with broad rewrites\n\n**Review focus:**\n- Targeted change in planned files only\n- Verification command was actually run\n\n## Tasks\n\n## Task inspect-target: Inspect the current implementation for: snapshot regression task\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Spec:**\n\nRead src/checkout/implementation.txt and adjacent tests/docs to confirm the bug surface before making changes.\n\n**Done Criteria:**\n- Relevant code path identified\n- Expected behaviour stated before edit\n\n## Task apply-fix: Implement the requested change for checkout\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- inspect-target\n\n**Spec:**\n\nApply the smallest code change that satisfies the task while preserving existing public interfaces.\n\n**Done Criteria:**\n- Bug is fixed in the target implementation\n- No unrelated files are changed\n\n## Task verify: Verify behaviour and regression safety\n\n**Files:**\n- src/checkout/implementation.txt\n\n**Depends on:**\n- apply-fix\n\n**Spec:**\n\nRun the narrowest relevant tests first, then the configured project test command when available.\n\n**Done Criteria:**\n- Targeted verification passes\n- Failure output is captured for the fix loop if tests fail\n",
         "parsed_file_paths": [
           "src/checkout/implementation.txt"
         ],
@@ -636,6 +653,18 @@
           "session_split": "per_role",
           "wire_chars": "<VOLATILE>"
         },
+        "review": {
+          "approved": true,
+          "attempt": 1,
+          "clean": true,
+          "continue_session": false,
+          "findings": [],
+          "pass": "review",
+          "repair_preceded": false,
+          "session_id": "<VOLATILE>",
+          "short_summary": "Plan approved by JSON contract; no residual risk identified.",
+          "verdict": "APPROVED"
+        },
         "review_continue_session": false,
         "review_session_id": "mock-codex-1",
         "round": 1
@@ -795,6 +824,10 @@
   "status": "done",
   "task": "snapshot regression task",
   "timestamp": "<TIMESTAMP>",
+  "verification_contract_presence": {
+    "declared": false
+  },
+  "versions": "<HOST_SPECIFIC>",
   "worktree": {
     "base_ref": "<VOLATILE>",
     "branch_ref": "orcho/run/<RUN_ID>",

@@ -230,6 +230,19 @@ The `orcho` distribution depends on `orcho-core`; most CLI users should start
 with `orcho`, while integrators can depend on `orcho-core` directly. The
 `orcho[mcp]`/`orcho[all]` extras remain as no-op back-compat aliases.
 
+### Upgrading
+
+`orcho update` detects the installer that owns the current environment — pipx,
+`uv tool`, pip in a virtualenv, or plain pip — and upgrades through it:
+
+```bash
+orcho update            # upgrade via the detected install manager
+orcho update --dry-run  # report the install and command, change nothing
+```
+
+Editable installs and source checkouts are reported rather than upgraded: the
+checkout is the upgrade unit there, so update it with `git pull`.
+
 For source-checkout setup, tests, and contribution workflow, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -317,6 +330,9 @@ orcho run --resume 20260503_104135
 
 # Status, history, metrics
 orcho status | orcho history | orcho metrics
+
+# Upgrade via the manager that installed Orcho
+orcho update
 ```
 
 ---

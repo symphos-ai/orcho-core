@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from agents.entities import SubTask
+from core.contracts.criteria import AcceptanceCriterion
 from core.io.git_helpers import create_worktree
 from pipeline.engine.commit_delivery import resolve_commit_delivery
 from pipeline.engine.companion_scope import (
@@ -129,7 +130,9 @@ def _write_plan(run_dir: Path, *, plan_mods=(), subtask_mods=()) -> None:
         ),
         source="json",
         goal="goal here",
-        acceptance_criteria=("a",),
+        acceptance_criteria=(
+            AcceptanceCriterion(id="C1", intent="a", verify="agent_assertion"),
+        ),
         owned_files=("pipeline/x.py",),
         allowed_modifications=tuple(plan_mods),
     )

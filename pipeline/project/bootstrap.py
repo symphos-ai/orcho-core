@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.protocols import SessionMode
+from core.infra.versions import installed_orcho_versions
 from core.observability import events as _events, logging as _logging
 from core.observability.logging import success
 from pipeline.checkpoint import CheckpointStore
@@ -57,6 +58,10 @@ from pipeline.engine import (
 )
 from pipeline.plugins import PluginConfig
 from pipeline.project.types import PresentationPolicy
+from pipeline.project.verification_disclosure import (
+    VerificationContractPresence,
+    stamp_contract_presence,
+)
 
 # ── exceptions ────────────────────────────────────────────────────────────
 
@@ -390,6 +395,7 @@ def init_session_with_atexit(
     project_path: Path,
     plugin: PluginConfig,
     model: str,
+    max_rounds: int,
     profile_name: str,
     session_mode: SessionMode,
     change_handoff: str,
@@ -402,6 +408,7 @@ def init_session_with_atexit(
     followup_parent_status: str | None = None,
     followup_base_task: str | None = None,
     plan_source_run_id: str | None = None,
+    verification_contract_presence: VerificationContractPresence | None = None,
 ) -> dict:
     """Build the session dict, write meta.json early, register the atexit
     hook that marks status="interrupted" on abnormal exit.
@@ -411,6 +418,14 @@ def init_session_with_atexit(
     ``session["status"]`` on normal finish, the hook reads the updated
     value and stays a no-op. SIGKILL bypasses atexit entirely — there
     the early meta.json write is the only safety net.
+
+    ``verification_contract_presence`` is the run's already-decided
+    verification-contract fact (see
+    :mod:`pipeline.project.verification_disclosure`). It is stamped onto the
+    session before the first ``save_session`` below, so ``meta.json`` carries
+    it from the first durable write and the atexit hook — which captures this
+    same dict — re-persists it on an abnormal exit. Omitted (``None``) the
+    block stays absent, which is how runs written before it existed read.
 
     Raises :class:`PhaseHandoffHaltedError` when ``resume_from`` points
     at a run whose prior meta.json records a phase-handoff halt; halt
@@ -429,7 +444,16 @@ def init_session_with_atexit(
         "timestamp": datetime.now().isoformat(),
         "status": "running",
         "phases": {},
+        # Which Orcho packages wrote this run: the only way an artifact can
+        # later be matched to an engine version.
+        "versions": installed_orcho_versions(),
+        # The effective round budget this run executes with, already resolved
+        # by the frontend (inherited on a resume, not the frontend default).
+        # Read-only audit projection: the authority a resume reads is the run's
+        # own ``checkpoints.db`` ``run_meta.config_json``, never this key.
+        "max_rounds": max_rounds,
     }
+    stamp_contract_presence(session, verification_contract_presence)
     if projected_profile:
         session["projected_profile"] = projected_profile
     # Follow-up context: persisted so MCP / dashboards can reconstruct
