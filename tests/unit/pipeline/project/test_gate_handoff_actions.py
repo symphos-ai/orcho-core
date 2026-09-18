@@ -190,6 +190,10 @@ class TestPersistedGateEvidence:
 
 
 class TestFindingsClassification:
+    @pytest.mark.parametrize("findings", [None, [], (), "env_failure", ["x"]])
+    def test_malformed_findings_are_not_hygiene(self, findings) -> None:
+        assert not policy.findings_are_hygiene(findings)
+
     def test_env_only_set_is_eligible(self) -> None:
         assert policy.env_retry_eligible(
             [_finding("lint"), _finding("typecheck")],
