@@ -193,6 +193,86 @@ def test_hygiene_verification_gate_is_eligible_without_retry_and_recommends_waiv
     assert advice.recommended_action == "continue_with_waiver"
 
 
+def _env_gate_signal(available_actions: tuple[str, ...]):
+    return _signal(
+        trigger="verification_gate_failed",
+        available_actions=available_actions,
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_env_failure",
+                    "severity": "P3",
+                    "failure_kind": "env_failure",
+                    "body": "class=env_failure; exit_code=None",
+                }
+            ]
+        },
+        last_output="class=env_failure; exit_code=None",
+    )
+
+
+def test_env_gate_with_retry_available_recommends_the_rerun() -> None:
+    """The cheaper honest route: fix the environment, re-run the same gates,
+    keep real proof instead of waiving one."""
+    sig = _env_gate_signal(
+        ("retry_verification", "continue_with_waiver", "halt"),
+    )
+    advice = hygiene_gate_advice(sig)
+    assert advice is not None
+    assert advice.recommended_action == "retry_verification"
+    assert advice.confidence == "high"
+    # No agent round is involved, so there is no corrective feedback to draft.
+    assert advice.retry_feedback == ""
+    assert "environment" in advice.rationale.lower()
+
+
+def test_env_gate_without_retry_still_recommends_waiver() -> None:
+    """Fail-closed parity: when the engine could not prove the blocking set,
+    the menu has no rerun and the advice must not invent one."""
+    sig = _env_gate_signal(("continue_with_waiver", "halt"))
+    advice = hygiene_gate_advice(sig)
+    assert advice is not None
+    assert advice.recommended_action == "continue_with_waiver"
+    assert advice.retry_feedback == ""
+
+
+def test_provenance_gate_never_recommends_the_rerun() -> None:
+    """A provenance failure is not fixed by re-running the command, so the
+    rerun is not recommended even if the menu somehow offered it."""
+    sig = _signal(
+        trigger="verification_gate_failed",
+        available_actions=(
+            "retry_verification", "continue_with_waiver", "halt",
+        ),
+        artifacts={
+            "findings": [
+                {
+                    "id": "verification_gate_provenance_failure",
+                    "severity": "P3",
+                    "failure_kind": "provenance_failure",
+                    "body": "class=provenance_failure; exit_code=0",
+                }
+            ]
+        },
+        last_output="class=provenance_failure; exit_code=0",
+    )
+    advice = hygiene_gate_advice(sig)
+    assert advice is not None
+    assert advice.recommended_action == "continue_with_waiver"
+
+
+def test_retry_verification_is_a_valid_parsed_action() -> None:
+    from pipeline.project.handoff_advice import _VALID_ACTIONS
+
+    assert "retry_verification" in _VALID_ACTIONS
+    advice = parse_advice(
+        '{"recommended_action": "retry_verification", "confidence": "high", '
+        '"rationale": "environment fix", "retry_feedback": ""}'
+    )
+    assert advice.recommended_action == "retry_verification"
+    assert advice.parse_warnings == ()
+
+
 def test_not_eligible_without_output_or_findings() -> None:
     sig = _signal(last_output="", artifacts={})
     assert advice_actions_available(sig) is False

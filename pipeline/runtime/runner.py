@@ -85,6 +85,8 @@ def run_profile(
     quality_gate_registry: Any = None,
     ctx: Any = None,  # LifecycleContext — Phase 5e-5 substep 3
     completed_phases: set[str] | None = None,
+    silent_completed_phases: set[str] | None = None,
+    quiet_loop_phases: set[str] | None = None,
     loop_resume_cursors: Mapping[str, LoopResumeCursor] | None = None,
     phase_handoff_resolver: PhaseHandoffResolver | None = None,
     on_handoff_outcome: PhaseHandoffOutcomeCallback | None = None,
@@ -144,6 +146,28 @@ def run_profile(
     handler does not re-execute, but ``on_phase_start`` /
     ``on_phase_end`` still fire for trace continuity and the phase
     log records ``{"skipped": "completed earlier in this run (resumed)"}``.
+    ``silent_completed_phases`` narrows that contract for the resumes
+    whose continuation point is *behind* the phases it names: a member of
+    it that is also in ``completed_phases`` is skipped without firing
+    ``on_phase_start`` / ``on_phase_end`` at all. It exists for the
+    ``retry_verification`` resume, which re-measures gates and then
+    continues after the phase that raised them — an observer must not see
+    that run start ``implement`` again, not even to record a skip, because
+    no agent round was entitled to run there. The phase log still records
+    the skip, so the run's own account of why a phase did not execute is
+    unchanged. Every other resume leaves this argument unset and keeps its
+    trace-continuity callbacks.
+
+    ``quiet_loop_phases`` is the companion rule for the loop the same resume
+    continues *into*. A named member reached at index > 0 of a round whose
+    ``until`` clause already holds has nothing left to do — the loop is
+    finished and the member will only record its own no-op — so it dispatches
+    with both callbacks withheld: handler, adapters, checkpoint and metrics are
+    untouched, and only the start/end trace is suppressed. The test is the
+    loop's declared predicate, never a guess about what a handler would do, and
+    a member that turns out to have worked anyway still announces itself.
+    Unset for every other caller.
+
     LoopStep inner phases are skipped only through a validated
     ``loop_resume_cursors`` entry. The cursor identifies one round and an
     ordered committed prefix; the runner begins at the next member without
@@ -166,6 +190,8 @@ def run_profile(
     caller that does not pass ``on_phase_pre``.
     """
     _completed_phases: set[str] = set(completed_phases or ())
+    _silent_completed: set[str] = set(silent_completed_phases or ())
+    _quiet_loop_phases: set[str] = set(quiet_loop_phases or ())
     _loop_resume_cursors = dict(loop_resume_cursors or {})
     resolver: PhaseHandoffResolver = phase_handoff_resolver or pause_resolver
     # Phase 5d: Profile is the production shape. PipelineProfile remains
@@ -229,6 +255,7 @@ def run_profile(
                                     inner, state,
                                     on_phase_start=on_phase_start,
                                     on_phase_end=on_phase_end,
+                                    silent=inner.phase in _silent_completed,
                                 )
                         continue
                     # Partial overlap is the genuinely unsafe mid-loop
@@ -252,6 +279,7 @@ def run_profile(
                 on_handoff_outcome=on_handoff_outcome,
                 on_phase_pre=on_phase_pre,
                 resume_cursor=resume_cursor,
+                quiet_loop_phases=_quiet_loop_phases,
             )
             continue
         if isinstance(entry, PhaseStep):
@@ -265,6 +293,7 @@ def run_profile(
                     entry, state,
                     on_phase_start=on_phase_start,
                     on_phase_end=on_phase_end,
+                    silent=entry.phase in _silent_completed,
                 )
                 continue
             # Pre-phase seam (ADR 0081): the orchestrator may evaluate a
@@ -595,16 +624,24 @@ def _skip_completed_phase(
     *,
     on_phase_start: Callable[[str, PipelineState], None] | None,
     on_phase_end:   Callable[[str, PipelineState], None] | None,
+    silent: bool = False,
 ) -> None:
     """Resume-skip a phase that already completed in a prior run.
 
     Thin wrapper over :func:`_skip_phase` with the resume reason —
     operators expect a "phase X completed (skipped on resume)" line.
+
+    ``silent`` withholds both callbacks, so the phase leaves its phase-log
+    record but no start/end trace at all. Only the ``retry_verification``
+    continuation asks for it (see ``run_profile``): there the skipped
+    phases are behind the point the run resumed at, and a start event for
+    one of them would advertise an agent round the resume is forbidden to
+    take.
     """
     _skip_phase(
         step, state, RESUME_SKIP_REASON,
-        on_phase_start=on_phase_start,
-        on_phase_end=on_phase_end,
+        on_phase_start=None if silent else on_phase_start,
+        on_phase_end=None if silent else on_phase_end,
     )
 
 
@@ -894,6 +931,116 @@ def _stuff_legacy_test_result(
     state.last_test_output = tr.output if (not tr.passed and not tr.skipped) else ""
 
 
+#: ``state.extras`` keys describing the loop a phase is currently running
+#: inside. The runner owns them for the duration of a ``LoopStep``; the
+#: orchestrator's direct retry seams stamp the same four when they dispatch a
+#: loop member outside the runner, so anything that pauses mid-loop records one
+#: consistent position regardless of who was driving.
+ACTIVE_LOOP_KEY_EXTRA = "_active_loop_round_key"
+ACTIVE_LOOP_PHASES_EXTRA = "_active_loop_phases"
+ACTIVE_LOOP_BUDGET_EXTRA = "_active_loop_budget"
+ACTIVE_LOOP_UNTIL_EXTRA = "_active_loop_until"
+#: Members of the *current* round that have run, in the order this round ran
+#: them. The declared member order is not enough: a human-directed review retry
+#: repairs before it reviews, so "which member is still owed" can only be read
+#: off what actually executed.
+ACTIVE_LOOP_EXECUTED_EXTRA = "_active_loop_executed"
+#: Which dispatcher is driving the round, and therefore which execution orders
+#: are *possible* in it. A reader that only saw the order would have to take
+#: any sequence on trust; naming the mode makes the order checkable against a
+#: closed set of shapes.
+ACTIVE_LOOP_MODE_EXTRA = "_active_loop_mode"
+
+#: The runner and the plan retry walk a round in its declared member order.
+LOOP_DISPATCH_DECLARED = "declared_order"
+#: The human-directed review retry repairs first and reviews after — the exact
+#: reverse of a two-member review loop, and the only other order a round of one
+#: of this engine's loops can have.
+LOOP_DISPATCH_REVIEW_RETRY = "review_retry_order"
+
+_ACTIVE_LOOP_EXTRAS = (
+    ACTIVE_LOOP_KEY_EXTRA,
+    ACTIVE_LOOP_PHASES_EXTRA,
+    ACTIVE_LOOP_BUDGET_EXTRA,
+    ACTIVE_LOOP_UNTIL_EXTRA,
+    ACTIVE_LOOP_EXECUTED_EXTRA,
+    ACTIVE_LOOP_MODE_EXTRA,
+)
+
+_ACTIVE_LOOP_ABSENT = object()
+
+
+def stamp_active_loop(
+    state: PipelineState,
+    *,
+    loop_key: str,
+    phases: tuple[str, ...],
+    budget: int,
+    until: str,
+    mode: str = LOOP_DISPATCH_DECLARED,
+) -> dict[str, Any]:
+    """Record the loop a member is about to run inside; return the prior values.
+
+    ``budget`` is the *effective* round budget — ``max_rounds`` plus any
+    human-directed extra rounds — because a pause raised in an extra round is
+    still a position the run must be able to resume from. ``mode`` names the
+    dispatcher, which is what makes the recorded execution order checkable
+    later: each mode admits exactly one family of orders. Pass the result to
+    :func:`restore_active_loop` in a ``finally``.
+    """
+    previous = {
+        key: state.extras.get(key, _ACTIVE_LOOP_ABSENT)
+        for key in _ACTIVE_LOOP_EXTRAS
+    }
+    state.extras[ACTIVE_LOOP_KEY_EXTRA] = loop_key
+    state.extras[ACTIVE_LOOP_PHASES_EXTRA] = tuple(phases)
+    state.extras[ACTIVE_LOOP_BUDGET_EXTRA] = int(budget)
+    state.extras[ACTIVE_LOOP_UNTIL_EXTRA] = until
+    state.extras[ACTIVE_LOOP_EXECUTED_EXTRA] = ()
+    state.extras[ACTIVE_LOOP_MODE_EXTRA] = mode
+    return previous
+
+
+def mark_loop_member_executed(state: PipelineState, phase: str) -> None:
+    """Record ``phase`` as run in the active round, in execution order.
+
+    Called immediately before the member dispatches, because the gates that can
+    pause it fire from inside that dispatch: by the time an ``after_phase`` gate
+    reads the position, the member really has run. A ``before_phase`` gate runs
+    earlier still and correctly sees the member as not yet executed.
+    """
+    executed = state.extras.get(ACTIVE_LOOP_EXECUTED_EXTRA)
+    current = tuple(executed) if isinstance(executed, tuple) else ()
+    if phase in current:
+        return
+    state.extras[ACTIVE_LOOP_EXECUTED_EXTRA] = (*current, phase)
+
+
+def restore_active_loop(state: PipelineState, previous: dict[str, Any]) -> None:
+    """Undo :func:`stamp_active_loop`, including for a loop that had none."""
+    for key, value in previous.items():
+        if value is _ACTIVE_LOOP_ABSENT:
+            state.extras.pop(key, None)
+        else:
+            state.extras[key] = value
+
+
+def loop_until_satisfied(predicate: str, state: PipelineState) -> bool:
+    """Public read of a loop's ``until`` clause against the live state.
+
+    The orchestrator evaluates it at the moment a gate pauses mid-loop, while
+    the round's verdict is still in ``state.phase_log``; a later resume cannot
+    re-derive it from a rebuilt state.
+    """
+    return _evaluate_until(predicate, state)
+
+
+def _phase_recorded_a_skip(state: PipelineState, phase: str) -> bool:
+    """Whether ``phase`` logged a handler-side skip on this dispatch."""
+    log = state.phase_log.get(phase)
+    return isinstance(log, dict) and bool(log.get("skipped"))
+
+
 def _run_loop_step(
     step: LoopStep,
     state: PipelineState,
@@ -908,6 +1055,7 @@ def _run_loop_step(
     on_handoff_outcome: PhaseHandoffOutcomeCallback | None = None,
     on_phase_pre: Callable[[str, PipelineState], None] | None = None,
     resume_cursor: LoopResumeCursor | None = None,
+    quiet_loop_phases: set[str] | None = None,
 ) -> PipelineState:
     """Drive a retry loop until ``step.until`` is satisfied or ``step.max_rounds``
     iterations elapse.
@@ -944,18 +1092,34 @@ def _run_loop_step(
     # slice 2 the value defaults to 0, so behaviour is unchanged for
     # non-resumed runs.
     step_phases = tuple(inner.phase for inner in step.steps)
+    # The budget a cursor is judged against is the *effective* one: a
+    # human-directed retry extends the loop past its declared ``max_rounds``,
+    # and a boundary recorded inside such a round is a real position the run
+    # has to be able to return to.
+    extra_rounds = extra_human_directed_rounds(state, step)
+    total_rounds = step.max_rounds + extra_rounds
     if (
         resume_cursor is not None
         and (
             resume_cursor.loop_key != step.round_extras_key
             or resume_cursor.loop_phases != step_phases
             or resume_cursor.round_n < 1
-            or resume_cursor.round_n > step.max_rounds
+            or resume_cursor.round_n > total_rounds
             or step_phases[:len(resume_cursor.completed_phases)]
             != resume_cursor.completed_phases
             or len(resume_cursor.completed_phases) >= len(step_phases)
-            or step_phases[len(resume_cursor.completed_phases)]
-            != resume_cursor.next_phase
+            or resume_cursor.next_phase not in step_phases
+            or not resume_cursor.done_phases <= set(step_phases)
+            or bool(
+                resume_cursor.done_phases
+                & set(resume_cursor.completed_phases),
+            )
+            or resume_cursor.next_phase in resume_cursor.done_phases
+            or (
+                not resume_cursor.done_phases
+                and step_phases[len(resume_cursor.completed_phases)]
+                != resume_cursor.next_phase
+            )
         )
     ):
         raise LoopResumeBlockedError(
@@ -963,22 +1127,22 @@ def _run_loop_step(
             "match the active profile boundary."
         )
 
-    extra_rounds = extra_human_directed_rounds(state, step)
-    total_rounds = step.max_rounds + extra_rounds
-    active_key_sentinel = object()
-    prev_active_key = state.extras.get("_active_loop_round_key", active_key_sentinel)
-    prev_active_phases = state.extras.get(
-        "_active_loop_phases", active_key_sentinel,
+    previous_active_loop = stamp_active_loop(
+        state,
+        loop_key=step.round_extras_key,
+        phases=step_phases,
+        budget=total_rounds,
+        until=step.until,
+        mode=LOOP_DISPATCH_DECLARED,
     )
     state.extras[f"{step.round_extras_key}_max"] = step.max_rounds
     try:
-        state.extras["_active_loop_round_key"] = step.round_extras_key
-        state.extras["_active_loop_phases"] = step_phases
         first_round = resume_cursor.round_n if resume_cursor is not None else 1
         for round_n in range(first_round, total_rounds + 1):
             if state.halt:
                 break
             state.extras[step.round_extras_key] = round_n
+            state.extras[ACTIVE_LOOP_EXECUTED_EXTRA] = ()
             state.extras[HUMAN_DIRECTED_FLAG_KEY] = round_n > step.max_rounds
             # Phase 5e step 1 + substep 6b: every inner PhaseStep
             # dispatches through the FSM. Inner step.execution +
@@ -992,12 +1156,31 @@ def _run_loop_step(
                 if (
                     resume_cursor is not None
                     and round_n == resume_cursor.round_n
-                    and inner_index < len(resume_cursor.completed_phases)
+                    and (
+                        inner_index < len(resume_cursor.completed_phases)
+                        or inner_step.phase in resume_cursor.done_phases
+                    )
                 ):
-                    # This phase committed before the process stopped. Do not
+                    # This phase committed before the process stopped — either
+                    # as part of the round's ordered prefix, or out of order in
+                    # a round that ran its members in its own sequence. Do not
                     # fire callbacks: they would duplicate completion events,
                     # checkpoint rows, metrics, and plan artifacts.
                     continue
+                # The round's earlier members may already have satisfied the
+                # loop's own ``until`` clause, leaving this member nothing to
+                # do. A caller that named it in ``quiet_loop_phases`` wants
+                # that no-op to stay off the trace: the phase still dispatches,
+                # so its handler, adapters, checkpoint and metrics behave
+                # exactly as always — only the start/end callbacks are
+                # withheld. The test is the loop's declared predicate, never a
+                # guess about the handler, and a round that still needs this
+                # member falls through to the ordinary trace.
+                quiet = (
+                    inner_index > 0
+                    and inner_step.phase in (quiet_loop_phases or ())
+                    and _evaluate_until(step.until, state)
+                )
                 # Pre-phase seam (ADR 0081) for loop-inner phases — see the
                 # top-level note in ``run_profile``.
                 if on_phase_pre is not None:
@@ -1015,11 +1198,20 @@ def _run_loop_step(
                             on_phase_end=on_phase_end,
                         )
                         continue
+                mark_loop_member_executed(state, inner_step.phase)
                 state = _dispatch_via_fsm(
                     inner_step, state, ctx,
-                    on_phase_start=on_phase_start,
-                    on_phase_end=on_phase_end,
+                    on_phase_start=None if quiet else on_phase_start,
+                    on_phase_end=None if quiet else on_phase_end,
                 )
+                if quiet and not _phase_recorded_a_skip(state, inner_step.phase):
+                    # Safety net for the case the predicate did not foresee: a
+                    # phase that actually did work always announces itself,
+                    # late rather than never.
+                    if on_phase_start is not None:
+                        on_phase_start(inner_step.phase, state)
+                    if on_phase_end is not None:
+                        on_phase_end(inner_step.phase, state)
                 if state.halt:
                     break
                 # Phase 2 (handoff slice): after every inner phase
@@ -1164,14 +1356,7 @@ def _run_loop_step(
             if _evaluate_until(step.until, state):
                 break
     finally:
-        if prev_active_key is active_key_sentinel:
-            state.extras.pop("_active_loop_round_key", None)
-        else:
-            state.extras["_active_loop_round_key"] = prev_active_key
-        if prev_active_phases is active_key_sentinel:
-            state.extras.pop("_active_loop_phases", None)
-        else:
-            state.extras["_active_loop_phases"] = prev_active_phases
+        restore_active_loop(state, previous_active_loop)
         state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
     return state
 

@@ -267,6 +267,33 @@ class TestAwaitingPhaseHandoff:
         assert waiver.intent  # has a human-readable intent
         assert "feedback" not in waiver.args
 
+    def test_retry_verification_surfaced_without_feedback_in_args(
+        self,
+    ) -> None:
+        """The gate-retry verb is a recognised decide action. Unlike the
+        feedback-required verbs it takes *no* operator text at all, so its
+        machine-callable args must carry no ``feedback`` key."""
+        meta = _meta(
+            status="awaiting_phase_handoff",
+            handoff_id="h-1",
+            available_actions=[
+                "retry_verification", "continue_with_waiver", "halt",
+            ],
+        )
+        actions = compute_next_actions(meta, run_id="r1")
+        verbs = [a.args.get("action") for a in actions]
+        assert verbs == [
+            "retry_verification", "continue_with_waiver", "halt",
+        ]
+        retry = next(
+            a for a in actions if a.args.get("action") == "retry_verification"
+        )
+        assert retry.tool == "orcho_phase_handoff_decide"
+        assert retry.intent  # has a human-readable intent
+        assert "feedback" not in retry.args
+        assert retry.args["handoff_id"] == "h-1"
+        assert retry.args["run_id"] == "r1"
+
     def test_unknown_action_verb_is_silently_skipped(self) -> None:
         """A future verb the SDK doesn't know about must not crash
         clients holding stale payloads."""

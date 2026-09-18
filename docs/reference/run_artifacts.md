@@ -522,8 +522,61 @@ Set by `_apply_phase_handoff_pause` (`project_orchestrator.py:3038-3051`):
 ```
 
 Popped on `phase_handoff_decide(halt)` and on resume `continue` /
-`retry_feedback`. See [ADR 0031](../adr/0031-generic-phase-handoff-contract.md)
-for the full lifecycle.
+`continue_with_waiver` / `retry_feedback` / `retry_verification`. See
+[ADR 0031](../adr/0031-generic-phase-handoff-contract.md) for the full
+lifecycle.
+
+#### Verification-gate handoff artifacts
+
+A `trigger="verification_gate_failed"` payload carries the whole blocking set
+(ADR 0186): `gate_commands` and `gate_identities` list every failing command,
+`gate_command` / `gate_identity` name the primary one, and `findings` has one
+entry per command. Each `gate_identities` element is the
+`(command, hook, phase)` triple plus, when the evidence write landed, a
+`receipt_evidence` pointer:
+
+```json
+{
+  "gate_identity": {"command": "lint", "hook": "after_phase", "phase": "implement"},
+  "gate_identities": [
+    {
+      "command": "lint", "hook": "after_phase", "phase": "implement",
+      "receipt_evidence": "verification_command_receipts/executions/lint--after_phase--implement--0001.json"
+    }
+  ]
+}
+```
+
+When the gates ran inside a declarative loop, the payload also carries
+`gate_loop_position` (`loop_key` / `loop_phases` / `round` / `phase` / `hook` /
+`budget` / `until_satisfied` / `executed` / `mode`) — the round and member the
+pause stopped at, the gate's hook (an `after_phase` member has run; a
+`before_phase` one is still owed), the effective round budget (a
+`retry_feedback` round runs past the declared `max_rounds`), whether that round
+satisfied the loop's `until` clause, the members the round ran in the order it
+ran them, and the dispatcher that produced that order. `loop_phases` is the
+declared order; `executed` is the real one, and they differ for a
+`retry_feedback` round, which repairs before it reviews. `mode` is what makes
+`executed` checkable: each dispatcher can produce only one family of orders. A
+`retry_verification` resume needs all of it to continue the loop after the
+raising phase instead of re-entering it from the first member, and to tell a
+closed loop from one that still owes rounds. It is absent for a top-level phase,
+which needs no position. When a retry's own rerun fails again, the fresh pause
+it publishes carries the same block forward — that pause is raised outside the
+loop, so there is nothing live to read it from, and a fresh pause without it
+would offer a retry the next resume could not locate.
+
+`receipt_evidence` is a run-dir-relative path to the immutable receipt of the
+execution that produced that failure. It is **omitted, never blanked**, when no
+evidence path was recorded, so a consumer reads its absence as "unproven"
+rather than as an empty pointer. `gate_identity` stays a bare triple (waiver
+identity and handoff-route classification compare the whole mapping). A
+`retry_verification` menu is published only when every element carries the
+pointer, and the retry resolves each pointer inside this run's
+`verification_command_receipts/executions/` directory before reading it —
+an absolute, traversing, or symlinked pointer is refused rather than followed
+out of the run — see
+[ADR 0195](../adr/0195-same-run-environment-gate-retry.md).
 
 ### Unattended handoff halt and typed resume refusal
 

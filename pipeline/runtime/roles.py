@@ -237,11 +237,15 @@ class PhaseHandoffAction(StrEnum):
         require a non-empty operator verdict and durably record a waiver.
         The waiver is authoritatively injected into all downstream review
         gates so the waived findings are not reopened as blocking.
+    RETRY_VERIFICATION — the operator repaired the external preconditions;
+        the engine re-executes the persisted blocking gate set on the
+        retained verification subject without an agent.
     """
     CONTINUE = "continue"
     RETRY_FEEDBACK = "retry_feedback"
     HALT = "halt"
     CONTINUE_WITH_WAIVER = "continue_with_waiver"
+    RETRY_VERIFICATION = "retry_verification"
 
 
 class ScopeExpansionSanction(StrEnum):

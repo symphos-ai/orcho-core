@@ -126,6 +126,14 @@ class StateInputs:
     # ran in a prior process, so its durable artifact must be recoverable.
     resume_completed_phases: frozenset[str] = frozenset()
     resume_requested: bool = False
+    # True only when this resume is a ``retry_verification`` env retry (decided
+    # once in ``session_run``). It downgrades the authoritative ledger
+    # initialization below from "raise" to "record why it could not be
+    # trusted", because the env-retry owner — reached moments later, before any
+    # gate runs — is the component that must judge the ledger and re-park the
+    # pause. Raising here instead would refuse the run from setup, leaving the
+    # operator a dead run in place of a decidable pause.
+    env_retry_resume: bool = False
     # Typed control field loaded from the canonical cross handoff JSON, never
     # inferred from its rendered prompt text.
     cross_declared_files: tuple[str, ...] = ()
@@ -137,6 +145,37 @@ class StateSetup:
 
     state: Any
     codemap: str
+
+
+def _initialize_ledger_for_env_retry(state: Any) -> None:
+    """Load/validate the ledger for an env retry without refusing the run.
+
+    Same authoritative call as the ordinary resume — an intact ledger is
+    validated exactly as before, so a healthy env retry is byte-identical. The
+    only difference is the failure shape: instead of propagating the refusal
+    out of setup, the reason is recorded under
+    :data:`~pipeline.project.verification_env_retry.ENV_RETRY_LEDGER_BLOCKED_KEY`
+    and the run continues to the router, where the env-retry owner reads the
+    marker, runs no gate, and re-parks the pause with that reason. Fail-closed
+    is preserved (the marker blocks re-execution); what changes is that the
+    operator is left with a decidable pause rather than a refused run.
+    """
+    from pipeline.project.verification_env_retry import (
+        ENV_RETRY_LEDGER_BLOCKED_KEY,
+        EnvRetryLedgerBlocked,
+    )
+    from pipeline.project.verification_ledger_runtime import (
+        ResumeVerificationLedgerError,
+        initialize,
+    )
+    from pipeline.verification_ledger_store import LedgerStoreError
+
+    try:
+        initialize(state, resume=True)
+    except (LedgerStoreError, ResumeVerificationLedgerError, OSError) as error:
+        state.extras[ENV_RETRY_LEDGER_BLOCKED_KEY] = EnvRetryLedgerBlocked(
+            f"{type(error).__name__}: {error}",
+        )
 
 
 def build_pipeline_state(inputs: StateInputs) -> StateSetup:
@@ -267,9 +306,12 @@ def build_pipeline_state(inputs: StateInputs) -> StateSetup:
         )
         # Durable scheduled-gate declaration snapshot is created after state /
         # isolation resolution and before any phase hook can resolve selection.
-        from pipeline.project.verification_ledger_runtime import initialize
+        if inputs.env_retry_resume:
+            _initialize_ledger_for_env_retry(state)
+        else:
+            from pipeline.project.verification_ledger_runtime import initialize
 
-        initialize(state, resume=inputs.resume_requested)
+            initialize(state, resume=inputs.resume_requested)
 
     # Correction follow-up: thread the parent run as a verification-receipt
     # search source so readiness (``build_final_acceptance_readiness`` via

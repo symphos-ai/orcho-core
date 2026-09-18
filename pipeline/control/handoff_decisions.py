@@ -13,7 +13,7 @@ need the same three-step lifecycle when resuming a paused run:
 3. **Classify** the action into the
    :data:`HandoffDecisionAction` literal so callers can branch
    cleanly between halt / continue / retry_feedback /
-   continue_with_waiver.
+   continue_with_waiver / retry_verification.
 
 This module deliberately knows nothing about session dicts, ``meta.json``,
 cross checkpoints, ``cross_plan.md``, ``phase0_done``, child aliases,
@@ -33,14 +33,15 @@ from typing import Literal
 
 from pipeline.run_state.types import HandoffAction
 
-#: The four operator decision actions, normalised to the SDK's literal
+#: The operator decision actions, normalised to the SDK's literal
 #: values. Mirrors :class:`pipeline.runtime.roles.PhaseHandoffAction`
 #: without depending on the runtime layer.
 HandoffDecisionAction = Literal[
     "halt", "continue", "retry_feedback", "continue_with_waiver",
+    "retry_verification",
 ]
 
-#: The valid decision actions on the wire. The three active (non-terminal)
+#: The valid decision actions on the wire. The active (non-terminal)
 #: transitions are sourced from the shared :class:`HandoffAction` transition
 #: enum; ``halt`` is the terminal action that enum deliberately omits (it is
 #: owned by :mod:`pipeline.run_state.terminal`). Keeping this set derived from
@@ -80,7 +81,8 @@ class HandoffDecisionResult:
     """Outcome of :func:`load_handoff_decision`.
 
     The caller branches on ``action`` and applies its own domain-specific
-    halt / continue / retry_feedback / continue_with_waiver semantics. ``feedback`` is
+    halt / continue / retry_feedback / continue_with_waiver /
+    retry_verification semantics. ``feedback`` is
     normalised to the empty string when the SDK returned ``None`` so
     branches that prepend it to a prompt do not have to ``or ""`` at
     every call site. ``note`` and ``decided_at`` are passed through
@@ -106,7 +108,7 @@ def load_handoff_decision(
     * **Corrupt decision** (``InvalidPhaseHandoffState``) →
       ``RuntimeError`` wrapping the SDK exception.
     * **Valid decision** → :class:`HandoffDecisionResult` with
-      ``action`` narrowed to the four-value literal.
+      ``action`` narrowed to the :data:`HandoffDecisionAction` literal.
     """
     from sdk.errors import InvalidPhaseHandoffState
     from sdk.phase_handoff import load_phase_handoff_decision
@@ -148,12 +150,12 @@ def load_handoff_decision(
 
 
 def _narrow_action(raw: str) -> HandoffDecisionAction:
-    """Constrain the SDK's wider string type to the four-value literal.
+    """Constrain the SDK's wider string type to the decision literal.
 
     The SDK's :class:`PhaseHandoffDecision` carries ``action`` as
     :data:`PhaseHandoffActionValue` (a wider literal alias). The strict
     reader already validates the value lands inside that set; here we
-    re-narrow to the four resume-relevant outcomes so callers' branch
+    re-narrow to the resume-relevant outcomes so callers' branch
     matrix is exhaustive and `mypy --strict` can see it.
 
     Any other string slipping through the strict reader (e.g. a future
@@ -164,5 +166,6 @@ def _narrow_action(raw: str) -> HandoffDecisionAction:
         return raw  # type: ignore[return-value]
     raise RuntimeError(
         f"Unknown handoff decision action {raw!r}; expected one of "
-        "'halt' / 'continue' / 'retry_feedback' / 'continue_with_waiver'."
+        "'halt' / 'continue' / 'retry_feedback' / 'continue_with_waiver' / "
+        "'retry_verification'."
     )

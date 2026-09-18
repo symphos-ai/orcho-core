@@ -126,7 +126,39 @@ artifact and dispatches per the recorded action:
 |---|---|
 | `continue` | Injects `state.extras["phase_handoff_override"]`; loop runner exits without rewriting machine verdict; dispatch proceeds past `validate_plan` |
 | `retry_feedback` | Injects `state.last_critique = feedback` + `state.extras["human_feedback"]`; runs exactly **one** extra `plan → validate_plan` round (separate `human_directed_rounds` counter); `LoopStep.max_rounds` unchanged |
+| `retry_verification` | Re-executes the persisted blocking gate set on the retained verification subject, in the same run dir, with **no agent round and no feedback**; routed to its own owner *before* route classification and before the ledger is read ([ADR 0195](../adr/0195-same-run-environment-gate-retry.md)). All gates green → the decision is consumed and the run continues after the phase the gates were scheduled on — phases behind it are skipped without firing the resume-skip trace callbacks, a raising phase inside a loop is positioned by a validated loop cursor built from the pause (an unlocatable loop round blocks before any gate runs), and a loop member reached with the round already satisfied dispatches without announcing itself, so no `phase.start` advertises a round this action may not take; a still-red gate → a fresh gate handoff; any evidence defect → a `:retry_blocked` re-park with zero gates executed |
 | `halt` | **Cannot resume — terminal.** Refused at `project_orchestrator.py:1782-1788` with `PhaseHandoffHaltedError` (CLI rc=2) |
+
+#### Scheduled-gate ledger handling on a `retry_verification` resume
+
+Whether a CHECKPOINT resume is an env retry is decided **once**, in
+`pipeline/project/session_run.py` before the header prints, from the prior
+`meta.json` plus the tolerantly-read `phase_handoff_decisions/` artifacts. Both
+pre-router setup steps that touch `scheduled_gate_ledger.json` read that one
+copy, so they cannot disagree about which resume they are setting up:
+
+| Setup step | Ordinary resume | `retry_verification` resume |
+|---|---|---|
+| Run-header gate matrix (decorative read) | strict: a corrupt ledger raises | tolerant: a failed read renders exactly as an unwritten ledger; nothing is printed about it |
+| Ledger initialization (`initialize(state, resume=True)`, authoritative) | raises out of setup | same call; a store/OS error is recorded as a typed marker in `state.extras` and the run reaches the router |
+
+The env-retry owner then reads that marker, executes no gate, and re-parks the
+pause with the recorded reason — fail-closed is preserved (the marker is what
+blocks re-execution), but the operator gets a decidable pause instead of a
+refused run. The tolerance is scoped to this action only.
+
+The retained worktree is also mandatory for this resume: like an active review
+retry (ADR 0088), a missing, unregistered, or reclaimed `meta.worktree.path`
+blocks before any checkout is materialised rather than minting a fresh one.
+
+Both setup steps and the worktree guard key off the *claim*, not the record's
+validity: a decision artifact addressed to the active pause that records
+`retry_verification` puts the resume inside this boundary even when its own
+persisted ids are corrupted. The strict decision reader still refuses such an
+artifact — it runs later, inside the resume router — but by then the retained
+subject is safe, and the refusal lands as a `:retry_blocked` re-park naming the
+corrupted audit record. For every other action a corrupt decision artifact
+stays a hard resume failure.
 
 ### Refusal paths
 

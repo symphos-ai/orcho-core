@@ -60,7 +60,10 @@ def test_isolation_id_reaches_bootstrap_and_before_delivery_executor(
     monkeypatch.setattr(
         session_run,
         "_resolve_profile_runtime",
-        lambda request: SimpleNamespace(session_ts=session_ts),
+        # ``**_`` swallows the coordinator's setup-only keywords (e.g. the
+        # pre-router ``env_retry_resume`` answer); none of them affect the
+        # ORCHO_ISOLATION_ID scope under test.
+        lambda request, **_: SimpleNamespace(session_ts=session_ts),
     )
 
     def fake_resolve_state(request, ctx) -> None:
@@ -108,7 +111,7 @@ def test_isolation_id_is_removed_after_early_halt(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(
         session_run,
         "_resolve_profile_runtime",
-        lambda request: SimpleNamespace(session_ts="halted-run-id"),
+        lambda request, **_: SimpleNamespace(session_ts="halted-run-id"),
     )
 
     def fake_resolve_state(request, ctx) -> None:
