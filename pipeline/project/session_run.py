@@ -73,6 +73,7 @@ from pipeline.project.state_setup import (
 )
 from pipeline.project.types import PresentationPolicy, ProjectRunRequest
 from pipeline.project.verification_disclosure import VerificationContractPresence
+from pipeline.project.verification_env_retry import detect_env_retry_resume
 
 __all__ = ["load_plugin", "run_project_pipeline_session"]
 
@@ -129,6 +130,32 @@ class _ProjectRunContext:
     state: Any = None
     codemap: Any = None
     halted: bool = False
+    #: Decided once, before the header: is this resume a ``retry_verification``
+    #: env retry? Both pre-router setup steps that touch the scheduled-gate
+    #: ledger (the header's decorative read, the state's authoritative
+    #: initialization) read this one copy, so they can never disagree about
+    #: which resume they are setting up.
+    env_retry_resume: bool = False
+
+
+def _read_prior_meta(output_dir: Path | None) -> dict[str, Any]:
+    """Read the run dir's persisted ``meta.json`` tolerantly.
+
+    The *prior* run's record, read before ``setup_run_id`` rewrites the file
+    from the fresh session dict. A missing dir / file / malformed payload all
+    yield ``{}``, so every caller degrades to "nothing was recorded" rather
+    than raising out of run setup.
+    """
+    if output_dir is None:
+        return {}
+    meta_file = Path(output_dir) / "meta.json"
+    if not meta_file.is_file():
+        return {}
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
 
 
 def _read_persisted_runtime_override(
@@ -146,16 +173,8 @@ def _read_persisted_runtime_override(
     ``None``, so a fresh run (no meta yet) and a plain resume (no record) are
     both strict no-ops — the override activates only when a record exists.
     """
-    if output_dir is None:
-        return None
-    meta_file = Path(output_dir) / "meta.json"
-    if not meta_file.is_file():
-        return None
-    try:
-        meta = json.loads(meta_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(meta, dict):
+    meta = _read_prior_meta(output_dir)
+    if not meta:
         return None
     from sdk.run_control.runtime_override import read_runtime_override
 
@@ -180,7 +199,9 @@ def _is_fresh_explicit_start(request: ProjectRunRequest) -> bool:
     )
 
 
-def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
+def _resolve_profile_runtime(
+    request: ProjectRunRequest, *, env_retry_resume: bool = False,
+) -> _ProjectRunContext:
     """Resolve profile, run id, plugin, runtime/models, and the header.
 
     Resolves the run's profile and every value derived from it (profile
@@ -199,6 +220,10 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
     / ``[Codex]`` chip per phase. The header banner + ``Run dir`` line
     render only under TERMINAL (the gate lives in
     ``print_pipeline_header``).
+
+    ``env_retry_resume`` is decided by the caller (once, before this stage) and
+    only travels: it reaches the header as ``ledger_read_tolerant`` and is
+    parked on the context for ``_resolve_state``. Nothing here re-derives it.
     """
     # ADR 0101 / T2: read the persisted operator runtime/model override BEFORE
     # ``setup_run_id`` rewrites ``meta.json`` from the fresh session dict, so a
@@ -327,6 +352,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         resume_from=request.resume_from,
         contract=verification_contract,
         contract_presence=contract_presence,
+        ledger_read_tolerant=env_retry_resume,
     )
 
     return _ProjectRunContext(
@@ -357,6 +383,7 @@ def _resolve_profile_runtime(request: ProjectRunRequest) -> _ProjectRunContext:
         agent_registry=_runtime.agent_registry,
         verification_contract=verification_contract,
         contract_presence=contract_presence,
+        env_retry_resume=env_retry_resume,
     )
 
 
@@ -501,6 +528,7 @@ def _resolve_state(request: ProjectRunRequest, ctx: _ProjectRunContext) -> None:
         verification_contract=ctx.verification_contract,
         resume_completed_phases=resume_completed_phases,
         resume_requested=bool(request.resume_from),
+        env_retry_resume=ctx.env_retry_resume,
     ))
     ctx.state = _state_setup.state
     ctx.codemap = _state_setup.codemap
@@ -626,8 +654,19 @@ def run_project_pipeline_session(
         request.output_dir.mkdir(parents=True, exist_ok=True)
     request = restore_inherited_plan_request(request)
     request = _promote_plan_only_followup(request)
+    # Decide "is this a retry_verification env retry?" exactly once, from the
+    # prior meta.json + decision artifacts, BEFORE ``_resolve_profile_runtime``
+    # prints the header. Everything downstream of this line that touches the
+    # scheduled-gate ledger before the router reads this single value: the
+    # header's decorative read and the state's authoritative initialization.
+    # Deciding it twice would let one setup step treat a corrupt ledger as
+    # fatal while the other made it survivable, and which one ran first would
+    # then determine whether the operator got a pause or a dead run.
+    env_retry_resume = bool(request.resume_from) and detect_env_retry_resume(
+        _read_prior_meta(request.output_dir), request.output_dir,
+    )
     with startup_watchdog_scope(request.output_dir):
-        ctx = _resolve_profile_runtime(request)
+        ctx = _resolve_profile_runtime(request, env_retry_resume=env_retry_resume)
         from pipeline.project.resume_control import (
             ResumeControlError,
             materialize_resume_control_refusal,

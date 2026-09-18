@@ -917,6 +917,17 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
                     "re-execute phases without completed-phase evidence."
                 ) from exc
 
+        # A resume arm that proved its own loop position from the persisted
+        # handoff overrides the store's view of that loop: the pause is the
+        # more recent evidence about where this run actually stopped, and the
+        # store may hold nothing at all for a run whose checkpoint rows were
+        # written under a different session id.
+        if resume_outcome.loop_resume_cursors:
+            loop_resume_cursors = {
+                **loop_resume_cursors,
+                **dict(resume_outcome.loop_resume_cursors),
+            }
+
         # Hypothesis prelude is part of the plan loop's fresh-run
         # pre-work. On checkpoint resumes the checkpoint is the context
         # handoff, not a provider-session continuation; starting a new
@@ -963,6 +974,10 @@ def dispatch_via_v2_profile(run: Any, profile) -> dict:
             on_round_end=_on_round_end,
             ctx=ctx,
             completed_phases=completed_phases,
+            # Only the env-retry continuation populates these; for every other
+            # resume they are empty and ``run_profile`` behaves as before.
+            silent_completed_phases=set(resume_outcome.silent_completed_phases),
+            quiet_loop_phases=set(resume_outcome.quiet_loop_phases),
             loop_resume_cursors=loop_resume_cursors,
             on_handoff_outcome=_on_handoff_outcome,
             # ``getattr`` keeps duck-typed run stand-ins (runtime tests) working:

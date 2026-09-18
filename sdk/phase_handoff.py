@@ -7,7 +7,7 @@ orchestrator writes ``meta.phase_handoff`` (the canonical active payload)
 and exits rc=4 with ``meta.status="awaiting_phase_handoff"``.
 
 ``phase_handoff_decide(run_id, handoff_id, action, ...)`` is how a human
-(or supervisor agent) resolves that pause. Four actions:
+(or supervisor agent) resolves that pause. The actions:
 
 - ``continue`` — proceed past the paused phase as a manual override. The
   machine verdict is preserved (no rewrite to approved). The decision is
@@ -26,13 +26,18 @@ and exits rc=4 with ``meta.status="awaiting_phase_handoff"``.
   The waiver is authoritatively injected into all downstream review gates
   so the waived findings are not reopened as blocking. Requires
   ``feedback`` (the operator verdict).
+- ``retry_verification`` — the operator repaired the external
+  preconditions a blocking gate set tripped on; the engine re-executes
+  exactly that persisted gate set on the retained verification subject
+  without an agent round. Takes no ``feedback``; the resume either
+  continues the run or repauses with a fresh handoff.
 
 The function NEVER spawns a process. It is a pure state transition: it
 reads ``meta``, validates ``handoff_id`` against the active payload,
 validates ``action`` against the runtime-produced ``available_actions``,
 writes a decision artifact, and (for ``halt``) flips status. Actual
-continuation (continue / retry_feedback / continue_with_waiver) lives in
-``orcho_run_resume``.
+continuation (continue / retry_feedback / continue_with_waiver /
+retry_verification) lives in ``orcho_run_resume``.
 
 Decision artifacts live under
 ``<run_dir>/phase_handoff_decisions/{safe_handoff_id}.json`` — directory
@@ -77,13 +82,15 @@ from sdk.runs import _CWD_DEFAULT, find_run, load_meta
 
 PhaseHandoffActionValue = Literal[
     "continue", "retry_feedback", "halt", "continue_with_waiver",
+    "retry_verification",
 ]
 
 _DECISIONS_DIRNAME = "phase_handoff_decisions"
 _HALTED_STATUS = "halted"
 _VALID_ACTIONS: frozenset[str] = frozenset({a.value for a in PhaseHandoffAction})
 # The active (non-terminal) resume actions whose *application* lives in
-# ``orcho_run_resume`` — continue / continue_with_waiver / retry_feedback.
+# ``orcho_run_resume`` — continue / continue_with_waiver / retry_feedback /
+# retry_verification.
 # Sourced from the shared run_state transition enum so the project resume
 # path and this SDK decision path classify the active/terminal split from one
 # contract. ``halt`` is deliberately absent: it is the terminal action, applied
@@ -158,9 +165,10 @@ def phase_handoff_decide(
     Writes a decision artifact under
     ``<run_dir>/phase_handoff_decisions/{safe_handoff_id}.json``. For
     ``halt``, synchronously flips ``meta.status`` to ``halted`` and clears
-    the active ``meta.phase_handoff`` payload. ``continue`` /
-    ``retry_feedback`` do not spawn a process — actual continuation lives
-    in ``orcho_run_resume``.
+    the active ``meta.phase_handoff`` payload. Every active action
+    (``continue`` / ``retry_feedback`` / ``continue_with_waiver`` /
+    ``retry_verification``) does not spawn a process — actual continuation
+    lives in ``orcho_run_resume``.
 
     Raises:
         ValueError: ``action`` not in the canonical set, or
@@ -806,11 +814,13 @@ def _next_actions_after_decide(
     The decision API does not spawn anything — it is a pure state
     transition. Callers always need to follow up:
 
-    * ``continue`` / ``retry_feedback`` / ``continue_with_waiver``: the
-      run is still paused (meta.status stays ``awaiting_phase_handoff``)
-      but the decision artifact has been written. Calling
-      ``orcho_run_resume`` is the mandatory next step; the resume reads
-      the decision artifact and advances the run.
+    * ``continue`` / ``retry_feedback`` / ``continue_with_waiver`` /
+      ``retry_verification``: the run is still paused (meta.status stays
+      ``awaiting_phase_handoff``) but the decision artifact has been
+      written. Calling ``orcho_run_resume`` is the mandatory next step;
+      the resume reads the decision artifact and advances the run — for
+      ``retry_verification`` by re-executing the persisted blocking gate
+      set rather than dispatching an agent.
     * ``halt``: meta.status has been flipped to ``halted`` and
       meta.phase_handoff cleared. The post-halt meta drives the
       suggestion set via the generic ``compute_next_actions``

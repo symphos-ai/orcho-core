@@ -421,6 +421,118 @@ class TestContinueWithWaiver:
         )
 
 
+# ── retry_verification (env gate rerun, no feedback) ─────────────────────────
+
+
+class TestRetryVerificationAction:
+    """The env-gate menu: the operator repairs the environment and the engine
+    re-runs exactly the failed gates. No agent round, so no feedback is read."""
+
+    _ENV_SET: tuple[str, ...] = (
+        "retry_verification", "continue_with_waiver", "halt",
+    )
+
+    def test_menu_shows_the_rerun_line_when_available(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            _signal(available_actions=self._ENV_SET),
+            stdin=_scripted_stdin("7", ""),
+            stdout=out,
+        )
+        body = strip_ansi(out.getvalue())
+        assert "7) 🔄 retry_verification" in body
+        # The canonical menu stays numerically ascending: the two other
+        # available actions keep their own numbers and print before it.
+        assert body.index("3) 🛑 halt") < body.index("7) 🔄 retry_verification")
+        # Never offered as an agent retry.
+        assert "retry_feedback" not in body
+
+    def test_menu_hides_the_rerun_when_unavailable(self) -> None:
+        out = _new_stdout()
+        prompt_phase_handoff_action(
+            _signal(available_actions=("continue", "retry_feedback", "halt")),
+            stdin=_scripted_stdin("1", ""),
+            stdout=out,
+        )
+        assert "retry_verification" not in out.getvalue()
+
+    def test_hint_carries_the_number_and_short_name(self) -> None:
+        from pipeline.control.handoff_prompt import _action_hint
+
+        assert _action_hint(set(self._ENV_SET)) == (
+            "  Action [3/4/7 or halt/waiver/verify]: "
+        )
+
+    @pytest.mark.parametrize("key", ["7", "v", "verify", "retry_verification"])
+    def test_every_alias_selects_the_action_without_reading_feedback(
+        self, key: str,
+    ) -> None:
+        out = _new_stdout()
+        result = prompt_phase_handoff_action(
+            _signal(available_actions=self._ENV_SET),
+            # Exactly two lines: the action and the (blank) audit note. A
+            # third line would be consumed only if feedback were read.
+            stdin=_scripted_stdin(key, ""),
+            stdout=out,
+        )
+        assert isinstance(result, HandoffDecisionInput)
+        assert result.action == "retry_verification"
+        assert result.feedback is None
+        assert result.note == "orcho-cli tty retry_verification"
+        body = out.getvalue()
+        assert "Feedback" not in body
+        assert "Operator verdict" not in body
+
+    def test_not_in_the_feedback_required_set(self) -> None:
+        from pipeline.control.handoff_prompt import _FEEDBACK_REQUIRED_ACTIONS
+
+        assert set(_FEEDBACK_REQUIRED_ACTIONS) == {
+            "retry_feedback", "continue_with_waiver",
+        }
+
+    def test_rejected_when_not_in_available_actions(self) -> None:
+        """Availability is the runtime's call: the alias must not smuggle the
+        action into a menu that never offered it."""
+        out = _new_stdout()
+        result = prompt_phase_handoff_action(
+            _signal(available_actions=("continue", "halt")),
+            stdin=_scripted_stdin("7", "verify", "retry_verification"),
+            stdout=out,
+        )
+        assert result is HANDOFF_PROMPT_ABORTED
+
+    def test_label_is_phase_independent(self) -> None:
+        from pipeline.control.handoff_prompt import _action_label
+
+        labels = {
+            _action_label("retry_verification", _signal(phase=phase))
+            for phase in (
+                "implement", "review_changes", "validate_plan",
+                "final_acceptance",
+            )
+        }
+        assert len(labels) == 1
+
+    def test_existing_menus_render_byte_for_byte(self) -> None:
+        """Adding a seventh action must not perturb any menu that does not
+        offer it — same stdout as before, for every legacy action set."""
+        for actions in (
+            ("continue", "retry_feedback", "halt"),
+            ("continue", "halt"),
+            _WAIVER_ACTIONS,
+        ):
+            out = _new_stdout()
+            prompt_phase_handoff_action(
+                _signal(available_actions=actions),
+                stdin=_scripted_stdin("1" if "continue" in actions else "3", ""),
+                stdout=out,
+            )
+            body = out.getvalue()
+            assert "7)" not in body
+            assert "retry_verification" not in body
+            assert "verify" not in body
+
+
 # ── audit note path ──────────────────────────────────────────────────────────
 
 

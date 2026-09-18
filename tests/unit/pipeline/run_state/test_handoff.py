@@ -11,6 +11,9 @@ Pins the load-bearing contract for :mod:`pipeline.run_state.handoff`:
   carry no extra keys;
 * a ``retry_feedback`` transition carries a typed plan/repair mode
   distinguishable without parsing the paused phase string;
+* a ``retry_verification`` transition clears the payload and derives an
+  override alone — no feedback, no human_feedback marker, no waiver, no
+  retry mode;
 * halt is **not** implemented here (it stays terminal); and
 * the module is pure — no IO / subprocess / provider / runtime imports.
 """
@@ -37,6 +40,7 @@ from pipeline.run_state import (
     continue_with_waiver_handoff,
     request_active_handoff,
     retry_feedback_handoff,
+    retry_verification_handoff,
 )
 
 
@@ -270,6 +274,60 @@ def test_retry_mode_distinguishes_without_phase_parsing() -> None:
     assert plan.override == repair.override
     assert plan.retry_mode is not repair.retry_mode
     assert "phase" not in plan.override
+
+
+# ── retry_verification (no agent round, no feedback) ────────────────────
+
+
+def test_retry_verification_clears_payload_and_builds_override() -> None:
+    state = _state_with_handoff()
+    tr = retry_verification_handoff(
+        state,
+        handoff_id="h1",
+        note="reinstalled the toolchain",
+        decided_at="2026-09-17T00:00:00Z",
+    )
+    assert state["status"] == "running"
+    assert "phase_handoff" not in state
+    assert isinstance(tr, HandoffTransition)
+    assert list(tr.override.items()) == [
+        ("handoff_id", "h1"),
+        ("action", "retry_verification"),
+        ("feedback", None),
+        ("note", "reinstalled the toolchain"),
+        ("decided_at", "2026-09-17T00:00:00Z"),
+    ]
+    # Engine-only re-execution: no operator text, no waiver, no loop mode.
+    assert tr.human_feedback is None
+    assert tr.waiver is None
+    assert tr.retry_mode is None
+
+
+def test_retry_verification_override_has_exactly_five_keys() -> None:
+    tr = retry_verification_handoff(
+        _state_with_handoff(), handoff_id="h1", note=None, decided_at=None,
+    )
+    assert set(tr.override) == {
+        "handoff_id", "action", "feedback", "note", "decided_at",
+    }
+    assert tr.override["feedback"] is None
+
+
+def test_retry_verification_action_stored_as_plain_string() -> None:
+    tr = retry_verification_handoff(
+        _state_with_handoff(), handoff_id="h1", note=None, decided_at=None,
+    )
+    assert tr.override["action"] == "retry_verification"
+    assert type(tr.override["action"]) is str
+    assert HandoffAction.RETRY_VERIFICATION.value == "retry_verification"
+
+
+def test_retry_verification_clear_is_idempotent_without_payload() -> None:
+    state = {"status": "awaiting_phase_handoff"}
+    retry_verification_handoff(
+        state, handoff_id="h1", note=None, decided_at=None,
+    )
+    assert state == {"status": "running"}
 
 
 # ── builders: exact key sets (nothing extra) ────────────────────────────

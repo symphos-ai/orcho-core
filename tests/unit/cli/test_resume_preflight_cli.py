@@ -23,7 +23,12 @@ from pipeline.project.cli import _handle_checkpoint_resume_preflight
 _HANDOFF_ID = "validate_plan:plan_round:2"
 
 
-def _make_run(tmp_path: Path, *, status: str = "interrupted") -> tuple[Path, Path]:
+def _make_run(
+    tmp_path: Path,
+    *,
+    status: str = "interrupted",
+    available_actions: list[str] | None = None,
+) -> tuple[Path, Path]:
     runs = tmp_path / "runs"
     run_dir = runs / "20260101_000000"
     run_dir.mkdir(parents=True)
@@ -39,7 +44,11 @@ def _make_run(tmp_path: Path, *, status: str = "interrupted") -> tuple[Path, Pat
             "round_extras_key": "plan_round",
             "round": 2,
             "loop_max_rounds": 2,
-            "available_actions": ["continue", "retry_feedback", "halt"],
+            "available_actions": (
+                available_actions
+                if available_actions is not None
+                else ["continue", "retry_feedback", "halt"]
+            ),
             "artifacts": {},
             "last_output": "crit",
         },
@@ -77,6 +86,55 @@ def test_noninteractive_prints_hint_and_exits_4_no_mutation(
     # No decision recorded, meta untouched.
     assert not (run_dir / "phase_handoff_decisions").exists()
     assert (run_dir / "meta.json").read_text(encoding="utf-8") == before
+
+
+def test_hint_for_a_rerun_menu_omits_the_feedback_kwarg(
+    tmp_path, capsys,
+) -> None:
+    """``retry_verification`` leads an env-gate menu and takes no operator
+    text, so the copy-pasteable example must not hand the caller a
+    ``feedback=`` the SDK would reject."""
+    _runs, run_dir = _make_run(
+        tmp_path,
+        status="interrupted",
+        available_actions=["retry_verification", "continue_with_waiver", "halt"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        _handle_checkpoint_resume_preflight(
+            run_id=run_dir.name,
+            run_dir=run_dir,
+            meta=_meta(run_dir),
+            no_interactive=True,
+        )
+    assert exc.value.code == 4
+
+    err = capsys.readouterr().err
+    assert "retry_verification, continue_with_waiver, halt" in err
+    assert "'retry_verification'" in err
+    assert "feedback=" not in err
+
+
+def test_hint_for_a_feedback_led_menu_still_carries_the_kwarg(
+    tmp_path, capsys,
+) -> None:
+    """Parity check for the branch above: a feedback-required first action
+    keeps its ``feedback=`` placeholder."""
+    _runs, run_dir = _make_run(
+        tmp_path,
+        status="interrupted",
+        available_actions=["continue_with_waiver", "halt"],
+    )
+
+    with pytest.raises(SystemExit):
+        _handle_checkpoint_resume_preflight(
+            run_id=run_dir.name,
+            run_dir=run_dir,
+            meta=_meta(run_dir),
+            no_interactive=True,
+        )
+
+    assert 'feedback="..."' in capsys.readouterr().err
 
 
 def test_interactive_records_decision_and_continues(

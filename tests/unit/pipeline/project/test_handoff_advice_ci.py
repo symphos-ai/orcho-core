@@ -211,6 +211,30 @@ def test_hygiene_gate_stops_for_operator_waiver_without_advisor(tmp_path, patch_
     assert counter.n == 0
 
 
+def test_hygiene_gate_with_rerun_menu_still_stops_for_the_operator(
+    tmp_path, patch_advisor,
+):
+    """The env-gate advice now recommends a rerun, but CI must still hand the
+    decision to a human: the rerun presumes an environment fix nobody made
+    here, so the unattended path stays ``needs_operator`` and never invokes
+    the advisor."""
+    counter = patch_advisor(_advice())
+    out = ci.handle_ci_advice(
+        _run(tmp_path, _plan()),
+        _signal(
+            trigger="verification_gate_failed",
+            available=("retry_verification", "continue_with_waiver", "halt"),
+            findings=({"failure_kind": "env_failure", "severity": "P3"},),
+        ),
+        _AUTO,
+        budget_remaining=1,
+    )
+    assert out.outcome == "stop"
+    assert out.state == "needs_operator"
+    assert out.reason == "waiver"
+    assert counter.n == 0
+
+
 def test_out_of_scope_stops(tmp_path, patch_advisor):
     patch_advisor(_advice(expected_files=("other/secret.py",)))
     out = ci.handle_ci_advice(

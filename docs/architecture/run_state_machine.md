@@ -65,6 +65,7 @@ own. The writer never owns every side effect.
 | `awaiting_phase_handoff` | operator `continue` | `running` | `continue_handoff` | cleared | decision artifact, override marker, checkpoint/resume dispatch |
 | `awaiting_phase_handoff` | operator `continue_with_waiver` | `running` | `continue_with_waiver_handoff` | cleared | decision artifact, override + waiver markers, checkpoint/resume dispatch |
 | `awaiting_phase_handoff` | operator `retry_feedback` | `running` | `retry_feedback_handoff` | cleared | decision artifact, human feedback marker, checkpoint invalidation, plan/repair loop dispatch |
+| `awaiting_phase_handoff` | operator `retry_verification` | `running` | `retry_verification_handoff` | cleared | decision artifact, override marker (no feedback / waiver / retry-mode), re-execution of the persisted gate set, continue-or-repause decision |
 | `awaiting_phase_handoff` | operator `halt` | `halted` | `mark_run_halted` | cleared | decision artifact, `run.end`, checkpoint terminal write |
 | `running` | normal success | `done` | `mark_run_done` | cleared | `run.end`, checkpoint terminal write, final save |
 | `running` | plan-only tail (planning/research) | `awaiting_human_review` | `mark_run_awaiting_review` (via `resolve_terminal_outcome`) | preserved | `run.end`; the plan artifact is the operator's review subject |
@@ -114,6 +115,68 @@ run stays decidable (`awaiting_phase_handoff` / torn-but-decidable
 `interrupted`) and is resumable again once the retained worktree diff is
 restored. See [run_state.md](run_state.md) → "Retained worktree-subject
 resume".
+
+### Env-retry resume re-measures the same retained subject
+
+The `awaiting_phase_handoff → running` (`retry_verification`) transition is
+subject-aware for the same reason, inverted (ADR 0195). The operator repaired
+the environment a blocking `env_failure` gate set tripped on; the engine
+re-executes exactly that persisted set with **no agent round**, so the subject
+it must prove is not "a diff is present to fix" but "the tree the failing
+receipts observed is still the one about to be re-measured". Every check runs
+before `retry_verification_handoff` clears the payload:
+
+- **Retained subject unavailable + active env-retry** — the ADR 0088 class-(c)
+  block extends to this action: a missing, unregistered, or reclaimed recorded
+  worktree stops the resume with a recoverable operator error naming the path,
+  *before* any clean checkout is materialised. A fresh checkout would
+  re-measure a different tree and publish a pass the run never earned.
+- **One scope** — every decided identity names the same hook and phase, the
+  pause's own phase is the one routing derives from that hook, and a recorded
+  loop position names that hook too. A record whose phase and gates describe
+  different positions would re-measure the right commands and then report
+  phases nothing verified as complete.
+- **A locatable continuation point** — the run must be able to say where it
+  picks up once the gates are green. A top-level raising phase answers that by
+  itself, with the gate's hook deciding which side of it the run picks up on: an
+  `after_phase` gate leaves the phase behind, a `before_phase` / `before_delivery`
+  gate leaves it as the first thing to run. A phase inside a declarative loop
+  needs the loop position the pause recorded (`gate_loop_position`), re-checked
+  against the live profile — including the recorded execution order against the
+  dispatcher that claims to have produced it — and turned into a validated loop
+  cursor. The position records which members the
+  round actually ran, in order, because a `retry_feedback` round repairs before
+  it reviews — a pause on its repair leaves the review owed. Once the round has
+  run every member the recorded boundary answer decides it — a satisfied
+  `until` or an exhausted effective budget closes the loop, otherwise the next
+  round is owed and is resumed without replaying the finished one, with the
+  whole granted budget intact. A loop round the engine cannot
+  locate blocks here rather than resuming from a guessed member.
+- **Ledger / receipt / subject evidence chain** — every decided identity must
+  be a durably selected ledger row whose latest execution failed against the
+  `receipt_evidence` the handoff recorded, whose receipt parses in strict form
+  and classifies `failed` / `env_failure`, and whose retained worktree sits at
+  the `observed_head_oid` the receipts agree on. `tree_oid` is deliberately not
+  compared — a gate writing inside its own checkout moves it without the run
+  having moved.
+
+On the green path the run continues *after* the raising phase: everything
+through it is reported completed and skipped without firing the resume-skip
+trace callbacks, a loop that contained it resumes at the next member, and a loop
+member ahead that the round no longer needs dispatches without announcing
+itself. No `phase.start` on this path advertises a write round the action is not
+allowed to take, and the interactive prompt path applies the identical rules
+in-process.
+
+Every blocker re-parks the pause with its reason through the ordinary pause
+tail (a fresh `:retry_blocked` handoff id), having executed zero gate commands:
+the run stays `awaiting_phase_handoff` and decidable rather than becoming
+terminal. Two pre-router setup steps are folded into the same boundary so a
+corrupt ledger reaches this owner instead of refusing the run first — the
+header's decorative ledger read is tolerant under an env retry, and
+authoritative ledger initialization records why it could not be trusted instead
+of raising. Both are gated on a single detection taken once per resume; every
+other resume keeps the strict behaviour.
 
 ## Cross-Run Transition Matrix
 

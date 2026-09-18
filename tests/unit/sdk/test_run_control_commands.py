@@ -26,7 +26,10 @@ from sdk.run_control.types import PendingOperatorAction, PhaseHandoffDecisionCom
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-_ALL_ACTIONS = ("continue", "retry_feedback", "halt", "continue_with_waiver")
+_ALL_ACTIONS = (
+    "continue", "retry_feedback", "halt", "continue_with_waiver",
+    "retry_verification",
+)
 
 
 def _handoff_pending(
@@ -108,6 +111,19 @@ class TestValidation:
         # only retry_feedback / continue_with_waiver need feedback.
         assert build_decision_command(_handoff_pending(), "continue").feedback is None
         assert build_decision_command(_handoff_pending(), "halt").feedback is None
+
+    def test_retry_verification_accepted_without_feedback(self) -> None:
+        # The engine re-executes the persisted gate set; there is no
+        # operator text to collect, so the verb must build cleanly bare.
+        cmd = build_decision_command(_handoff_pending(), "retry_verification")
+        assert cmd.action == "retry_verification"
+        assert cmd.feedback is None
+        assert cmd.handoff_id == "implement:r1"
+
+    def test_retry_verification_outside_available_actions_rejected(self) -> None:
+        pending = _handoff_pending(available=("continue_with_waiver", "halt"))
+        with pytest.raises(ValueError, match="available_actions"):
+            build_decision_command(pending, "retry_verification")
 
     def test_missing_handoff_id_rejected(self) -> None:
         with pytest.raises(ValueError, match="handoff_id"):

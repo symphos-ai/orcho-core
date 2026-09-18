@@ -300,7 +300,10 @@ def _resume_request(tmp_path):
 
 def _patch_resume_coordinator(monkeypatch, ctx) -> None:
     monkeypatch.setattr(session_run, "_promote_plan_only_followup", lambda request: request)
-    monkeypatch.setattr(session_run, "_resolve_profile_runtime", lambda request: ctx)
+    # ``**_`` swallows the coordinator's setup-only keywords (e.g. the
+    # pre-router ``env_retry_resume`` answer): this double stands in for
+    # profile/runtime resolution, and none of them steer refusal behaviour.
+    monkeypatch.setattr(session_run, "_resolve_profile_runtime", lambda request, **_: ctx)
 
 
 def test_typed_refusal_before_pipeline_run_persists_halted_meta(tmp_path, monkeypatch) -> None:
