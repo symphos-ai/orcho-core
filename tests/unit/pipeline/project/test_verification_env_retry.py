@@ -422,7 +422,7 @@ def test_the_whole_granted_budget_survives_the_resume(
     ``max_rounds=1`` with two extra rounds granted is a budget of three. A gate
     pausing in round 2 leaves round 3 still promised, so the continuation must
     restore the whole extension — deriving it from the round it stopped in
-    would silently drop the last round the operator paid for.
+    would silently drop the operator's final configured round.
 
     Proved against a real ``run_profile``: round 3 has to execute, and round 2
     must not be replayed.
