@@ -44,6 +44,13 @@ AGENT_UNFIXABLE_KINDS = frozenset({
 # with NO verdict at all — that is a P1 blocker, not a P3 note.
 _HYGIENE_SEVERITY_KINDS = AGENT_UNFIXABLE_KINDS - {"timeout"}
 
+#: In-memory annotation the gate executor stamps on a receipt with the run-dir
+#: relative path of that execution's immutable evidence file (see
+#: ``gate_repair._persist_gate_receipt``). Rendering reads it to tie a handoff's
+#: blocking identities back to the receipts that produced them; it is absent
+#: whenever the evidence write did not land.
+RECEIPT_EVIDENCE_PATH_KEY = "_scheduled_receipt_evidence_path"
+
 
 @dataclass(frozen=True, slots=True)
 class GateFailure:
@@ -103,6 +110,20 @@ def required_fix(failure_kind: str, command: str) -> str:
             "explicit waiver."
         )
     return "Fix the failing verification command and rerun it."
+
+
+def all_env_failure(failures: tuple[GateFailure, ...]) -> bool:
+    """Whether EVERY failure in the set is specifically an ``env_failure``.
+
+    Narrower than :func:`all_hygiene` on purpose: hygiene covers everything no
+    agent can fix, but only an environment failure is one the engine can close
+    by re-executing the same command after the operator repairs its
+    preconditions. A provenance failure, an unverifiable subject, or a timeout
+    would not be resolved by a rerun alone.
+    """
+    return bool(failures) and all(
+        failure.failure_kind == "env_failure" for failure in failures
+    )
 
 
 def all_hygiene(failures: tuple[GateFailure, ...]) -> bool:
@@ -211,13 +232,18 @@ def handoff_artifacts(
     """
     primary = failures[0]
     identities = [
-        {"command": failure.command, "hook": hook, "phase": gate_phase}
+        _identity_entry(failure, hook=hook, gate_phase=gate_phase)
         for failure in failures
     ]
     return {
         "gate_command": primary.command,
         "gate_set": primary.gate_set,
-        "gate_identity": identities[0],
+        # The primary stays a bare triple: it is the waiver identity and the
+        # handoff-route key, both single-identity contracts that compare the
+        # whole mapping.
+        "gate_identity": {
+            "command": primary.command, "hook": hook, "phase": gate_phase,
+        },
         "gate_commands": [failure.command for failure in failures],
         "gate_identities": identities,
         "findings": findings(failures),
@@ -225,9 +251,31 @@ def handoff_artifacts(
     }
 
 
+def _identity_entry(
+    failure: GateFailure, *, hook: str, gate_phase: str,
+) -> dict[str, Any]:
+    """One ``gate_identities`` element: the triple plus its receipt evidence.
+
+    ``receipt_evidence`` points at the immutable evidence file of the execution
+    that produced this failure, so a later retry can prove the identity it is
+    about to re-execute is the one the operator decided on. The key is omitted
+    — never blanked — when the execution left no evidence path, so a consumer
+    reads its absence as "unproven" rather than as an empty pointer.
+    """
+    entry: dict[str, Any] = {
+        "command": failure.command, "hook": hook, "phase": gate_phase,
+    }
+    evidence = failure.receipt.get(RECEIPT_EVIDENCE_PATH_KEY)
+    if isinstance(evidence, str) and evidence.strip():
+        entry["receipt_evidence"] = evidence
+    return entry
+
+
 __all__ = [
     "AGENT_UNFIXABLE_KINDS",
+    "RECEIPT_EVIDENCE_PATH_KEY",
     "GateFailure",
+    "all_env_failure",
     "all_hygiene",
     "critique",
     "finding_severity",

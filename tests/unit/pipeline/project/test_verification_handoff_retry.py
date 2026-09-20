@@ -187,6 +187,10 @@ def test_retry_repairs_once_then_reruns_one_fresh_identity(
                 prior_round=1, fresh_round=2, loop_max_rounds=1,
                 human_retry_ordinal=1,
             ),
+            # The loop this human-directed round belongs to, so a gate failing
+            # inside it can record a resumable position. ``None`` here: this
+            # test drives the seam with a profile stand-in that has no loops.
+            "repair_loop": None,
     }}
     assert calls[1]["retry_context"] == calls[0]["repair"]["retry_context"]
     assert calls[1]["profile"] is not None
@@ -587,6 +591,93 @@ def test_dispatch_exposes_explicit_human_retry_round_to_lifecycle() -> None:
     assert session["phases"] == {
         "rounds": [{"round": 2, "critique": "retry feedback"}],
     }
+
+
+def test_human_directed_repair_exposes_a_resumable_loop_position() -> None:
+    """A gate failing inside this round must be able to record where it was.
+
+    The round runs past the loop's declared budget, so nothing in the profile
+    can locate it afterwards — only the position stamped while it runs. Read
+    here through routing's own reader, mid-dispatch, because that is exactly
+    when a failing gate would read it.
+
+    This seam runs *only* the repair member. The record has to say so: a review
+    this round still owes must not look like it already ran.
+    """
+    from pipeline.lifecycle import default_lifecycle_context
+    from pipeline.plugins import PluginConfig
+    from pipeline.project import verification_handoff_retry
+    from pipeline.project.gate_repair import _active_loop_position
+    from pipeline.runtime import (
+        LoopStep,
+        PhaseRegistry,
+        PhaseStep,
+        PipelineState,
+    )
+
+    seen: list[dict | None] = []
+    registry = PhaseRegistry()
+
+    def _repair(state):
+        # What an ``after_phase`` gate on the dispatched member would read.
+        seen.append(
+            _active_loop_position(run, "repair_changes", hook="after_phase"),
+        )
+        # A phase this round has not run cannot claim an after-phase position.
+        seen.append(
+            _active_loop_position(run, "review_changes", hook="after_phase"),
+        )
+        return state
+
+    registry.register("repair_changes", _repair)
+    ctx = default_lifecycle_context(phase_registry=registry)
+    state = PipelineState(task="fix gate", project_dir="/project", plugin=PluginConfig())
+    run = SimpleNamespace(state=state)
+    repair_loop = LoopStep(
+        steps=(
+            PhaseStep(phase="review_changes"),
+            PhaseStep(phase="repair_changes"),
+        ),
+        until="review_changes.approved",
+        max_rounds=1,
+        round_extras_key="repair_round",
+    )
+
+    verification_handoff_retry._dispatch_one_repair(
+        run,
+        PhaseStep(phase="repair_changes"),
+        ctx,
+        retry_context=VerificationHandoffRetryContext(
+            identity=GateIdentity("pytest-unit", "after_phase", "review_changes"),
+            identities=(
+                GateIdentity("pytest-unit", "after_phase", "review_changes"),
+            ),
+            prior_round=1, fresh_round=2, loop_max_rounds=1,
+            human_retry_ordinal=1,
+        ),
+        repair_loop=repair_loop,
+    )
+
+    assert seen == [
+        {
+            "loop_key": "repair_round",
+            "loop_phases": ["review_changes", "repair_changes"],
+            "round": 2,
+            "phase": "repair_changes",
+            # The effective budget, not the declared one: this round only
+            # exists because an operator asked for it.
+            "budget": 2,
+            "until_satisfied": False,
+            # Only the repair: the review this round owes is still owed, and
+            # the mode says which order this dispatcher can produce at all.
+            "executed": ["repair_changes"],
+            "mode": "review_retry_order",
+            "hook": "after_phase",
+        },
+        None,
+    ]
+    # The stamp is scoped to the dispatch and leaves nothing behind.
+    assert state.extras == {"repair_round": 2, "repair_round_max": 1}
 
 
 def test_adapter_contract_failure_restores_recovery_subject(

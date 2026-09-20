@@ -231,6 +231,7 @@ def apply_verification_handoff_retry(
     except RepairSubjectUnproven as exc:
         raise VerificationHandoffRetryBlocked(str(exc)) from exc
     from pipeline.project.gate_repair import _repair_step
+    from pipeline.project.handoff import find_repair_loop
 
     repair_step = _repair_step(profile)
     if repair_step is None:
@@ -265,6 +266,7 @@ def apply_verification_handoff_retry(
             repair_step,
             ctx,
             retry_context=retry_context,
+            repair_loop=find_repair_loop(profile),
         )
     except AgentCallError:
         # Provider/process failures retain their established lifecycle handling;
@@ -308,15 +310,24 @@ def _dispatch_one_repair(
     ctx: Any,
     *,
     retry_context: VerificationHandoffRetryContext,
+    repair_loop: Any = None,
 ) -> None:
-    """Dispatch a human-directed repair with explicit loop identity."""
-    from pipeline.runtime.runner import _dispatch_via_fsm
+    """Dispatch a human-directed repair with explicit loop identity.
 
-    active_key_sentinel = object()
-    human_directed_sentinel = object()
-    previous_active_key = run.state.extras.get(
-        "_active_loop_round_key", active_key_sentinel,
+    ``repair_loop`` supplies the member order and ``until`` clause of the loop
+    this round belongs to. It is what lets a verification gate failing *inside*
+    this round record a resumable position: the round is outside the loop's
+    declared budget, so nothing but the recorded position can locate it again.
+    """
+    from pipeline.runtime.runner import (
+        LOOP_DISPATCH_REVIEW_RETRY,
+        _dispatch_via_fsm,
+        mark_loop_member_executed,
+        restore_active_loop,
+        stamp_active_loop,
     )
+
+    human_directed_sentinel = object()
     previous_human_directed = run.state.extras.get(
         HUMAN_DIRECTED_FLAG_KEY, human_directed_sentinel,
     )
@@ -324,8 +335,20 @@ def _dispatch_one_repair(
     # local to this orchestration seam rather than growing state.extras flags.
     run.state.extras["repair_round"] = retry_context.fresh_round
     run.state.extras["repair_round_max"] = retry_context.loop_max_rounds
-    run.state.extras["_active_loop_round_key"] = "repair_round"
+    previous_active_loop = stamp_active_loop(
+        run.state,
+        loop_key="repair_round",
+        phases=tuple(
+            inner.phase for inner in getattr(repair_loop, "steps", ()) or ()
+        ),
+        budget=max(retry_context.fresh_round, retry_context.loop_max_rounds),
+        until=getattr(repair_loop, "until", ""),
+        mode=LOOP_DISPATCH_REVIEW_RETRY,
+    )
     run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
+    # Only the repair member runs here; a review still owed by this round must
+    # stay owed if a gate pauses the repair.
+    mark_loop_member_executed(run.state, repair_step.phase)
     try:
         run.state = _dispatch_via_fsm(
             repair_step, run.state, ctx,
@@ -333,10 +356,7 @@ def _dispatch_one_repair(
             on_phase_end=getattr(run, "_on_phase_end", None),
         )
     finally:
-        if previous_active_key is active_key_sentinel:
-            run.state.extras.pop("_active_loop_round_key", None)
-        else:
-            run.state.extras["_active_loop_round_key"] = previous_active_key
+        restore_active_loop(run.state, previous_active_loop)
         if previous_human_directed is human_directed_sentinel:
             run.state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
         else:

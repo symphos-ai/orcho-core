@@ -46,12 +46,13 @@ tests can drive routing without a real agent or worktree.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pipeline.project import gate_failure_set
-from pipeline.project.gate_failure_set import GateFailure
+from pipeline.project import gate_failure_set, gate_handoff_actions
+from pipeline.project.gate_failure_set import RECEIPT_EVIDENCE_PATH_KEY, GateFailure
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -1023,9 +1024,6 @@ def _gate_duration(receipt: dict) -> float:
     return float(value) if isinstance(value, int | float) else 0.0
 
 
-_RECEIPT_EVIDENCE_PATH_KEY = "_scheduled_receipt_evidence_path"
-
-
 def _persist_gate_receipt(run: Any, entry: Any, receipt: dict) -> None:
     """Write latest + immutable scheduled receipt evidence; never raises."""
     output_dir = getattr(getattr(run, "state", None), "output_dir", None)
@@ -1041,7 +1039,7 @@ def _persist_gate_receipt(run: Any, entry: Any, receipt: dict) -> None:
             phase=str(getattr(entry, "phase", "")),
         )
         if evidence is not None:
-            receipt[_RECEIPT_EVIDENCE_PATH_KEY] = evidence.relative_to(output_dir).as_posix()
+            receipt[RECEIPT_EVIDENCE_PATH_KEY] = evidence.relative_to(output_dir).as_posix()
 
 
 def _classify_gate_receipt(receipt: dict, ctx: Any | None = None) -> Any:
@@ -1152,7 +1150,7 @@ def _record_executed_gate_event(
 ) -> None:
     """Stamp the ``executed_pass`` / ``executed_fail`` event for a run gate."""
     decision = "executed_pass" if classification.status == "present" else "executed_fail"
-    evidence = receipt.get(_RECEIPT_EVIDENCE_PATH_KEY)
+    evidence = receipt.get(RECEIPT_EVIDENCE_PATH_KEY)
     receipt_path = evidence if isinstance(evidence, str) else None
     _append_gate_event(
         run,
@@ -1362,6 +1360,7 @@ def _request_handoff(
     phase: str,
     hook: str,
     gate_phase: str,
+    carry_loop_position: Mapping[str, Any] | None = None,
 ) -> None:
     """Stash a phase-handoff signal so the caller persists the pause.
 
@@ -1376,7 +1375,25 @@ def _request_handoff(
     artifacts = gate_failure_set.handoff_artifacts(
         failures, hook=hook, gate_phase=gate_phase,
     )
+    position = _active_loop_position(run, phase, hook=hook)
+    if position is None and carry_loop_position is not None:
+        # A handoff re-raised by a gate *rerun* is published from outside the
+        # loop that owned the round, so there is no live stamp to read. The
+        # caller hands over the position the previous pause already proved:
+        # nothing has executed since, so the boundary is still the same one —
+        # and without it the fresh pause would offer a retry that the next
+        # resume could only refuse as unlocatable.
+        position = dict(carry_loop_position)
+    if position is not None:
+        artifacts[gate_handoff_actions.LOOP_POSITION_KEY] = position
     hygiene = gate_failure_set.all_hygiene(failures)
+    # An env-only set is retryable only when the artifacts it just rendered can
+    # actually address the re-execution — same admission the re-park recomputes
+    # from the persisted record alone.
+    env_retryable = (
+        gate_failure_set.all_env_failure(failures)
+        and gate_handoff_actions.env_retry_admissible(artifacts)
+    )
     last_output = getattr(run.state, "last_critique", "") or artifacts["short_summary"]
     signal = PhaseHandoffRequested(
         # The id stays the single-identity ``gate:<command>:<round>`` shape the
@@ -1391,7 +1408,9 @@ def _request_handoff(
         round_extras_key="repair_round",
         round=max(1, round_n),
         loop_max_rounds=max(1, max_rounds),
-        available_actions=_handoff_actions(profile, hygiene=hygiene),
+        available_actions=gate_handoff_actions.verification_handoff_actions(
+            profile, hygiene=hygiene, env_retryable=env_retryable,
+        ),
         artifacts=artifacts,
         last_output=last_output,
     )
@@ -1399,53 +1418,100 @@ def _request_handoff(
     run.state.stop(f"phase handoff requested: {signal.handoff_id}")
 
 
-def _persisted_findings_are_hygiene(findings: Any) -> bool:
-    """Whether EVERY persisted finding is agent-unfixable.
+def _active_loop_position(
+    run: Any, phase: str, *, hook: str = "",
+) -> dict[str, Any] | None:
+    """Where inside a declarative loop this pause is being raised, if anywhere.
 
-    Which actions to offer follows from what the failures ARE, so read each
-    persisted ``failure_kind`` rather than inferring it from severity: a timeout
-    is agent-unfixable (waiver / halt only) yet carries P1, so the severity
-    proxy would silently offer it a repair retry. Read over the whole list, not
-    its first member — a handoff can block on several commands, and one still
-    agent-fixable failure keeps a repair retry a real option.
+    The runner — and every orchestrator seam that dispatches a loop member
+    itself — stamps the active loop's key, member order, effective round budget
+    and ``until`` clause into ``state.extras`` for as long as that loop runs.
+    Captured here, at the moment of the pause, it is the only durable evidence
+    of *which round of which member order* a later resume has to continue from:
+    the payload's own ``round`` / ``round_extras_key`` describe the repair loop
+    by convention, not the loop this phase belongs to.
+
+    ``until_satisfied`` is recorded now, not re-derived later, for the same
+    reason. It answers the one question the resume cannot: whether this round
+    closed the loop. A rebuilt state has no round verdict in its phase log, so
+    a resume asking the predicate afterwards would read "not satisfied" and
+    open a round the run had already finished.
+
+    ``hook`` decides what the position even means. An ``after_phase`` gate runs
+    once its member has finished, so that member is the last thing executed; a
+    ``before_phase`` gate runs *before* its member, which is therefore still
+    owed and must not be recorded as done.
+
+    ``None`` for a top-level phase, which needs no position — and for an
+    incomplete stamp, which is not a position anyone may act on.
     """
-    if not isinstance(findings, list | tuple) or not findings:
-        return False
-    verdicts: list[bool] = []
-    for finding in findings:
-        if not isinstance(finding, dict):
-            return False
-        kind = str(finding.get("failure_kind") or "")
-        verdicts.append(
-            kind in gate_failure_set.AGENT_UNFIXABLE_KINDS
-            if kind
-            else finding.get("severity") == "P3"
-        )
-    return all(verdicts)
-
-
-def _handoff_actions(profile: Any, *, hygiene: bool) -> tuple[str, ...]:
-    """Return only actions the current profile can execute for this failure."""
-    from pipeline.runtime.roles import PhaseHandoffAction
-
-    return (
-        (PhaseHandoffAction.CONTINUE_WITH_WAIVER.value, PhaseHandoffAction.HALT.value)
-        if hygiene
-        else (
-            (
-                PhaseHandoffAction.CONTINUE.value,
-                PhaseHandoffAction.RETRY_FEEDBACK.value,
-                PhaseHandoffAction.HALT.value,
-                PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
-            )
-            if _repair_step(profile) is not None
-            else (
-                PhaseHandoffAction.CONTINUE.value,
-                PhaseHandoffAction.HALT.value,
-                PhaseHandoffAction.CONTINUE_WITH_WAIVER.value,
-            )
-        )
+    from pipeline.runtime.runner import (
+        ACTIVE_LOOP_BUDGET_EXTRA,
+        ACTIVE_LOOP_EXECUTED_EXTRA,
+        ACTIVE_LOOP_KEY_EXTRA,
+        ACTIVE_LOOP_MODE_EXTRA,
+        ACTIVE_LOOP_PHASES_EXTRA,
+        ACTIVE_LOOP_UNTIL_EXTRA,
+        loop_until_satisfied,
     )
+
+    extras = getattr(getattr(run, "state", None), "extras", None)
+    if not isinstance(extras, dict):
+        return None
+    loop_key = extras.get(ACTIVE_LOOP_KEY_EXTRA)
+    loop_phases = extras.get(ACTIVE_LOOP_PHASES_EXTRA)
+    if not (isinstance(loop_key, str) and loop_key):
+        return None
+    if not isinstance(loop_phases, tuple) or phase not in loop_phases:
+        return None
+    round_n = extras.get(loop_key)
+    if not _positive_int(round_n):
+        return None
+    budget = extras.get(ACTIVE_LOOP_BUDGET_EXTRA)
+    until = extras.get(ACTIVE_LOOP_UNTIL_EXTRA)
+    if not _positive_int(budget) or budget < round_n or not isinstance(until, str):
+        return None
+    mode = extras.get(ACTIVE_LOOP_MODE_EXTRA)
+    if not (isinstance(mode, str) and mode):
+        return None
+    executed = extras.get(ACTIVE_LOOP_EXECUTED_EXTRA)
+    if not isinstance(executed, tuple):
+        return None
+    if hook in _PRE_PHASE_HOOKS:
+        # The gate guards the member: it has not run, and recording it as done
+        # would resume past a phase nothing executed.
+        if phase in executed:
+            return None
+    elif not executed or executed[-1] != phase:
+        # An after-phase gate runs once its member finished, so that member is
+        # the last thing executed; anything else is a stamp nobody kept current.
+        return None
+    return {
+        "loop_key": loop_key,
+        "loop_phases": list(loop_phases),
+        "round": round_n,
+        "phase": phase,
+        "hook": hook,
+        "budget": budget,
+        "until_satisfied": (
+            bool(until) and loop_until_satisfied(until, run.state)
+        ),
+        # In execution order, not declared order: a human-directed review retry
+        # repairs before it reviews, and only this list can say which member the
+        # round still owes. ``mode`` names the dispatcher, so a reader can check
+        # the order against the shapes that dispatcher can actually produce.
+        "executed": list(executed),
+        "mode": mode,
+    }
+
+
+#: Gate hooks that fire *before* the phase they guard. Their pause leaves that
+#: phase still owed — the opposite of an ``after_phase`` pause.
+_PRE_PHASE_HOOKS = frozenset({"before_phase", "before_delivery"})
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 def repark_verification_handoff_retry_blocked(
@@ -1461,7 +1527,11 @@ def repark_verification_handoff_retry_blocked(
     from pipeline.runtime.roles import PhaseHandoffType
 
     artifacts = dict(active.get("artifacts") or {})
-    hygiene = _persisted_findings_are_hygiene(artifacts.get("findings"))
+    hygiene = gate_handoff_actions.findings_are_hygiene(artifacts.get("findings"))
+    # Recomputed from the persisted record, not carried over from the decision
+    # that just blocked: a record whose identities or receipt evidence are
+    # defective must not re-offer a retry the engine cannot address.
+    env_retryable = gate_handoff_actions.env_retry_admissible(artifacts)
     prior_id = str(active.get("id") or "gate:verification")
     prior_summary = artifacts.get("short_summary")
     artifacts["retry_blocked_reason"] = reason
@@ -1486,7 +1556,9 @@ def repark_verification_handoff_retry_blocked(
         round_extras_key=str(active.get("round_extras_key") or "repair_round"),
         round=max(1, int(active.get("round", 1) or 1)),
         loop_max_rounds=max(1, int(active.get("loop_max_rounds", 1) or 1)),
-        available_actions=_handoff_actions(profile, hygiene=hygiene),
+        available_actions=gate_handoff_actions.verification_handoff_actions(
+            profile, hygiene=hygiene, env_retryable=env_retryable,
+        ),
         artifacts=artifacts,
         last_output=last_output,
     )
@@ -1610,7 +1682,11 @@ def _repair_budget(run: Any, profile: Any) -> int:
 
 
 def rerun_verification_handoff_gate(
-    run: Any, *, retry_context: Any, profile: Any,
+    run: Any,
+    *,
+    retry_context: Any,
+    profile: Any,
+    carry_loop_position: Mapping[str, Any] | None = None,
 ) -> bool:
     """Re-execute EVERY durable selected gate the handoff blocked on.
 
@@ -1620,6 +1696,11 @@ def rerun_verification_handoff_gate(
     resolved before any command runs; the lookup is identity-based, and a
     missing or duplicate match is a control failure, not permission to run a
     similarly named command.
+
+    ``carry_loop_position`` is the loop boundary the *previous* pause proved.
+    A rerun runs outside the loop that owned the round, so if these gates fail
+    again the fresh pause has no live position to record — and a fresh pause
+    that offers a retry nothing can locate is a dead end for the operator.
     """
     contract = _contract(run)
     if contract is None:
@@ -1658,6 +1739,7 @@ def rerun_verification_handoff_gate(
         profile=profile,
         phase=_handoff_phase(primary.hook, primary.phase),
         hook=primary.hook, gate_phase=primary.phase,
+        carry_loop_position=carry_loop_position,
     )
     return False
 

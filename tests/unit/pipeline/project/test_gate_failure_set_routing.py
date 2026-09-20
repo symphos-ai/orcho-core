@@ -20,7 +20,11 @@ import pytest
 
 from pipeline.evidence.verification_receipt import subject_identity
 from pipeline.plugins import PluginConfig
-from pipeline.project import gate_repair
+from pipeline.project import (
+    gate_failure_set,
+    gate_handoff_actions,
+    gate_repair,
+)
 from pipeline.verification_contract import PlaceholderContext, VerificationContract
 from pipeline.verification_failure import classify_receipt
 
@@ -63,6 +67,8 @@ class _State:
         }
         self.last_critique = ""
         self.last_test_output = ""
+        # Read by the loop-boundary verdict routing records on a mid-loop pause.
+        self.phase_log: dict = {}
         self.halt = False
         self.halt_reason = ""
         self.phase_handoff_request = None
@@ -89,8 +95,9 @@ def _receipt(
     detail: str = "",
     stdout: str = "out",
     stderr: str = "err",
+    evidence: str | None = None,
 ) -> dict:
-    return {
+    receipt = {
         "schema_version": 3,
         "exit_code": exit_code,
         "stdout_tail": stdout,
@@ -101,6 +108,48 @@ def _receipt(
             "version": 1, "object_format": "sha1", "tree_oid": "a" * 40,
             "observed_head_oid": "b" * 40, "baseline_oid": None,
         }},
+        "dependencies": [],
+    }
+    if evidence is not None:
+        # What ``_persist_gate_receipt`` stamps once the immutable evidence
+        # file lands; the subprocess seam is patched out here, so tests that
+        # need a proven receipt supply it themselves.
+        receipt[gate_failure_set.RECEIPT_EVIDENCE_PATH_KEY] = evidence
+    return receipt
+
+
+def _env_failure_receipt(evidence: str) -> dict:
+    """No exit code + an execution detail: ``classify_receipt`` -> env_failure."""
+    return _receipt(
+        None, detail="cannot run: interpreter not found", evidence=evidence,
+    )
+
+
+def _env_command_payload(
+    command: str, *, exit_code: int | None = None, detail: str = "no interpreter",
+) -> dict:
+    """A run_command payload the receipt writer can persist verbatim."""
+    return {
+        "kind": "verification_command",
+        "command": command,
+        "env": "",
+        "cwd": "/tmp/wt",
+        "placeholders": {"checkout": "/tmp/wt", "project": "/tmp/p"},
+        "argv": [command],
+        "env_overrides": {},
+        "assertions": [],
+        "exit_code": exit_code,
+        "duration_s": 0.1,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "log_path": None,
+        "parity": "absolute",
+        "detail": detail,
+        "git": {
+            "checkout_head": None,
+            "baseline_head": None,
+            "changed_files_fingerprint": None,
+        },
         "dependencies": [],
     }
 
@@ -391,6 +440,234 @@ def test_all_agent_unfixable_set_offers_waiver_or_halt_only(
     assert run.state.phase_handoff_request.available_actions == (
         "continue_with_waiver", "halt",
     )
+
+
+def test_env_only_set_offers_a_gate_rerun_before_waiver_or_halt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two environment failures are agent-unfixable but engine-retryable: the
+    operator repairs the environment and the engine re-executes exactly these
+    gates. The record must address that rerun — one ``receipt_evidence``-bearing
+    identity per blocking command."""
+    contract = _contract()
+    run = _run(contract)
+    _patch_gates(monkeypatch, {
+        "lint": [_env_failure_receipt("verification/scheduled/lint-1.json")],
+        "typecheck": [
+            _env_failure_receipt("verification/scheduled/typecheck-1.json"),
+        ],
+        "vitest": [_receipt(0)],
+    })
+    critiques = _patch_repair(monkeypatch)
+
+    outcome = gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    assert outcome.paused and outcome.rounds == 0
+    assert critiques == []  # agent-unfixable: no repair round burned
+    signal = run.state.phase_handoff_request
+    assert [f["failure_kind"] for f in signal.artifacts["findings"]] == [
+        "env_failure", "env_failure",
+    ]
+    assert signal.available_actions == (
+        "retry_verification", "continue_with_waiver", "halt",
+    )
+    assert signal.artifacts["gate_identities"] == [
+        {
+            "command": "lint", "hook": "after_phase", "phase": "implement",
+            "receipt_evidence": "verification/scheduled/lint-1.json",
+        },
+        {
+            "command": "typecheck", "hook": "after_phase", "phase": "implement",
+            "receipt_evidence": "verification/scheduled/typecheck-1.json",
+        },
+    ]
+    # The primary stays a bare triple — waiver identity and route
+    # classification are single-identity contracts over the whole mapping.
+    assert signal.artifacts["gate_identity"] == {
+        "command": "lint", "hook": "after_phase", "phase": "implement",
+    }
+
+
+def test_a_pause_raised_inside_a_loop_records_where_the_round_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The payload has to say which round and member the gates ran for.
+
+    A ``retry_verification`` resume continues the loop *after* the raising
+    phase, and the payload's own ``round`` / ``round_extras_key`` name the
+    repair loop by convention — not necessarily the loop this phase belongs to.
+    The runner stamps the active loop into ``state.extras`` for exactly as long
+    as the loop runs, so the pause captures it while it is still true.
+    """
+    contract = _contract()
+    run = _run(contract)
+    from pipeline.runtime.runner import (
+        mark_loop_member_executed,
+        stamp_active_loop,
+    )
+
+    run.state.extras["implement_round"] = 2
+    stamp_active_loop(
+        run.state,
+        loop_key="implement_round",
+        phases=("implement", "verify_changes"),
+        # An operator-granted extra round: the effective budget, not the
+        # declared one, is what a later resume has to accept.
+        budget=2,
+        until="verify_changes.approved",
+    )
+    mark_loop_member_executed(run.state, "implement")
+    _patch_gates(monkeypatch, {
+        "lint": [_env_failure_receipt("verification/scheduled/lint-1.json")],
+        "typecheck": [_receipt(0)],
+        "vitest": [_receipt(0)],
+    })
+    _patch_repair(monkeypatch)
+
+    gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    signal = run.state.phase_handoff_request
+    assert signal.artifacts[gate_handoff_actions.LOOP_POSITION_KEY] == {
+        "loop_key": "implement_round",
+        "loop_phases": ["implement", "verify_changes"],
+        "round": 2,
+        "phase": "implement",
+        "budget": 2,
+        # Recorded now, while the round's verdict is still readable: a rebuilt
+        # state cannot answer whether this round closed the loop.
+        "until_satisfied": False,
+        # In execution order — the member still owed by this round is whatever
+        # is missing from here, not whatever follows in the declaration — plus
+        # the dispatcher that produced it, so the order can be checked against
+        # the shapes that dispatcher can actually make.
+        "executed": ["implement"],
+        "mode": "declared_order",
+        # The gate reported on a member that had run, not on one it guards.
+        "hook": "after_phase",
+    }
+
+
+def test_a_top_level_pause_records_no_loop_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing to position: the phase is not a member of any active loop."""
+    contract = _contract()
+    run = _run(contract)
+    from pipeline.runtime.runner import stamp_active_loop
+
+    # A stale stamp from a loop that already closed must not be read as this
+    # phase's position — the phase is not one of its members.
+    run.state.extras["plan_round"] = 1
+    stamp_active_loop(
+        run.state,
+        loop_key="plan_round",
+        phases=("plan", "validate_plan"),
+        budget=1,
+        until="validate_plan.approved",
+    )
+    _patch_gates(monkeypatch, {
+        "lint": [_env_failure_receipt("verification/scheduled/lint-1.json")],
+        "typecheck": [_receipt(0)],
+        "vitest": [_receipt(0)],
+    })
+    _patch_repair(monkeypatch)
+
+    gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    signal = run.state.phase_handoff_request
+    assert gate_handoff_actions.LOOP_POSITION_KEY not in signal.artifacts
+
+
+def test_real_execution_stamps_receipt_evidence_onto_the_identities(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """The pointer is not test scaffolding: driving the real persistence seam
+    (``run_command`` patched, ``_persist_gate_receipt`` live) shows an
+    after_phase env failure reaching the handoff with a ``receipt_evidence``
+    path that resolves to the failing receipt on disk."""
+    import json
+
+    import pipeline.verification_command as vc
+
+    contract = _contract(schedule=[{
+        "after_phase": "implement", "policy": "require",
+        "action": "handoff", "commands": ["lint", "typecheck"],
+    }])
+    run = _run(contract)
+    run.state.output_dir = tmp_path
+    monkeypatch.setattr(
+        vc, "run_command", lambda command, *a, **k: _env_command_payload(command),
+    )
+    monkeypatch.setattr(
+        gate_repair,
+        "_classify_gate_receipt",
+        lambda receipt, _ctx: classify_receipt(receipt),
+    )
+    _patch_repair(monkeypatch)
+
+    gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    signal = run.state.phase_handoff_request
+    assert signal.available_actions == (
+        "retry_verification", "continue_with_waiver", "halt",
+    )
+    identities = signal.artifacts["gate_identities"]
+    assert [entry["command"] for entry in identities] == ["lint", "typecheck"]
+    for entry in identities:
+        evidence = tmp_path / entry["receipt_evidence"]
+        assert evidence.is_file()
+        recorded = json.loads(evidence.read_text())
+        assert recorded["command"] == entry["command"]
+        assert recorded["exit_code"] is None
+
+
+def test_env_set_without_receipt_evidence_gets_no_rerun_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-closed: an env-only set whose executions left no evidence pointer
+    cannot prove which receipts a rerun would replace, so the menu stays
+    waiver / halt."""
+    contract = _contract()
+    run = _run(contract)
+    _patch_gates(monkeypatch, {
+        "lint": [_receipt(None, detail="cannot run")],
+        "typecheck": [_receipt(None, detail="cannot run")],
+        "vitest": [_receipt(0)],
+    })
+    _patch_repair(monkeypatch)
+
+    gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    signal = run.state.phase_handoff_request
+    assert signal.available_actions == ("continue_with_waiver", "halt")
+    for entry in signal.artifacts["gate_identities"]:
+        assert "receipt_evidence" not in entry
+
+
+def test_mixed_env_and_timeout_set_gets_no_rerun_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout is agent-unfixable too, but re-running it is not the fix —
+    the budget is declared in the contract. A set that mixes the two is not
+    engine-retryable."""
+    contract = _contract()
+    run = _run(contract)
+    timeout = _receipt(None, evidence="verification/scheduled/typecheck-1.json")
+    timeout["outcome"] = "timeout"
+    _patch_gates(monkeypatch, {
+        "lint": [_env_failure_receipt("verification/scheduled/lint-1.json")],
+        "typecheck": [timeout],
+        "vitest": [_receipt(0)],
+    })
+    _patch_repair(monkeypatch)
+
+    gate_repair.run_post_implement_gate_repair(run, object(), object())
+
+    signal = run.state.phase_handoff_request
+    assert [f["failure_kind"] for f in signal.artifacts["findings"]] == [
+        "env_failure", "timeout",
+    ]
+    assert signal.available_actions == ("continue_with_waiver", "halt")
 
 
 def test_abort_still_short_circuits_the_remaining_gates(

@@ -160,6 +160,7 @@ class HandoffAction(StrEnum):
     CONTINUE = "continue"
     CONTINUE_WITH_WAIVER = "continue_with_waiver"
     RETRY_FEEDBACK = "retry_feedback"
+    RETRY_VERIFICATION = "retry_verification"
 
 
 class HandoffRetryMode(StrEnum):

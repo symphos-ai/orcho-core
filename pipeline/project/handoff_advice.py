@@ -75,6 +75,7 @@ _VALID_ACTIONS: tuple[str, ...] = (
     "retry_feedback",
     "halt",
     "continue_with_waiver",
+    "retry_verification",
 )
 _VALID_CONFIDENCE: tuple[str, ...] = ("high", "medium", "low")
 #: Compactness caps so the advisor context never copies a whole transcript.
@@ -91,7 +92,7 @@ _RESPONSE_CONTRACT = (
     "Respond with exactly one JSON object and nothing else. Use this shape:\n"
     "{\n"
     '  "recommended_action": "<one of: continue | retry_feedback | halt | '
-    'continue_with_waiver>",\n'
+    'continue_with_waiver | retry_verification>",\n'
     '  "confidence": "<one of: high | medium | low>",\n'
     '  "rationale": "<one or two sentences on why this path is the smallest '
     'honest way forward>",\n'
@@ -146,6 +147,7 @@ class HandoffAdvice:
         "retry_feedback",
         "halt",
         "continue_with_waiver",
+        "retry_verification",
     ]
     confidence: Literal["high", "medium", "low"]
     rationale: str
@@ -228,10 +230,36 @@ def hygiene_gate_failure_kind(signal: PhaseHandoffRequested) -> str | None:
 
 
 def hygiene_gate_advice(signal: PhaseHandoffRequested) -> HandoffAdvice | None:
-    """Return the deterministic waiver recommendation for a hygiene handoff."""
+    """Return the deterministic recommendation for a hygiene handoff.
+
+    An ``env_failure`` whose menu still offers ``retry_verification`` has a
+    cheaper honest route than a waiver: the operator repairs the environment
+    outside the agent and the engine re-runs exactly those gates in the same
+    run, so the change keeps real proof instead of being accepted on a waived
+    one. Every other hygiene handoff — a provenance failure, or an
+    environment failure the engine cannot re-address — keeps the waiver
+    recommendation unchanged.
+    """
     kind = hygiene_gate_failure_kind(signal)
     if kind is None:
         return None
+    available = tuple(getattr(signal, "available_actions", ()) or ())
+    if kind == "env_failure" and "retry_verification" in available:
+        return HandoffAdvice(
+            recommended_action="retry_verification",
+            confidence="high",
+            rationale=(
+                "env_failure is an execution-environment problem the operator "
+                "fixes outside the agent; once it is fixed the engine re-runs "
+                "the same gates in this run, so the change can still be "
+                "proven rather than waived."
+            ),
+            retry_feedback="",
+            operator_note=(
+                "Fix the environment first, then resume — the rerun needs no "
+                "agent round and no operator feedback."
+            ),
+        )
     return HandoffAdvice(
         recommended_action="continue_with_waiver",
         confidence="high",

@@ -660,9 +660,14 @@ with `seq > since_seq`.
 pause is a phase handoff, that `action` is in `pending.available_actions`,
 and that feedback-required actions (`retry_feedback`,
 `continue_with_waiver`) carry non-empty feedback — reusing the canonical
-`sdk.phase_handoff` rule, not a local copy. The command is data only: it
-never executes the decision or writes to disk. `to_decide_kwargs()` adapts
-it to `sdk.phase_handoff.phase_handoff_decide`, the sole executor.
+`sdk.phase_handoff` rule, not a local copy. The feedback-required set is
+exactly those two: `retry_verification` takes **no** feedback, because the
+engine re-executes the persisted verification gate set with no agent round and
+there is no operator text for a verdict to carry
+([ADR 0195](../adr/0195-same-run-environment-gate-retry.md)). The command is
+data only: it never executes the decision or writes to disk.
+`to_decide_kwargs()` adapts it to `sdk.phase_handoff.phase_handoff_decide`, the
+sole executor.
 
 **Gate command boundary (Stage 4, first half).** Gate decisions resolve
 through `core.resolve_gate_decision` with `run` / `skip` choices and do

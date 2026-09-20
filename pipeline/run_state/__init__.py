@@ -55,6 +55,7 @@ from pipeline.run_state.handoff import (
     continue_with_waiver_handoff,
     request_active_handoff,
     retry_feedback_handoff,
+    retry_verification_handoff,
 )
 from pipeline.run_state.phase_outcome import is_phase_checkpoint_success
 from pipeline.run_state.projector import project_events, project_run_dir
@@ -174,6 +175,7 @@ __all__ = [
     "request_active_handoff",
     "resolve_terminal_outcome",
     "retry_feedback_handoff",
+    "retry_verification_handoff",
     "settle_cross_terminal",
     "supervisor_halt_reason",
     "supervisor_terminal_status",

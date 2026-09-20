@@ -128,13 +128,15 @@ single latest result classified by readiness and delivery.
 
 ## Executable verification handoff actions (ADR 0153)
 
-`pipeline.project.gate_repair._request_handoff` is the sole owner of the
-verification-gate action menu. For a non-hygiene failure it includes
-`retry_feedback` only when the active projected profile has a
+`pipeline.project.gate_handoff_actions` owns the verification-gate action menu
+policy; `pipeline.project.gate_repair` publishes it. For a non-hygiene failure
+the menu includes `retry_feedback` only when the active projected profile has a
 `repair_changes` step; a repair-less profile receives the same ordered menu
 without that action. Hygiene failures remain exactly
 `continue_with_waiver`, `halt` because repairing source cannot fix a broken
-verification environment.
+verification environment — with the one env-only exception described in
+[Same-run environment-gate retry](#same-run-environment-gate-retry-adr-0195)
+below.
 
 The SDK continues to validate a requested action against the persisted
 `available_actions` membership. This is not a new SDK or MCP policy: clients
@@ -153,6 +155,45 @@ changes.
 This decision intentionally excludes unattended-halt resume behavior and any
 generalized action-policy matrix. Those paths retain their current owners and
 require a separate contract if changed.
+
+## Same-run environment-gate retry (ADR 0195)
+
+One hygiene menu is not final. When **every** blocking finding is explicitly
+`failure_kind: "env_failure"` — a command that produced no verdict because its
+environment was wrong — the operator can repair that environment outside the
+run, and the engine can re-measure without touching the change. That menu leads
+with `retry_verification`, then `continue_with_waiver`, `halt`.
+
+The action is offered only when the persisted record can actually address the
+re-execution:
+
+* every finding is an explicit `env_failure` (read from the typed kind, never
+  proxied through severity and never defaulted);
+* `gate_identities` parses as a valid, duplicate-free set whose primary
+  (`gate_identity`) is a member;
+* **every** element carries a `receipt_evidence` pointer to the immutable
+  evidence file of the execution that produced it;
+* the findings' commands and the identities' commands agree.
+
+Partial evidence is not evidence: without all four clauses the menu is exactly
+the ADR 0153 one (`continue_with_waiver`, `halt`). Admission is recomputed from
+the persisted record on every publication, including the `:retry_blocked`
+re-park, so a record that has become defective never re-offers the action.
+
+`retry_verification` takes no operator feedback, dispatches no agent, stays in
+the same run, and re-executes exactly the persisted identities on the retained
+verification subject through the ordinary rerun executor. Before anything
+mutates, four independent facts must agree — decision ↔ ledger ↔ receipt ↔
+retained subject — and any defect re-parks the pause with its reason having run
+zero gate commands. See
+[ADR 0195](../adr/0195-same-run-environment-gate-retry.md) for the full
+evidence chain, the resume routing, and the retained-worktree requirement.
+
+`timeout`, `provenance_failure`, and `unverifiable` are deliberately **not**
+retryable this way: re-running the same command would not resolve a budget a
+declaration owns, a wrong interpreter proven by provenance assertions, or a
+subject that could not be identified. They keep `continue_with_waiver` /
+`halt`.
 
 ## Verification subject identity (ADR 0140, I4-R1)
 
@@ -201,6 +242,17 @@ A hygiene failure is not a source-code repair request. Its phase handoff uses
 existing `artifacts.findings`, `artifacts.short_summary`, and `last_output`, and
 offers only `continue_with_waiver` or `halt`. A waiver remains an explicit
 operator action; test failures retain repair-loop and `retry_feedback` behavior.
+
+The one exception is an **env-only** set — every finding explicitly
+`env_failure` — whose persisted record proves which gates to re-execute
+(a valid `gate_identities` set with a `receipt_evidence` pointer on every
+element, agreeing with the findings' commands). That menu additionally leads
+with `retry_verification`: the operator repairs the environment outside the
+run and the engine re-measures the same subject in the same run, with no agent
+and no feedback, so the change keeps real proof instead of being accepted on a
+waiver ([ADR 0195](../adr/0195-same-run-environment-gate-retry.md)). A
+`timeout`, a `provenance_failure`, an `unverifiable` subject, or an env set
+without that evidence keeps `continue_with_waiver` / `halt` unchanged.
 
 `timeout` deliberately sits between the two columns' behaviours: it *blocks*
 like a test failure (a command that never finished proved nothing, so a
@@ -848,8 +900,8 @@ set, so the operator never decides on a strict subset of what is red:
 |---|---|
 | `findings` | one entry per failing command, each naming its `command` |
 | `gate_commands` | every failing command, primary first |
-| `gate_identities` | every failing `(command, hook, phase)`, primary first |
-| `gate_command` / `gate_identity` | the **primary** (first) failure only |
+| `gate_identities` | every failing `(command, hook, phase)`, primary first; each element additionally carries `receipt_evidence` (the run-dir-relative immutable receipt of that execution) when the evidence write landed, and omits the key when it did not (ADR 0195) |
+| `gate_command` / `gate_identity` | the **primary** (first) failure only, as a bare triple |
 | `short_summary` | one `command: evidence` line per failure |
 
 The singular keys stay single-identity on purpose: waiver identity and

@@ -508,7 +508,10 @@ def _handoff_actions(
     and the action verb are baked into the args. ``retry_feedback`` and
     ``continue_with_waiver`` deliberately do not include a ``feedback``
     key: callers must collect real operator text and add it before
-    invoking the decision tool.
+    invoking the decision tool. ``retry_verification`` carries no
+    ``feedback`` key either, for the opposite reason: it takes none —
+    the engine re-executes the persisted gate set, no operator text is
+    involved.
     """
     payload = meta.get("phase_handoff")
     if not isinstance(payload, Mapping):
@@ -565,6 +568,11 @@ def _handoff_intent(verb: str) -> str | None:
             "waiver; the waived findings are injected into downstream "
             "review gates so they are not reopened as blocking. Requires "
             "an operator verdict."
+        ),
+        "retry_verification": (
+            "Re-run the blocking verification gates after repairing the "
+            "external preconditions they failed on; no agent round and no "
+            "operator feedback are involved."
         ),
     }.get(verb)
 
