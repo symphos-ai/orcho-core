@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-20
+
+This release adds a bounded recovery path for required verification blocked
+only by the execution environment. It preserves the existing run and its
+implementation while re-running the exact persisted gate set.
+
+### Added
+
+- `retry_verification` is offered when every blocking verification finding is
+  explicitly classified as `env_failure` and the persisted gate identity,
+  evidence, receipt state, and retained worktree are complete and consistent.
+- The retry runs without feedback collection or another planning,
+  implementation, review, or repair phase. A passing retry continues from the
+  run's recorded schedule point.
+- The operator action is available through the run-control SDK and the public
+  decision surfaces backed by that SDK.
+
+### Changed
+
+- Verification retries use the gate definitions persisted by the run rather
+  than resolving the current project configuration again.
+- Retry selection and execution are recorded durably, including whether each
+  gate result came from the retry.
+
+### Fixed
+
+- A temporary environment failure no longer requires launching a new run or
+  repeating completed agent work after the operator repairs the environment.
+- Incomplete or inconsistent retry evidence fails closed. A failed retry
+  re-parks the same run with the new receipts instead of advancing delivery.
+
+### Upgrade Notes
+
+- Upgrade the complete Orcho package set to 0.11 and restart MCP server
+  processes before using the retry action.
+- This recovery path is intentionally narrow. Product defects and mixed
+  verification failures continue through the existing repair paths.
+
 ## 0.10.0 - 2026-09-17
 
 This release connects acceptance criteria to durable evidence and makes paused,
