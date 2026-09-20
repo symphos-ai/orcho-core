@@ -408,6 +408,66 @@ class TestResumeSkipsCompletedPhases:
         assert starts == ["plan", "implement"]
         assert ends == ["plan", "implement"]
 
+    def test_silent_completed_phase_fires_no_callback_but_keeps_its_marker(
+        self,
+    ) -> None:
+        """The ``retry_verification`` continuation skips without a trace pair.
+
+        That resume re-measures gates and continues *after* the phase they
+        were scheduled on. A ``phase.start`` for a write phase behind that
+        point would advertise an agent round to every event consumer, so the
+        callbacks are withheld — while the phase log still explains why the
+        phase did not execute.
+        """
+        starts: list[str] = []
+        ends: list[str] = []
+        seen: list[str] = []
+        reg = _registry_recording(seen)
+        profile = Profile(
+            name="small_task", kind=ProfileKind.FULL_CYCLE, variant="lite",
+            steps=(
+                PhaseStep(phase="plan"),
+                PhaseStep(phase="implement"),
+                PhaseStep(phase="final_acceptance"),
+            ),
+        )
+        state = _state()
+        run_profile(
+            profile, state, reg,
+            on_phase_start=lambda n, _s: starts.append(n),
+            on_phase_end=lambda n, _s: ends.append(n),
+            completed_phases={"plan", "implement"},
+            silent_completed_phases={"implement"},
+        )
+        # ``plan`` is completed but not silent: it keeps the ordinary
+        # resume-skip trace pair. Only the named phase loses it.
+        assert starts == ["plan", "final_acceptance"]
+        assert ends == ["plan", "final_acceptance"]
+        assert seen == ["final_acceptance"]
+        log = state.phase_log.get("implement")
+        assert isinstance(log, dict)
+        assert log.get("skipped") == "completed earlier in this run (resumed)"
+
+    def test_silent_completed_phases_is_inert_for_every_other_resume(
+        self,
+    ) -> None:
+        """Unset (the default) leaves the resume-skip trace exactly as it was."""
+        starts: list[str] = []
+        reg = _registry_recording([])
+        profile = Profile(
+            name="small_task", kind=ProfileKind.FULL_CYCLE, variant="lite",
+            steps=(PhaseStep(phase="plan"), PhaseStep(phase="implement")),
+        )
+        run_profile(
+            profile, _state(), reg,
+            on_phase_start=lambda n, _s: starts.append(n),
+            completed_phases={"implement"},
+            # A name that is not in ``completed_phases`` never silences
+            # anything: this argument only narrows an existing skip.
+            silent_completed_phases={"final_acceptance"},
+        )
+        assert starts == ["plan", "implement"]
+
     def test_fresh_run_completed_phases_empty_is_byte_identical(
         self,
     ) -> None:

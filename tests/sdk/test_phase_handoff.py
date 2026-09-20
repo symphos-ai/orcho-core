@@ -5,7 +5,9 @@ exact-payload idempotency, ``halt`` flips meta.status and clears the
 active payload, ``halt`` is idempotent against the persisted artifact
 even after the active handoff is cleared, ``retry_feedback`` requires a
 non-empty feedback string, ``handoff_id`` must match the active payload,
-chosen ``action`` must be in the active ``available_actions``.
+chosen ``action`` must be in the active ``available_actions``, and
+``retry_verification`` is accepted without feedback (the engine re-executes
+the persisted gate set; there is no operator text to inject).
 
 Plus a focused test for ``PhaseStep`` direct construction with both
 ``human_review`` and ``handoff`` set — the loader's mutual-exclusion
@@ -1503,5 +1505,212 @@ class TestSharedActionContract:
         from pipeline.control.handoff_decisions import _VALID_DECISION_ACTIONS
         from sdk.phase_handoff import _VALID_ACTIONS
 
-        # Project-side classifier and SDK wire-validation share the 4-value set.
+        # Project-side classifier and SDK wire-validation share one set.
         assert _VALID_DECISION_ACTIONS == _VALID_ACTIONS
+
+    def test_retry_verification_is_active_not_terminal(self) -> None:
+        from sdk.phase_handoff import _ACTIVE_RESUME_ACTIONS, _VALID_ACTIONS
+
+        assert "retry_verification" in _VALID_ACTIONS
+        assert "retry_verification" in _ACTIVE_RESUME_ACTIONS
+
+    def test_retry_verification_not_feedback_required(self) -> None:
+        """The feedback-required set stays exactly retry_feedback +
+        continue_with_waiver — retry_verification takes no operator text."""
+        from sdk.phase_handoff import _FEEDBACK_REQUIRED_ACTIONS
+
+        assert set(_FEEDBACK_REQUIRED_ACTIONS) == {
+            "retry_feedback", "continue_with_waiver",
+        }
+
+
+# ── retry_verification decision ────────────────────────────────────────────
+
+
+_RV_ACTIONS = ["retry_verification", "continue_with_waiver", "halt"]
+
+
+class TestRetryVerificationDecision:
+    """``retry_verification`` is a feedback-free active decision: the
+    operator repaired the external preconditions and the engine re-executes
+    the persisted blocking gate set on resume."""
+
+    def test_accepted_without_feedback(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        run_dir = _seed_run(
+            runs,
+            "20260917_100000_rv0001",
+            handoff_id="implement:verification_gate_failed:1",
+            phase="implement",
+            available_actions=_RV_ACTIONS,
+        )
+
+        result = phase_handoff_decide(
+            "20260917_100000_rv0001",
+            "implement:verification_gate_failed:1",
+            "retry_verification",
+            note="reinstalled the toolchain",
+            runs_dir=runs,
+            cwd=None,
+        )
+
+        assert result.action == "retry_verification"
+        assert result.feedback is None
+        assert result.note == "reinstalled the toolchain"
+        assert result.phase == "implement"
+
+        # Pure state transition: the pause stays in effect until resume.
+        meta = json.loads((run_dir / "meta.json").read_text())
+        assert meta["status"] == "awaiting_phase_handoff"
+        assert meta["phase_handoff"]["id"] == (
+            "implement:verification_gate_failed:1"
+        )
+
+        payload = json.loads(
+            (
+                run_dir / "phase_handoff_decisions"
+                / f"{safe_handoff_id('implement:verification_gate_failed:1')}"
+                  ".json"
+            ).read_text(),
+        )
+        assert payload["action"] == "retry_verification"
+        assert payload["feedback"] is None
+
+    def test_next_actions_point_at_resume(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _seed_run(
+            runs,
+            "20260917_100100_rv0002",
+            handoff_id="implement:verification_gate_failed:1",
+            phase="implement",
+            available_actions=_RV_ACTIONS,
+        )
+        result = phase_handoff_decide(
+            "20260917_100100_rv0002",
+            "implement:verification_gate_failed:1",
+            "retry_verification",
+            runs_dir=runs,
+            cwd=None,
+        )
+        tools = [a.tool for a in result.next_actions]
+        assert tools == ["orcho_run_resume"]
+        assert result.next_actions[0].optional is False
+        assert result.next_actions[0].args == {
+            "run_id": "20260917_100100_rv0002",
+        }
+
+    def test_rejected_when_not_in_available_actions(
+        self, tmp_path: Path,
+    ) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _seed_run(
+            runs,
+            "20260917_100200_rv0003",
+            handoff_id="implement:verification_gate_failed:1",
+            phase="implement",
+            available_actions=["continue_with_waiver", "halt"],
+        )
+        with pytest.raises(InvalidPhaseHandoffState) as exc:
+            phase_handoff_decide(
+                "20260917_100200_rv0003",
+                "implement:verification_gate_failed:1",
+                "retry_verification",
+                runs_dir=runs,
+                cwd=None,
+            )
+        assert "available_actions" in str(exc.value)
+        # Nothing persisted — availability is a runtime decision.
+        assert not (
+            runs / "20260917_100200_rv0003" / "phase_handoff_decisions"
+        ).exists()
+
+    def test_exact_replay_is_idempotent(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        run_dir = _seed_run(
+            runs,
+            "20260917_100300_rv0004",
+            handoff_id="implement:verification_gate_failed:1",
+            phase="implement",
+            available_actions=_RV_ACTIONS,
+        )
+        first = phase_handoff_decide(
+            "20260917_100300_rv0004",
+            "implement:verification_gate_failed:1",
+            "retry_verification",
+            note="n",
+            runs_dir=runs,
+            cwd=None,
+        )
+        artifact = (
+            run_dir / "phase_handoff_decisions"
+            / f"{safe_handoff_id('implement:verification_gate_failed:1')}.json"
+        )
+        mtime = artifact.stat().st_mtime_ns
+        second = phase_handoff_decide(
+            "20260917_100300_rv0004",
+            "implement:verification_gate_failed:1",
+            "retry_verification",
+            note="n",
+            runs_dir=runs,
+            cwd=None,
+        )
+        assert first == second
+        assert artifact.stat().st_mtime_ns == mtime
+
+    def test_divergent_replay_conflicts(self, tmp_path: Path) -> None:
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _seed_run(
+            runs,
+            "20260917_100400_rv0005",
+            handoff_id="implement:verification_gate_failed:1",
+            phase="implement",
+            available_actions=_RV_ACTIONS,
+        )
+        phase_handoff_decide(
+            "20260917_100400_rv0005",
+            "implement:verification_gate_failed:1",
+            "retry_verification",
+            note="first",
+            runs_dir=runs,
+            cwd=None,
+        )
+        # Different note for the same action.
+        with pytest.raises(InvalidPhaseHandoffState, match="already decided"):
+            phase_handoff_decide(
+                "20260917_100400_rv0005",
+                "implement:verification_gate_failed:1",
+                "retry_verification",
+                note="second",
+                runs_dir=runs,
+                cwd=None,
+            )
+        # Different action for the same handoff id.
+        with pytest.raises(InvalidPhaseHandoffState, match="already decided"):
+            phase_handoff_decide(
+                "20260917_100400_rv0005",
+                "implement:verification_gate_failed:1",
+                "halt",
+                runs_dir=runs,
+                cwd=None,
+            )
+
+    def test_terminal_run_rejected(self, tmp_path: Path) -> None:
+        """A run that already settled has no active pause to decide; the
+        engine must not accept a gate-retry against it."""
+        runs = tmp_path / "runs"
+        runs.mkdir()
+        _seed_run(runs, "20260917_100500_rv0006", status="halted")
+        with pytest.raises(InvalidPhaseHandoffState) as exc:
+            phase_handoff_decide(
+                "20260917_100500_rv0006",
+                "implement:verification_gate_failed:1",
+                "retry_verification",
+                runs_dir=runs,
+                cwd=None,
+            )
+        assert "not awaiting a phase handoff" in str(exc.value)

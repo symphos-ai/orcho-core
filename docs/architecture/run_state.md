@@ -542,7 +542,12 @@ The hard error is scoped narrowly to the active review-retry branch; generic
 resume, follow-up continuity, and cross-children paths are unchanged. A reuse
 decision is recorded additively on the session worktree block as
 `meta.worktree.resume_continuity` (`mode_label` / `path` / `source`) for
-inspectability — existing `meta.worktree` consumers are unaffected.
+inspectability — existing `meta.worktree` consumers are unaffected. A blocked
+**env retry** (`retry_verification`, [ADR 0195](../adr/0195-same-run-environment-gate-retry.md))
+adds one key to that record, `blocked: true`, so "this resume stopped before
+materialising a checkout" is readable without string-matching the
+operator-facing `mode_label`. Every other classification — including a blocked
+review retry — persists the unchanged three-key record.
 
 **Clean-HEAD repair guard is recoverable.** Immediately before the review-retry
 write phase,

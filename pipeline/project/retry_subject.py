@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Repair-subject proof for the review-retry resume path.
+"""Retry-subject proofs for the operator resume paths.
+
+Two resumes re-execute work against a subject a prior phase already
+observed, and each must prove that subject is still there before mutating
+anything: :func:`ensure_repair_subject_proven` for a review retry (the
+rejected diff must be present to repair) and
+:func:`ensure_verification_subject_retained` for an env-failure gate retry
+(the exact tree the failing receipts measured must still be the one under
+the gate). Both are read-only and raise :class:`RepairSubjectUnproven`.
 
 After ``review_changes`` rejects a change and the operator decides
 ``retry_feedback``, the resumed run must run ``repair_changes`` against the
@@ -23,6 +31,11 @@ An unproven subject raises :class:`RepairSubjectUnproven` (a narrow
 mutates the session, the decision artifact, or the active handoff — so a run
 that aborts here stays decidable and can be resumed again once the retained
 worktree diff is restored.
+
+The verification guard is documented on
+:func:`ensure_verification_subject_retained`; it proves the *opposite*
+property (the subject is unchanged), so it shares none of the dirty-tree
+requirement above.
 """
 from __future__ import annotations
 
@@ -30,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from core.io.git_helpers import git_head, has_uncommitted
+from pipeline.engine.worktree import is_worktree_reclaimed
 
 # The operator-facing recoverable message for the clean-HEAD case. Quoted
 # verbatim by callers and pinned by tests.
@@ -41,10 +55,14 @@ CLEAN_HEAD_MESSAGE = (
 
 
 class RepairSubjectUnproven(RuntimeError):
-    """The review-retry repair subject (the rejected diff) is not present.
+    """The retry subject this module was asked to prove is not present.
+
+    Raised for the review-retry repair subject (the rejected diff) and,
+    by :func:`ensure_verification_subject_retained`, for the retained
+    verification subject an env retry must re-execute against.
 
     Recoverable: the guard runs before any state mutation, so the active
-    handoff + its decision survive. Restore the retained worktree diff (or
+    handoff + its decision survive. Restore the retained worktree (or
     halt) and resume again.
     """
 
@@ -125,6 +143,79 @@ def ensure_repair_subject_proven(
     raise RepairSubjectUnproven(CLEAN_HEAD_MESSAGE)
 
 
+def ensure_verification_subject_retained(
+    *,
+    cwd: str,
+    worktree_block: dict[str, Any] | None,
+    expected_head: str | None,
+) -> None:
+    """Raise :class:`RepairSubjectUnproven` unless the *verification* subject survived.
+
+    A ``retry_verification`` re-execution runs no agent and changes nothing in
+    the checkout: the operator repaired the environment *outside* the run. So
+    the subject this proves is the opposite of
+    :func:`ensure_repair_subject_proven`'s — not "a diff is present to fix",
+    but "the exact tree the failing receipts observed is still the one we are
+    about to re-measure". A dirty working tree is therefore neither required
+    nor meaningful here, and ``tree_oid`` is deliberately not compared: a gate
+    that writes into its own checkout (a cache dir, a build artifact) would
+    move the tree oid without the run having been resumed anywhere else.
+
+    ``expected_head`` is the ``observed_head_oid`` the failing receipts of this
+    blocking set agree on, or ``None`` when every receipt recorded an
+    unavailable subject. ``None`` skips only the HEAD comparison — the
+    retained-worktree checks below stay mandatory, since a re-execution in a
+    *different* checkout is not a retry of this gate set at all.
+
+    Read-only: no session, decision, or handoff mutation.
+    """
+    isolation = (
+        worktree_block.get("isolation")
+        if isinstance(worktree_block, dict)
+        else None
+    )
+    if isinstance(worktree_block, dict) and isolation != "off":
+        recorded_path = worktree_block.get("path")
+        if not (isinstance(recorded_path, str) and recorded_path.strip()):
+            raise RepairSubjectUnproven(
+                "Cannot re-run the verification gate: the run records an "
+                "isolated worktree with no path, so the retained verification "
+                "subject cannot be identified. Halt this run instead.",
+            )
+        if is_worktree_reclaimed(worktree_block):
+            raise RepairSubjectUnproven(
+                f"Cannot re-run the verification gate: the retained worktree "
+                f"{recorded_path!r} was reclaimed by workspace cleanup, so its "
+                "recorded path is historical. Restore the archive explicitly "
+                "or begin a new recovery run.",
+            )
+        if not Path(recorded_path).exists():
+            raise RepairSubjectUnproven(
+                f"Cannot re-run the verification gate: the retained worktree "
+                f"{recorded_path!r} no longer exists. Re-running in a fresh "
+                "checkout would measure a different subject than the one the "
+                "failing receipts observed. Restore it or halt this run.",
+            )
+        if _normalised(cwd) != _normalised(recorded_path):
+            raise RepairSubjectUnproven(
+                f"Cannot re-run the verification gate: the gate working "
+                f"directory {cwd!r} does not match the retained verification "
+                f"subject {recorded_path!r}. Restore the retained worktree or "
+                "halt this run.",
+            )
+
+    if expected_head is None:
+        return
+    head = git_head(cwd)
+    if head != expected_head:
+        raise RepairSubjectUnproven(
+            f"Cannot re-run the verification gate: the retained subject is at "
+            f"HEAD {head!r}, but the failing receipts observed "
+            f"{expected_head!r}. The retry would re-measure different content "
+            "than the operator decided on. Halt this run instead.",
+        )
+
+
 def guard_review_retry_subject(run: Any) -> None:
     """Thin run-level adapter: prove the repair subject before dispatch.
 
@@ -142,5 +233,6 @@ __all__ = [
     "CLEAN_HEAD_MESSAGE",
     "RepairSubjectUnproven",
     "ensure_repair_subject_proven",
+    "ensure_verification_subject_retained",
     "guard_review_retry_subject",
 ]

@@ -4,9 +4,9 @@ pipeline.control.handoff_prompt — TTY-interactive phase-handoff prompt.
 When ``orcho run`` is attached to a real TTY and ``--no-interactive``
 is not set, a fired phase handoff can be resolved **in-process** —
 the operator picks ``continue`` / ``retry_feedback`` / ``halt`` /
-``continue_with_waiver`` at the keyboard and the same subprocess
-continues (or terminates) without exiting rc=4 and respawning under
-``--resume``.
+``continue_with_waiver`` / ``retry_verification`` at the keyboard and
+the same subprocess continues (or terminates) without exiting rc=4 and
+respawning under ``--resume``.
 
 This module owns the *prompt* surface only — reading stdin, rendering
 the action menu, validating input. The audit-trail invariant from
@@ -74,6 +74,10 @@ _ACTION_LABELS: dict[str, str] = {
     "retry_feedback": "2) 🔁 retry_feedback      — one extra retry round with human feedback",
     "halt":           "3) 🛑 halt                — terminate the run synchronously",
     "continue_with_waiver": "4) 📝 continue_with_waiver — accept the verdict with a durable operator waiver",
+    # Key 7 deliberately skips 5 / 6: those are the advisory pseudo-actions,
+    # and reusing either number would make the same keystroke mean two things
+    # depending on whether the advisor happens to be available.
+    "retry_verification": "7) 🔄 retry_verification  — re-run the failed verification gates after an environment fix (no agent)",
 }
 
 _ACTION_BY_KEY: dict[str, str] = {
@@ -91,12 +95,19 @@ _ACTION_BY_KEY: dict[str, str] = {
     "w":                    "continue_with_waiver",
     "waiver":               "continue_with_waiver",
     "continue_with_waiver": "continue_with_waiver",
+    "7":                  "retry_verification",
+    "v":                  "retry_verification",
+    "verify":             "retry_verification",
+    "retry_verification": "retry_verification",
 }
 
 # Actions that require a mandatory operator verdict (free text) before
 # the decision can be recorded. ``retry_feedback`` injects it into the
 # next retry round; ``continue_with_waiver`` records it as the durable
 # waiver verdict. Both reuse :func:`_read_feedback`.
+# ``retry_verification`` is deliberately absent: the operator already acted by
+# repairing the environment, and the engine re-executes the persisted gate set
+# with no agent — there is no text for a verdict to carry.
 _FEEDBACK_REQUIRED_ACTIONS: frozenset[str] = frozenset({
     "retry_feedback",
     "continue_with_waiver",
@@ -411,6 +422,7 @@ def _print_summary(
     print("  Choose action:", file=out)
     for action_name in (
         "continue", "retry_feedback", "halt", "continue_with_waiver",
+        "retry_verification",
     ):
         if action_name in signal.available_actions:
             print(f"    {_action_label(action_name, signal)}", file=out)
@@ -566,6 +578,7 @@ _ACTION_HINT: dict[str, tuple[str, str]] = {
     "retry_feedback": ("2", "retry"),
     "halt":           ("3", "halt"),
     "continue_with_waiver": ("4", "waiver"),
+    "retry_verification":   ("7", "verify"),
 }
 
 

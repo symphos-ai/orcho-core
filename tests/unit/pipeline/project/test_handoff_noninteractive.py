@@ -52,3 +52,21 @@ def test_authoritative_or_unsafe_handoffs_halt(signal, reason) -> None:
     assert resolution.kind == "halt"
     assert resolution.reason == reason
     assert "auto-halted by unattended policy" in resolution.note
+
+
+def test_verification_rerun_menu_still_halts_unattended() -> None:
+    """``retry_verification`` is an operator action: it presumes somebody
+    repaired the environment. Unattended policy must never pick it — with no
+    ``continue`` on the menu the run halts exactly as before."""
+    resolution = resolve_unattended_handoff(
+        _signal(
+            trigger="verification_gate_failed",
+            available_actions=(
+                "retry_verification", "continue_with_waiver", "halt",
+            ),
+        ),
+    )
+
+    assert resolution.kind == "halt"
+    assert resolution.reason == "continue_unavailable"
+    assert "retry_verification" not in resolution.note

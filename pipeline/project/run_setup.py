@@ -372,6 +372,7 @@ def print_pipeline_header(
     resume_from: str | None = None,
     contract: VerificationContract | None = None,
     contract_presence: VerificationContractPresence | None = None,
+    ledger_read_tolerant: bool = False,
 ) -> None:
     """Emit the run-header banner via :mod:`core.io.transcript`.
 
@@ -396,6 +397,14 @@ def print_pipeline_header(
     declared, the header renders the one-line disclosure in place of the gate
     matrix; a declared contract and an unrecorded fact both leave the header
     byte-identical. Nothing here consults the plugin or the ledger for it.
+
+    ``ledger_read_tolerant`` downgrades the *decorative* ledger read that feeds
+    the gate matrix. The header reads the ledger only to colour rows with what
+    already ran; on a ``retry_verification`` resume the run's own owner is the
+    one that must judge that artifact and re-park honestly, so a corrupt ledger
+    must not first kill the run from inside a courtesy banner. Under the flag a
+    failed read renders exactly as an unwritten ledger does. It carries no
+    authoritative meaning — the default keeps the strict read.
     """
     if presentation is not PresentationPolicy.TERMINAL:
         return
@@ -479,10 +488,20 @@ def print_pipeline_header(
     )
     ledger_rows = None
     if output_dir is not None:
-        from pipeline.verification_ledger_store import ledger_path, load_ledger
+        from pipeline.verification_ledger_store import (
+            LedgerStoreError,
+            ledger_path,
+            load_ledger,
+        )
 
         if ledger_path(output_dir).exists():
-            ledger_rows = load_ledger(output_dir).rows
+            if ledger_read_tolerant:
+                try:
+                    ledger_rows = load_ledger(output_dir).rows
+                except (LedgerStoreError, OSError, ValueError):
+                    ledger_rows = None
+            else:
+                ledger_rows = load_ledger(output_dir).rows
     verification_view = build_verification_header_view(
         contract, has_final_phase=has_final_phase, ledger_rows=ledger_rows,
     )

@@ -44,7 +44,8 @@ would be wrong.
 from __future__ import annotations
 
 import contextlib
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +91,14 @@ from pipeline.runtime.handoff import (
     build_phase_handoff_signal,
 )
 from pipeline.runtime.roles import PhaseHandoffAction
-from pipeline.runtime.runner import _dispatch_via_fsm
+from pipeline.runtime.runner import (
+    LOOP_DISPATCH_DECLARED,
+    LOOP_DISPATCH_REVIEW_RETRY,
+    _dispatch_via_fsm,
+    mark_loop_member_executed,
+    restore_active_loop,
+    stamp_active_loop,
+)
 
 # ``run`` parameters are typed ``Any`` rather than ``_PipelineRun``.
 # Phase F moved ``_PipelineRun`` into ``pipeline.project.run`` (a
@@ -360,12 +368,29 @@ class PhaseHandoffResumeOutcome:
     is True when the retry round produced a fresh rejection — the
     orchestrator should then call ``apply_phase_handoff_pause`` and
     return without further dispatch.
+
+    ``silent_completed_phases`` is the subset of ``completed_phases`` the
+    runner must skip without firing its trace callbacks. ``quiet_loop_phases``
+    is its companion for the loop the dispatch continues *into*: a member
+    reached after the round's ``until`` clause already holds records its skip
+    without announcing it. ``loop_resume_cursors`` positions a loop the resume
+    re-enters mid-round, keyed by the loop's ``round_extras_key``.
+
+    Only the ``retry_verification`` arm sets these three. That resume continues
+    *after* the phase whose gates it re-measured, so a start event behind that
+    point would announce a round it is not allowed to run, and a loop re-entered
+    from its first member would re-execute the very phase the gates measured.
+    Every other arm leaves them empty and keeps the resume trace and loop entry
+    exactly as they were.
     """
 
     profile: Any
     completed_phases: frozenset[str]
     paused: bool
     invalidated_phases: frozenset[str] = frozenset()
+    silent_completed_phases: frozenset[str] = frozenset()
+    quiet_loop_phases: frozenset[str] = frozenset()
+    loop_resume_cursors: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -837,11 +862,27 @@ def apply_review_repair_handoff_retry(
     run.state.extras[repair_loop.round_extras_key] = retry_round_n
     run.state.extras[f"{repair_loop.round_extras_key}_max"] = loop_max_rounds
     run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
-    prev_active_key = run.state.extras.get("_active_loop_round_key")
-    run.state.extras["_active_loop_round_key"] = repair_loop.round_extras_key
+    # The full loop position, not just its key: a verification gate that fails
+    # inside this human-directed round pauses on a loop *member*, and the
+    # resume that re-executes it has to know which round of which member order
+    # — and that the round is inside an extended budget — to pick up exactly
+    # where this one stopped.
+    previous_active_loop = stamp_active_loop(
+        run.state,
+        loop_key=repair_loop.round_extras_key,
+        phases=tuple(inner.phase for inner in repair_loop.steps),
+        budget=max(retry_round_n, loop_max_rounds),
+        until=repair_loop.until,
+        mode=LOOP_DISPATCH_REVIEW_RETRY,
+    )
     prev_adapter_registry = ctx.session_adapter_registry
     try:
         ctx.session_adapter_registry = None
+        # This arm repairs *first* and reviews after — the reverse of the
+        # declared member order. Recording what actually ran is what lets a
+        # gate pausing on the repair leave the still-owed review behind, rather
+        # than looking like the round's last member.
+        mark_loop_member_executed(run.state, repair_step.phase)
         run.state = _dispatch_via_fsm(
             repair_step,
             run.state,
@@ -851,6 +892,7 @@ def apply_review_repair_handoff_retry(
         )
         ctx.session_adapter_registry = prev_adapter_registry
         if not run.state.halt:
+            mark_loop_member_executed(run.state, review_step.phase)
             run.state = _dispatch_via_fsm(
                 review_step,
                 run.state,
@@ -911,10 +953,7 @@ def apply_review_repair_handoff_retry(
     finally:
         ctx.session_adapter_registry = prev_adapter_registry
         run.state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
-        if prev_active_key is None:
-            run.state.extras.pop("_active_loop_round_key", None)
-        else:
-            run.state.extras["_active_loop_round_key"] = prev_active_key
+        restore_active_loop(run.state, previous_active_loop)
 
     _persist_handoff_retry_metrics(run)
     return PhaseHandoffResumeOutcome(
@@ -1342,6 +1381,14 @@ def apply_phase_handoff_resume(
       one extra round (plan→validate or repair→review depending on
       phase). If that round triggers a fresh handoff, stash the signal
       and return ``paused=True``.
+    * Active payload + ``retry_verification`` decision → re-execute the
+      persisted blocking gate set with no agent round, on the retained
+      subject the failing receipts observed. Routed on the action alone,
+      before the ledger is read: the ledger is that retry's *evidence*,
+      so a malformed one must reach its own fail-closed re-park rather
+      than a generic route blocker. A decision artifact that itself fails
+      strict validation re-parks the same way, because the pre-router
+      guards already retained this run's subject for that decision.
     """
     if run.output_dir is None:
         return PhaseHandoffResumeOutcome(profile, frozenset(), False)
@@ -1352,7 +1399,26 @@ def apply_phase_handoff_resume(
     if not isinstance(handoff_id, str) or not handoff_id:
         return PhaseHandoffResumeOutcome(profile, frozenset(), False)
 
-    decision = load_handoff_decision_validated(run.output_dir, handoff_id)
+    try:
+        decision = load_handoff_decision_validated(run.output_dir, handoff_id)
+    except RuntimeError as exc:
+        # A corrupt decision artifact is a hard resume failure for every
+        # action — except the one whose pre-router guards already retained a
+        # subject on its behalf. See
+        # ``verification_env_retry.repark_unreadable_env_retry_decision``:
+        # it returns ``None`` (keep this failure) unless the record on disk
+        # claims this pause was decided ``retry_verification``.
+        from pipeline.project.verification_env_retry import (
+            repark_unreadable_env_retry_decision,
+        )
+
+        reparked = repark_unreadable_env_retry_decision(
+            run=run, profile=profile, active=active,
+            handoff_id=handoff_id, error=exc,
+        )
+        if reparked is None:
+            raise
+        return reparked
     action = decision.action
     feedback = decision.feedback
     note = decision.note
@@ -1396,6 +1462,21 @@ def apply_phase_handoff_resume(
             "meta.status was not yet halted (torn write or partial "
             "restore). Meta has been healed to ``status=halted`` — "
             "halt is terminal; start a new run instead."
+        )
+
+    if action == "retry_verification":
+        # Before route classification on purpose. ``_scheduled_gate_identities``
+        # raises on an unreadable ledger, and for this action the ledger is the
+        # evidence the retry is gated on — a generic route blocker would turn
+        # the operator's recoverable, re-parkable state into a hard resume
+        # failure. Its owner owns every blocker, including that one.
+        from pipeline.project.verification_env_retry import (
+            apply_verification_env_retry_resume,
+        )
+
+        return apply_verification_env_retry_resume(
+            run=run, profile=profile, active=active, handoff_id=handoff_id,
+            note=note, decided_at=decided_at,
         )
 
     # Trigger is the primary discriminator. In particular a verification gate
@@ -1626,14 +1707,22 @@ def apply_phase_handoff_resume(
     run.state.extras[plan_loop.round_extras_key] = retry_round_n
     run.state.extras[f"{plan_loop.round_extras_key}_max"] = loop_max_rounds
     run.state.extras[HUMAN_DIRECTED_FLAG_KEY] = True
-    prev_active_key = run.state.extras.get("_active_loop_round_key")
-    run.state.extras["_active_loop_round_key"] = (
-        plan_loop.round_extras_key
+    # See the repair arm: a gate failing inside this round pauses on a loop
+    # member, so the whole position — member order, round, effective budget —
+    # has to be recorded, not just the loop key.
+    previous_active_loop = stamp_active_loop(
+        run.state,
+        loop_key=plan_loop.round_extras_key,
+        phases=tuple(inner.phase for inner in plan_loop.steps),
+        budget=max(retry_round_n, loop_max_rounds),
+        until=plan_loop.until,
+        mode=LOOP_DISPATCH_DECLARED,
     )
     try:
         for inner_step in plan_loop.steps:
             if run.state.halt:
                 break
+            mark_loop_member_executed(run.state, inner_step.phase)
             run.state = _dispatch_via_fsm(
                 inner_step,
                 run.state,
@@ -1669,10 +1758,7 @@ def apply_phase_handoff_resume(
             )
     finally:
         run.state.extras.pop(HUMAN_DIRECTED_FLAG_KEY, None)
-        if prev_active_key is None:
-            run.state.extras.pop("_active_loop_round_key", None)
-        else:
-            run.state.extras["_active_loop_round_key"] = prev_active_key
+        restore_active_loop(run.state, previous_active_loop)
 
     # No fresh handoff fired → loop is logically closed; strip it
     # from the dispatched profile and let the rest run.
@@ -2054,6 +2140,12 @@ def process_pending_phase_handoffs(
                     "manual override..."
                 )
             print(paint(message, C.GREY))
+        elif decision_input.action == PhaseHandoffAction.RETRY_VERIFICATION.value:
+            print(paint(
+                "  ↳ Re-running the blocking verification gates on the "
+                "retained subject (no agent round)...",
+                C.GREY,
+            ))
         elif decision_input.action == PhaseHandoffAction.HALT.value:
             print(paint("  ↳ Halting run synchronously...", C.GREY))
 
@@ -2178,6 +2270,14 @@ def process_pending_phase_handoffs(
                 on_round_end=on_round_end,
                 ctx=ctx,
                 completed_phases=completed_phases,
+                # Same continuation rules as the fresh-process dispatch in
+                # ``profile_dispatch``: an interactive decision must not leave a
+                # different trace than the same decision taken through the SDK.
+                silent_completed_phases=set(
+                    resume_outcome.silent_completed_phases,
+                ),
+                quiet_loop_phases=set(resume_outcome.quiet_loop_phases),
+                loop_resume_cursors=dict(resume_outcome.loop_resume_cursors),
                 # Unattended continuation must retain the pre-final receipt
                 # materializer used by initial dispatch. Keep operator-driven
                 # continuation unchanged.

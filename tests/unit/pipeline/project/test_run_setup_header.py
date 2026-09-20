@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agents.protocols import SessionMode
 from core.io.ansi import strip_ansi
 from pipeline.plugins import PluginConfig
@@ -97,3 +99,107 @@ class TestVerificationContractDisclosure:
             contract_presence=VerificationContractPresence(declared=False),
         )
         assert out == ""
+
+
+class TestLedgerReadTolerance:
+    """T7 — the header's decorative ledger read must not kill an env retry.
+
+    On a ``retry_verification`` resume the scheduled-gate ledger is the very
+    artifact the env-retry owner has to judge; it must reach that owner, which
+    re-parks the pause with a named reason and runs no gate. A courtesy banner
+    that raises first would replace that decidable pause with a dead run, so
+    the read is downgraded — and only the read, only under the flag.
+    """
+
+    @staticmethod
+    def _contract():
+        from pipeline.verification_contract import VerificationContract
+
+        return VerificationContract.from_plugin(PluginConfig(
+            work_mode="governed",
+            verification_envs={"ci": {"image": "python:3.12"}},
+            verification={
+                "default_env": "ci",
+                "commands": {"lint": {"run": "ruff check .", "env": "ci"}},
+                "schedule": [
+                    {"after_phase": "implement", "policy": "require",
+                     "commands": ["lint"], "on_fail": "handoff"},
+                ],
+            },
+        ))
+
+    @staticmethod
+    def _write_valid_ledger(run_dir: Path, contract) -> None:
+        from pipeline.project.verification_ledger_runtime import initialize_contract
+
+        initialize_contract(run_dir, contract)
+
+    @staticmethod
+    def _write_corrupt_ledger(run_dir: Path) -> None:
+        from pipeline.verification_ledger_store import FILENAME
+
+        (run_dir / FILENAME).write_text("{not json at all", encoding="utf-8")
+
+    def test_corrupt_ledger_is_tolerated_and_renders_as_unwritten(
+        self, capsys, tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        self._write_corrupt_ledger(run_dir)
+
+        tolerated = _print_header(
+            capsys, output_dir=run_dir, contract=self._contract(),
+            ledger_read_tolerant=True,
+        )
+
+        # Identical to the header of a run whose ledger was never written:
+        # a failed read carries no authoritative meaning of its own.
+        unwritten_dir = tmp_path / "clean" / "run"
+        unwritten_dir.mkdir(parents=True)
+        unwritten = _print_header(
+            capsys, output_dir=unwritten_dir, contract=self._contract(),
+        )
+        assert tolerated.replace(
+            str(run_dir), "<RUN>",
+        ) == unwritten.replace(str(unwritten_dir), "<RUN>")
+
+    def test_corrupt_ledger_without_the_flag_still_raises(
+        self, capsys, tmp_path: Path,
+    ) -> None:
+        from pipeline.verification_ledger_store import LedgerStoreError
+
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        self._write_corrupt_ledger(run_dir)
+
+        with pytest.raises(LedgerStoreError):
+            _print_header(capsys, output_dir=run_dir, contract=self._contract())
+
+    def test_valid_ledger_renders_identically_with_and_without_the_flag(
+        self, capsys, tmp_path: Path,
+    ) -> None:
+        """The flag downgrades a failure only; it never changes a good read."""
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        self._write_valid_ledger(run_dir, self._contract())
+
+        strict = _print_header(
+            capsys, output_dir=run_dir, contract=self._contract(),
+        )
+        tolerant = _print_header(
+            capsys, output_dir=run_dir, contract=self._contract(),
+            ledger_read_tolerant=True,
+        )
+        assert strict == tolerant
+
+    def test_silent_presentation_never_reads_the_ledger(
+        self, capsys, tmp_path: Path,
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        self._write_corrupt_ledger(run_dir)
+
+        assert _print_header(
+            capsys, presentation=PresentationPolicy.SILENT,
+            output_dir=run_dir, contract=self._contract(),
+        ) == ""

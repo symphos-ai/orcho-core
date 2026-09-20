@@ -104,6 +104,23 @@ def test_needs_decision_names_handoff_actions_and_resume() -> None:
     ]
 
 
+def test_needs_decision_lists_the_verification_rerun_action() -> None:
+    """An env-gate pause offers a gate rerun; the next-step line must name it
+    verbatim so the operator can pass it straight to the decide tool."""
+    lines = next_step_lines(_diag(
+        CONDITION_NEEDS_DECISION,
+        handoff_id="gate:lint:1",
+        available_actions=(
+            "retry_verification", "continue_with_waiver", "halt",
+        ),
+    ))
+    assert lines == [
+        "decide the pending phase handoff gate:lint:1 "
+        "(actions: retry_verification, continue_with_waiver, halt) "
+        f"then orcho run --resume {RUN}",
+    ]
+
+
 def test_stalled_points_at_repair_state() -> None:
     assert next_step_lines(_diag(CONDITION_STALLED, status="running")) == [
         f"orcho repair-state {RUN}",

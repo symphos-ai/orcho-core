@@ -6,8 +6,8 @@ settled status (``done`` / ``halted`` / ``failed`` / ``interrupted``), this
 module owns the field-level mutation for the transitions that keep a run
 *alive* across a phase-handoff pause: requesting a handoff
 (``status='awaiting_phase_handoff'`` + active payload) and resolving one to
-``continue`` / ``continue_with_waiver`` / ``retry_feedback``
-(``status='running'`` + cleared payload).
+``continue`` / ``continue_with_waiver`` / ``retry_feedback`` /
+``retry_verification`` (``status='running'`` + cleared payload).
 
 Two shapes of state, two return contracts:
 
@@ -179,7 +179,7 @@ def clear_active_handoff(state: dict[str, Any]) -> None:
     Sets ``status='running'`` and removes the active ``phase_handoff`` so a
     re-launch without progress will not loop on the same decision. This is
     the shared tail of every non-terminal resume (continue /
-    continue_with_waiver / retry_feedback).
+    continue_with_waiver / retry_feedback / retry_verification).
     """
     state["status"] = "running"
     state.pop("phase_handoff", None)
@@ -289,6 +289,36 @@ def retry_feedback_handoff(
     )
 
 
+def retry_verification_handoff(
+    state: dict[str, Any],
+    *,
+    handoff_id: str,
+    note: str | None,
+    decided_at: str | None,
+) -> HandoffTransition:
+    """Resolve to ``retry_verification``: clear the payload, no agent work.
+
+    The operator repaired the external preconditions a blocking gate set
+    tripped on; the engine re-executes exactly that persisted set on the
+    retained verification subject. No agent round is dispatched, so this
+    transition carries **no** ``feedback``, no ``human_feedback`` marker,
+    no waiver, and no ``retry_mode``: the override marker (with
+    ``feedback=None``) is the whole derived record. Re-execution, the
+    evidence checks that gate it, and the continue-or-repause decision all
+    stay with the caller.
+    """
+    clear_active_handoff(state)
+    return HandoffTransition(
+        override=build_phase_handoff_override(
+            handoff_id=handoff_id,
+            action=HandoffAction.RETRY_VERIFICATION,
+            feedback=None,
+            note=note,
+            decided_at=decided_at,
+        ),
+    )
+
+
 __all__ = [
     "build_handoff_payload",
     "build_human_feedback",
@@ -299,4 +329,5 @@ __all__ = [
     "continue_with_waiver_handoff",
     "request_active_handoff",
     "retry_feedback_handoff",
+    "retry_verification_handoff",
 ]
