@@ -19,6 +19,14 @@
     "codex_idle_seconds": 900,
     "gemini_idle_seconds": 900
   },
+  "claude": {
+    "_comment": "Launch policy for Claude CLI processes started by Orcho. disable_hooks adds a process-scoped Claude settings override that disables ordinary lifecycle hooks for those calls only; direct Claude CLI sessions keep their normal settings.",
+    "disable_hooks": false
+  },
+  "codex": {
+    "_comment": "Launch policy for Codex CLI processes started by Orcho. disable_hooks adds a process-scoped feature override that disables ordinary lifecycle hooks for those calls only; direct Codex CLI sessions keep their normal settings and notifications.",
+    "disable_hooks": false
+  },
   "claude_glm": {
     "_comment": "Claude-compatible GLM adapter defaults. CLAUDE_GLM_* overrides win; CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer. 'config_dir' is where this adapter keeps its own CLI config; empty means the per-user default, and it is never the operator's ordinary config directory.",
     "opus_model": "glm-5.3",
