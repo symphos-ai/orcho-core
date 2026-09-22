@@ -389,6 +389,12 @@ class CodexAgent:
         cmd += self._skill_scope.config_args()
         return cmd
 
+    def _hook_args(self) -> list[str]:
+        """Return the opt-in, process-scoped Codex hooks override."""
+        app = config.AppConfig.load()
+        runtime_config = getattr(app, "codex", config.CodexRuntimeConfig())
+        return ["--disable", "hooks"] if runtime_config.disable_hooks else []
+
     def _exec_cmd(self, *, mutates_artifacts: bool, resume: bool = False) -> list[str]:
         """Build the ``codex exec`` / ``codex exec resume`` invocation.
 
@@ -427,7 +433,12 @@ class CodexAgent:
         cmd = [self.bin, "exec"]
         if resume:
             cmd.append("resume")
-        cmd += [*self._config_args(), "--skip-git-repo-check", "--json"]
+        cmd += [
+            *self._config_args(),
+            *self._hook_args(),
+            "--skip-git-repo-check",
+            "--json",
+        ]
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
         return cmd
 

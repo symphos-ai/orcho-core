@@ -131,7 +131,7 @@ def _merge_local_layer(cfg: dict, local: dict) -> None:
     for section in ("timeouts", "session", "codemap", "hypothesis",
                     "language", "artifacts", "pipeline", "commit",
                     "worktree", "pre_run_dirty", "sandbox", "cli",
-                    "accounting", "claude_glm"):
+                    "accounting", "claude", "claude_glm", "codex"):
         if section in local and isinstance(local[section], dict):
             overlay = {
                 key: value
@@ -236,7 +236,9 @@ def _merge_json_layers(*, workspace: Path | str | None = None) -> dict:
         "sandbox":       dict(raw_defaults.get("sandbox", {})),
         "cli":           dict(raw_defaults.get("cli", {})),
         "accounting":    dict(raw_defaults.get("accounting", {})),
+        "claude":        dict(raw_defaults.get("claude", {})),
         "claude_glm":    dict(raw_defaults.get("claude_glm", {})),
+        "codex":         dict(raw_defaults.get("codex", {})),
     }
 
     if _local_config_disabled():
@@ -307,6 +309,38 @@ def _resolve_accounting(raw: dict[str, Any]) -> dict[str, Any]:
     if v := os.environ.get("ORCHO_ACCOUNTING"):
         accounting_defaults["enabled"] = _coerce_bool(v, default=False)
     return accounting_defaults
+
+
+@dataclass(frozen=True)
+class ClaudeRuntimeConfig:
+    """Typed launch policy for Orcho-owned Claude CLI processes."""
+
+    disable_hooks: bool = False
+
+
+@dataclass(frozen=True)
+class CodexRuntimeConfig:
+    """Typed launch policy for Orcho-owned Codex CLI processes."""
+
+    disable_hooks: bool = False
+
+
+def _resolve_claude_runtime(raw: dict[str, Any]) -> ClaudeRuntimeConfig:
+    settings = raw.get("claude", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    return ClaudeRuntimeConfig(
+        disable_hooks=_coerce_bool(settings.get("disable_hooks"), default=False),
+    )
+
+
+def _resolve_codex_runtime(raw: dict[str, Any]) -> CodexRuntimeConfig:
+    settings = raw.get("codex", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    return CodexRuntimeConfig(
+        disable_hooks=_coerce_bool(settings.get("disable_hooks"), default=False),
+    )
 
 
 def _parse_session_split_override(raw: Any) -> dict[str, str]:
@@ -672,7 +706,9 @@ class AppConfig:
     sandbox:    dict[str, Any] = field(default_factory=dict)  # process-level isolation (ADR 0034)
     cli:        dict[str, Any] = field(default_factory=dict)  # CLI defaults (e.g. output_mode)
     accounting: dict[str, Any] = field(default_factory=dict)  # opt-in dollar accounting
+    claude: ClaudeRuntimeConfig = field(default_factory=ClaudeRuntimeConfig)
     claude_glm: dict[str, Any] = field(default_factory=dict)  # GLM adapter defaults
+    codex: CodexRuntimeConfig = field(default_factory=CodexRuntimeConfig)
 
     @classmethod
     @cache
@@ -782,6 +818,8 @@ class AppConfig:
             cli_defaults["output_mode"] = v.strip().lower()
 
         accounting_defaults = _resolve_accounting(raw)
+        claude_runtime = _resolve_claude_runtime(raw)
+        codex_runtime = _resolve_codex_runtime(raw)
 
         claude_glm_defaults: dict[str, Any] = {
             "opus_model": "glm-5.3", "sonnet_model": "glm-5.3",
@@ -833,7 +871,9 @@ class AppConfig:
             sandbox    = sandbox_defaults,
             cli        = cli_defaults,
             accounting = accounting_defaults,
+            claude     = claude_runtime,
             claude_glm = claude_glm_defaults,
+            codex      = codex_runtime,
         )
 
     # ── phase views (canonical) ──────────────────────────────────────────────

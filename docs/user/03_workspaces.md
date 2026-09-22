@@ -221,6 +221,30 @@ workspace `config.json` → workspace `config.local.json` → environment
 variables. This matches the common `settings.json` / `settings.local.json`
 convention: commit the shared file; keep the local file personal.
 
+### Disable agent lifecycle hooks for Orcho runs
+
+Some runtime hooks write project files when a session ends or compacts. To keep
+those hooks active in ordinary interactive sessions while suppressing them in
+one Orcho workspace, add this personal override:
+
+```json
+{
+  "claude": {
+    "disable_hooks": true
+  },
+  "codex": {
+    "disable_hooks": true
+  }
+}
+```
+
+Orcho then passes `--settings '{"disableAllHooks":true}'` to each Claude CLI
+process and `--disable hooks` to each Codex CLI process it starts in that
+workspace, including fresh, write, and resumed calls. The setting does not
+change project or user runtime files, Codex external notifications, or Orcho's
+verification gates. Managed hooks remain subject to each runtime's managed
+settings hierarchy.
+
 `workspace init` also creates discoverable extension-point guides. They
 are only created when missing and are never overwritten. Prompt overrides
 resolve project first, then workspace, then core. Project plugins still

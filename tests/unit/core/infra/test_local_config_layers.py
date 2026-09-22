@@ -451,3 +451,39 @@ def test_workspace_overlay_can_override_claude_glm_defaults(
         "sonnet_model": "workspace-glm",
         "max_context_tokens": 99999,
     }
+
+
+def test_workspace_overlay_can_disable_claude_hooks(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["workspace_personal"],
+        {"claude": {"disable_hooks": True}},
+    )
+
+    assert config._merge_json_layers()["claude"] == {"disable_hooks": True}
+    try:
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().claude == config.ClaudeRuntimeConfig(
+            disable_hooks=True,
+        )
+    finally:
+        config.AppConfig.load.cache_clear()
+
+
+def test_workspace_overlay_can_disable_codex_hooks(
+    config_layout: dict[str, Path],
+) -> None:
+    _write_json(
+        config_layout["workspace_personal"],
+        {"codex": {"disable_hooks": True}},
+    )
+
+    assert config._merge_json_layers()["codex"] == {"disable_hooks": True}
+    try:
+        config.AppConfig.load.cache_clear()
+        assert config.AppConfig.load().codex == config.CodexRuntimeConfig(
+            disable_hooks=True,
+        )
+    finally:
+        config.AppConfig.load.cache_clear()
