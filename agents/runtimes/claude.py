@@ -536,7 +536,7 @@ class ClaudeAgent:
             self._resolve_cli_binary,
         )
         self.model = model or config.phase_model(
-            "implement", "claude-opus-5[1m]",
+            "implement", "claude-opus-5-5",
         )
         self.effort = effort
         self._owned_children = OwnedChildRegistry()
