@@ -14,6 +14,7 @@ discipline so callers in :mod:`pipeline.engine.worktree` can branch on
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -471,6 +472,33 @@ def apply_patch_to_checkout(
     return GitOpResult(ok=True)
 
 
+def stage_checkout_paths(
+    checkout_path: str | Path, paths: Sequence[str],
+) -> GitOpResult:
+    """Stage exactly ``paths`` — additions, edits and deletions — in the checkout.
+
+    Path-scoped ``git add`` rejects a pathspec that matches neither the index
+    nor the working tree, and that is precisely a deletion already staged with
+    ``git rm``. Such a path already holds its final index state, so it is left
+    out of the ``add`` instead of failing the whole stage. Every other path goes
+    through ``git add`` unchanged, so nothing outside ``paths`` reaches the index.
+    """
+    if not paths:
+        return GitOpResult(ok=True)
+    rc, stdout, stderr = _run_git(["ls-files", "-z", "--", *paths], cwd=checkout_path)
+    if rc != 0:
+        return GitOpResult(ok=False, error=stderr.strip() or f"rc={rc}")
+    indexed = set(stdout.split("\0"))
+    root = Path(checkout_path)
+    pending = [p for p in paths if p in indexed or os.path.lexists(root / p)]
+    if not pending:
+        return GitOpResult(ok=True)
+    rc, _stdout, stderr = _run_git(["add", "--", *pending], cwd=checkout_path)
+    if rc != 0:
+        return GitOpResult(ok=False, error=stderr.strip() or f"rc={rc}")
+    return GitOpResult(ok=True)
+
+
 __all__ = [
     "GitOpResult",
     "GitStatusKind",
@@ -485,5 +513,6 @@ __all__ = [
     "git_head",
     "has_uncommitted",
     "remove_worktree",
+    "stage_checkout_paths",
     "worktree_diff_against_base",
 ]

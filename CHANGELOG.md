@@ -11,6 +11,12 @@
   re-enter an already finished review/repair loop. The decided gate is not
   re-raised in front of the guarded phase, and the resume point matches the
   one `retry_verification` uses.
+- Commit delivery no longer fails when the run deleted a file with `git rm`.
+  Staging run-owned paths by name rejected a deletion that was already in the
+  index (`pathspec ... did not match any files`), so an approved run halted
+  with `commit_delivery_failed`. Such paths are now left as staged; every
+  other run-owned path is staged as before, and paths outside the run are
+  still never added.
 
 ## 0.11.0 - 2026-09-20
 
