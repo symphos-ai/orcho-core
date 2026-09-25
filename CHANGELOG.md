@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Continuing past a failed `before_delivery` or `before_phase` gate now runs
+  the phase that gate guards. Previously `continue` and
+  `continue_with_waiver` recorded `final_acceptance` as completed without
+  executing it, so the run reached delivery with no release verdict and could
+  re-enter an already finished review/repair loop. The decided gate is not
+  re-raised in front of the guarded phase, and the resume point matches the
+  one `retry_verification` uses.
+
 ## 0.11.0 - 2026-09-20
 
 This release adds a bounded recovery path for required verification blocked
