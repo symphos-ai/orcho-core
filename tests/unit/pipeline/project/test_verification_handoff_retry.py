@@ -498,6 +498,142 @@ def test_verification_continue_actions_close_gate_pause_without_plan_loop(
     assert "phase_handoff_waiver" in run.session if action.endswith("waiver") else "phase_handoff_waiver" not in run.session
 
 
+def _pre_phase_gate_pause(hook: str) -> SimpleNamespace:
+    """A gate pause published at the ``final_acceptance`` pre-phase seam.
+
+    ``before_delivery`` / ``before_phase`` gates fire *before* the phase they
+    guard (``gate_repair.evaluate_pre_phase_gates``), so the phase the pause
+    names has not run yet.
+    """
+    run = _run()
+    run.session["phase_handoff"]["artifacts"] = {"gate_identity": {
+        "command": "pytest-unit", "hook": hook, "phase": "",
+    }}
+    return run
+
+
+@pytest.mark.parametrize("hook", ["before_delivery", "before_phase"])
+@pytest.mark.parametrize("action", ["continue", "continue_with_waiver"])
+def test_continue_on_pre_phase_gate_pause_leaves_the_guarded_phase_owed(
+    monkeypatch: pytest.MonkeyPatch, action: str, hook: str,
+) -> None:
+    """Accepting a failed pre-phase gate must not report the guarded phase done.
+
+    ADR 0195 states the rule for ``retry_verification``: a ``before_phase`` /
+    ``before_delivery`` gate guards a phase that has not run, so reporting it
+    completed "would end the run without the very phase the gate was
+    protecting". ``continue`` / ``continue_with_waiver`` accept the gate
+    failure; they do not waive the final acceptance review itself.
+    """
+    run = _pre_phase_gate_pause(hook)
+    active = run.session["phase_handoff"]
+    monkeypatch.setattr(
+        "pipeline.project.handoff._persist_handoff_running_state", lambda _run: None,
+    )
+
+    outcome = apply_verification_handoff_resume(
+        run=run, profile=object(), ctx=object(), active=active,
+        handoff_id="gate:pytest-unit:1", action=action,
+        feedback="Разрешено оператором" if action.endswith("waiver") else "",
+        note=None, decided_at="now",
+        identity=GateIdentity("pytest-unit", hook, ""),
+    )
+
+    assert "final_acceptance" not in outcome.completed_phases
+    assert "phase_handoff" not in run.session
+
+
+@pytest.mark.parametrize("action", ["continue", "continue_with_waiver"])
+def test_continue_on_before_delivery_gate_pause_still_runs_final_acceptance(
+    monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    """Decision -> runner contract for the faino run ``20260831_170837_de791f``.
+
+    A ``before_delivery`` gate failed at the ``final_acceptance`` seam, the
+    operator chose ``continue``, and the resumed run re-entered the review loop
+    and then logged ``FINAL_ACCEPTANCE -> skipped: completed earlier in this run
+    (resumed)`` although final acceptance had never executed. The continuation
+    outcome is computed on the same profile the real ``run_profile`` then walks,
+    so both halves are observed where they happen: nothing behind the guarded
+    phase re-runs, and the guarded phase itself does.
+    """
+    from pipeline.runtime import (
+        LoopStep,
+        PhaseRegistry,
+        PhaseStep,
+        PipelineState,
+        Profile,
+        run_profile,
+    )
+
+    profile = Profile(name="gate-continue", kind="custom", steps=(
+        PhaseStep(phase="implement"),
+        LoopStep(steps=(PhaseStep(phase="review_changes"), PhaseStep(phase="repair_changes")),
+                 until="review_changes.clean", max_rounds=2, round_extras_key="repair_round"),
+        PhaseStep(phase="final_acceptance"),
+    ))
+    run = _pre_phase_gate_pause("before_delivery")
+    active = run.session["phase_handoff"]
+    monkeypatch.setattr(
+        "pipeline.project.handoff._persist_handoff_running_state", lambda _run: None,
+    )
+    outcome = apply_verification_handoff_resume(
+        run=run, profile=profile, ctx=object(), active=active,
+        handoff_id="gate:pytest-unit:1", action=action,
+        feedback="Разрешено оператором" if action.endswith("waiver") else "",
+        note=None, decided_at="now",
+        identity=GateIdentity("pytest-unit", "before_delivery", ""),
+    )
+
+    executed: list[str] = []
+    registry = PhaseRegistry()
+    for name in ("implement", "review_changes", "repair_changes", "final_acceptance"):
+        registry.register(name, lambda st, name=name: (executed.append(name), st)[1])
+    run_profile(
+        outcome.profile, PipelineState(task="t", project_dir=".", plugin=PluginConfig()),
+        registry,
+        completed_phases=set(outcome.completed_phases),
+        silent_completed_phases=set(outcome.silent_completed_phases),
+    )
+
+    assert executed == ["final_acceptance"]
+
+
+def test_accepted_gate_pause_skips_only_the_decided_hook_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guarded phase must not re-publish the pause the operator just closed.
+
+    ``before_delivery`` runs after ``before_phase``; accepting it skips that one
+    hook for this entry into the phase, and the record is consumed so a later
+    entry evaluates every hook again.
+    """
+    from pipeline.project import gate_repair
+
+    calls: list[str] = []
+    run = SimpleNamespace(
+        state=SimpleNamespace(extras={}, halt=False, phase_handoff_request=None),
+        _gate_profile=object(), _gate_ctx=object(),
+    )
+    monkeypatch.setattr(gate_repair, "_gate_active", lambda _run: True)
+    monkeypatch.setattr(
+        gate_repair, "run_gate_hook",
+        lambda _run, _profile, _ctx, *, hook, phase="": calls.append(hook),
+    )
+    gate_repair.record_accepted_gate_pause(
+        run.state, phase="final_acceptance", hook="before_delivery",
+    )
+
+    gate_repair.evaluate_pre_phase_gates(run, "final_acceptance")
+    first = list(calls)
+    calls.clear()
+    gate_repair.evaluate_pre_phase_gates(run, "final_acceptance")
+
+    assert first == ["before_phase"]
+    assert calls == ["before_phase", "before_delivery"]
+    assert gate_repair.ACCEPTED_GATE_PAUSE_KEY not in run.state.extras
+
+
 def test_provider_crash_propagates_and_does_not_become_control_blocker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

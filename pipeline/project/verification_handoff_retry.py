@@ -139,8 +139,13 @@ def apply_verification_handoff_resume(
     """Resolve every verification-handoff action without entering a phase loop.
 
     A verification gate may be raised at a terminal phase, but it is a gate
-    pause, not a plan or scope-expansion pause.  Closing it therefore only
-    advances past the phase that published the gate handoff.
+    pause, not a plan or scope-expansion pause.  Where closing it resumes
+    depends on the gate's hook, exactly as for ``retry_verification``
+    (ADR 0195): an ``after_phase`` gate reported on a phase that ran, so the
+    run continues after it; a ``before_phase`` / ``before_delivery`` gate
+    guards a phase that has not run, so ``continue`` / ``continue_with_waiver``
+    accept the gate failure and then run that phase. Reporting the guarded
+    phase complete would deliver without ``final_acceptance`` ever executing.
     """
     if action == "retry_feedback":
         try:
@@ -170,19 +175,30 @@ def apply_verification_handoff_resume(
 
     phase = active.get("phase")
     completed = frozenset({phase}) if isinstance(phase, str) and phase else frozenset()
+    if action not in ("continue", "continue_with_waiver"):
+        raise VerificationHandoffRetryBlocked(
+            f"unsupported verification handoff action {action!r}",
+        )
+    if action == "continue_with_waiver" and not feedback.strip():
+        raise VerificationHandoffRetryBlocked(
+            "verification waiver requires continue_with_waiver feedback",
+        )
+    # Proven before the transition, as for ``retry_verification``: a guarded
+    # pause whose resume point cannot be located blocks with the handoff and
+    # its decision left exactly as they were.
+    guarded = _guarded_continuation(profile, active)
+
     if action == "continue":
         transition = continue_handoff(
             run.session, handoff_id=handoff_id, note=note, decided_at=decided_at,
         )
         run.state.extras["phase_handoff_override"] = transition.override
         _persist_handoff_running_state(run)
+        if guarded is not None:
+            return _enter_guarded_phase(run, profile, active, guarded)
         return PhaseHandoffResumeOutcome(profile, completed, False)
 
     if action == "continue_with_waiver":
-        if not feedback.strip():
-            raise VerificationHandoffRetryBlocked(
-                "verification waiver requires continue_with_waiver feedback",
-            )
         artifacts = active.get("artifacts")
         findings = artifacts.get("findings") if isinstance(artifacts, dict) else None
         critique = active.get("last_output")
@@ -200,11 +216,45 @@ def apply_verification_handoff_resume(
         run.state.extras["phase_handoff_waiver"] = transition.waiver
         run.state.extras["phase_handoff_override"] = transition.override
         _persist_handoff_running_state(run)
+        if guarded is not None:
+            return _enter_guarded_phase(run, profile, active, guarded)
         return PhaseHandoffResumeOutcome(profile, completed, False)
 
     raise VerificationHandoffRetryBlocked(
         f"unsupported verification handoff action {action!r}",
     )
+
+
+def _guarded_continuation(profile: Any, active: Mapping[str, Any]) -> Any | None:
+    """The proven resume point of a pre-phase gate pause, else ``None``.
+
+    Shares the ``retry_verification`` owner (ADR 0195) so both ways of closing
+    a gate pause agree on which phases are behind the resume point.
+    """
+    from pipeline.project.verification_env_retry import (
+        pause_guards_its_phase,
+        prove_continuation_position,
+    )
+
+    if not pause_guards_its_phase(active):
+        return None
+    return prove_continuation_position(profile, active)
+
+
+def _enter_guarded_phase(
+    run: Any, profile: Any, active: Mapping[str, Any], continuation: Any,
+) -> Any:
+    """Resume at the guarded phase without re-raising the decided hook."""
+    from pipeline.project.gate_repair import record_accepted_gate_pause
+    from pipeline.project.verification_env_retry import (
+        continuation_outcome,
+        primary_gate_hook,
+    )
+
+    record_accepted_gate_pause(
+        run.state, phase=str(active.get("phase")), hook=str(primary_gate_hook(active)),
+    )
+    return continuation_outcome(run, profile, continuation)
 
 
 def apply_verification_handoff_retry(
