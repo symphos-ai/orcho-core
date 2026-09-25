@@ -23,7 +23,11 @@ from core.contracts.commit_decision_schema import (
     validate_decision_dict,
 )
 from core.io.ansi import C, paint
-from core.io.git_helpers import apply_patch_to_checkout, worktree_diff_against_base
+from core.io.git_helpers import (
+    apply_patch_to_checkout,
+    stage_checkout_paths,
+    worktree_diff_against_base,
+)
 from core.io.journey_prompt import (
     bold,
     default_chip,
@@ -997,7 +1001,7 @@ def apply_commit_delivery(
             delivery_outcome.delivery_branch if delivery_outcome is not None else None
         ),
     )
-    add = _run_git(decision.project_path, ["add", "--", *stage_paths])
+    add = stage_checkout_paths(decision.project_path, stage_paths)
     if not add.ok:
         return _persist(
             decision,
@@ -1425,10 +1429,9 @@ def _commit_run_branch(
         staged_paths=tuple(stage_paths),
         delivery_branch=delivery_branch,
     )
-    if stage_paths:
-        add = _run_git(source, ["add", "--", *stage_paths])
-        if not add.ok:
-            return None, ledger_record, add.error
+    add = stage_checkout_paths(source, stage_paths)
+    if not add.ok:
+        return None, ledger_record, add.error
     staged = _run_git(source, ["diff", "--cached", "--name-only"])
     if staged.ok and staged.stdout.strip():
         commit = _run_git(source, ["commit", "-s", "-m", message])
