@@ -27,8 +27,10 @@ that kept no ledger is found by its deterministic fallback subject and
 reported as ``legacy_commit`` — it is never adopted automatically, because
 nothing durable says who decided it.
 
-Only read-only git commands run here (``rev-parse``, ``symbolic-ref``,
-``cat-file``, ``log``); the checkout is never mutated.
+Only read-only git commands run against the checkout (``rev-parse``,
+``symbolic-ref``, ``cat-file``, ``log``, ``ls-files``); verifying an
+operator-named commit rebuilds the intended tree in a throwaway index, which
+writes objects but never touches the checkout's index, working tree or refs.
 """
 from __future__ import annotations
 
@@ -36,6 +38,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -317,8 +320,18 @@ def reconcile_delivery(
     run_id: str,
     decision_id: str,
     project_path: Path | str | None,
+    commit: str | None = None,
 ) -> DeliveryReconciliation:
     """Compare the ledger with Git, read-only.
+
+    ``commit`` is a commit the operator names as this run's delivery. It is
+    consulted only when the ledger stops at ``intent`` and no commit carries
+    the intended subject: an operator who delivered by hand chose their own
+    message, so the named commit is accepted when it is exactly the intended
+    delivery instead — its only parent is the intent's ``head_before`` and its
+    tree equals ``head_before`` with the intent's paths taken from the commit
+    target. A named commit that fails the check leaves ``intent_only`` with
+    the reason in ``detail``.
 
     * ``recorded`` — the audit artifact was written; the ledger is complete.
     * ``committed_unrecorded`` — a commit exists but the audit was never
@@ -391,6 +404,19 @@ def reconcile_delivery(
             ),
             record=record,
         )
+    if commit:
+        named, reason = _named_commit_is_intended_delivery(target, record, commit)
+        if named is not None:
+            return DeliveryReconciliation(
+                RECON_COMMITTED_UNRECORDED, commit_sha=named,
+                detail=(
+                    f"operator-named commit {named[:12]} is the intended delivery: "
+                    f"its parent is {(record.head_before or '?')[:12]} and its tree "
+                    "equals the run's change (the commit subject is not compared)"
+                ),
+                record=record,
+            )
+        return DeliveryReconciliation(RECON_INTENT_ONLY, detail=reason, record=record)
     return DeliveryReconciliation(
         RECON_INTENT_ONLY,
         detail="a delivery commit was intended but none matching the intent exists",
@@ -430,12 +456,60 @@ def describe_commit(cwd: Path | str, sha: str) -> CommitFacts | None:
     )
 
 
-# ── read-only git ─────────────────────────────────────────────────────────────
+def _named_commit_is_intended_delivery(
+    target: Path, record: DeliveryLedgerRecord, commit: str,
+) -> tuple[str | None, str]:
+    """``(sha, "")`` when ``commit`` is exactly the intended delivery, else ``(None, why)``."""
+    sha = _git(target, ["rev-parse", "--verify", "-q", f"{commit}^{{commit}}"])
+    if sha is None:
+        return None, f"commit {commit!r} cannot be read from {target}"
+    base = record.head_before
+    parents = (_git(target, ["log", "-1", "--format=%P", sha]) or "").split()
+    if not base or parents != [base]:
+        return None, (
+            f"commit {sha[:12]} does not sit directly on the delivery base "
+            f"{(base or '?')[:12]} the engine recorded (parents: "
+            f"{', '.join(p[:12] for p in parents) or 'none'})"
+        )
+    expected = _intended_delivery_tree(target, base, record.staged_paths)
+    if expected is None:
+        return None, f"the run's intended delivery could not be rebuilt from {target}"
+    if _git(target, ["rev-parse", f"{sha}^{{tree}}"]) != expected:
+        return None, (
+            f"commit {sha[:12]} does not carry exactly the run's change: its tree "
+            f"differs from {base[:12]} plus the run's paths as they are in {target}"
+        )
+    return sha, ""
 
 
-def _git(cwd: Path, args: list[str]) -> str | None:
+def _intended_delivery_tree(
+    target: Path, base: str, paths: tuple[str, ...],
+) -> str | None:
+    """Tree of ``base`` with ``paths`` staged from ``target``, via a throwaway index."""
+    with tempfile.TemporaryDirectory(prefix="orcho-delivery-") as tmp:
+        index = Path(tmp) / "index"
+        if not _git_ok(target, ["read-tree", base], index_file=index):
+            return None
+        tracked = set((_git(target, ["ls-files", "-z"], index_file=index) or "").split("\0"))
+        # A path neither in ``base`` nor on disk is already absent from the
+        # tree; ``git add`` would reject it as an unmatched pathspec.
+        present = [p for p in paths if p in tracked or os.path.lexists(target / p)]
+        if present and not _git_ok(target, ["add", "-A", "--", *present], index_file=index):
+            return None
+        return _git(target, ["write-tree"], index_file=index)
+
+
+# ── git plumbing ──────────────────────────────────────────────────────────────
+
+
+def _git_proc(
+    cwd: Path, args: list[str], *, index_file: Path | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     if not cwd.is_dir():
         return None
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = str(index_file)
     try:
         result = subprocess.run(
             ["git", *args],
@@ -444,14 +518,23 @@ def _git(cwd: Path, args: list[str]) -> str | None:
             text=True,
             check=False,
             timeout=_GIT_TIMEOUT_S,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if result.returncode != 0:
+    return result if result.returncode == 0 else None
+
+
+def _git(cwd: Path, args: list[str], *, index_file: Path | None = None) -> str | None:
+    result = _git_proc(cwd, args, index_file=index_file)
+    if result is None:
         return None
     out = result.stdout.strip()
     return out or None
+
+
+def _git_ok(cwd: Path, args: list[str], *, index_file: Path | None = None) -> bool:
+    return _git_proc(cwd, args, index_file=index_file) is not None
 
 
 def _commit_exists(cwd: Path, sha: str) -> bool:

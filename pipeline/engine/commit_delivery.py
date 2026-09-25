@@ -1141,6 +1141,9 @@ def persist_reconciled_delivery(
             staged_paths=files_staged,
             provenance=PROVENANCE_RECONCILED,
         )
+    if existing.commit_sha != commit_sha:
+        # An intent-only ledger (the engine's own commit failed) learns the
+        # commit here, so the recorded stage always names the delivery.
         existing = _ledger.record_delivery_commit(run_dir, existing, commit_sha)
     _ledger.record_delivery_audit(run_dir, existing)
     return persisted

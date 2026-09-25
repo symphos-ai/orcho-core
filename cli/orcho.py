@@ -819,7 +819,9 @@ def cmd_reconcile_delivery(args: argparse.Namespace) -> int:
         return exc.exit_code
 
     if not apply_requested:
-        state = inspect_delivery_reconciliation(ref.run_id, workspace=workspace)
+        state = inspect_delivery_reconciliation(
+            ref.run_id, workspace=workspace, commit=getattr(args, "commit", None),
+        )
         if want_json:
             sys.stdout.write(
                 json.dumps(state.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
@@ -1622,7 +1624,10 @@ def build_parser() -> argparse.ArgumentParser:
             "you verified: the audit artifact carries your operator name and "
             "note, the run's delivery block is set with provenance "
             "'reconciled', and the terminal status is settled the same way "
-            "finalization settles it. The checkout is never mutated."
+            "finalization settles it. When the run's own delivery commit "
+            "failed, --commit may name a commit you made by hand; it is "
+            "recorded when its parent and tree match the intended delivery. "
+            "The checkout is never mutated."
         ),
     )
     p_reconcile.add_argument("run_id", help="Run id to inspect / reconcile")
@@ -1632,7 +1637,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_reconcile.add_argument(
         "--commit", default=None, metavar="SHA",
-        help="The delivery commit you verified (sha or unique prefix); required with --apply",
+        help=(
+            "The delivery commit you verified (sha or unique prefix); required "
+            "with --apply. A dry-run with --commit checks that commit"
+        ),
     )
     p_reconcile.add_argument(
         "--operator", default=None,
