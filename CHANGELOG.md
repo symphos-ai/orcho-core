@@ -17,6 +17,16 @@
   with `commit_delivery_failed`. Such paths are now left as staged; every
   other run-owned path is staged as before, and paths outside the run are
   still never added.
+- `reconcile-delivery` can record a commit the operator made by hand after
+  the run's own delivery commit failed. Previously the ledger matched only a
+  commit carrying the engine's intended subject, so a manual delivery was
+  refused with `no_delivery_commit_found` and an approved run stayed halted.
+  A commit named with `--commit` is now recorded when its only parent is the
+  intended base and its tree equals the run's change; its subject is not
+  compared, and any other named commit is refused with `commit_mismatch`.
+  A dry-run with `--commit` checks the named commit without recording it.
+- A reconciled delivery now always records the commit sha in the delivery
+  ledger, so a second reconcile reports `already_recorded`.
 
 ## 0.11.0 - 2026-09-20
 

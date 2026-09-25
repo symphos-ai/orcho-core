@@ -303,3 +303,176 @@ def test_reconcile_without_any_release_record_says_the_verdict_is_unknown(
 def test_operator_is_required() -> None:
     with pytest.raises(ValueError, match="operator"):
         reconcile_delivery_record(RUN_ID, operator="  ", commit="abc")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Operator-delivered commit after a failed engine commit.
+#
+# Models run ``20260925_155324_e7fd4a``: final acceptance APPROVED, the engine
+# wrote its delivery intent, then its own commit failed, so the ledger stops at
+# ``intent`` and the run halts with ``commit_delivery_failed``. The operator
+# committed the approved work by hand under their own subject. Naming that
+# commit must record it when it is exactly the run's delivery — same parent as
+# the intent's ``head_before`` and the same change — whatever its subject.
+# ─────────────────────────────────────────────────────────────────────────
+
+MANUAL_RUN_ID = "20260925_155324_e7fd4a"
+_RUN_PATHS = ("app.txt", "new.txt", "obsolete.txt")
+
+
+def _halted_after_failed_commit(tmp_path: Path) -> tuple[Path, Path, Path, Path, str]:
+    """``(repo, worktree, runs, run_dir, base)`` for a run whose engine commit failed."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "obsolete.txt").write_text("obsolete\n", encoding="utf-8")
+    _git(repo, "add", "obsolete.txt")
+    _git(repo, "commit", "-q", "-m", "add obsolete")
+    base = _git(repo, "rev-parse", "HEAD")
+    worktree = tmp_path / "wt" / "checkout"
+    _git(
+        repo, "worktree", "add", "-q", "-b", f"orcho/run/{MANUAL_RUN_ID}",
+        str(worktree), base,
+    )
+    (worktree / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+    (worktree / "new.txt").write_text("new\n", encoding="utf-8")
+    _git(worktree, "rm", "-q", "obsolete.txt")
+
+    runs = tmp_path / "runs"
+    decision_id = dl.safe_decision_id(MANUAL_RUN_ID)
+    run_dir = _run(runs, {
+        "status": "halted",
+        "halt_reason": "commit_delivery_failed",
+        "project": str(repo),
+        "worktree": {"path": str(worktree), "base_ref": base},
+        "phases": {"final_acceptance": {
+            "verdict": "APPROVED", "approved": True, "ship_ready": True,
+            "short_summary": "Mobile kit moves into the engine.",
+            "release_blockers": [],
+        }},
+        "commit_delivery": {
+            "action": "approve",
+            "status": "commit_failed",
+            "run_id": MANUAL_RUN_ID,
+            "decision_id": decision_id,
+            "error": "fatal: pathspec 'obsolete.txt' did not match any files",
+        },
+    }, MANUAL_RUN_ID)
+    dl.record_delivery_intent(
+        run_dir,
+        run_id=MANUAL_RUN_ID,
+        decision_id=decision_id,
+        action="approve",
+        commit_target=worktree,
+        baseline_ref=base,
+        message="Mobile kit moves into the engine.",
+        strategy="release_summary",
+        staged_paths=_RUN_PATHS,
+        delivery_branch=f"orcho/deliver/{MANUAL_RUN_ID}-mobile-kit",
+    )
+    return repo, worktree, runs, run_dir, base
+
+
+def _operator_commit(checkout: Path, subject: str, *paths: str) -> str:
+    _git(checkout, "add", "-A", "--", *(paths or (".",)))
+    _git(checkout, "commit", "-q", "-s", "-m", subject)
+    return _git(checkout, "rev-parse", "HEAD")
+
+
+def _deliver_run_work_into(repo: Path, worktree: Path) -> None:
+    """Copy the run's change into ``repo`` the way an operator would."""
+    for name in ("app.txt", "new.txt"):
+        (repo / name).write_text((worktree / name).read_text(encoding="utf-8"))
+    (repo / "obsolete.txt").unlink()
+
+
+@pytest.mark.parametrize("committed_in", ["run_branch", "project_checkout"])
+def test_reconcile_records_an_operator_commit_of_the_run_delivery(
+    tmp_path: Path, committed_in: str,
+) -> None:
+    repo, worktree, runs, run_dir, base = _halted_after_failed_commit(tmp_path)
+    if committed_in == "run_branch":
+        sha = _operator_commit(worktree, "feat(mobile): operator's own subject")
+    else:
+        _deliver_run_work_into(repo, worktree)
+        sha = _operator_commit(repo, "feat(mobile): operator's own subject")
+    assert _git(repo, "rev-parse", f"{sha}^") == base
+
+    result = reconcile_delivery_record(
+        MANUAL_RUN_ID, operator="op", commit=sha[:8],
+        note="committed the approved diff by hand", runs_dir=runs, cwd=None,
+    )
+
+    assert result.accepted is True, result.reason
+    assert result.commit_sha == sha
+    assert result.terminal_outcome == "done"
+    assert result.release_verdict == "APPROVED"
+    meta = _meta(run_dir)
+    assert meta["status"] == "done"
+    assert "delivery_override" not in meta
+    delivery = meta["commit_delivery"]
+    assert delivery["status"] == "committed"
+    assert delivery["commit_sha"] == sha
+    assert delivery["provenance"] == "reconciled"
+    assert sorted(delivery["files_staged"]) == sorted(_RUN_PATHS)
+    ledger = dl.load_delivery_ledger(run_dir, dl.safe_decision_id(MANUAL_RUN_ID))
+    assert ledger is not None
+    assert ledger.stage == dl.STAGE_RECORDED
+    assert ledger.commit_sha == sha
+
+    again = reconcile_delivery_record(
+        MANUAL_RUN_ID, operator="op", commit=sha, runs_dir=runs, cwd=None,
+    )
+    assert again.accepted is False
+    assert again.blocker == "already_recorded"
+
+
+def _unrelated_parent_commit(repo: Path, worktree: Path) -> str:
+    """The run's change, but committed on top of an unrelated commit."""
+    (repo / "other.txt").write_text("other\n", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+    _git(repo, "commit", "-q", "-m", "unrelated")
+    _deliver_run_work_into(repo, worktree)
+    return _operator_commit(repo, "feat(mobile): on a moved base")
+
+
+def _partial_commit(repo: Path, worktree: Path) -> str:
+    """Right parent, but only part of the run's change."""
+    return _operator_commit(worktree, "feat(mobile): half of it", "app.txt")
+
+
+@pytest.mark.parametrize(
+    "make_commit", [_unrelated_parent_commit, _partial_commit],
+    ids=["wrong_parent", "partial_change"],
+)
+def test_reconcile_refuses_an_operator_commit_that_is_not_the_run_delivery(
+    tmp_path: Path, make_commit,
+) -> None:
+    repo, worktree, runs, run_dir, _base = _halted_after_failed_commit(tmp_path)
+    meta_before = _meta(run_dir)
+    sha = make_commit(repo, worktree)
+
+    result = reconcile_delivery_record(
+        MANUAL_RUN_ID, operator="op", commit=sha, runs_dir=runs, cwd=None,
+    )
+
+    assert result.accepted is False
+    assert result.blocker == "commit_mismatch"
+    assert _meta(run_dir) == meta_before
+    ledger = dl.load_delivery_ledger(run_dir, dl.safe_decision_id(MANUAL_RUN_ID))
+    assert ledger is not None and ledger.stage == dl.STAGE_INTENT
+
+
+def test_reconcile_does_not_guess_an_operator_commit_without_one_named(
+    tmp_path: Path,
+) -> None:
+    repo, worktree, runs, run_dir, _base = _halted_after_failed_commit(tmp_path)
+    _operator_commit(worktree, "feat(mobile): operator's own subject")
+    meta_before = _meta(run_dir)
+
+    result = reconcile_delivery_record(
+        MANUAL_RUN_ID, operator="op", runs_dir=runs, cwd=None,
+    )
+
+    assert result.accepted is False
+    assert result.blocker == "no_delivery_commit_found"
+    assert _meta(run_dir) == meta_before
