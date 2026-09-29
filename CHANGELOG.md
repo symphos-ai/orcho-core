@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.11.1 - 2026-09-29
+
+This release refreshes the default agent assignments and fixes recovery and
+delivery paths for runs that have already completed their implementation.
+
+### Added
+
+- Per-runtime `disable_hooks` settings let a workspace disable Claude or Codex
+  lifecycle hooks only for processes launched by Orcho. Existing user CLI
+  sessions keep their own hook settings.
+
+### Changed
+
+- The default phase assignments use Claude Fable 5.1 for planning and repair
+  escalation, Codex Astra for plan review, Claude Opus 5.5 for implementation
+  and routine repair, and Codex `gpt-6-sol` for code review and final acceptance.
+  Existing workspace overrides still take precedence.
+
 ### Fixed
 
 - Continuing past a failed `before_delivery` or `before_phase` gate now runs
