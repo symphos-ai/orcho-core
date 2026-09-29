@@ -5599,6 +5599,55 @@ class TestCmdReconcileDelivery:
         assert rc == 0
         assert "already agrees" in out
 
+    def test_dry_run_checks_a_named_operator_commit_then_apply_records_it(
+        self, workspace: Path, capsys,
+    ) -> None:
+        """The engine's commit failed after its intent; the operator committed
+        the same change by hand under their own subject and names it."""
+        from cli.orcho import cmd_reconcile_delivery
+        from pipeline.engine import delivery_ledger as dl
+
+        repo = workspace / "project"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "main")
+        self._git(repo, "config", "user.email", "test@orcho.invalid")
+        self._git(repo, "config", "user.name", "Orcho Test")
+        self._git(repo, "config", "commit.gpgsign", "false")
+        (repo / "app.txt").write_text("base\n", encoding="utf-8")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "init")
+        run_dir = self._run_dir(workspace, "r1", {
+            "status": "halted", "halt_reason": "commit_delivery_failed",
+            "project": str(repo),
+        })
+        (repo / "app.txt").write_text("base\nrun\n", encoding="utf-8")
+        dl.record_delivery_intent(
+            run_dir, run_id="r1", decision_id="r1", action="approve",
+            commit_target=repo, baseline_ref="HEAD", message="engine subject",
+            strategy="release_summary", staged_paths=("app.txt",),
+        )
+        self._git(repo, "commit", "-q", "-am", "operator's own subject")
+        sha = self._git(repo, "rev-parse", "HEAD")
+
+        rc = cmd_reconcile_delivery(
+            self._parse("r1", "--commit", sha[:10], "--workspace", str(workspace)),
+        )
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert "committed_unrecorded" in out
+        assert sha in out
+        assert not (run_dir / "commit_decisions" / "r1.json").exists()
+
+        rc = cmd_reconcile_delivery(self._parse(
+            "r1", "--apply", "--commit", sha[:10], "--operator", "op",
+            "--workspace", str(workspace),
+        ))
+        assert rc == 0
+        assert "Accepted:        yes" in capsys.readouterr().out
+        meta = json.loads(run_dir.joinpath("meta.json").read_text())
+        assert meta["status"] == "done"
+        assert meta["commit_delivery"]["commit_sha"] == sha
+
     def test_json_dry_run_emits_the_state(self, workspace: Path, capsys) -> None:
         from cli.orcho import cmd_reconcile_delivery
 

@@ -53,6 +53,7 @@ from typing import Any
 
 from pipeline.project import gate_failure_set, gate_handoff_actions
 from pipeline.project.gate_failure_set import RECEIPT_EVIDENCE_PATH_KEY, GateFailure
+from pipeline.verification_contract import PRE_PHASE_HOOKS
 from pipeline.verification_execution import (
     VerificationIdentity,
     resolve_selected_execution,
@@ -243,24 +244,53 @@ def run_post_implement_gate_repair(
 # flag stops nested gate evaluation.
 
 
+#: Consume-once record that the operator closed a pre-phase gate pause with
+#: ``continue`` / ``continue_with_waiver``. The guarded phase still runs, but the
+#: one hook the operator already decided is not evaluated again in front of it:
+#: on the unchanged subject it would only re-publish the same pause.
+ACCEPTED_GATE_PAUSE_KEY = "_accepted_gate_pause"
+
+
+def record_accepted_gate_pause(state: Any, *, phase: str, hook: str) -> None:
+    """Mark ``hook`` as operator-decided for the next entry into ``phase``."""
+    state.extras[ACCEPTED_GATE_PAUSE_KEY] = {"phase": phase, "hook": hook}
+
+
+def _take_accepted_gate_hook(run: Any, phase: str) -> str | None:
+    """Pop the accepted-pause record; return its hook only for ``phase``.
+
+    Popped unconditionally, like the runner's pre-phase skip channel, so a
+    record can never outlive the phase entry it was written for.
+    """
+    accepted = run.state.extras.pop(ACCEPTED_GATE_PAUSE_KEY, None)
+    if isinstance(accepted, Mapping) and accepted.get("phase") == phase:
+        hook = accepted.get("hook")
+        return hook if isinstance(hook, str) else None
+    return None
+
+
 def evaluate_pre_phase_gates(run: Any, phase: str) -> None:
     """``on_phase_pre``: before_phase(phase) + before_delivery on FINAL_PHASES."""
     if not _gate_active(run):
         return
+    # Only a gate pause writes the record, and gates are active whenever one
+    # could have been published — so the no-contract path never holds one.
+    accepted_hook = _take_accepted_gate_hook(run, phase)
     from pipeline.verification_contract import FINAL_PHASES
 
     run._in_gate_hook = True
     try:
-        run_gate_hook(
-            run,
-            run._gate_profile,
-            run._gate_ctx,
-            hook="before_phase",
-            phase=phase,
-        )
+        if accepted_hook != "before_phase":
+            run_gate_hook(
+                run,
+                run._gate_profile,
+                run._gate_ctx,
+                hook="before_phase",
+                phase=phase,
+            )
         if getattr(run.state, "halt", False) or run.state.phase_handoff_request:
             return
-        if phase in FINAL_PHASES:
+        if phase in FINAL_PHASES and accepted_hook != "before_delivery":
             run_gate_hook(
                 run,
                 run._gate_profile,
@@ -1477,7 +1507,7 @@ def _active_loop_position(
     executed = extras.get(ACTIVE_LOOP_EXECUTED_EXTRA)
     if not isinstance(executed, tuple):
         return None
-    if hook in _PRE_PHASE_HOOKS:
+    if hook in PRE_PHASE_HOOKS:
         # The gate guards the member: it has not run, and recording it as done
         # would resume past a phase nothing executed.
         if phase in executed:
@@ -1503,11 +1533,6 @@ def _active_loop_position(
         "executed": list(executed),
         "mode": mode,
     }
-
-
-#: Gate hooks that fire *before* the phase they guard. Their pause leaves that
-#: phase still owed — the opposite of an ``after_phase`` pause.
-_PRE_PHASE_HOOKS = frozenset({"before_phase", "before_delivery"})
 
 
 def _positive_int(value: Any) -> bool:
@@ -1758,10 +1783,12 @@ def _retry_gate_entry(run: Any, contract: Any, identity: Any) -> Any:
 
 
 __all__ = [
+    "ACCEPTED_GATE_PAUSE_KEY",
     "VERIFICATION_GATE_EVENTS_KEY",
     "GateRepairOutcome",
     "evaluate_post_phase_gates",
     "evaluate_pre_phase_gates",
+    "record_accepted_gate_pause",
     "run_gate_hook",
     "run_post_implement_gate_repair",
     "repark_verification_handoff_retry_blocked",

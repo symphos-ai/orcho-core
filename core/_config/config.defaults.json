@@ -3,11 +3,11 @@
   "phases": {
     "plan":               {"runtime": "claude", "model": "claude-fable-5-1[1m]", "effort": "high"},
     "validate_plan":      {"runtime": "codex",  "model": "gpt-6-astra",          "effort": "high"},
-    "implement":          {"runtime": "claude", "model": "claude-opus-5[1m]",    "effort": "medium"},
-    "review_changes":     {"runtime": "codex",  "model": "gpt-5.6-sol",          "effort": "medium"},
-    "repair_changes":     {"runtime": "claude", "model": "claude-opus-5[1m]",    "effort": "medium"},
+    "implement":          {"runtime": "claude", "model": "claude-opus-5-5",    "effort": "medium"},
+    "review_changes":     {"runtime": "codex",  "model": "gpt-6-sol",          "effort": "medium"},
+    "repair_changes":     {"runtime": "claude", "model": "claude-opus-5-5",    "effort": "medium"},
     "repair_escalation":  {"runtime": "claude", "model": "claude-fable-5-1[1m]", "effort": "high"},
-    "final_acceptance":   {"runtime": "codex",  "model": "gpt-5.6-sol",          "effort": "low"}
+    "final_acceptance":   {"runtime": "codex",  "model": "gpt-6-sol",          "effort": "low"}
   },
   "timeouts": {
     "_comment": "Hard caps use *_seconds and are disabled by 0. Idle watchdogs use *_idle_seconds and reset whenever the agent streams output.",
@@ -18,6 +18,14 @@
     "claude_idle_seconds": 1800,
     "codex_idle_seconds": 900,
     "gemini_idle_seconds": 900
+  },
+  "claude": {
+    "_comment": "Launch policy for Claude CLI processes started by Orcho. disable_hooks adds a process-scoped Claude settings override that disables ordinary lifecycle hooks for those calls only; direct Claude CLI sessions keep their normal settings.",
+    "disable_hooks": false
+  },
+  "codex": {
+    "_comment": "Launch policy for Codex CLI processes started by Orcho. disable_hooks adds a process-scoped feature override that disables ordinary lifecycle hooks for those calls only; direct Codex CLI sessions keep their normal settings and notifications.",
+    "disable_hooks": false
   },
   "claude_glm": {
     "_comment": "Claude-compatible GLM adapter defaults. CLAUDE_GLM_* overrides win; CLAUDE_GLM_MAX_CONTEXT_TOKENS must be a positive integer. 'config_dir' is where this adapter keeps its own CLI config; empty means the per-user default, and it is never the operator's ordinary config directory.",

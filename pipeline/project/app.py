@@ -136,7 +136,7 @@ def run_pipeline(
     task: str,
     project_dir: str,
     max_rounds: int = 1,
-    model: str = config.phase_model("implement", "claude-opus-5[1m]"),
+    model: str = config.phase_model("implement", "claude-opus-5-5"),
     output_dir: Path | None = None,
     dry_run: bool = False,
     phase_config: PhaseAgentConfig | None = None,

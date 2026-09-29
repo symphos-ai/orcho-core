@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 0.11.1 - 2026-09-29
+
+This release refreshes the default agent assignments and fixes recovery and
+delivery paths for runs that have already completed their implementation.
+
+### Added
+
+- Per-runtime `disable_hooks` settings let a workspace disable Claude or Codex
+  lifecycle hooks only for processes launched by Orcho. Existing user CLI
+  sessions keep their own hook settings.
+
+### Changed
+
+- The default phase assignments use Claude Fable 5.1 for planning and repair
+  escalation, Codex Astra for plan review, Claude Opus 5.5 for implementation
+  and routine repair, and Codex `gpt-6-sol` for code review and final acceptance.
+  Existing workspace overrides still take precedence.
+
+### Fixed
+
+- Continuing past a failed `before_delivery` or `before_phase` gate now runs
+  the phase that gate guards. Previously `continue` and
+  `continue_with_waiver` recorded `final_acceptance` as completed without
+  executing it, so the run reached delivery with no release verdict and could
+  re-enter an already finished review/repair loop. The decided gate is not
+  re-raised in front of the guarded phase, and the resume point matches the
+  one `retry_verification` uses.
+- Commit delivery no longer fails when the run deleted a file with `git rm`.
+  Staging run-owned paths by name rejected a deletion that was already in the
+  index (`pathspec ... did not match any files`), so an approved run halted
+  with `commit_delivery_failed`. Such paths are now left as staged; every
+  other run-owned path is staged as before, and paths outside the run are
+  still never added.
+- `reconcile-delivery` can record a commit the operator made by hand after
+  the run's own delivery commit failed. Previously the ledger matched only a
+  commit carrying the engine's intended subject, so a manual delivery was
+  refused with `no_delivery_commit_found` and an approved run stayed halted.
+  A commit named with `--commit` is now recorded when its only parent is the
+  intended base and its tree equals the run's change; its subject is not
+  compared, and any other named commit is refused with `commit_mismatch`.
+  A dry-run with `--commit` checks the named commit without recording it.
+- A reconciled delivery now always records the commit sha in the delivery
+  ledger, so a second reconcile reports `already_recorded`.
+
 ## 0.11.0 - 2026-09-20
 
 This release adds a bounded recovery path for required verification blocked

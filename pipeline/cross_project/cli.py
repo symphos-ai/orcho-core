@@ -616,7 +616,7 @@ Examples:
     if args.model is None:
         args.model = config.AppConfig.load().phase_model_map.get(
             "implement",
-            "claude-opus-5[1m]",
+            "claude-opus-5-5",
         )
 
     # Output dir rules (parallel single-project):

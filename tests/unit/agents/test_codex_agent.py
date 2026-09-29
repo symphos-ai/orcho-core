@@ -12,6 +12,7 @@ and continue it with ``codex exec resume <id>``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -300,6 +301,44 @@ class TestInvokeReadOnly:
         kwargs = mock_stream_run.call_args.kwargs
         assert kwargs["prompt"] == "the prompt"
         assert kwargs["delivery_mode"] == "stdin"
+
+    def test_hooks_remain_enabled_by_default(self, codex: CodexAgent) -> None:
+        cmd = codex._exec_cmd(mutates_artifacts=False)
+        assert "--disable" not in cmd
+
+    @pytest.mark.parametrize(
+        ("mutates_artifacts", "resume"),
+        [(False, False), (True, False), (True, True)],
+        ids=("fresh", "write", "resume"),
+    )
+    def test_disable_hooks_setting_applies_to_every_codex_call_shape(
+        self,
+        codex: CodexAgent,
+        monkeypatch: pytest.MonkeyPatch,
+        mutates_artifacts: bool,
+        resume: bool,
+    ) -> None:
+        from core.infra import config
+
+        app = config.AppConfig.load()
+        monkeypatch.setattr(
+            config.AppConfig,
+            "load",
+            staticmethod(lambda: replace(
+                app,
+                codex=config.CodexRuntimeConfig(disable_hooks=True),
+            )),
+        )
+
+        cmd = codex._exec_cmd(
+            mutates_artifacts=mutates_artifacts,
+            resume=resume,
+        )
+
+        index = cmd.index("--disable")
+        assert cmd[index + 1] == "hooks"
+        if resume:
+            assert cmd[:3] == [codex.bin, "exec", "resume"]
 
 
 # ── invoke(): write path (codex exec) ──────────────────────────────────────

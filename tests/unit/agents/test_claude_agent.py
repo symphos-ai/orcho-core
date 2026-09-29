@@ -22,6 +22,7 @@ via the local ``mock_stream_run`` fixture.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -363,6 +364,89 @@ class TestInvokeCliShape:
         claude.invoke("hi", "/project")
         cmd = mock_stream_run.call_args[0][0]
         assert "--effort" not in cmd
+
+    def test_hooks_remain_enabled_by_default(
+        self, claude: ClaudeAgent, mock_stream_run: MagicMock,
+    ) -> None:
+        claude.invoke("hi", "/project")
+        cmd = mock_stream_run.call_args[0][0]
+        assert "--settings" not in cmd
+
+    @pytest.mark.parametrize(
+        ("mutates_artifacts", "continue_session"),
+        [(False, False), (True, False), (True, True)],
+        ids=("fresh", "write", "resume"),
+    )
+    def test_disable_hooks_setting_applies_to_every_claude_call_shape(
+        self,
+        claude: ClaudeAgent,
+        mock_stream_run: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        mutates_artifacts: bool,
+        continue_session: bool,
+    ) -> None:
+        from core.infra import config
+
+        app = config.AppConfig.load()
+        monkeypatch.setattr(
+            config.AppConfig,
+            "load",
+            staticmethod(lambda: replace(
+                app,
+                claude=config.ClaudeRuntimeConfig(disable_hooks=True),
+            )),
+        )
+        if continue_session:
+            claude.session_id = "session-to-resume"
+
+        claude.invoke(
+            "hi",
+            "/project",
+            mutates_artifacts=mutates_artifacts,
+            continue_session=continue_session,
+        )
+
+        cmd = mock_stream_run.call_args[0][0]
+        index = cmd.index("--settings")
+        assert cmd[index + 1] == '{"disableAllHooks":true}'
+        if continue_session:
+            assert cmd[cmd.index("--resume") + 1] == "session-to-resume"
+
+    def test_disable_hooks_setting_prevents_synthetic_hook_side_effect(
+        self,
+        tmp_path: Path,
+        mock_claude_bin: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from core.infra import config
+
+        hook_log = tmp_path / "hook-log.md"
+
+        def fake_stream_run(cmd, *, cwd, **kwargs):
+            del kwargs
+            if "--settings" not in cmd:
+                Path(cwd, hook_log.name).write_text("hook ran", encoding="utf-8")
+            return _stream_result("done")
+
+        monkeypatch.setattr(agents_module, "_stream_run", fake_stream_run)
+        app = config.AppConfig.load()
+
+        ordinary = ClaudeAgent(model="m")
+        ordinary.invoke("ordinary", str(tmp_path))
+        assert hook_log.read_text(encoding="utf-8") == "hook ran"
+        hook_log.unlink()
+
+        isolated = ClaudeAgent(model="m")
+        monkeypatch.setattr(
+            config.AppConfig,
+            "load",
+            staticmethod(lambda: replace(
+                app,
+                claude=config.ClaudeRuntimeConfig(disable_hooks=True),
+            )),
+        )
+        isolated.invoke("isolated", str(tmp_path))
+        assert not hook_log.exists()
 
     def test_prompt_is_delivered_via_stdin_with_print_flag(
         self, claude: ClaudeAgent, mock_stream_run: MagicMock,

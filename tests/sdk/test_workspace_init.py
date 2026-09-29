@@ -298,6 +298,8 @@ def test_workspace_local_config_snapshot_contains_override_surface(
     assert data["phases"]["implement"]["effort"]
     for section in (
         "timeouts",
+        "claude",
+        "codex",
         "session",
         "codemap",
         "hypothesis",
