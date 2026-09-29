@@ -75,6 +75,11 @@ SCHEDULE_HOOKS: tuple[str, ...] = (
     "manual_only",
 )
 
+# Hooks that fire *before* the phase they guard. A pause raised by one of them
+# leaves that phase still owed — the opposite of an ``after_phase`` pause, which
+# reports on a phase that already ran.
+PRE_PHASE_HOOKS: frozenset[str] = frozenset({"before_phase", "before_delivery"})
+
 # Accepted ``work_mode`` values; ``""`` means unset.
 WORK_MODES: tuple[str, ...] = ("", "fast", "pro", "governed")
 

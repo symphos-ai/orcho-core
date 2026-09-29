@@ -179,8 +179,8 @@ variables:
 
 ```bash
 export MODEL_PLAN='claude-fable-5-1[1m]'
-export MODEL_IMPLEMENT='claude-opus-5[1m]'
-export MODEL_REVIEW_CHANGES=gpt-5.6-sol
+export MODEL_IMPLEMENT='claude-opus-5-5'
+export MODEL_REVIEW_CHANGES=gpt-6-sol
 export RUNTIME_REVIEW_CHANGES=codex
 ```
 

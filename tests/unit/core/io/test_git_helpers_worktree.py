@@ -1,8 +1,8 @@
 """Worktree primitives in :mod:`core.io.git_helpers` (GWT-1 / ADR 0033).
 
 Covers ``create_worktree``, ``remove_worktree``,
-``worktree_diff_against_base``, and ``apply_patch_to_checkout``
-against real on-disk git repos (tmp_path-scoped). Each test
+``worktree_diff_against_base``, ``apply_patch_to_checkout``, and
+``stage_checkout_paths`` against real on-disk git repos (tmp_path-scoped). Each test
 exercises one of the three contract guarantees:
 
 * never raises on expected git-side failure — surfaces via
@@ -26,6 +26,7 @@ from core.io.git_helpers import (
     create_worktree,
     git_head,
     remove_worktree,
+    stage_checkout_paths,
     worktree_diff_against_base,
 )
 
@@ -361,6 +362,49 @@ class TestApplyPatchToCheckout:
 
 
 # ── git_head ───────────────────────────────────────────────────────────────
+
+
+class TestStageCheckoutPaths:
+    @staticmethod
+    def _staged(repo: Path) -> list[str]:
+        return subprocess.run(
+            ["git", "diff", "--cached", "--name-status"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+
+    def test_stages_edits_additions_and_both_kinds_of_deletion(
+        self, tmp_path: Path,
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        for name in ("rm.txt", "gitrm.txt"):
+            (repo / name).write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "more"], cwd=repo, check=True)
+        (repo / "README.md").write_text("# edited\n", encoding="utf-8")
+        (repo / "new.txt").write_text("new\n", encoding="utf-8")
+        (repo / "rm.txt").unlink()
+        subprocess.run(["git", "rm", "-q", "gitrm.txt"], cwd=repo, check=True)
+
+        result = stage_checkout_paths(
+            repo, ["README.md", "new.txt", "rm.txt", "gitrm.txt"],
+        )
+
+        assert result.ok, result.error
+        assert sorted(self._staged(repo)) == [
+            "A\tnew.txt", "D\tgitrm.txt", "D\trm.txt", "M\tREADME.md",
+        ]
+
+    def test_leaves_paths_outside_the_list_unstaged(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("# edited\n", encoding="utf-8")
+        (repo / "unrelated.txt").write_text("parallel work\n", encoding="utf-8")
+
+        result = stage_checkout_paths(repo, ["README.md"])
+
+        assert result.ok, result.error
+        assert self._staged(repo) == ["M\tREADME.md"]
 
 
 class TestGitHead:

@@ -54,7 +54,7 @@ _REQUEST_ONLY_FIELDS = {"presentation"}
 # ``tests/conftest.py``) and prints the ACTUAL block in the assertion
 # diff. Paste that diff's ACTUAL string back into this constant. The
 # canonical path is pytest, not ``python -c …`` — Phase C's first draft
-# pinned ``model: str = 'claude-opus-5[1m]'`` from a manual
+# pinned ``model: str = 'claude-opus-5-5'`` from a manual
 # ``python -c`` capture under an active local-config override; the
 # test re-runs in a different env and the strings diverged. Always
 # regenerate from the actual failing test to match the lock's env.
@@ -63,7 +63,7 @@ _REQUEST_ONLY_FIELDS = {"presentation"}
 # CrossRunRequest field set is keyed against this exact 23-param shape.
 PINNED_RUN_CROSS_PIPELINE_SIGNATURE = (
     "(task: str, projects: dict[str, pathlib.Path], max_rounds: int = 1, "
-    "model: str = 'claude-opus-5[1m]', output_dir: pathlib.Path | None = None, "
+    "model: str = 'claude-opus-5-5', output_dir: pathlib.Path | None = None, "
     "dry_run: bool = False, mock: bool = False, "
     "provider: 'AgentProvider | None' = None, "
     "phase_config: agents.registry.PhaseAgentConfig | None = None, "

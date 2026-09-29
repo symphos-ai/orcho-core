@@ -1171,7 +1171,13 @@ silently: the resolve refuses to deliver again, run diagnosis reports
 `orcho reconcile-delivery <run_id> --apply --commit <sha>`
 (`provenance="reconciled"`, `operator` / `note` in the audit artifact; a
 rejected release settles as a *reconciled* `delivery_override`, never an
-operator override). A gate that is merely parked — no commit yet — is
+operator override). When the engine's own commit failed (ledger stuck at
+`intent`, no commit with the intended subject) and the operator committed the
+approved change by hand, the same command records that commit when
+`--commit` names it and it is exactly the intended delivery: its only parent
+is the intent's `head_before` and its tree equals `head_before` with the
+intent's `staged_paths` as they are in `commit_target`. Its subject is not
+compared; any other commit is refused with `commit_mismatch`. A gate that is merely parked — no commit yet — is
 decided with `orcho delivery decide <run_id> <action>` instead.
 
 ### Delivery publication facts

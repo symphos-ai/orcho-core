@@ -193,12 +193,12 @@ class TestPhaseAgentConfigDefault:
         cfg = PhaseAgentConfig.default(stubbed_registry)
         # Models come from _config/config.defaults.json
         assert cfg.plan_agent.model == "claude-fable-5-1[1m]"
-        assert cfg.implement_agent.model == "claude-opus-5[1m]"
-        assert cfg.repair_changes_agent.model == "claude-opus-5[1m]"
+        assert cfg.implement_agent.model == "claude-opus-5-5"
+        assert cfg.repair_changes_agent.model == "claude-opus-5-5"
         assert cfg.repair_escalation_agent.model == "claude-fable-5-1[1m]"
-        assert cfg.review_changes_agent.model == "gpt-5.6-sol"
+        assert cfg.review_changes_agent.model == "gpt-6-sol"
         assert cfg.validate_plan_agent.model == "gpt-6-astra"
-        assert cfg.final_acceptance_agent.model == "gpt-5.6-sol"
+        assert cfg.final_acceptance_agent.model == "gpt-6-sol"
 
     def test_env_var_overrides_phase_model(
         self,

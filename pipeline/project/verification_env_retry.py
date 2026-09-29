@@ -62,6 +62,7 @@ from pipeline.project.verification_handoff_retry import (
     VerificationHandoffRetryContext,
 )
 from pipeline.run_state import retry_verification_handoff
+from pipeline.verification_contract import PRE_PHASE_HOOKS
 
 #: ``state.extras`` key a pre-router resume step sets when it could not trust
 #: the scheduled-gate ledger. The env retry is the one resume that *depends*
@@ -350,7 +351,7 @@ def apply_verification_env_retry(
     # Proven before anything runs: a passing rerun must have a continuation
     # position to hand back, and "the gates are green but the engine cannot say
     # where to resume" is not a state worth creating.
-    continuation = _prove_continuation_position(profile, active)
+    continuation = prove_continuation_position(profile, active)
 
     transition = retry_verification_handoff(
         run.session, handoff_id=handoff_id, note=note, decided_at=decided_at,
@@ -387,7 +388,7 @@ def apply_verification_env_retry(
         # The rerun published a fresh signal/id; keep it active for the normal
         # pause persistence tail rather than clearing it as consumed.
         return _outcome(profile, completed=frozenset(), paused=True)
-    return _continuation_outcome(run, profile, continuation)
+    return continuation_outcome(run, profile, continuation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,7 +412,7 @@ class _Continuation:
     human_directed_rounds: tuple[str, int] | None = None
 
 
-def _prove_continuation_position(profile: Any, active: Mapping[str, Any]) -> _Continuation:
+def prove_continuation_position(profile: Any, active: Mapping[str, Any]) -> _Continuation:
     """Locate the exact resume point, or block before a single gate runs.
 
     Everything before the raising phase is finished work: re-entering any of it
@@ -452,7 +453,7 @@ def _prove_continuation_position(profile: Any, active: Mapping[str, Any]) -> _Co
         raise VerificationHandoffRetryBlocked(
             "the paused handoff does not name the phase its gates ran for",
         )
-    protected = _pause_guards_its_phase(active)
+    protected = pause_guards_its_phase(active)
     steps = getattr(profile, "steps", None)
     if not steps:
         # A profile shape with no walkable steps (direct-dispatch test doubles):
@@ -569,10 +570,6 @@ def _human_directed_rounds(loop: Any, budget: int) -> tuple[str, int] | None:
     return (loop.round_extras_key, budget - declared)
 
 
-#: Gate hooks that fire *before* the phase they guard, leaving it still owed.
-_PRE_PHASE_HOOKS = frozenset({"before_phase", "before_delivery"})
-
-
 def _recorded_loop_position(active: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The loop position this pause persisted, or ``None`` for a top-level one."""
     artifacts = active.get("artifacts")
@@ -584,14 +581,14 @@ def _recorded_loop_position(active: Mapping[str, Any]) -> Mapping[str, Any] | No
     return recorded if isinstance(recorded, Mapping) else None
 
 
-def _primary_hook(active: Mapping[str, Any]) -> Any:
+def primary_gate_hook(active: Mapping[str, Any]) -> Any:
     """The hook of the pause's primary gate identity, unvalidated."""
     artifacts = active.get("artifacts")
     primary = artifacts.get("gate_identity") if isinstance(artifacts, Mapping) else None
     return primary.get("hook") if isinstance(primary, Mapping) else None
 
 
-def _pause_guards_its_phase(active: Mapping[str, Any]) -> bool:
+def pause_guards_its_phase(active: Mapping[str, Any]) -> bool:
     """Whether the gates ran *before* the phase the pause names.
 
     ``before_phase`` / ``before_delivery`` gates guard a phase that has not run
@@ -600,7 +597,7 @@ def _pause_guards_its_phase(active: Mapping[str, Any]) -> bool:
     the phase name alone would let a green rerun walk straight past the very
     phase the gate was protecting.
     """
-    return _primary_hook(active) in _PRE_PHASE_HOOKS
+    return primary_gate_hook(active) in PRE_PHASE_HOOKS
 
 
 def _enclosing_loop(steps: Any, phase: str) -> tuple[Any, list[str]]:
@@ -707,10 +704,10 @@ def _validated_loop_position(
     # The position and the identities describe the same pause, so they describe
     # the same hook. A position that claims another one would flip which side
     # of the member the round resumes on while the gates say otherwise.
-    if recorded.get("hook") != _primary_hook(active):
+    if recorded.get("hook") != primary_gate_hook(active):
         raise _block(
             f"names hook {recorded.get('hook')!r} while the gates ran at "
-            f"{_primary_hook(active)!r}",
+            f"{primary_gate_hook(active)!r}",
         )
     round_n = recorded.get("round")
     # Validated against the budget the pause recorded, not the loop's declared
@@ -801,7 +798,7 @@ def _positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
-def _continuation_outcome(
+def continuation_outcome(
     run: Any, profile: Any, continuation: _Continuation,
 ) -> Any:
     """Resume the ordinary pipeline *after* the phase whose gates just passed.
@@ -952,7 +949,7 @@ def _reject_incoherent_gate_scope(
             f"raises a pause at {expected!r}; the record's phase and its gates "
             "do not describe the same position",
         )
-    primary_hook = _primary_hook(active)
+    primary_hook = primary_gate_hook(active)
     if primary_hook != hook:
         raise VerificationHandoffRetryBlocked(
             f"the primary gate identity names hook {primary_hook!r} while the "
@@ -1280,8 +1277,12 @@ __all__ = [
     "EnvRetryLedgerBlocked",
     "apply_verification_env_retry",
     "apply_verification_env_retry_resume",
+    "continuation_outcome",
     "detect_env_retry_resume",
     "is_env_retry_decision",
     "is_env_retry_decision_candidate",
+    "pause_guards_its_phase",
+    "primary_gate_hook",
+    "prove_continuation_position",
     "repark_unreadable_env_retry_decision",
 ]

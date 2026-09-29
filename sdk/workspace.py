@@ -591,6 +591,8 @@ def _write_env_file(env_file: Path, *, dry_run: bool) -> str:
 
 _CONFIG_SECTIONS: Final[tuple[str, ...]] = (
     "timeouts",
+    "claude",
+    "codex",
     "session",
     "codemap",
     "hypothesis",

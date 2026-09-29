@@ -19,11 +19,11 @@ class TestPhaseModelDefaults:
         assert app.phase_model_map == {
             "plan": "claude-fable-5-1[1m]",
             "validate_plan": "gpt-6-astra",
-            "implement": "claude-opus-5[1m]",
-            "review_changes": "gpt-5.6-sol",
-            "repair_changes": "claude-opus-5[1m]",
+            "implement": "claude-opus-5-5",
+            "review_changes": "gpt-6-sol",
+            "repair_changes": "claude-opus-5-5",
             "repair_escalation": "claude-fable-5-1[1m]",
-            "final_acceptance": "gpt-5.6-sol",
+            "final_acceptance": "gpt-6-sol",
         }
         assert app.phase_effort_map == {
             "plan": "high",

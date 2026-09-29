@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.engine.delivery_ledger import (
+    RECON_INTENT_ONLY,
     describe_commit,
     reconcile_delivery,
     safe_decision_id,
@@ -117,11 +118,14 @@ def inspect_delivery_reconciliation(
     runs_dir: Path | str | None = None,
     cwd: Path | str | None | object = _CWD_DEFAULT,
     meta: dict[str, Any] | None = None,
+    commit: str | None = None,
 ) -> DeliveryReconciliationState:
     """Compare the run's delivery record with the ledger and Git, read-only.
 
     ``consistent`` is ``True`` when nothing needs recording: no delivery commit
     exists, or the durable ``commit_delivery`` block already names it.
+    ``commit`` is an operator-named delivery commit; it is checked only when the
+    engine's own commit never happened (see ``reconcile_delivery``).
     """
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("inspect_delivery_reconciliation: run_id must be a non-empty string")
@@ -133,6 +137,7 @@ def inspect_delivery_reconciliation(
         run_id=ref.run_id,
         decision_id=safe_decision_id(ref.run_id),
         project_path=project,
+        commit=commit,
     )
     recorded = resolved_meta.get("commit_delivery")
     recorded_status = (
@@ -192,7 +197,9 @@ def reconcile_delivery_record(
 
     ``commit`` (a sha or unique prefix) must name the commit reconciliation
     found; passing it is how the operator states they verified that exact
-    commit. Refusals are typed (``accepted=False`` + ``blocker``), never
+    commit. When the engine's own delivery commit failed, the operator may
+    name a commit they made by hand: it is recorded when it is exactly the
+    intended delivery (same parent, same change), whatever its subject. Refusals are typed (``accepted=False`` + ``blocker``), never
     exceptions: ``no_delivery_commit_found``, ``already_recorded``,
     ``commit_mismatch``, ``commit_unreadable``.
 
@@ -208,7 +215,14 @@ def reconcile_delivery_record(
     meta = load_meta(ref.run_dir)
     state = inspect_delivery_reconciliation(
         ref.run_id, workspace=workspace, runs_dir=runs_dir, cwd=cwd, meta=meta,
+        commit=commit,
     )
+    if not state.commit_sha and commit and state.state == RECON_INTENT_ONLY:
+        return DeliveryReconcileResult(
+            run_id=ref.run_id, accepted=False, state=state.state,
+            blocker="commit_mismatch",
+            reason=f"{commit} is not this run's intended delivery: {state.detail}",
+        )
     if not state.commit_sha:
         return DeliveryReconcileResult(
             run_id=ref.run_id, accepted=False, state=state.state,

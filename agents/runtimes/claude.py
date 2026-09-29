@@ -52,6 +52,7 @@ if TYPE_CHECKING:
     from agents.runtimes.identity import RuntimeIdentity
 
 _DEFAULT_RUNTIME = "claude"
+_DISABLE_HOOKS_SETTINGS = '{"disableAllHooks":true}'
 
 # Account-identity probe (diagnostic only). ``claude auth status`` is the
 # non-interactive, user-facing status surface the CLI already exposes; it
@@ -535,7 +536,7 @@ class ClaudeAgent:
             self._resolve_cli_binary,
         )
         self.model = model or config.phase_model(
-            "implement", "claude-opus-5[1m]",
+            "implement", "claude-opus-5-5",
         )
         self.effort = effort
         self._owned_children = OwnedChildRegistry()
@@ -588,6 +589,14 @@ class ClaudeAgent:
         """Suffix for human-readable labels: `` --effort high`` or empty."""
         return f" --effort {self.effort}" if self.effort else ""
 
+    def _settings_args(self) -> list[str]:
+        """Return the opt-in, process-scoped Claude settings override."""
+        app = config.AppConfig.load()
+        runtime_config = getattr(app, "claude", config.ClaudeRuntimeConfig())
+        if not runtime_config.disable_hooks:
+            return []
+        return ["--settings", _DISABLE_HOOKS_SETTINGS]
+
     def _child_env_overrides(self) -> dict[str, str]:
         """Return runtime-owned child environment additions, if any."""
         return {}
@@ -616,6 +625,7 @@ class ClaudeAgent:
         cmd: list[str] = [
             *_wrap_windows_cmd(self.bin),
             "-p",
+            *self._settings_args(),
         ]
         if mutates_artifacts:
             # Claude write path: pre-accept edits and skip per-tool permission

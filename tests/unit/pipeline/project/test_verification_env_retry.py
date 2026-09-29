@@ -1566,10 +1566,10 @@ def test_the_interactive_decision_continues_exactly_like_the_sdk_one(
 
     run, _checkout, _evidence = _env_retry_run(tmp_path)
     profile = _feature_like_profile()
-    continuation = verification_env_retry._prove_continuation_position(
+    continuation = verification_env_retry.prove_continuation_position(
         profile, run.session["phase_handoff"],
     )
-    outcome = verification_env_retry._continuation_outcome(
+    outcome = verification_env_retry.continuation_outcome(
         run, profile, continuation,
     )
 
